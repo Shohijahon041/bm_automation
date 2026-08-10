@@ -1,0 +1,33 @@
+# Secrets
+.env
+*.env.local
+tokens.json
+profiles.json
+state/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Reports / data output
+reports/
+output/
+*.xlsx
+*.csv
+
+# Local database (SQLite)
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+*.err
+
+# OS
+.DS_Store
+Thumbs.db

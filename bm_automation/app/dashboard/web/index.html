@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BM Automation — Dashboard</title>
+<style>
+  :root {
+    --bg: #0f172a; --card: #1e293b; --line: #334155; --text: #e2e8f0;
+    --muted: #94a3b8; --accent: #38bdf8; --ok: #4ade80; --bad: #f87171;
+    --warn: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", system-ui, sans-serif; font-size: 14px;
+  }
+  header {
+    padding: 12px 20px; background: var(--card); border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  }
+  h1 { font-size: 18px; margin: 0; }
+  .sys { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .sys span { display: inline-flex; align-items: center; gap: 5px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); display: inline-block; }
+  .dot.ok { background: var(--ok); }
+  .dot.bad { background: var(--bad); }
+  main { padding: 16px 20px; max-width: 1280px; margin: 0 auto; }
+  .filters {
+    display: flex; gap: 10px; align-items: end; flex-wrap: wrap;
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 14px; margin-bottom: 16px;
+  }
+  .filters label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+  input, select, button {
+    background: var(--bg); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 8px; font-size: 13px;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  .btn-primary { background: var(--accent); color: #082f49; border: none; font-weight: 600; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }
+  .kpi { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .kpi .n { font-size: 24px; font-weight: 700; }
+  .kpi .l { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  section { margin-bottom: 18px; }
+  h2 { font-size: 15px; margin: 0 0 8px; color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; background: var(--card);
+    border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  th { background: #243449; color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  .tag { padding: 2px 8px; border-radius: 999px; font-size: 11px; }
+  .tag.ok { background: rgba(74,222,128,.15); color: var(--ok); }
+  .tag.bad { background: rgba(248,113,113,.15); color: var(--bad); }
+  .tag.warn { background: rgba(251,191,36,.15); color: var(--warn); }
+  .muted { color: var(--muted); }
+  .meta { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  .error-banner { background: rgba(248,113,113,.15); color: var(--bad); border: 1px solid var(--bad);
+    border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; }
+  .export-row { display: flex; gap: 8px; margin-bottom: 14px; }
+  .empty { color: var(--muted); padding: 12px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🚍 BM Automation — Dashboard</h1>
+  <div class="sys" id="sys"></div>
+</header>
+
+<main>
+  <div class="error-banner" id="errbox" style="display:none"></div>
+
+  <div class="filters">
+    <label>Sana <input type="date" id="f-date"></label>
+    <label>Yo'nalish
+      <select id="f-route"><option value="">Barchasi</option></select>
+    </label>
+    <label>Avtobus <input type="text" id="f-vehicle" placeholder="id / raqam"></label>
+    <label>Haydovchi <input type="text" id="f-driver" placeholder="id / ism"></label>
+    <label>Status
+      <select id="f-status">
+        <option value="">Barchasi</option>
+        <option>ACCEPTED</option><option>NOT_ACCEPTED</option>
+        <option>PENDING_ACCESS</option><option>APPROVED</option>
+        <option>REJECTED</option><option>ZERO_MILEAGE</option>
+      </select>
+    </label>
+    <label>Avto-yangilash
+      <select id="f-refresh">
+        <option value="30">30s</option>
+        <option value="10">10s</option>
+        <option value="5">5s</option>
+        <option value="0">o'chiq</option>
+      </select>
+    </label>
+    <button id="btn-apply" class="btn-primary">Qo'llash</button>
+    <button id="btn-sync">Sync now</button>
+  </div>
+
+  <div class="export-row">
+    <button data-exp="csv">⬇ CSV</button>
+    <button data-exp="xlsx">⬇ Excel</button>
+    <button data-exp="pdf">⬇ PDF</button>
+    <span class="muted" id="export-hint" style="align-self:center"></span>
+  </div>
+
+  <section id="today-block">
+    <h2>Bugun</h2>
+    <div class="kpis" id="kpis"></div>
+  </section>
+
+  <section id="routes-block">
+    <h2>Yo'nalishlar</h2>
+    <div id="routes-tab"></div>
+  </section>
+
+  <section id="vehicles-block">
+    <h2>Avtobuslar</h2>
+    <div id="vehicles-tab"></div>
+  </section>
+
+  <section id="drivers-block">
+    <h2>Haydovchilar</h2>
+    <div id="drivers-tab"></div>
+  </section>
+
+  <section id="trips-block">
+    <h2>Reyslar (so'nggi)</h2>
+    <div id="trips-tab"></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+let state = {};
+
+function qs() {
+  const p = new URLSearchParams();
+  const d = document.getElementById("f-date").value;
+  const r = document.getElementById("f-route").value;
+  const v = document.getElementById("f-vehicle").value.trim();
+  const dr = document.getElementById("f-driver").value.trim();
+  const st = document.getElementById("f-status").value;
+  if (d) p.set("date", d);
+  if (r) p.set("route", r);
+  if (v) p.set("vehicle", v);
+  if (dr) p.set("driver", dr);
+  if (st) p.set("status", st);
+  return p;
+}
+
+async function api(path, params) {
+  const url = path + (params ? "?" + params.toString() : "");
+  const r = await fetch(url, {headers: {"Accept": "application/json"}});
+  return r.json();
+}
+
+function esc(x) {
+  return String(x ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+function tag(status) {
+  const s = String(status || "");
+  if (s === "ACCEPTED" || s === "faol" || s === "APPROVED") return '<span class="tag ok">' + esc(s) + '</span>';
+  if (s === "REJECTED" || s === "NOT_ACCEPTED" || s === "faol emas" || s === "ZERO_MILEAGE") return '<span class="tag bad">' + esc(s) + '</span>';
+  return '<span class="tag warn">' + esc(s) + '</span>';
+}
+
+function table(cols, rows) {
+  if (!rows.length) return '<div class="empty">Ma'lumot yo\'q</div>';
+  const h = "<tr>" + cols.map(c => "<th>" + esc(c) + "</th>").join("") + "</tr>";
+  const b = rows.map(r => "<tr>" + r.map(c => "<td>" + c + "</td>").join("") + "</tr>").join("");
+  return "<table>" + h + b + "</table>";
+}
+
+function renderSys(s) {
+  const el = document.getElementById("sys");
+  const items = [
+    ["BM API", s.api && s.api.ok], ["DB", s.database && s.database.ok],
+    ["Telegram", s.telegram && s.telegram.ok],
+    ["Scheduler", s.scheduler && s.scheduler.ok],
+  ].map(([name, ok]) =>
+    `<span><i class="dot ${ok ? "ok" : "bad"}"></i>${name}</span>`).join("");
+  el.innerHTML = items;
+}
+
+function render(data) {
+  document.getElementById("errbox").style.display = "none";
+  const t = data.today || {};
+
+  const kpis = [
+    ["Jami avtobuslar", t.total_buses ?? 0], ["Faol avtobuslar", t.active_buses ?? 0],
+    ["Faol emas", t.not_active_buses ?? 0], ["Jami reyslar", t.total_trips ?? 0],
+    ["Bajarilgan", t.completed ?? 0], ["Qabul qilingan", t.accepted ?? 0],
+    ["Qabul qilinmagan", t.not_accepted ?? 0], ["Pending", t.pending ?? 0],
+    ["Rejected", t.rejected ?? 0], ["Zero mileage", t.zero_mileage ?? 0],
+  ].map(([l, n]) => '<div class="kpi"><div class="n">' + esc(n) +
+    '</div><div class="l">' + esc(l) + "</div></div>").join("");
+  document.getElementById("kpis").innerHTML = kpis;
+
+  const routes = (data.routes || []).map(r => [
+    esc(r.name), esc(r.route_id), r.planned, r.actual, r.accepted,
+    r.not_accepted, r.rejected, r.zero_mileage,
+    '<b>' + r.performance + "%</b>"
+  ]);
+  document.getElementById("routes-tab").innerHTML = table(
+    ["Nom", "ID", "planned", "actual", "accepted", "not accepted", "rejected", "zero", "perf %"], routes);
+
+  const vehicles = (data.vehicles || []).map(v => [
+    esc(v.plate_number), esc(v.model), tag(v.status), v.trips, v.issues,
+    esc(v.last_activity)
+  ]);
+  document.getElementById("vehicles-tab").innerHTML = table(
+    ["Avtobus", "Model", "Status", "Reyslar", "Issues", "Oxirgi faollik"], vehicles);
+
+  const drivers = (data.drivers || []).map(d => [
+    esc(d.name), esc(d.driver_id), d.trips, d.working_days, d.issues,
+    d.attendance + "%"
+  ]);
+  document.getElementById("drivers-tab").innerHTML = table(
+    ["Haydovchi", "ID", "Reyslar", "Ish kunlari", "Issues", "Davomat"], drivers);
+
+  const trips = (data.trips || []).slice(0, 50).map(x => [
+    esc(x.date), esc((x.route_id || "").slice(0, 8)), esc(x.vehicle_id || "-"),
+    esc(x.driver_id || "-"), esc(x.planned_time || "-"), esc(x.actual_time || "-"),
+    tag(x.status), esc(x.source)
+  ]);
+  document.getElementById("trips-tab").innerHTML = table(
+    ["Sana", "Route", "Avtobus", "Haydovchi", "Reja", "Amalda", "Status", "Manba"], trips);
+
+  renderSys(data.system);
+  const updated = (data.generated_at || "").replace("T", " ").slice(0, 19);
+  document.getElementById("export-hint").textContent = "Yangilandi: " + updated;
+}
+
+async function load() {
+  try {
+    const data = await api("/api/summary", qs());
+    if (!data.ok) {
+      document.getElementById("errbox").style.display = "block";
+      document.getElementById("errbox").textContent = data.error || "Xatolik";
+      if (data.system) renderSys(data.system);
+      return;
+    }
+    render(data);
+    state.lastData = data;
+  } catch (e) {
+    document.getElementById("errbox").style.display = "block";
+    document.getElementById("errbox").textContent = "Serverga ulanib bo'lmadi: " + e;
+  }
+}
+
+async function loadRoutes() {
+  try {
+    const data = await api("/api/routes");
+    const sel = document.getElementById("f-route");
+    for (const r of (data.routes || [])) {
+      const o = document.createElement("option");
+      o.value = r.id; o.textContent = r.name;
+      sel.appendChild(o);
+    }
+  } catch (e) { /* drop-down muhim emas */ }
+}
+
+function setupRefresh() {
+  setInterval(() => {
+    const secs = parseInt(document.getElementById("f-refresh").value, 10);
+    if (secs > 0) load();
+  }, 1000);
+}
+
+function exportUrl(fmt) {
+  const p = qs();
+  p.set("format", fmt);
+  p.set("scope", "all");
+  return "/api/export?" + p.toString();
+}
+
+document.getElementById("btn-apply").addEventListener("click", load);
+document.querySelectorAll("[data-exp]").forEach(b => {
+  b.addEventListener("click", () => window.location.href = exportUrl(b.dataset.exp));
+});
+document.getElementById("btn-sync").addEventListener("click", async () => {
+  document.getElementById("btn-sync").textContent = "Sync...";
+  const body = Object.fromEntries(qs().entries());
+  try {
+    const r = await fetch("/api/sync", {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+    const d = await r.json();
+    document.getElementById("btn-sync").textContent = d.ok ? "Sync ✓" : "Sync ✗";
+    load();
+  } catch (e) {
+    document.getElementById("btn-sync").textContent = "Sync ✗";
+  }
+  setTimeout(() => document.getElementById("btn-sync").textContent = "Sync now", 2000);
+});
+
+document.getElementById("f-date").value = new Date().toISOString().slice(0, 10);
+loadRoutes();
+load();
+setupRefresh();
+</script>
+</body>
+</html>
