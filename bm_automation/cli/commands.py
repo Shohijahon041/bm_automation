@@ -250,10 +250,42 @@ def cmd_schedule(args) -> int:
 
 def cmd_bot(args) -> int:
     from ..app.notifications.bot import main as bot_main
-    return bot_main(["--once"] if args.once else [])
+    flags = []
+    if args.once:
+        flags.append("--once")
+    if getattr(args, "watchdog", False):
+        flags.append("--watchdog")
+    return bot_main(flags or [])
 
 
 def cmd_dashboard(args) -> int:
     from ..app.dashboard.server import run
     return run(host=args.host, port=args.port, open_browser=not args.no_browser)
+
+
+def cmd_insights(args) -> int:
+    import sys
+
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+    from ..app.notifications.ops.self_review import build_text
+    print(build_text(days=args.days or None, html=args.html))
+    return 0
+
+
+def cmd_cleanup(args) -> int:
+    from ..app.utils import cleanup
+
+    files = cleanup.prune_reports(
+        max_age_days=args.reports_days, dry_run=args.dry_run)
+    exports = cleanup.prune_pending_exports(
+        max_age_days=args.exports_days, dry_run=args.dry_run)
+    logs = cleanup.prune_logs(
+        max_age_days=args.logs_days, dry_run=args.dry_run)
+    mode = "Sinov (dry-run): " if args.dry_run else ""
+    print(f"{mode}eski fayllar: {files} ta, eski export yozuvlari: {exports} ta, "
+          f"eski log fayllari: {logs} ta")
+    return 0
 

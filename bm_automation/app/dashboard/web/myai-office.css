@@ -1,0 +1,794 @@
+/* MyAI Agent Control Center — Obsidian-Inspired Design */
+
+/* ══════════════════════════════════════════════════════════════════════
+   ROOT VARIABLES — Obsidian Dark Palette
+   ══════════════════════════════════════════════════════════════════════ */
+:root {
+  --occ-bg: #1e1e1e;
+  --occ-floor: #252525;
+  --occ-panel: #2d2d2d;
+  --occ-desk: #333333;
+  --occ-desk-top: #3a3a3a;
+  --occ-screen: #1a1a2e;
+  --occ-screen-glow: rgba(0, 200, 150, 0.1);
+  --occ-wall: #1e1e1e;
+  --occ-line: rgba(255, 255, 255, 0.08);
+  --occ-text: #dcddde;
+  --occ-muted: #72767d;
+  --occ-accent: #00b894;
+  --occ-teal: #00b894;
+  --occ-amber: #f0a93e;
+  --occ-alert: #e85a4f;
+  --occ-idle: #5a6274;
+  --occ-working: #00b894;
+  --occ-thinking: #6c8eef;
+  --occ-walking: #f0a93e;
+  --occ-waiting: #f0a93e;
+  --occ-completed: #00b894;
+  --occ-error: #e85a4f;
+  --occ-blocked: #ff6b6b;
+  --occ-planning: #9c7cf4;
+  --occ-radius: 6px;
+  --occ-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --occ-font: 'IBM Plex Mono', 'Consolas', monospace;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   ROOT LAYOUT
+   ══════════════════════════════════════════════════════════════════════ */
+.occ-root {
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  height: calc(100vh - 200px);
+  min-height: 500px;
+  gap: 0;
+  background: var(--occ-bg);
+  border-radius: var(--occ-radius);
+  overflow: hidden;
+  border: 1px solid var(--occ-line);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   CHAT PANEL — Clean, minimal
+   ══════════════════════════════════════════════════════════════════════ */
+.occ-chat {
+  flex: 1;
+  min-height: 200px;
+  max-height: 50vh;
+  overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--occ-bg);
+  border-bottom: 1px solid var(--occ-line);
+  font-family: var(--occ-font);
+}
+
+.occ-chat-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 120px;
+  opacity: 0.4;
+}
+
+.occ-chat-empty-icon {
+  font-size: 32px;
+  margin-bottom: 8px;
+}
+
+.occ-chat-empty-title {
+  font-family: var(--occ-font);
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--occ-text);
+  letter-spacing: 0.5px;
+}
+
+.occ-chat-empty-desc {
+  font: 11px var(--occ-font);
+  color: var(--occ-muted);
+  margin-top: 4px;
+}
+
+/* Message bubbles */
+.occ-msg {
+  display: flex;
+  gap: 10px;
+  max-width: 85%;
+  animation: occ-msg-in 0.2s ease-out;
+}
+
+@keyframes occ-msg-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.occ-msg.user {
+  align-self: flex-end;
+  flex-direction: row-reverse;
+}
+
+.occ-msg.agent {
+  align-self: flex-start;
+}
+
+.occ-msg-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+  background: var(--occ-panel);
+}
+
+.occ-msg-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.occ-msg-meta {
+  font: 9px var(--occ-font);
+  color: var(--occ-muted);
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.occ-msg-meta .agent-name {
+  font-weight: 600;
+  color: var(--occ-accent);
+}
+
+.occ-msg-text {
+  background: var(--occ-panel);
+  padding: 10px 14px;
+  border-radius: 8px;
+  font: 12px var(--occ-font);
+  color: var(--occ-text);
+  line-height: 1.5;
+  border: 1px solid var(--occ-line);
+}
+
+.occ-msg.user .occ-msg-text {
+  background: rgba(0, 184, 148, 0.15);
+  border-color: rgba(0, 184, 148, 0.2);
+}
+
+/* Steps/progress messages */
+.occ-msg-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font: 10px var(--occ-font);
+  color: var(--occ-muted);
+  animation: occ-msg-in 0.2s ease-out;
+}
+
+.occ-msg-step .step-icon {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  flex-shrink: 0;
+}
+
+.occ-msg-step .step-icon.working {
+  background: rgba(0, 184, 148, 0.2);
+  color: var(--occ-accent);
+  animation: occ-pulse 1.5s infinite;
+}
+
+.occ-msg-step .step-icon.completed {
+  background: rgba(0, 184, 148, 0.2);
+  color: var(--occ-accent);
+}
+
+.occ-msg-step .step-icon.error {
+  background: rgba(232, 90, 79, 0.2);
+  color: var(--occ-alert);
+}
+
+.occ-msg-step .step-icon.waiting {
+  background: rgba(240, 169, 62, 0.2);
+  color: var(--occ-amber);
+}
+
+@keyframes occ-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   TASK INPUT BAR — Clean, minimal
+   ══════════════════════════════════════════════════════════════════════ */
+.occ-task-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--occ-panel);
+  border-bottom: 1px solid var(--occ-line);
+}
+
+.occ-task-input {
+  flex: 1;
+}
+
+.occ-task-input input {
+  width: 100%;
+  background: var(--occ-bg);
+  border: 1px solid var(--occ-line);
+  border-radius: var(--occ-radius);
+  padding: 10px 14px;
+  font: 12px var(--occ-font);
+  color: var(--occ-text);
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.occ-task-input input:focus {
+  border-color: var(--occ-accent);
+}
+
+.occ-task-input input::placeholder {
+  color: var(--occ-muted);
+}
+
+.occ-task-chain {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font: 10px var(--occ-font);
+  color: var(--occ-muted);
+}
+
+.occ-task-chain .chain-step {
+  padding: 2px 8px;
+  background: var(--occ-bg);
+  border-radius: 4px;
+  border: 1px solid var(--occ-line);
+}
+
+.occ-task-chain .chain-step.active {
+  background: rgba(0, 184, 148, 0.15);
+  border-color: rgba(0, 184, 148, 0.3);
+  color: var(--occ-accent);
+}
+
+.occ-task-chain .chain-step.done {
+  background: rgba(0, 184, 148, 0.1);
+  color: var(--occ-muted);
+}
+
+.occ-overall-wrap {
+  width: 120px;
+}
+
+.occ-overall-bar {
+  height: 4px;
+  background: var(--occ-bg);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.occ-overall-fill {
+  height: 100%;
+  background: var(--occ-accent);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   AGENT GRID — Compact, Obsidian-style
+   ══════════════════════════════════════════════════════════════════════ */
+.occ-floor {
+  border-bottom: 1px solid var(--occ-line);
+}
+
+.occ-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 6px;
+  padding: 8px;
+  background: var(--occ-bg);
+}
+
+.occ-ws {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px 6px;
+  background: var(--occ-panel);
+  border-radius: var(--occ-radius);
+  border: 1px solid var(--occ-line);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.occ-ws:hover {
+  background: var(--occ-desk);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.occ-ws.active {
+  border-color: var(--occ-accent);
+  background: rgba(0, 184, 148, 0.08);
+}
+
+.occ-avatar {
+  width: 36px;
+  height: 48px;
+  position: relative;
+  margin-bottom: 6px;
+}
+
+.occ-avatar-head {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--occ-desk-top);
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 2px solid var(--occ-line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+}
+
+.occ-avatar-body {
+  width: 20px;
+  height: 22px;
+  border-radius: 4px 4px 0 0;
+  background: var(--occ-desk-top);
+  position: absolute;
+  top: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 2px solid var(--occ-line);
+}
+
+.occ-agent-name {
+  font: 600 10px var(--occ-font);
+  color: var(--occ-text);
+  text-align: center;
+  margin-top: 4px;
+  line-height: 1.2;
+}
+
+.occ-agent-role {
+  font: 8px var(--occ-font);
+  color: var(--occ-muted);
+  text-align: center;
+  margin-top: 2px;
+}
+
+/* Status badges */
+.occ-status-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font: 8px var(--occ-font);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.occ-status-badge.idle {
+  background: rgba(90, 98, 116, 0.2);
+  color: var(--occ-idle);
+}
+
+.occ-status-badge.working {
+  background: rgba(0, 184, 148, 0.15);
+  color: var(--occ-working);
+  animation: occ-pulse 1.5s infinite;
+}
+
+.occ-status-badge.thinking {
+  background: rgba(108, 142, 239, 0.15);
+  color: var(--occ-thinking);
+}
+
+.occ-status-badge.walking {
+  background: rgba(240, 169, 62, 0.15);
+  color: var(--occ-walking);
+}
+
+.occ-status-badge.waiting {
+  background: rgba(240, 169, 62, 0.15);
+  color: var(--occ-waiting);
+}
+
+.occ-status-badge.completed {
+  background: rgba(0, 184, 148, 0.15);
+  color: var(--occ-completed);
+}
+
+.occ-status-badge.error {
+  background: rgba(232, 90, 79, 0.15);
+  color: var(--occ-error);
+}
+
+.occ-status-badge.blocked {
+  background: rgba(255, 107, 107, 0.15);
+  color: var(--occ-blocked);
+}
+
+.occ-status-badge.planning {
+  background: rgba(156, 124, 244, 0.15);
+  color: var(--occ-planning);
+}
+
+.occ-status-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   FEED PANEL — Right sidebar
+   ══════════════════════════════════════════════════════════════════════ */
+.occ-feed {
+  border-left: 1px solid var(--occ-line);
+  background: var(--occ-panel);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.occ-feed-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--occ-line);
+  font: 600 11px var(--occ-font);
+  color: var(--occ-text);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.occ-feed-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.occ-feed-item {
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  border-radius: var(--occ-radius);
+  margin-bottom: 4px;
+  transition: background 0.15s;
+  cursor: pointer;
+}
+
+.occ-feed-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.occ-feed-item.active {
+  background: rgba(0, 184, 148, 0.08);
+  border: 1px solid rgba(0, 184, 148, 0.2);
+}
+
+.occ-feed-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  flex-shrink: 0;
+  background: var(--occ-desk);
+}
+
+.occ-feed-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.occ-feed-title {
+  font: 600 10px var(--occ-font);
+  color: var(--occ-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.occ-feed-subtitle {
+  font: 9px var(--occ-font);
+  color: var(--occ-muted);
+  margin-top: 2px;
+}
+
+.occ-feed-time {
+  font: 8px var(--occ-font);
+  color: var(--occ-muted);
+  flex-shrink: 0;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   DETAIL PANEL — Agent detail overlay
+   ══════════════════════════════════════════════════════════════════════ */
+.occ-detail {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 400px;
+  height: 100vh;
+  background: var(--occ-panel);
+  border-left: 1px solid var(--occ-line);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 0.3s ease;
+}
+
+.occ-detail.open {
+  transform: translateX(0);
+}
+
+.occ-detail-header {
+  padding: 16px;
+  border-bottom: 1px solid var(--occ-line);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.occ-detail-title {
+  font: 600 14px var(--occ-font);
+  color: var(--occ-text);
+}
+
+.occ-detail-close {
+  background: none;
+  border: none;
+  color: var(--occ-muted);
+  cursor: pointer;
+  font-size: 18px;
+  padding: 4px;
+}
+
+.occ-detail-close:hover {
+  color: var(--occ-text);
+}
+
+.occ-detail-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.occ-detail-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  background: var(--occ-bg);
+  border-top: 1px solid var(--occ-line);
+}
+
+.occ-detail-log-item {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0;
+  font: 10px var(--occ-font);
+}
+
+.occ-detail-log-item .time {
+  color: var(--occ-muted);
+  flex-shrink: 0;
+}
+
+.occ-detail-log-item .msg {
+  color: var(--occ-text);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   CONTROLS — Pause/Cancel
+   ══════════════════════════════════════════════════════════════════════ */
+.occ-controls {
+  display: flex;
+  gap: 6px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--occ-line);
+  background: var(--occ-panel);
+}
+
+.occ-btn {
+  appearance: none;
+  border: 1px solid var(--occ-line);
+  background: transparent;
+  color: var(--occ-text);
+  border-radius: var(--occ-radius);
+  padding: 6px 14px;
+  font: 11px var(--occ-font);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.occ-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.occ-btn.danger {
+  border-color: rgba(232, 90, 79, 0.4);
+  color: var(--occ-alert);
+}
+
+.occ-btn.danger:hover {
+  background: rgba(232, 90, 79, 0.1);
+}
+
+.occ-btn.warning {
+  border-color: rgba(240, 169, 62, 0.4);
+  color: var(--occ-amber);
+}
+
+.occ-btn.warning:hover {
+  background: rgba(240, 169, 62, 0.1);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   SSE STATUS INDICATOR
+   ══════════════════════════════════════════════════════════════════════ */
+.occ-sse-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 10px var(--occ-font);
+  color: var(--occ-muted);
+}
+
+.occ-sse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--occ-idle);
+}
+
+.occ-sse-dot.connected {
+  background: var(--occ-completed);
+  box-shadow: 0 0 6px rgba(0, 184, 148, 0.5);
+}
+
+.occ-sse-dot.disconnected {
+  background: var(--occ-error);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   PACKETS — Agent activity visualization
+   ══════════════════════════════════════════════════════════════════════ */
+.occ-packet {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--occ-bg);
+  border-radius: 4px;
+  font: 9px var(--occ-font);
+  color: var(--occ-muted);
+  margin: 4px 0;
+  animation: occ-packet-in 0.3s ease-out;
+}
+
+@keyframes occ-packet-in {
+  from { opacity: 0; transform: translateX(-10px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.occ-packet .packet-icon {
+  color: var(--occ-accent);
+}
+
+.occ-packet .packet-time {
+  margin-left: auto;
+  color: var(--occ-muted);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   MOBILE / RESPONSIVE
+   ══════════════════════════════════════════════════════════════════════ */
+@media (max-width: 900px) {
+  .occ-root {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: auto;
+  }
+
+  .occ-feed {
+    border-left: none;
+    border-top: 1px solid var(--occ-line);
+    max-height: 250px;
+  }
+
+  .occ-grid {
+    gap: 6px;
+    padding: 6px;
+  }
+
+  .occ-detail {
+    width: 100vw;
+  }
+
+  .occ-chat {
+    max-height: 40vh;
+  }
+}
+
+@media (max-width: 600px) {
+  .occ-ws {
+    min-width: 80px;
+    padding: 8px 4px;
+  }
+
+  .occ-avatar {
+    width: 28px;
+    height: 38px;
+  }
+
+  .occ-avatar-head {
+    width: 18px;
+    height: 18px;
+  }
+
+  .occ-avatar-body {
+    width: 16px;
+    height: 18px;
+    top: 18px;
+  }
+
+  .occ-agent-name {
+    font-size: 9px;
+  }
+
+  .occ-agent-role {
+    font-size: 7px;
+  }
+
+  .occ-msg {
+    max-width: 95%;
+  }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .occ-status-working .occ-avatar-body::before,
+  .occ-status-working .occ-avatar-body::after,
+  .occ-status-thinking .occ-avatar,
+  .occ-status-walking .occ-avatar,
+  .occ-status-waiting .occ-avatar,
+  .occ-status-completed .occ-avatar,
+  .occ-status-error .occ-avatar,
+  .occ-status-planning .occ-avatar::after,
+  .occ-status-blocked .occ-ws,
+  .occ-feed-item,
+  .occ-packet,
+  .occ-msg,
+  .occ-msg-step {
+    animation: none !important;
+  }
+}

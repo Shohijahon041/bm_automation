@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from ..utils.km import trip_km
+
 
 def now_utc() -> str:
     """ISO-8601 UTC timestamp (saqlash uchun, mikrosekund aniqlikda)."""
@@ -108,6 +110,7 @@ class TripRecord:
             "status": TripStatus.normalize(self.status),
             "source": self.source,
             "last_synced_at": self.last_synced_at,
+            "distance_km": round(trip_km(self.data), 2),
             "data": json_dumps(self.data),
         }
 
@@ -119,6 +122,7 @@ class SyncResult:
     entity: str
     inserted: int = 0
     updated: int = 0
+    deleted: int = 0
     total: int = 0
     error: str = ""
 
@@ -127,6 +131,7 @@ class SyncResult:
             "entity": self.entity,
             "inserted": self.inserted,
             "updated": self.updated,
+            "deleted": self.deleted,
             "total": self.total,
             "error": self.error,
         }
@@ -138,14 +143,24 @@ TABLES = [
     "routes",
     "vehicles",
     "drivers",
+    "driver_profiles",
+    "driver_work_logs",
+    "driver_fines",
     "duties",
     "schedules",
     "waybills",
     "trips",
+    "route_daily",
     "trip_statuses",
     "reports",
     "report_runs",
     "errors",
     "notifications",
     "automation_runs",
+    "dispatcher_routes",
+    "documents",
+    "sms_log",
+    "sms_route_flags",
+    "avans",
+    "staff",
 ]

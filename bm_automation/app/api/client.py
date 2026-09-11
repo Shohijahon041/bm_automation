@@ -37,8 +37,8 @@ from typing import Any, Callable, Optional
 
 import requests
 
-from ..config.settings import USER_MGMT, get_config
-from ..core.tokens import load_tokens, save_tokens
+from ..config.settings import Config, USER_MGMT, get_config
+from ..core.tokens import company_tokens_path, load_tokens, save_tokens
 from ..utils.logger import get_logger
 
 API_ERROR_MSG = {
@@ -123,8 +123,14 @@ class BMClient:
     bir marta qayta bajariladi.
     """
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, token_path: str | None = None):
+        """Klient yaratadi.
+
+        token_path berilgan bo'lsa, tokenlar shu faylda saqlanadi (per-company
+        login uchun) — global tokens.json buzilmaydi.
+        """
         self.config = config or get_config()
+        self.token_path = token_path
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -147,7 +153,7 @@ class BMClient:
     # ===================== AUTH =====================
 
     def set_tokens(self, access_token: str, refresh_token: str | None = None) -> None:
-        """Tokenlarni xotiraga va tokens.json'ga yozadi."""
+        """Tokenlarni xotiraga va token fayliga yozadi."""
         self.access_token = access_token
         self.refresh_token = refresh_token
         self.session.headers["Authorization"] = f"Bearer {access_token}"
@@ -156,10 +162,11 @@ class BMClient:
             refresh_token,
             base_url=self.config.base_url,
             organization=getattr(self.config, "organization", ""),
+            path=self.token_path,
         )
 
     def load_tokens_from_file(self) -> bool:
-        data = load_tokens()
+        data = load_tokens(path=self.token_path)
         if data and data.get("access_token"):
             self.access_token = data["access_token"]
             self.refresh_token = data.get("refresh_token")
@@ -168,9 +175,23 @@ class BMClient:
         return False
 
     def login(self, force: bool = False) -> None:
-        """Saqlangan token bor bo'lsa ishlatadi, aks holda login qiladi."""
+        """Saqlangan token bor bo'lsa ishlatadi, aks holda login qiladi.
+
+        Saqlangan token muddati o'tgan bo'lsa (``exp`` yaqin) birinchi
+        navbatda refresh token sinab ko'riladi — aks holda keyingi so'rov
+        401 bilan refresh silsilasiga tushardi. Refresh ishlamasa
+        username/password bilan, so'ngra (auto_relogin bo'lsa) OneID
+        brauzer orqali yangi login olinadi.
+        """
         if not force and self.load_tokens_from_file():
-            return
+            if self._token_remaining(self.access_token) > 60:
+                return
+            self.logger.warning("saqlangan token muddati o'tgan — refresh sinab ko'rilmoqda")
+            try:
+                self._refresh()
+                return
+            except BMAuthError as exc:
+                self.logger.warning("refresh token ishlamadi (%s); password login", exc)
         url = f"{self.config.base_url}{USER_MGMT}/user-profile/login"
         cid = self._new_cid()
         start = time.monotonic()
@@ -187,10 +208,35 @@ class BMClient:
         try:
             data = self._parse(resp, cid=cid)
         except BMApiError as exc:
+            if self.auto_relogin:
+                # Password ham ishlamasa (o'zgargan/lock) — OneID brauzer
+                # oqimi oxirgi chora sifatida ishlatiladi.
+                self.logger.warning("password login ishlamadi (%s); OneID qilinmoqda", exc)
+                from ..auth.browser_login import browser_login
+                browser_login(headless=True, timeout=300)
+                if not self.load_tokens_from_file():
+                    raise BMAuthError(401, message="OneID login access token bermadi")
+                return
             raise BMAuthError(exc.status, code=exc.code, message=exc.message, detail=exc.detail) from exc
         if not isinstance(data, dict):
             raise BMAuthError(200, message="login javobi noto'g'ri format")
         self.set_tokens(data.get("access_token"), data.get("refresh_token"))
+
+    @staticmethod
+    def _token_remaining(token: str) -> int:
+        """JWT ``exp`` bo'yicha qolgan vaqt (sekund); xato bo'lsa -1."""
+        if not token:
+            return -1
+        try:
+            import base64
+            import json as _json
+
+            payload = token.split(".")[1]
+            payload += "=" * (-len(payload) % 4)
+            claims = _json.loads(base64.urlsafe_b64decode(payload))
+            return int(claims.get("exp", 0)) - int(time.time())
+        except Exception:  # noqa: BLE001 - parolash xato bo'lsa eskirgan deb hisoblaymiz
+            return -1
 
     def login_via_oneid(self, code: str) -> dict:
         """OneID code ni token + profillar ro'yxatiga almashtiradi."""
@@ -227,20 +273,37 @@ class BMClient:
         return self.request("GET", f"{USER_MGMT}/user-profile/account-authorities", timeout=60)
 
     def _refresh(self) -> None:
-        """Refresh token orqali yangi access token oladi va saqlaydi."""
+        """Refresh token orqali yangi access token oladi va saqlaydi.
+
+        Tokenlar bitta faylda bir nechta jarayon (bot/dashboard/task'lar)
+        tomonidan baham ko'riladi; refresh token rotatsiya qilinadi. 401
+        bo'lsa fayl qayta o'qilib, boshqa jarayon yangilagan refresh bilan
+        bir marta qayta uriniladi.
+        """
         if not self.refresh_token:
             raise BMAuthError(401, message="refresh token mavjud emas")
         url = f"{self.config.base_url}{USER_MGMT}/user-profile/refresh-token"
-        cid = self._new_cid()
-        start = time.monotonic()
-        try:
-            resp = self._send("POST", url,
-                              json={"refreshToken": self.refresh_token},
-                              timeout=60, cid=cid)
-        except requests.RequestException as exc:
-            raise BMAuthError(401, message="refresh so'rovi tarmoq xatosi") from exc
-        self._monitor(cid=cid, method="POST", url=url,
-                      status=resp.status_code, duration_ms=(time.monotonic() - start) * 1000)
+        resp = None
+        for attempt in range(2):
+            cid = self._new_cid()
+            start = time.monotonic()
+            try:
+                resp = self._send("POST", url,
+                                  json={"refreshToken": self.refresh_token},
+                                  timeout=60, cid=cid)
+            except requests.RequestException as exc:
+                raise BMAuthError(401, message="refresh so'rovi tarmoq xatosi") from exc
+            self._monitor(cid=cid, method="POST", url=url,
+                          status=resp.status_code, duration_ms=(time.monotonic() - start) * 1000)
+            if resp.status_code != 401 or attempt:
+                break
+            data = load_tokens(path=self.token_path)
+            fresh = (data or {}).get("refresh_token")
+            if not fresh or fresh == self.refresh_token:
+                break
+            self.logger.warning("refresh boshqa jarayon tomonidan aylantirilgan — "
+                                "yangilangan token bilan qayta urinilmoqda")
+            self.refresh_token = fresh
         try:
             data = self._parse(resp, cid=cid)
         except BMApiError as exc:
@@ -254,18 +317,25 @@ class BMClient:
         self.set_tokens(new_access, new_refresh)
 
     def _refresh_or_relogin(self) -> None:
-        """401'da: avval refresh; ishlamasa OneID brauzer login."""
+        """401'da: avval refresh; ishlamasa password login; so'ngra OneID."""
         try:
             self._refresh()
         except Exception:
-            self.logger.warning("refresh token ishlamadi; OneID login qilinmoqda")
+            self.logger.warning("refresh token ishlamadi; qayta login qilinmoqda")
             if not self.auto_relogin:
                 raise
-            from ..auth.browser_login import browser_login
-            browser_login(headless=True, timeout=300)
-            self.load_tokens_from_file()
-            if not self.access_token:
-                raise BMAuthError(401, message="OneID login access token bermadi")
+            try:
+                # To'g'ridan-to'g'ri username/password bilan qayta login —
+                # OneID brauzer oqimi (id.egov.uz) sekin va noqulay, u faqat
+                # oxirgi chora.
+                self.login(force=True)
+            except Exception:
+                self.logger.warning("password login ham ishlamadi; OneID qilinmoqda")
+                from ..auth.browser_login import browser_login
+                browser_login(headless=True, timeout=300)
+                self.load_tokens_from_file()
+                if not self.access_token:
+                    raise BMAuthError(401, message="OneID login access token bermadi")
 
     def _ensure_auth(self) -> None:
         if not self.access_token:
@@ -417,7 +487,7 @@ class BMClient:
             start = time.monotonic()
             try:
                 resp = self._send(method, url, params=params, json=json, timeout=timeout, cid=cid)
-            except requests.RequestException as exc:
+            except (requests.RequestException, ConnectionError) as exc:
                 duration_ms = (time.monotonic() - start) * 1000
                 self._monitor(cid=cid, method=method, url=url,
                               duration_ms=duration_ms, error=type(exc).__name__)
@@ -462,19 +532,51 @@ class BMClient:
                 attempt += 1
                 continue
 
-            return self._parse(resp, cid=cid)
+            # ---- Body o'qish + parse. Server ulanish tushib qolsa (masalan
+            # "server closed the connection unexpectedly" — response body
+            # o'qilayotganda) ham qayta urinish kerak. _send muvaffaqiyatli
+            # bo'lib, body'ni o'qish (resp.json()) paytida ConnectionError/
+            # ChunkedEncodingError ko'tarilishi mumkin — bu ham retry loop ichida.
+            try:
+                return self._parse(resp, cid=cid)
+            except (requests.RequestException, ConnectionError, OSError) as exc:
+                # Faqat idempotent so'rovlar uchun tarmoq xatosi retry qilinadi.
+                has_read_exc = (
+                    isinstance(exc, ConnectionError)
+                    or isinstance(exc, requests.exceptions.ChunkedEncodingError)
+                    or isinstance(exc, OSError)
+                    or "Connection" in type(exc).__name__
+                    or "Chunked" in type(exc).__name__
+                    or "closed the connection" in str(exc)
+                    or "connection is lost" in str(exc)
+                )
+                if idempotent and attempt < retries and has_read_exc:
+                    self._monitor(cid=cid, method=method, url=url,
+                                  duration_ms=(time.monotonic() - start) * 1000,
+                                  error=f"body o'qish: {type(exc).__name__}")
+                    self._backoff_sleep(attempt)
+                    attempt += 1
+                    continue
+                raise
 
         raise BMApiError(status or 500, message="so'rov yakuniy muvaffaqiyatsiz")
 
     def download(self, path: str, out_file: str, params: Optional[dict] = None,
-                 timeout: float | tuple | None = None) -> str:
-        """Faylni stream bilan yuklab oladi (Excel/hisobot)."""
+                 timeout: float | tuple | None = None, retries: int = MAX_RETRIES) -> str:
+        """Faylni stream bilan yuklab oladi (Excel/hisobot).
+
+        Tarmoq xatosi (ulanish uzilishi) va 5xx'da exponential backoff bilan
+        qayta urinadi — jadval/hisobot yuklab olishda server barqaror bo'lmagan
+        hollarda ham ish to'xtamaydi.
+        """
         timeout = timeout if timeout is not None else DEFAULT_DOWNLOAD_TIMEOUT
+        retries = max(0, int(retries or 0))
         url = self._build_url(self.config.base_url, path)
         self._ensure_auth()
         auth_replayed = False
+        attempt = 0
 
-        while True:
+        while attempt <= retries:
             cid = self._new_cid()
             start = time.monotonic()
             try:
@@ -483,6 +585,10 @@ class BMClient:
                 duration_ms = (time.monotonic() - start) * 1000
                 self._monitor(cid=cid, method="GET", url=url,
                               duration_ms=duration_ms, error=type(exc).__name__)
+                if attempt < retries:
+                    self._backoff_sleep(attempt)
+                    attempt += 1
+                    continue
                 raise BMApiError(0, message=f"yuklab olish: tarmoq xatosi: {type(exc).__name__}") from exc
 
             status = resp.status_code
@@ -494,6 +600,11 @@ class BMClient:
                 auth_replayed = True
                 continue
 
+            if status >= 500 and attempt < retries:
+                self._backoff_sleep(attempt)
+                attempt += 1
+                continue
+
             if status >= 400:
                 raise BMApiError(status, detail=f"yuklab olish muvaffaqiyatsiz: {status}")
 
@@ -502,9 +613,18 @@ class BMClient:
                     for chunk in resp.iter_content(chunk_size=65536):
                         if chunk:
                             fh.write(chunk)
-            except requests.RequestException as exc:
+            except (requests.RequestException, ConnectionError, OSError) as exc:
+                if attempt < retries:
+                    self._monitor(cid=cid, method="GET", url=url,
+                                  duration_ms=(time.monotonic() - start) * 1000,
+                                  error=f"yuklab olish to'xtadi: {type(exc).__name__}")
+                    self._backoff_sleep(attempt)
+                    attempt += 1
+                    continue
                 raise BMApiError(0, message=f"yuklab olish to'xtadi: {type(exc).__name__}") from exc
             return out_file
+
+        raise BMApiError(status or 500, message="yuklab olish yakuniy muvaffaqiyatsiz")
 
     # ===================== CONVENIENCE =====================
 

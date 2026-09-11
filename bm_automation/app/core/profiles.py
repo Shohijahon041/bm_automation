@@ -5,8 +5,20 @@ Har bir kompaniya uchun:
     - profileId   — OneID profili ID (get-token-by-profile uchun; bo'sh = joriy token)
     - routeVariantId — kompaniyaning yo'nalishi
     - routeName   — jadval sarlavhasida ko'rsatiladigan yo'nalish nomi
+    - kmRate      — yo'nalish uchun 1 km narxi (so'm); ustunlik tartibida
+      eng pastda: bot orqali o'rnatilgan → `KM_RATE` env → haydovchining
+      shaxsiy `km_rate` → kompaniya `kmRate`
     - start1      — 1-chiqish konechkasi nomi (masalan "Prez Oldi")
     - start2      — 2-chiqish konechkasi nomi (masalan "Oybek Massiv")
+
+Ko'p-firmali tizim (multi-company):
+    - ownerChatIds — kompaniya egasi Telegram chat ID(lar)i ro'yxati.
+      Ega faqat o'z kompaniyasini ko'radi; ADMIN hammasini.
+    - username / password — kompaniyaning o'z BM kredensiallari
+      (ixtiyoriy). Berilgan bo'lsa, shu kompaniya uchun alohida client
+      quriladi va token shu kompaniya nomi ostida alohida faylda saqlanadi.
+      Bo'lmasa, adminning asosiy tokeni + login_by_profile(profileId)
+      ishlatiladi.
 
 profiles.json faylida saqlanadi. OneID login paytida aniqlangan profillar
 ham shu faylga yoziladi (login-browser orqali).
@@ -94,6 +106,53 @@ def upsert_profile(profile: dict) -> str:
     return name
 
 
+def owner_chat_ids(profile: dict | None) -> list[int]:
+    """Kompaniya egalarining Telegram chat ID'lari ro'yxati."""
+    if not profile:
+        return []
+    raw = profile.get("ownerChatIds") or []
+    out = []
+    for v in raw if isinstance(raw, list) else [raw]:
+        try:
+            out.append(int(str(v).strip()))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def set_owner_chat_ids(name: str, chat_ids: list[int]) -> dict:
+    """Kompaniyaga egalarni biriktiradi (upsert orqali)."""
+    p = get_profile(name) or {"name": name}
+    p["ownerChatIds"] = [int(c) for c in chat_ids if str(c).strip().lstrip("-").isdigit()]
+    upsert_profile(p)
+    return p
+
+
+def set_credentials(name: str, username: str, password: str) -> dict:
+    """Kompaniyaning o'z BM kredensiallarini saqlaydi."""
+    p = get_profile(name) or {"name": name}
+    p["username"] = (username or "").strip()
+    p["password"] = (password or "").strip()
+    upsert_profile(p)
+    return p
+
+
+def profile_by_owner(chat_id: int) -> list[dict]:
+    """Berilgan chat ID egalik qiladigan kompaniyalar ro'yxati."""
+    out = []
+    for p in all_profiles():
+        if chat_id in owner_chat_ids(p):
+            out.append(p)
+    return out
+
+
+def profiles_with_credentials() -> list[dict]:
+    """O'z kredensiallariga ega kompaniyalar (client_for_profile uchun)."""
+    return [p for p in all_profiles()
+            if (p.get("username") or "").strip()
+            and (p.get("password") or "").strip()]
+
+
 def discover_from_oneid(captured: list[dict], route_name: str = "") -> list[dict]:
     """OneID login paytida ushlangan profillarni faylga qo'shadi.
 
@@ -107,6 +166,11 @@ def discover_from_oneid(captured: list[dict], route_name: str = "") -> list[dict
         if not pid or not org:
             continue
         name = re.sub(r'["\u201c\u201d]', "", str(org)).strip()
-        upsert_profile({"name": name, "profileId": str(pid), "routeName": route_name})
+        update = {"name": name, "profileId": str(pid)}
+        # routeName bo'sh bo'lsa mavjud qiymatni o'chirmaydi (upsert merge
+        # orqali faqat berilgan maydonlar yangilanadi).
+        if route_name:
+            update["routeName"] = route_name
+        upsert_profile(update)
         added.append({"name": name, "profileId": str(pid)})
     return added

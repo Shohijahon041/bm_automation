@@ -82,7 +82,10 @@ class _Cfg:
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("BM_TOKENS_FILE", str(tmp_path / "tokens.json"))
+    import bm_automation.app.core.tokens as tokens_mod
+
+    monkeypatch.setattr(tokens_mod, "TOKENS_FILE", tmp_path / "tokens.json")
+    monkeypatch.setattr(tokens_mod, "TOKENS_DIR", tmp_path / "tokens")
     c = BMClient(config=_Cfg())
     c.access_token = TOKEN
     c.refresh_token = REFRESH
@@ -195,7 +198,7 @@ def test_refresh_failure_raises_auth_error_without_secret(client):
 
 
 def test_refresh_failure_relogin_flow(client, monkeypatch):
-    """refresh ishlamasa -> OneID login (browser) -> yangi tokenlar -> replay."""
+    """refresh ishlamasa -> password login -> OneID login (browser) -> replay."""
     called = {}
 
     def fake_browser_login(**kwargs):
@@ -214,12 +217,108 @@ def test_refresh_failure_relogin_flow(client, monkeypatch):
     client.session = FakeSession([
         _err(401),
         _err(400, {"message": "refresh eskirgan"}),
+        _err(401, {"message": "password xato"}),
         _ok({"data": "after-relogin"}),
     ])
     client.auto_relogin = True
     assert client.get("/secure") == "after-relogin"
     assert called.get("browser") is True
     assert client.access_token == "browser-access"
+    methods = [c["method"] for c in client.session.calls]
+    assert methods == ["GET", "POST", "POST", "GET"]
+
+
+def test_login_refreshes_when_access_expired(client, monkeypatch):
+    """Muddati o'tgan access -> password o'rniga avval refresh ishlatiladi."""
+    def fake_load_from_file():
+        client.access_token = "expired-access"
+        client.refresh_token = "saved-refresh"
+        return True
+
+    monkeypatch.setattr(client, "load_tokens_from_file", fake_load_from_file)
+    monkeypatch.setattr(client, "_token_remaining", lambda t: -1)
+
+    client.session = FakeSession([
+        _ok({"data": {"access_token": "fresh-access",
+                      "refresh_token": "fresh-refresh"}}),
+    ])
+    client.login()
+    assert client.access_token == "fresh-access"
+    methods = [c["method"] for c in client.session.calls]
+    assert methods == ["POST"]  # faqat refresh; password POST qilinmaydi
+    assert "refresh-token" in client.session.calls[0]["url"]
+
+
+def test_login_falls_back_to_password_when_refresh_fails(client, monkeypatch):
+    """Refresh eskirgan bo'lsa login() username/password bilan davom etadi."""
+    def fake_load_from_file():
+        client.access_token = "expired-access"
+        client.refresh_token = "saved-refresh"
+        return True
+
+    monkeypatch.setattr(client, "load_tokens_from_file", fake_load_from_file)
+    monkeypatch.setattr(client, "_token_remaining", lambda t: -1)
+
+    client.session = FakeSession([
+        _err(401, {"message": "refresh eskirgan"}),
+        _ok({"data": {"access_token": "pw-access",
+                      "refresh_token": "pw-refresh"}}),
+    ])
+    client.login()
+    assert client.access_token == "pw-access"
+    methods = [c["method"] for c in client.session.calls]
+    assert methods == ["POST", "POST"]
+
+
+def test_login_falls_back_to_oneid_when_password_fails(client, monkeypatch):
+    """Password ham 401 bo'lsa auto_relogin OneID brauzer oqimini ishlatadi."""
+    called = {}
+
+    def fake_browser_login(**kwargs):
+        called["browser"] = True
+
+    def fake_load_from_file():
+        client.access_token = "oneid-access"
+        client.refresh_token = "oneid-refresh"
+        return True
+
+    import importlib
+    browser_login_module = importlib.import_module("bm_automation.app.auth.browser_login")
+    monkeypatch.setattr(browser_login_module, "browser_login", fake_browser_login)
+    monkeypatch.setattr(client, "load_tokens_from_file", fake_load_from_file)
+    monkeypatch.setattr(client, "_token_remaining", lambda t: -1)
+
+    client.session = FakeSession([
+        _err(401, {"message": "refresh eskirgan"}),
+        _err(401, {"message": "password xato"}),
+    ])
+    client.auto_relogin = True
+    client.login()
+    assert called.get("browser") is True
+    assert client.access_token == "oneid-access"
+
+
+def test_refresh_race_retries_with_rotated_token(client, tmp_path):
+    """Boshqa jarayon refresh aylantirgan bo'lsa, yangi token bilan qayta uriniladi."""
+    import json
+
+    (tmp_path / "tokens.json").write_text(json.dumps({
+        "access_token": "stale-access",
+        "refresh_token": "rotated-refresh",
+    }), encoding="utf-8")
+
+    client.session = FakeSession([
+        _err(401, {"message": "refresh eskirgan"}),
+        _ok({"data": {"access_token": "new-access",
+                      "refresh_token": "new-refresh"}}),
+    ])
+    client.refresh_token = "old-refresh"
+    client._refresh()
+    assert client.access_token == "new-access"
+    assert client.refresh_token == "new-refresh"
+    methods = [c["method"] for c in client.session.calls]
+    assert methods == ["POST", "POST"]
+    assert client.session.calls[1]["json"]["refreshToken"] == "rotated-refresh"
 
 
 # ---------- Rate-limit (429) ----------

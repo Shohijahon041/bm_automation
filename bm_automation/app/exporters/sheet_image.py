@@ -12,7 +12,7 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.figure import Figure  # noqa: E402
 from matplotlib.patches import FancyBboxPatch  # noqa: E402
 
 from ..utils.text import title_case
@@ -82,7 +82,9 @@ def _draw_panel(ax, x, y_top, width, direction, title, rows, theme, row_h=0.92, 
     for i, r in enumerate(rows):
         fc = theme["row"] if i % 2 == 0 else "#FFFFFF"
         _draw_rounded(ax, x, y - row_h, width, row_h, fc, ec=GRID, lw=0.6, r=0.1)
-        ax.add_patch(plt.Rectangle((x, y - row_h), 0.09, row_h, facecolor=theme["accent"]))
+        ax.add_patch(FancyBboxPatch((x, y - row_h), 0.09, row_h,
+                                    boxstyle="round,pad=0,rounding_size=0.01",
+                                    facecolor=theme["accent"], edgecolor="none"))
         cx = x + 0.18
         # Grafik
         ax.text(cx + 0.45, y - row_h / 2, r["graph"], ha="center", va="center", fontsize=F(15),
@@ -134,7 +136,7 @@ def make_sheet_image(data: dict, out_file: str, width_in: float = 15.0) -> str:
     height_in = footer_h + panel_h + title_h
     top = footer_h + panel_h
 
-    fig = plt.figure(figsize=(width_in, height_in), dpi=140)
+    fig = Figure(figsize=(width_in, height_in), dpi=140)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(0, width_in)
     ax.set_ylim(0, height_in)
@@ -168,5 +170,5 @@ def make_sheet_image(data: dict, out_file: str, width_in: float = 15.0) -> str:
             ha="right", va="center", fontsize=11, color=TEXT_MUTED)
 
     fig.savefig(out_file, bbox_inches="tight", facecolor=BG)
-    plt.close(fig)
+    fig.clear()
     return str(Path(out_file))

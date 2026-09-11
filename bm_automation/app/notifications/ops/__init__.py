@@ -1,7 +1,7 @@
 """Transport Operations Bot — professional Telegram bot.
 
 Buyruqlar: /start /status /today /routes /vehicles /drivers /trips /problems
-/reports /export /sync /errors /help + inline navigatsiya.
+/reports /export /sync /errors /insights /help + inline navigatsiya.
 
 Role-based access: ADMIN / DISPATCHER / VIEWER (ops.roles).
 """

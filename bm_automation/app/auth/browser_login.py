@@ -167,9 +167,9 @@ def browser_login(
             # Diagnostika: sahifa holatini yozib qo'yamiz
             try:
                 print(f"  OneID tugmasi topilmadi ({attempt}) | URL: {page.url}")
-                body = page.inner_text("body")[:400]
+                body = page.inner_text("body")[:200]
                 if body.strip():
-                    print("  Sahifa matni:", body.replace("\n", " | ")[:400])
+                    print("  Sahifa matni:", body.replace("\n", " | ")[:200])
             except Exception:
                 pass
             try:

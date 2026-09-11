@@ -1,6 +1,6 @@
 """Ma'lumotlar bazasi qatlami.
 
-PostgreSQL (standart) va SQLite (local fallback) qo'llab-quvvatlanadi.
+Faqat PostgreSQL (Supabase) qo'llab-quvvatlanadi.
 Barcha 14 jadval: profiles, routes, vehicles, drivers, duties, schedules,
 waybills, trips, trip_statuses, reports, report_runs, errors, notifications,
 automation_runs.

@@ -12,12 +12,14 @@ import sys
 def build_parser() -> argparse.ArgumentParser:
     from .commands import (
         cmd_bot,
+        cmd_cleanup,
         cmd_daily,
         cmd_dashboard,
         cmd_drivers,
         cmd_duty,
         cmd_gross_route,
         cmd_gross_trip,
+        cmd_insights,
         cmd_list_reports,
         cmd_login,
         cmd_login_browser,
@@ -31,7 +33,10 @@ def build_parser() -> argparse.ArgumentParser:
         cmd_waybill,
     )
     from .db_commands import (
+        cmd_db_backup,
+        cmd_db_enable_rls,
         cmd_db_errors,
+        cmd_db_fill_drivers,
         cmd_db_init,
         cmd_db_reports,
         cmd_db_runs,
@@ -160,15 +165,39 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_bot = sub.add_parser("bot", help="Telegram bot: holat (dashboard) + qayta yuborish tugmasi")
     p_bot.add_argument("--once", action="store_true", help="Bitta getUpdates tsikli (sinash)")
+    p_bot.add_argument("--watchdog", action="store_true",
+                       help="Avtomatik qayta ishga tushirish (crash → restart)")
     p_bot.set_defaults(func=cmd_bot)
 
     p_dash = sub.add_parser("dashboard", help="Web dashboard (http)")
-    p_dash.add_argument("--host", default="127.0.0.1", help="Server manzili (standart 127.0.0.1)")
+    p_dash.add_argument("--host", default="0.0.0.0", help="Server manzili (standart 0.0.0.0)")
     p_dash.add_argument("--port", type=int, default=8080, help="Server porti (standart 8080)")
     p_dash.add_argument("--no-browser", action="store_true", help="Brauzerni ochmaslik")
     p_dash.set_defaults(func=cmd_dashboard)
 
-    p_db = sub.add_parser("db", help="Ma'lumotlar bazasi (PostgreSQL/SQLite)")
+    p_ins = sub.add_parser(
+        "insights",
+        help="AI o'z-o'zini rivojlantirish tahlili (loglar + takroriy muammolar + tavsiyalar)")
+    p_ins.add_argument("--days", type=int, default=0,
+                       help="Tahlil oynasi kunlarda (0 = AI_SELFREVIEW_DAYS)")
+    p_ins.add_argument("--html", action="store_true",
+                       help="Telegram HTML teglari bilan chiqarish")
+    p_ins.set_defaults(func=cmd_insights)
+
+    p_clean = sub.add_parser(
+        "cleanup",
+        help="Eski fayl va export yozuvlarini aylanma tozalash")
+    p_clean.add_argument("--reports-days", type=int, default=30,
+                         help="reports/ fayllarini saqlash kuni (standart 30)")
+    p_clean.add_argument("--exports-days", type=int, default=7,
+                         help="_exports_pending.json saqlash kuni (standart 7)")
+    p_clean.add_argument("--logs-days", type=int, default=30,
+                         help="logs/ fayllarini saqlash kuni (standart 30)")
+    p_clean.add_argument("--dry-run", action="store_true",
+                         help="Faqat hisob — hech narsa o'chirilmaydi")
+    p_clean.set_defaults(func=cmd_cleanup)
+
+    p_db = sub.add_parser("db", help="Ma'lumotlar bazasi (Supabase/PostgreSQL)")
     db_sub = p_db.add_subparsers(dest="action", required=True)
     db_i = db_sub.add_parser("init", help="Sxemani yaratish")
     db_i.set_defaults(func=cmd_db_init)
@@ -179,8 +208,10 @@ def build_parser() -> argparse.ArgumentParser:
     db_sync.add_argument("--date", default="", help="Sana YYYY-MM-DD (bo'sh = bugun)")
     db_sync.add_argument("--from", dest="from_date", default="", help="Waybill boshlanish sana")
     db_sync.add_argument("--to", default="", help="Waybill tugash sana")
+    db_sync.add_argument("--force", action="store_true",
+                         help="driver_profiles'ni qayta to'liq olish (detail API)")
     db_sync.add_argument("--what", default="statuses,profiles,routes,drivers,vehicles,duties,trips,waybills",
-                         help="Nimalarni sync qilish (vergul bilan): statuses,profiles,routes,drivers,vehicles,duties,trips,waybills")
+                         help="Nimalarni sync qilish (vergul bilan): statuses,profiles,routes,drivers,driver_profiles,vehicles,duties,trips,waybills,work_logs")
     db_sync.set_defaults(func=cmd_db_sync)
     db_t = db_sub.add_parser("trips", help="Saqlangan trip'lar ro'yxati")
     db_t.add_argument("--date", default="", help="Sana filteri")
@@ -197,6 +228,26 @@ def build_parser() -> argparse.ArgumentParser:
     db_rp = db_sub.add_parser("reports", help="Hisobotlar tarixi")
     db_rp.add_argument("--limit", type=int, default=20)
     db_rp.set_defaults(func=cmd_db_reports)
+    db_fill = db_sub.add_parser(
+        "fill-drivers",
+        help="Haydovchi ma'lumotlarini saytdan to'ldirish (profil + kunlik km)")
+    db_fill.add_argument("--route", default="", help="routeVariantId (bo'sh = barcha profillar)")
+    db_fill.add_argument("--date", default="", help="Kunlik km sanasi YYYY-MM-DD (bo'sh = bugun)")
+    db_fill.add_argument("--days", type=int, default=0,
+                         help="So'nggi N kun uchun km (0 = trips'dagi barcha tarix)")
+    db_fill.set_defaults(func=cmd_db_fill_drivers)
+    db_rls = db_sub.add_parser(
+        "enable-rls",
+        help="Barcha jadvallarda Row Level Security yoqish (policy qo'shmaydi)")
+    db_rls.set_defaults(func=cmd_db_enable_rls)
+    db_backup = db_sub.add_parser(
+        "backup",
+        help="Supabase'ga zaxira nusxa yaratish")
+    db_backup.add_argument("--status", action="store_true",
+                           help="Backup holatini ko'rish")
+    db_backup.add_argument("--tables", default="",
+                           help="Faqat ma'lum jadvallarni backup qilish (vergul bilan)")
+    db_backup.set_defaults(func=cmd_db_backup)
 
     return parser
 

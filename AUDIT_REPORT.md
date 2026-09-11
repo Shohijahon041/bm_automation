@@ -1,3 +1,89 @@
+# BM Avtomatizatsiya — Texnik Audit Hisoboti (2026-09-12)
+
+- **Loyiha:** `bm_automation` (bm.dtransport.uz avtomatlashtirish)
+- **Audit sanasi:** 2026-09-12 (qayta audit; oldingisi 2026-08-10 — pastda arxivda)
+- **Holat:** 380/380 test yashil, P0–P3 topilmalar tuzatildi
+
+---
+
+## 1. Executive Summary
+
+2026-08-10 auditidagi kritik muammolarning aksariyati hal qilingan: yagona
+HTTP-klient (retry/backoff/timeout/token-redaction), `logging` asosidagi
+strukturli loglar, atomik token yozish va refresh-race himoyasi, rolga asoslangan
+Telegram ruxsatlari, `.gitignore` endi token/profil/.env fayllarini qoplaydi,
+Docker + PostgreSQL + Supabase zaxira oqimi ishga tushirilgan.
+
+Bu auditda topilgan va **bugun tuzatilgan** muammolar:
+
+| Daraja | Muammo | Holat |
+|---|---|---|
+| P0 | `requirements.txt` ishchi kopyadan o'chirilgan — VDS'da `docker compose build` buzar edi | ✅ Git HEAD'dan tiklandi |
+| P0 | `bm_automation/atto_tokens.json` (jonli Atto sessiya tokeni) va `backup/` (142 MB PII'li DB dump) `.gitignore`da yo'q edi | ✅ Qo'shildi, `git check-ignore` bilan tekshirildi |
+| P1 | 10 test yiqilgan (5 ta `test_ops_bot` eski deny-model, 5 ta `test_verify` sana-bog'liq) | ✅ Joriy modelga moslashtirildi; 380/380 yashil |
+| P2 | `DASHBOARD_TOKEN` hujjatlarida yo'q edi; SPA tokeni ~30 chaqiruvning faqat 1 tasida yuborardi | ✅ `.env.example`, DEPLOY_VDS.md, server-ogohlantirish va SPA wiring tuzatildi |
+| P2 | docker-compose izohi "Supabase ishlatilmaydi" deb yozgan, `.env.example` esa Supabase backup'ni sozlagan | ✅ Izohlar moslashtirildi |
+| P3 | 12 ta ishlatilmaydigan `atto_*` skript (8 tida hardcode kredensial!) paket ildizida; `tools/debug*.py`; ildizda ortiqcha loglar | ✅ `tools/atto_dev/` va `logs/`ga ko'chirildi |
+
+## 2. Ochiq (tuzatilmagan) tavsiyalar
+
+1. ~~**Atto parolini almashtiring**~~ — ✅ 2026-09-12: skriptlar endi
+   `.env` (`ATTO_LOGIN`/`ATTO_PASSWORD`) dan o'qiydi (`tools/atto_dev/atto_env.py`),
+   hardcode kredensiallar olib tashlandi. **Parolni baribir almashtiring** —
+   u haftalar davomida ochiq matnda yotgan.
+2. **Bitta TG_BOT_TOKEN = bitta mashina.** Windows watchdog va VDS konteyneri
+   bir token bilan birga ishlasa, Telegram 409 (getUpdates conflict) qaytadi
+   (8-sentabr logida ko'rilgan). Faqat bittasida ishga tushiring.
+3. ~~**Retention siyosati yo'q**~~ — ✅ 2026-09-12: `logs/` ham tozalanadigan
+   bo'ldi (`cleanup.prune_logs`, 30 kun, `BM_LOGS_RETENTION_DAYS`; faol `bm.log`
+   va log bo'lmagan fayllar tegilmaydi). `reports/` (30 kun) allaqachon edi.
+   `data/` (haydovchi rasmlari/hujjatlari) **ataylab** TTL'dan tashqarida —
+   bu arxiv ma'lumot, o'chirish kerak emas.
+4. **Repo tarixi:** hali ham bitta commit + ~170 o'zgartirilgan fayl commit
+   qilinmagan holatda. Birinchi commitdan oldin `git status`ni secretlar bo'yicha
+   yana bir marta tekshiring (`git check-ignore` hamma maxfiy yo'llarni bloklaydi).
+5. **Muhit farqi:** lokal Python 3.14 (Windows), konteyner 3.12 — asosiy oqimlar
+   uchun muammo emas, lekin CI qo'shsangiz versiyani bir xillashtiring.
+6. ~~`psycopg_pool` DeprecationWarning~~ — ✅ 2026-09-12: `ConnectionPool(open=True)`
+   aniq ko'rsatildi (`app/db/base.py`).
+
+## 3. Tuzatishlar tafsiloti (2026-09-12)
+
+- `requirements.txt` — git HEAD'dan tiklandi (requests, python-dotenv, openpyxl,
+  matplotlib, playwright, pytest, psycopg[binary]).
+- `.gitignore` — `atto_tokens.json` va `backup/` qo'shildi.
+- `tests/test_verify.py` — fake site klienti endi haqiqiy API kabi faqat
+  so'ralgan oraliq ichidagi kunlarni qaytaradi; `test_month_bounds` sana-bog'liqlikdan
+  xalos qilindi.
+- `tests/test_ops_bot.py` — ochiq rejim (default) va qat'iy rejim
+  (`TG_ALLOWED_IDS`/`TG_STRICT_ACCESS`, barcha manbalar birlashadi, dublikatsiz)
+   shartnomasi assert qilinadi.
+- `bm_automation/app/dashboard/server.py` — `run()`da: tashqi manzil + token
+  yo'q bo'lsa ogohlantirish logi.
+- `bm_automation/app/dashboard/web/index.html` — barcha API chaqiruvlar
+  `bmFetch` orqali Bearer token yuboradi; token localStorage'da (`bm-token`),
+  `<img>` rasmlari uchun `bm_token` cookie ham o'rnatiladi; 401 bo'lsa token
+  bir marta so'raladi. `/api/users/{id}/photo` `img src` orqali cookie bilan.
+- `.env.example` + `DEPLOY_VDS.md` — `DASHBOARD_TOKEN` hujjatlashtirildi
+  (generatsiya buyrug'i bilan), Supabase zaxira izohlari to'g'irlandi.
+- `docker-compose.yml` — izoh drifti tuzatildi.
+- `bm_automation/atto_*.py` (12 fayl) → `tools/atto_dev/`; `backend2.*`,
+  `backend_job.*` → `logs/`. `schedule.log` qoldi (`run_daily.cmd` faol yozadi).
+
+## 4. Tekshirish
+
+```
+python -X utf8 -m pytest tests bm_automation/tests   # 380 passed
+git check-ignore -v bm_automation/atto_tokens.json backup/
+```
+
+---
+
+# Tarixiy audit (2026-08-10) — arxiv
+
+Quyidagi hisobot o'sha kungi holat bo'yicha; ko'p tavsiyalar amalga oshirilgan
+(yuqoriga qarang).
+
 # BM Avtomatizatsiya — Texnik Audit Hisoboti
 
 - **Loyiha:** `bm_automation` (bm.dtransport.uz avtomatlashtirish)
@@ -370,3 +456,32 @@ Tavsiya etilgan tartib (har bosqich tekshirilishi mumkin bo'lgan natija bilan):
 - **Git:** repo `master` bo'limida hali hech qanday commit yo'q — xavfsizlik fixlarini (1-bosqich) birinchi commitdan OLDIN qilish muhim.
 
 *Ushbu hisobot faqat tahlil natijasidir; kodga o'zgartirish kiritilmadi.*
+
+---
+
+## Ilova C — Yangilanishlar (2026-08-15)
+
+Auditdan keyin bajarilgan ishlar:
+
+| # | Audit xulosasi | Holat |
+|---|----------------|-------|
+| 1 | `tokens.json`/`profiles.json` `.gitignore`da emas | ✅ `.gitignore`ga qo'shildi; `tokens.json` atomic write orqali |
+| 2 | Bot buyruqlari uchun chat auth yo'q | ✅ Qat'iy allowlist `is_allowed` (`TG_ALLOWED_IDS` yoki admin+dispatcher+chat); role: ADMIN/DISPATCHER/MANAGER/VIEWER |
+| 3 | Token race condition | ✅ Barcha JSON yozuvlari `atomic_write` orqali; `threading.Lock` |
+| 4 | `--log` faylga `log.info` chiqmasligi | ✅ `logger.py` aylanadigan fayl handler (`logs/bm.log`) + `tail()` |
+| 5 | Logging `print`-asosida | ✅ Darajali, 1 MB x 5 aylanadigan fayl log |
+| 7 | Retry yo'qligi | ✅ `BMClient`: exponential backoff + jitter, `BMRateLimitError` |
+| 8 | `reports/` tozalanmasligi | ✅ `utils/cleanup.py` — 30 kunlik TTL; bot tsikli kuniga bir marta; CLI `cleanup` |
+| 9 | `_exports_pending.json` eski yozuvlar | ✅ 7 kunlik TTL (`prune_pending_exports`, o'qishda ham) |
+
+Yangi funksiyalar (auditdan keyin qo'shildi):
+- **MANAGER roli** — `ownerChatIds` orqali firma egasi faqat o'z kompaniyasini ko'radi.
+- **Bot sozlamalari** — `/settings`: 1 km narxi va til (o'zbek/rus) bot orqali.
+- **AI-yordamchi** (`/ai`) va **AI o'z-o'zini rivojlantirish** (`/insights`, `self_review.py`) — loglar va takroriy muammolar tahlili, OpenRouter ixtiyoriy.
+- **Avto-xabarlar** — `daily_summary` (ertalabki xulosa), `problem_alerts`, `self_review`.
+- **Xatolar/muvaffaqiyatsiz avto-ishlar** — DB `errors` va `automation_runs` jadvallari.
+- **Insights web-dashboard** — `server.py` `/api/insights` endpoint'i (self_review.analyze + lokal qoidalar tavsiyalari); `web/index.html` da "AI tahlil" sahifasi: xatolar, takroriy muammolar va tavsiyalar paneli.
+- **MergedCell xatosi tuzatildi** — Excel kataklariga xavfsiz yozish yordamchisi `exporters/excel_cells.py` (`set_cell`/`resolve_cell`): birlashtirilgan katak ichiga yozish endi anchor katakka tushadi. `export_fill.py` va `daily_grafik.py` (kunlik grafik generatori) shu yordamchiga o'tkazildi.
+- **Firma boshqaruvchisi @AlSafariy (486986)** — `TG_MANAGER_IDS=486986`, `profiles.json` da FERGANATEX (10-yo'nalish) ga `ownerChatIds` bilan biriktirildi; MANAGER faqat o'z firmasi ma'lumotlarini ko'radi, eksport/sync/tahrirlash huquqidan mahrum.
+- **Bot qayta ishga tushirildi** — yangi kod (rollar, firma filtri, davomat, OY TARIXI foizi, settings, ZERO_MILEAGE) bilan ishlayapti; 486986 ga jonli tekshiruvda faqat FERGANATEX ma'lumotlari chiqayotgani tasdiqlandi.
+- **Testlar** — SQLite dublikati bilan 312 test yashil (`tests/`). `tests/conftest.py` dagi autouse fixture bot sozlamalarini (`state/bot_settings.json`) testlardan izolyatsiya qiladi, shuning uchun bot orqali o'rnatilgan jonli km narxi test natijalarini buzmaydi.

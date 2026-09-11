@@ -15,9 +15,8 @@ from datetime import date
 from pathlib import Path
 
 from ..api.client import BMClient
-from ..config.settings import BRUTTO_MGMT
 from ..exporters.sheet_image import make_sheet_image
-from ..repositories.duty_repo import DUTY, DutyRepository
+from ..repositories.duty_repo import DutyRepository
 from ..repositories.waybill_repo import WaybillRepository
 from ..utils.io import ensure_dir, safe_name
 from ..utils.text import normalize_uz
@@ -37,13 +36,23 @@ DEFAULT_KONECHKA = {
 }
 
 
+def _norm_time(t: str) -> str:
+    """Vaqtni HH:MM formatiga tekislaydi (string taqqoslash uchun)."""
+    t = (t or "").strip()
+    if ":" in t:
+        parts = t.split(":", 1)
+        return f"{int(parts[0]):02d}:{parts[1][:2]}"
+    return t
+
+
 def graph_start_direction(client: BMClient, shift_graph_id: str, start_time: str) -> str | None:
     """Grafik qaysi yo'nalishda (konechkadan) boshlanishini aniqlaydi."""
     repo = DutyRepository(client)
     for direction in ("UP", "DOWN"):
         try:
             slots = repo.graph_times(shift_graph_id, direction)
-        except Exception:
+        except Exception as exc:
+            print(f"  [graph_start_direction] {direction} xatolik: {exc}")
             continue
         if not slots:
             continue
@@ -60,7 +69,8 @@ def konechka_names(client: BMClient, route_id: str, date_str: str) -> dict:
     names = dict(DEFAULT_KONECHKA)
     try:
         data = WaybillRepository(client).report(route_id, date_str, date_str)
-    except Exception:
+    except Exception as exc:
+        print(f"  [konechka_names] waybill xatolik: {exc}")
         return names
     counts = {"UP": Counter(), "DOWN": Counter()}
     for wb in data or []:
@@ -74,14 +84,17 @@ def konechka_names(client: BMClient, route_id: str, date_str: str) -> dict:
     return names
 
 
-def build_rows(client: BMClient, route_id: str, date_str: str, profile: dict | None = None) -> dict:
+def build_rows(client: BMClient, route_id: str, date_str: str,
+               profile: dict | None = None,
+               duty_data: dict | None = None) -> dict:
     """Duty + grafik yo'nalishlari + konechka nomlarini yig'adi.
 
+    duty_data berilgan bo'lsa duty API ga qayta so'rov yubormaydi.
     profile berilsa konechka nomlari va yo'nalish nomi profil'dan olinadi
     (start1 = 1-chiqish, start2 = 2-chiqish). Qaytaradi:
     {date, routeName, konechka: {dir: name}, groups: {dir: [rows]}}
     """
-    duty = DutyRepository(client).by_date(route_id, date_str)
+    duty = duty_data if duty_data is not None else DutyRepository(client).by_date(route_id, date_str)
     if not duty:
         raise ValueError(f"{date_str} uchun duty ma'lumoti topilmadi")
     if profile and (profile.get("start1") or profile.get("start2")):
@@ -117,10 +130,10 @@ def build_rows(client: BMClient, route_id: str, date_str: str, profile: dict | N
         if idx is None:
             best[key] = len(groups[direction])
             groups[direction].append(row)
-        elif row["start"] and row["start"] < groups[direction][idx]["start"]:
+        elif row["start"] and _norm_time(row["start"]) < _norm_time(groups[direction][idx]["start"]):
             groups[direction][idx] = row
     for d in groups:
-        groups[d].sort(key=lambda r: r["start"])
+        groups[d].sort(key=lambda r: _norm_time(r["start"]))
     return {
         "date": date_str,
         "routeName": route_name,
@@ -137,10 +150,11 @@ def run(
     send: bool = False,
     chat_id: str | None = None,
     profile: dict | None = None,
+    duty_data: dict | None = None,
 ) -> dict:
     """Jadval rasmini yaratadi (ixtiyoriy Telegram'ga yuboradi)."""
     date_str = date_str or date.today().isoformat()
-    data = build_rows(client, route_id, date_str, profile=profile)
+    data = build_rows(client, route_id, date_str, profile=profile, duty_data=duty_data)
     base = Path(out_dir)
     ensure_dir(base)
     img = base / f"driver-sheet_{route_id[:8]}_{date_str.replace('-', '')}.png"
@@ -156,7 +170,8 @@ def run(
         from ..notifications.telegram import resend_keyboard, send_photo
 
         d = date.fromisoformat(date_str)
-        caption = f"{data['routeName']} | {d:%d.%m.%Y} | Kunlik chiqish jadvali"
+        caption = (f"🚌 {data['routeName']} | {d:%d.%m.%Y} | "
+                   f"Kunlik chiqish jadvali (grafik × haydovchi × avtobus)")
         target = chat_id or telegram_settings().get("driver_chat_id") or None
         send_photo(str(img), caption=caption, chat_id=target,
                    reply_markup=resend_keyboard(profile.get("name") if profile else None))

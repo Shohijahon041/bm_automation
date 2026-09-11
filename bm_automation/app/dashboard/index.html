@@ -1,0 +1,1364 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jo'nash taxtasi — BM</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800;900&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config = { corePlugins: { preflight: false } };</script>
+<style>
+  :root {
+    --bg-deep: #10131A;
+    --bg-panel: #1A1F29;
+    --bg-raised: #232A37;
+    --bg-hover: #283040;
+    --amber: #F0A93E;
+    --teal: #3FB6A8;
+    --alert: #E85A4F;
+    --ink: #F2EFE7;
+    --muted: #7C8494;
+    --line: #2A3140;
+    --line-soft: rgba(122,132,148,.14);
+    --radius-sm: 7px;
+    --radius: 11px;
+    --radius-lg: 15px;
+    --ease: cubic-bezier(.4,0,.2,1);
+    --shadow-sm: 0 1px 2px rgba(0,0,0,.2), 0 4px 14px rgba(0,0,0,.1);
+    --shadow-md: 0 2px 6px rgba(0,0,0,.26), 0 14px 34px rgba(0,0,0,.22);
+    --shadow-lg: 0 10px 34px rgba(0,0,0,.4), 0 34px 96px rgba(0,0,0,.55);
+    --ring: 0 0 0 3px rgba(240,169,62,.18);
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg-deep); color: var(--ink);
+    font-family: "IBM Plex Sans", sans-serif; font-size: 14px; line-height: 1.55;
+    background-image:
+      radial-gradient(1100px 560px at 18% -12%, rgba(240,169,62,.06), transparent 60%),
+      radial-gradient(900px 500px at 88% -10%, rgba(63,182,168,.05), transparent 55%);
+    background-attachment: fixed;
+  }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: var(--bg-deep); }
+  ::-webkit-scrollbar-thumb { background: #2c3442; border-radius: 6px; border: 2px solid var(--bg-deep); }
+  ::-webkit-scrollbar-thumb:hover { background: #3a4356; }
+  .mono { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
+
+  /* ------------------------------------------------ top bar */
+  .topbar {
+    position: sticky; top: 0; z-index: 50;
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 12px 20px; background: rgba(14,17,23,.9);
+    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line); box-shadow: 0 1px 0 rgba(255,255,255,.02) inset, 0 6px 20px rgba(0,0,0,.22);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand-mark {
+    width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center;
+    background: linear-gradient(135deg, var(--amber), #b97a1f);
+    font-family: "Big Shoulders Display", sans-serif; font-weight: 900; font-size: 20px;
+    color: #10131A; box-shadow: 0 2px 10px rgba(240,169,62,.35);
+  }
+  .brand-name { font-family: "Big Shoulders Display", sans-serif; font-weight: 800; font-size: 20px; letter-spacing: .5px; }
+  .brand-sub { display: block; font-family: "IBM Plex Mono", monospace; font-size: 9px; color: var(--muted); letter-spacing: 2px; }
+
+  .pills { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 auto; }
+  .pill {
+    border: 1px solid var(--line); background: transparent; color: var(--muted);
+    font-family: "IBM Plex Mono", monospace; font-size: 12px; letter-spacing: .5px;
+    padding: 7px 14px; border-radius: 999px; cursor: pointer;
+    transition: transform .16s var(--ease), background .16s var(--ease), color .16s var(--ease), border-color .16s var(--ease), box-shadow .16s var(--ease);
+  }
+  .pill:hover { background: var(--bg-raised); color: var(--ink); border-color: #3a4356; transform: translateY(-1px); }
+  .pill.active { background: var(--amber); color: #10131A; border-color: var(--amber); font-weight: 600; box-shadow: 0 2px 12px rgba(240,169,62,.35); }
+  .pill:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+
+  .clock { text-align: right; }
+  .clock-time { font-family: "IBM Plex Mono", monospace; font-size: 22px; font-weight: 600; line-height: 1; letter-spacing: .5px; }
+  .clock-date { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--muted); margin-top: 3px; letter-spacing: .5px; }
+
+  /* ------------------------------------------------ sub nav */
+  .subnav {
+    display: flex; gap: 26px; padding: 0 20px; max-width: 1440px; margin: 16px auto 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .subnav a {
+    color: var(--muted); text-decoration: none; font-size: 13px; font-weight: 500;
+    padding: 10px 2px; border-bottom: 2px solid transparent; margin-bottom: -1px;
+    font-family: "IBM Plex Mono", monospace; letter-spacing: .5px;
+    transition: color .15s var(--ease), border-color .15s var(--ease);
+  }
+  .subnav a:hover { color: var(--ink); border-bottom-color: rgba(240,169,62,.5); }
+  .subnav a:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+
+  main { max-width: 1440px; margin: 0 auto; padding: 18px 20px 48px; }
+
+  .err { display: none; background: linear-gradient(90deg, rgba(232,90,79,.14), rgba(232,90,79,.05));
+    color: var(--alert); border: 1px solid rgba(232,90,79,.4); border-left: 3px solid var(--alert);
+    border-radius: var(--radius); padding: 12px 16px; margin-bottom: 16px; font-size: 13px;
+    animation: fadeDown .25s var(--ease) both; }
+
+  /* ------------------------------------------------ hero */
+  .hero { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .kpi {
+    background: linear-gradient(180deg, var(--bg-raised), var(--bg-panel) 55%);
+    border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px 16px 16px; position: relative; overflow: hidden;
+    box-shadow: var(--shadow-sm);
+    transition: transform .18s var(--ease), box-shadow .18s var(--ease), border-color .18s var(--ease);
+  }
+  .kpi::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+    box-shadow: 0 2px 10px rgba(0,0,0,.3); }
+  .kpi.teal::before  { background: var(--teal); }
+  .kpi.amber::before { background: var(--amber); }
+  .kpi.alert::before { background: var(--alert); }
+  .kpi:hover { transform: translateY(-2px); border-color: #3a4356; box-shadow: var(--shadow-md); }
+  .kpi .label { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--muted);
+    letter-spacing: 1.2px; text-transform: uppercase; }
+  .kpi .num {
+    font-family: "Big Shoulders Display", sans-serif; font-weight: 900; font-size: 46px;
+    line-height: 1.05; margin-top: 8px;
+  }
+  .kpi .num.teal  { color: var(--teal); }
+  .kpi .num.amber { color: var(--amber); }
+  .kpi .num.alert { color: var(--alert); }
+  .kpi .foot { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--muted); margin-top: 6px; }
+
+  /* split-flap flip — faqat hero raqamlarida */
+  .flap { display: inline-block; transform-origin: top center; animation: flap .5s var(--ease) both; }
+  .kpi:nth-child(1) .flap { animation-delay: .0s; }
+  .kpi:nth-child(2) .flap { animation-delay: .12s; }
+  .kpi:nth-child(3) .flap { animation-delay: .24s; }
+  .kpi:nth-child(4) .flap { animation-delay: .36s; }
+  @keyframes flap {
+    0%   { transform: rotateX(92deg) translateY(-6px); opacity: 0; }
+    60%  { opacity: 1; }
+    100% { transform: rotateX(0deg) translateY(0); opacity: 1; }
+  }
+  @keyframes fadeDown {
+    from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .flap { animation: none; }
+    .err { animation: none; }
+    .sys .dot.ok { animation: none; }
+    html { scroll-behavior: auto; }
+  }
+
+  /* ------------------------------------------------ board */
+  .panel {
+    background: linear-gradient(180deg, rgba(35,42,55,.55), transparent 90%), var(--bg-panel);
+    border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 18px; margin-bottom: 18px; box-shadow: var(--shadow-sm);
+  }
+  .panel h2 {
+    font-family: "Big Shoulders Display", sans-serif; font-weight: 800; font-size: 20px;
+    margin: 0 0 14px; letter-spacing: 1px; position: relative;
+    padding-bottom: 10px; border-bottom: 1px solid var(--line-soft);
+  }
+  .panel h2::after { content: ""; position: absolute; left: 0; bottom: -1px; width: 54px; height: 2px;
+    border-radius: 2px; background: linear-gradient(90deg, var(--amber), transparent); }
+  .panel h2 .hint { font-family: "IBM Plex Sans", sans-serif; font-weight: 400; font-size: 12px;
+    color: var(--muted); margin-left: 8px; }
+
+  .board, .table { width: 100%; border-collapse: collapse; }
+  .board th, .board td, .table th, .table td {
+    text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line-soft);
+    font-size: 13px; white-space: nowrap;
+  }
+  .board th, .table th { font-family: "IBM Plex Mono", monospace; font-size: 10px; letter-spacing: 1.6px;
+    text-transform: uppercase; color: var(--muted); font-weight: 500;
+    background: rgba(255,255,255,.015); }
+  .board tbody tr, .table tbody tr { transition: background .14s var(--ease); }
+  .board tbody tr:nth-child(even), .table tbody tr:nth-child(even) { background: rgba(255,255,255,.012); }
+  .board tbody tr:hover, .table tbody tr:hover { background: linear-gradient(90deg, rgba(240,169,62,.06), rgba(63,182,168,.04)); }
+  .board tbody tr:last-child td, .table tbody tr:last-child td { border-bottom: none; }
+  .board .badge { display: inline-grid; place-items: center; width: 28px; height: 28px;
+    background: var(--bg-deep); border: 1px solid var(--line); border-radius: 8px;
+    font-family: "IBM Plex Mono", monospace; font-size: 12px; font-weight: 600; color: var(--amber);
+    box-shadow: 0 1px 0 rgba(255,255,255,.03) inset; }
+  .board .who { font-weight: 600; }
+  .board .who-sub { display: block; font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .board .mono-cell { font-family: "IBM Plex Mono", monospace; font-size: 12px; }
+  .board .muted { color: var(--muted); }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
+
+  .pct { font-family: "IBM Plex Mono", monospace; font-size: 12px; font-weight: 600; }
+  .pct.teal  { color: var(--teal); }
+  .pct.amber { color: var(--amber); }
+  .pct.alert { color: var(--alert); }
+
+  .pill-status { display: inline-block; padding: 3px 10px; border-radius: 999px;
+    font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .5px; border: 1px solid;
+    box-shadow: 0 1px 0 rgba(255,255,255,.03) inset; }
+  .pill-status.done { color: var(--teal); border-color: rgba(63,182,168,.4); background: rgba(63,182,168,.1); }
+  .pill-status.late { color: var(--alert); border-color: rgba(232,90,79,.4); background: rgba(232,90,79,.1); }
+  .pill-status.run  { color: var(--amber); border-color: rgba(240,169,62,.4); background: rgba(240,169,62,.1); }
+  .pill-status.gray { color: var(--muted); border-color: var(--line); background: transparent; }
+
+  .hide-sm { }
+
+  /* ------------------------------------------------ two-col */
+  .cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-bottom: 18px; align-items: start; }
+
+  .problem { display: flex; gap: 12px; padding: 11px 4px; border-bottom: 1px solid var(--line-soft);
+    align-items: baseline; transition: background .14s var(--ease); border-radius: var(--radius-sm); }
+  .problem:hover { background: rgba(255,255,255,.015); }
+  .problem:last-child { border-bottom: none; }
+  .problem .bar { width: 3px; align-self: stretch; border-radius: 2px; flex: none; }
+  .problem.serious .bar { background: var(--alert); }
+  .problem.warn .bar { background: var(--amber); }
+  .problem .p-main { font-size: 13px; font-weight: 600; }
+  .problem .p-meta { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .problem.serious .p-main { color: var(--alert); }
+  .problem.warn .p-main { color: var(--amber); }
+
+  .chart-wrap { position: relative; height: 220px; }
+  .trend-foot { display: flex; gap: 16px; margin-top: 12px;
+    font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--muted); }
+  .trend-foot b { font-weight: 600; }
+
+  /* ------------------------------------------------ registry */
+  .registry { width: 100%; border-collapse: collapse; }
+  .registry th, .registry td {
+    text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line-soft);
+    font-family: "IBM Plex Mono", monospace; font-size: 12px;
+  }
+  .registry th { font-size: 10px; letter-spacing: 1.6px; text-transform: uppercase; color: var(--muted);
+    font-weight: 500; background: rgba(255,255,255,.015); }
+  .registry td { max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .registry tbody tr { transition: background .14s var(--ease); cursor: pointer; }
+  .registry tbody tr:nth-child(even) { background: rgba(255,255,255,.012); }
+  .registry tbody tr:hover { background: linear-gradient(90deg, rgba(240,169,62,.06), rgba(63,182,168,.04)); }
+  .registry tbody tr:last-child td { border-bottom: none; }
+  .registry tbody tr:focus-visible { outline: 2px solid var(--amber); outline-offset: -2px; }
+  .registry .driver-name { transition: color .14s var(--ease); }
+  .registry tbody tr:hover .driver-name { color: var(--amber); }
+  .registry .driver-open { padding: 6px 9px; min-height: 0; font-size: 11px; }
+
+  .empty { color: var(--muted); padding: 26px 18px; font-size: 13px; text-align: center;
+    border: 1px dashed var(--line); border-radius: var(--radius); background: rgba(255,255,255,.012); }
+
+  /* ------------------------------------------------ driver management */
+  .driver-toolbar { display: flex; gap: 10px; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; margin-bottom: 16px; }
+  .driver-toolbar h2 { margin: 0; padding-bottom: 0; border-bottom: none; }
+  .driver-toolbar h2::after { display: none; }
+  .driver-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .dl-group { display: inline-flex; align-items: center; gap: 5px;
+    border-left: 1px solid var(--line); padding-left: 8px; }
+  .dl-group .button { padding: 8px 9px; }
+  .input, .select {
+    color: var(--ink); background: var(--bg-deep); border: 1px solid var(--line); border-radius: var(--radius-sm);
+    padding: 8px 10px; font: 12px "IBM Plex Mono", monospace; min-height: 34px;
+    transition: border-color .14s var(--ease), box-shadow .14s var(--ease);
+  }
+  .input:focus, .select:focus { outline: none; border-color: var(--amber); box-shadow: var(--ring); }
+  .input[type="search"] { min-width: 190px; }
+  .button {
+    appearance: none; border: 1px solid var(--amber); background: var(--amber); color: #10131A;
+    border-radius: var(--radius-sm); padding: 8px 12px; min-height: 34px; cursor: pointer;
+    font: 600 12px "IBM Plex Mono", monospace; letter-spacing: .3px;
+    box-shadow: 0 1px 0 rgba(255,255,255,.08) inset;
+    transition: transform .14s var(--ease), box-shadow .14s var(--ease), filter .14s var(--ease),
+      background .14s var(--ease), border-color .14s var(--ease);
+  }
+  .button:hover { filter: brightness(1.08); transform: translateY(-1px); box-shadow: 0 4px 14px rgba(240,169,62,.25); }
+  .button:active { transform: translateY(0); }
+  .button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+  .button.ghost { background: transparent; border-color: var(--line); color: var(--ink); box-shadow: none; }
+  .button.ghost:hover { background: var(--bg-raised); border-color: #3a4356; color: #fff; box-shadow: none; }
+  .button.danger { background: var(--alert); border-color: var(--alert); color: white; box-shadow: 0 1px 0 rgba(255,255,255,.08) inset; }
+  .button.danger:hover { box-shadow: 0 4px 14px rgba(232,90,79,.28); }
+  .driver-summary { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; margin-bottom: 14px; }
+  .driver-summary > div { background: var(--bg-deep); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px 11px;
+    box-shadow: 0 1px 0 rgba(255,255,255,.02) inset; }
+  .driver-summary span { display: block; color: var(--muted); font: 10px "IBM Plex Mono", monospace; text-transform: uppercase; letter-spacing: .7px; }
+  .driver-summary b { display: block; margin-top: 3px; font: 700 20px "Big Shoulders Display", sans-serif; letter-spacing: .4px; }
+  .driver-name { font-family: "IBM Plex Sans", sans-serif; font-weight: 600; display: block;
+    max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .driver-sub { display: block; margin-top: 3px; color: var(--muted); font: 10px "IBM Plex Mono", monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--teal); margin-right: 6px; }
+  .status-dot.black { background: var(--alert); }
+  .tag { display: inline-block; padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted);
+    font: 10px "IBM Plex Mono", monospace; box-shadow: 0 1px 0 rgba(255,255,255,.03) inset; }
+  .tag.good { color: var(--teal); border-color: rgba(63,182,168,.45); background: rgba(63,182,168,.08); }
+  .tag.warn { color: var(--amber); border-color: rgba(240,169,62,.45); background: rgba(240,169,62,.08); }
+  .tag.bad { color: var(--alert); border-color: rgba(232,90,79,.45); background: rgba(232,90,79,.08); }
+  .documents-mark { display: flex; gap: 4px; }
+  .doc-mark { width: 18px; height: 18px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 5px;
+    color: var(--muted); font: 10px "IBM Plex Mono", monospace; background: var(--bg-deep); }
+  .doc-mark.ready { color: var(--teal); border-color: rgba(63,182,168,.45); background: rgba(63,182,168,.08); }
+
+  dialog.driver-dialog { width: min(1180px, calc(100vw - 28px)); max-height: calc(100vh - 28px); padding: 0;
+    color: var(--ink); background: linear-gradient(180deg, #1c2230, var(--bg-panel));
+    border: 1px solid #3a4356; border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); z-index: 200; }
+  dialog.driver-dialog::backdrop { background: rgba(6,8,12,.72); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
+  .driver-modal-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; padding: 16px 20px; background: rgba(28,34,48,.96); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line); }
+  .driver-modal-title { font: 800 26px "Big Shoulders Display", sans-serif; letter-spacing: .8px; }
+  .driver-modal-meta { color: var(--muted); font: 11px "IBM Plex Mono", monospace; margin-top: 2px; }
+  .icon-button { width: 32px; height: 32px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: transparent;
+    color: var(--ink); cursor: pointer; font-size: 20px; line-height: 1;
+    transition: background .14s var(--ease), border-color .14s var(--ease), transform .14s var(--ease); }
+  .icon-button:hover { background: var(--bg-raised); border-color: #3a4356; transform: translateY(-1px); }
+  .icon-button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+  .driver-modal-body { padding: 18px 20px 24px; }
+  .driver-metrics { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; margin-bottom: 18px; }
+  .driver-metric { border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-deep); padding: 10px 11px;
+    box-shadow: 0 1px 0 rgba(255,255,255,.02) inset; }
+  .driver-metric label { display: block; font: 10px "IBM Plex Mono", monospace; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .driver-metric b { display: block; margin-top: 3px; font: 800 23px "Big Shoulders Display", sans-serif; }
+  .form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+  .form-panel { background: rgba(16,19,26,.42); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; margin-bottom: 16px;
+    box-shadow: 0 1px 0 rgba(255,255,255,.02) inset; }
+  .form-panel h3 { margin: 0 0 14px; font: 800 18px "Big Shoulders Display", sans-serif; letter-spacing: .7px;
+    color: var(--ink); }
+  .field { display: grid; gap: 5px; min-width: 0; }
+  .field label { color: var(--muted); font: 10px "IBM Plex Mono", monospace; text-transform: uppercase; letter-spacing: .6px; }
+  .field input, .field textarea { width: 100%; color: var(--ink); background: var(--bg-deep); border: 1px solid var(--line); border-radius: var(--radius-sm);
+    padding: 8px 10px; font: 12px "IBM Plex Sans", sans-serif;
+    transition: border-color .14s var(--ease), box-shadow .14s var(--ease); }
+  .field textarea { min-height: 70px; resize: vertical; }
+  .field input:focus, .field textarea:focus { outline: none; border-color: var(--amber); box-shadow: var(--ring); }
+  .check-field { display: flex; align-items: center; gap: 8px; color: var(--ink); font-size: 12px; }
+  .check-field input { width: 16px; height: 16px; accent-color: var(--amber); }
+  .form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+  .document-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  .document-card { background: var(--bg-deep); border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden;
+    box-shadow: 0 1px 0 rgba(255,255,255,.02) inset; transition: border-color .14s var(--ease), transform .14s var(--ease); }
+  .document-card:hover { border-color: #3a4356; }
+  .document-preview { height: 108px; display: grid; place-items: center; color: var(--muted); font: 11px "IBM Plex Mono", monospace; background:
+    repeating-linear-gradient(45deg, rgba(255,255,255,.012), rgba(255,255,255,.012) 8px, transparent 8px, transparent 16px); }
+  .document-preview img { width: 100%; height: 100%; display: block; object-fit: cover; }
+  .document-card footer { display: flex; justify-content: space-between; align-items: center; padding: 8px; text-align: left; color: var(--ink); font-size: 11px; }
+  .document-card input { display: none; }
+  .upload-label { color: var(--amber); cursor: pointer; font: 11px "IBM Plex Mono", monospace; transition: color .14s var(--ease); }
+  .upload-label:hover { color: var(--ink); }
+  .upload-label:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+  .driver-history { max-height: 250px; overflow: auto; border: 1px solid var(--line-soft); border-radius: var(--radius-sm); }
+  .driver-history table { width: 100%; border-collapse: collapse; }
+  .driver-history th, .driver-history td { padding: 8px 10px; border-bottom: 1px solid var(--line-soft); text-align: left; font: 11px "IBM Plex Mono", monospace; }
+  .driver-history th { color: var(--muted); font-size: 10px; text-transform: uppercase; background: rgba(255,255,255,.015); position: sticky; top: 0; }
+  .split-form { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, .8fr); gap: 16px; align-items: start; }
+  .driver-message { display: none; margin-bottom: 14px; padding: 10px 12px; border: 1px solid rgba(232,90,79,.45); border-radius: var(--radius-sm);
+    background: rgba(232,90,79,.1); color: var(--alert); font-size: 12px; animation: fadeDown .2s var(--ease) both; }
+  .driver-message.ok { border-color: rgba(63,182,168,.45); background: rgba(63,182,168,.1); color: var(--teal); }
+
+  /* ------------------------------------------------ dash layout (chap sidebar) */
+  .dash-grid { display: grid; grid-template-columns: clamp(272px, 24vw, 348px) minmax(0, 1fr); gap: 16px; align-items: start; }
+  .dash-main { order: 2; min-width: 0; }
+  .dash-main > .panel, .cols > .panel { min-width: 0; }
+  .dash-side { order: 1; position: sticky; top: 84px; max-height: calc(100vh - 100px);
+    overflow-y: auto; overscroll-behavior: contain;
+    border-right: 1px solid var(--line-soft); padding-right: 14px; }
+  .dash-side::-webkit-scrollbar { width: 6px; }
+  .dash-side::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+  .side-card { padding: 14px; margin-bottom: 14px; }
+  .side-card:last-child { margin-bottom: 0; }
+  .side-card h2 { font-size: 16px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; letter-spacing: 1px; }
+  .side-card h2 .hint { margin-left: auto; font-size: 10px; }
+  .sec-ic { display: inline-flex; color: var(--amber); flex: none; filter: drop-shadow(0 0 6px rgba(240,169,62,.35)); }
+  .dash-side .hero { grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 0; }
+  .dash-side .kpi { padding: 10px 11px 11px; }
+  .dash-side .kpi .num { font-size: 30px; margin-top: 4px; }
+  .dash-side .kpi .label { font-size: 9px; }
+  .dash-side .kpi .foot { font-size: 9px; }
+  .side-card #prob-body { max-height: 300px; overflow-y: auto; padding-right: 2px; }
+  .side-card .chart-wrap { height: 180px; }
+  .side-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 10px; }
+  .side-stats > div { background: var(--bg-deep); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 9px; }
+  .side-stats span { display: block; color: var(--muted); font: 9px "IBM Plex Mono", monospace; text-transform: uppercase; letter-spacing: .6px; }
+  .side-stats b { display: block; margin-top: 2px; font: 700 14px "Big Shoulders Display", sans-serif; letter-spacing: .3px; }
+  .side-drv { display: flex; align-items: center; gap: 8px; padding: 7px 4px; border-bottom: 1px solid var(--line-soft); cursor: pointer;
+    border-radius: var(--radius-sm); transition: background .14s var(--ease), padding .14s var(--ease); }
+  .side-drv:last-child { border-bottom: none; }
+  .side-drv:hover { background: var(--bg-hover); padding-left: 8px; }
+  .side-drv-name { font-size: 12px; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .side-drv-meta { font: 10px "IBM Plex Mono", monospace; color: var(--muted); flex: none; }
+  .side-drv b { flex: none; font-size: 12px; color: var(--amber); }
+
+  /* ------------------------------------------------ system status + filters */
+  .sys { display: flex; gap: 12px; flex-wrap: wrap; }
+  .sys span { display: inline-flex; align-items: center; gap: 6px; font: 10px "IBM Plex Mono", monospace;
+    color: var(--muted); letter-spacing: .5px; }
+  .sys b { font-weight: 400; color: #9aa3b5; }
+  .sys .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+  .sys .dot.ok { background: var(--teal); box-shadow: 0 0 6px rgba(63,182,168,.6); }
+  .sys .dot.bad { background: var(--alert); box-shadow: 0 0 6px rgba(232,90,79,.6); }
+  .filter-field { display: flex; flex-direction: column; gap: 4px; font: 10px "IBM Plex Mono", monospace;
+    color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+  .filter-field .input, .filter-field .select { margin-top: 2px; }
+  .export-hint { align-self: center; font-size: 11px; }
+  .avatar { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; border: 1px solid var(--line); flex: none; }
+  .avatar-empty { display: inline-grid; place-items: center; background: var(--bg-raised); color: var(--muted);
+    font: 700 14px "IBM Plex Mono", monospace; }
+  .avatar-lg { width: 58px; height: 58px; border-radius: 12px; }
+  .avatar-row { display: flex; align-items: center; gap: 10px; }
+  .photo-upload { display: flex; align-items: center; gap: 14px; }
+  .photo-upload img { width: 88px; height: 88px; border-radius: var(--radius); object-fit: cover; border: 1px solid var(--line); }
+  .photo-upload input { display: none; }
+
+  footer { text-align: center; color: var(--muted); font-family: "IBM Plex Mono", monospace;
+    font-size: 11px; padding: 22px 0 32px; letter-spacing: 1px; }
+
+  /* ------------------------------------------------ responsive */
+  @media (max-width: 1100px) {
+    .dash-grid { grid-template-columns: 1fr; }
+    .dash-main { order: 1; }
+    .dash-side { order: 2; position: static; max-height: none; overflow: visible; border-right: none; padding-right: 0; }
+    .dash-side .hero { grid-template-columns: repeat(4, 1fr); }
+    .side-card { margin-bottom: 10px; }
+  }
+  @media (max-width: 900px) {
+    .hero { grid-template-columns: repeat(2, 1fr); }
+    .cols { grid-template-columns: 1fr; }
+    .driver-summary { grid-template-columns: repeat(3, 1fr); }
+    .driver-metrics { grid-template-columns: repeat(3, 1fr); }
+    .form-grid { grid-template-columns: repeat(2, 1fr); }
+    .document-grid { grid-template-columns: repeat(2, 1fr); }
+    .split-form { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 640px) {
+    .topbar { padding: 10px 14px; }
+    .pills { order: 3; width: 100%; justify-content: center; }
+    .clock { margin-left: auto; }
+    .board .hide-sm { display: none; }
+    .driver-summary { grid-template-columns: repeat(2, 1fr); }
+    .driver-metrics { grid-template-columns: repeat(2, 1fr); }
+    .form-grid { grid-template-columns: 1fr; }
+    .driver-toolbar { align-items: stretch; }
+    .driver-tools { width: 100%; }
+    .driver-tools .input[type="search"] { flex: 1; min-width: 0; }
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark">BM</div>
+    <div>
+      <span class="brand-name">JO'NASH TAXTASI</span>
+      <span class="brand-sub">DISPETCHER PANELI</span>
+    </div>
+  </div>
+  <nav class="pills" id="pills"></nav>
+  <div class="sys" id="sys"></div>
+  <div class="clock">
+    <div class="clock-time mono" id="clock">--:--:--</div>
+    <div class="clock-date" id="clockdate"></div>
+  </div>
+</header>
+
+<nav class="subnav">
+  <a href="#hero">Bugun</a>
+  <a href="#problems">Muammolar</a>
+  <a href="#trend">Trend</a>
+  <a href="#registry">Haydovchilar</a>
+</nav>
+
+<main>
+  <div class="panel" style="padding:14px">
+    <div class="flex flex-wrap items-end gap-3">
+      <label class="filter-field">Sana <input type="date" id="f-date" class="input"></label>
+      <label class="filter-field">Yo'nalish
+        <select id="f-route" class="select"><option value="">Barchasi</option></select>
+      </label>
+      <label class="filter-field">Avtobus <input type="text" id="f-vehicle" class="input" placeholder="id / raqam"></label>
+      <label class="filter-field">Haydovchi <input type="text" id="f-driver" class="input" placeholder="id / ism"></label>
+      <label class="filter-field">Status
+        <select id="f-status" class="select">
+          <option value="">Barchasi</option>
+          <option>ACCEPTED</option><option>NOT_ACCEPTED</option><option>PENDING_ACCESS</option>
+          <option>APPROVED</option><option>REJECTED</option><option>ZERO_MILEAGE</option>
+        </select>
+      </label>
+      <label class="filter-field">Avto-yangilash
+        <select id="f-refresh" class="select">
+          <option value="30" selected>30s</option><option value="10">10s</option>
+          <option value="5">5s</option><option value="0">o'chiq</option>
+        </select>
+      </label>
+      <button id="btn-apply" class="button">QO'LLASH</button>
+      <button id="btn-sync" class="button ghost">OYLIK SYNC</button> <button id="btn-sync-daily" class="button ghost">KUNLIK SYNC</button>
+      <button id="btn-check" class="button ghost">Sayt ↔ Baza tekshirish</button>
+      <span class="flex items-center gap-2">
+        <button class="button ghost" data-exp="csv">CSV</button>
+        <button class="button ghost" data-exp="xls">XLS</button>
+        <button class="button ghost" data-exp="xlsx">XLSX</button>
+        <button class="button ghost" data-exp="pdf">PDF</button>
+      </span>
+      <span class="muted mono export-hint" id="export-hint"></span>
+    </div>
+  </div>
+  <div class="err" id="err"></div>
+
+  <div class="dash-grid">
+    <div class="dash-main">
+      <section class="panel" id="check-block" style="display:none">
+        <h2>Sayt ↔ Baza tekshiruvi <span class="hint" id="check-hint"></span></h2>
+        <div id="check-body"></div>
+      </section>
+
+      <section class="panel" id="board">
+        <h2>Bugungi taxta <span class="hint" id="board-hint"></span></h2>
+        <div id="board-body"></div>
+      </section>
+
+      <section class="cols">
+        <div class="panel" id="routes-block">
+          <h2>Yo'nalishlar <span class="hint" id="routes-hint"></span></h2>
+          <div id="routes-tab"></div>
+        </div>
+        <div class="panel" id="vehicles-block">
+          <h2>Avtobuslar <span class="hint" id="vehicles-hint"></span></h2>
+          <div id="vehicles-tab"></div>
+        </div>
+      </section>
+
+      <section class="panel" id="registry">
+        <div class="driver-toolbar">
+          <h2>Haydovchilar reestri <span class="hint">oylik ish va shaxsiy karta</span></h2>
+          <div class="driver-tools">
+            <input class="input" id="driver-month" type="month" aria-label="Hisobot oyi">
+            <input class="input" id="driver-search" type="search" placeholder="Haydovchini qidiring" aria-label="Haydovchini qidiring">
+            <span class="dl-group" title="Reestrni yuklab olish (oy + firma bo'yicha)">
+              <button class="button ghost" data-dl="csv">CSV</button>
+              <button class="button ghost" data-dl="xls">XLS</button>
+              <button class="button ghost" data-dl="xlsx">XLSX</button>
+              <button class="button ghost" data-dl="pdf">PDF</button>
+            </span>
+            <button class="button" id="driver-add" type="button">+ YANGI HAYDOVCHI</button>
+          </div>
+        </div>
+        <div class="driver-summary" id="driver-summary"></div>
+        <div id="registry-body"></div>
+      </section>
+    </div>
+
+    <aside class="dash-side" aria-label="Qisqacha ko'rinish">
+      <section class="panel side-card" id="hero" aria-label="Bugun">
+        <h2><span class="sec-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></span> Bugun <span class="hint" id="hero-hint"></span></h2>
+        <div class="hero hero-side" id="hero-body"></div>
+      </section>
+      <section class="panel side-card" id="problems">
+        <h2><span class="sec-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span> Muammolar <span class="hint" id="prob-hint"></span></h2>
+        <div id="prob-body"></div>
+      </section>
+      <section class="panel side-card" id="trend">
+        <h2><span class="sec-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg></span> Trend <span class="hint" id="trend-hint"></span></h2>
+        <div class="chart-wrap"><canvas id="trend-chart"></canvas></div>
+        <div class="trend-foot" id="trend-foot"></div>
+      </section>
+      <section class="panel side-card" id="drivers-side">
+        <h2><span class="sec-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span> Haydovchilar <span class="hint" id="side-drivers-hint"></span></h2>
+        <div id="side-drivers"></div>
+      </section>
+    </aside>
+  </div>
+</main>
+
+<dialog class="driver-dialog" id="driver-dialog" aria-labelledby="driver-dialog-title">
+  <div id="driver-dialog-content"></div>
+</dialog>
+
+<footer>BM AUTOMATION · JO'NASH TAXTASI · <span id="foot-time"></span></footer>
+
+<script>
+"use strict";
+let route = "";              // tanlangan yo'nalish (firma)
+let chart = null;
+
+const state = { routes: [], names: {}, plates: {}, dnames: {}, lastData: null,
+  driverDirectory: null, currentDriver: null };
+
+function esc(x) {
+  return String(x ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+function qs() {
+  const p = new URLSearchParams();
+  const d = document.getElementById("f-date").value;
+  const r = document.getElementById("f-route").value;
+  const v = document.getElementById("f-vehicle").value.trim();
+  const dr = document.getElementById("f-driver").value.trim();
+  const st = document.getElementById("f-status").value;
+  if (d) p.set("date", d);
+  if (r) p.set("route", r);
+  if (v) p.set("vehicle", v);
+  if (dr) p.set("driver", dr);
+  if (st) p.set("status", st);
+  return p;
+}
+async function api(path, params) {
+  const url = path + (params ? "?" + params.toString() : "");
+  const r = await fetch(url, {headers: {"Accept": "application/json"}});
+  return r.json();
+}
+async function postJSON(path, payload = {}) {
+  const r = await fetch(path, { method: "POST", headers: {"Content-Type": "application/json", "Accept": "application/json"},
+    body: JSON.stringify(payload) });
+  const data = await r.json().catch(() => ({ok: false, error: "Server javobi o'qilmadi"}));
+  if (!r.ok && data.ok !== false) data.ok = false;
+  return data;
+}
+function money(v) {
+  return new Intl.NumberFormat("uz-UZ", {maximumFractionDigits: 0}).format(Number(v || 0)) + " so'm";
+}
+function num(v) { return new Intl.NumberFormat("uz-UZ", {maximumFractionDigits: 1}).format(Number(v || 0)); }
+
+function pctClass(v) { return v >= 95 ? "teal" : (v >= 80 ? "amber" : "alert"); }
+function pctColor(v) { return v >= 95 ? "teal" : (v >= 80 ? "amber" : "alert"); }
+
+function statusPill(s) {
+  s = String(s || "");
+  const map = {
+    "ACCEPTED": ["done", "TUGADI"],
+    "APPROVED": ["done", "TASDIQLANDI"],
+    "NOT_ACCEPTED": ["late", "KECHIKMOQDA"],
+    "REJECTED": ["late", "BEKOR"],
+    "PENDING_ACCESS": ["run", "BAJARILMOQDA"],
+    "ZERO_MILEAGE": ["gray", "NOLLIK"],
+  };
+  const [cls, label] = map[s] || ["gray", s || "—"];
+  return `<span class="pill-status ${cls}">${label}</span>`;
+}
+
+/* ------------------------------------------------ top pills (firmalar) */
+async function loadRoutes() {
+  try {
+    const data = await api("/api/routes");
+    state.routes = data.routes || [];
+  } catch (e) { state.routes = []; }
+  const sel = document.getElementById("f-route");
+  sel.innerHTML = '<option value="">Barchasi</option>' + state.routes.map(r =>
+    `<option value="${esc(r.id)}">${esc(r.name)}</option>`).join("");
+  sel.value = route;
+  renderPills();
+}
+
+function renderPills() {
+  const el = document.getElementById("pills");
+  const base = "pill-tw inline-flex items-center border rounded-full px-3.5 py-1.5 " +
+    "font-mono text-[12px] tracking-[0.5px] cursor-pointer transition-colors " +
+    "border-[#2A3140] bg-transparent text-[#7C8494] " +
+    "hover:bg-[#232A37] hover:text-[#F2EFE7] focus-visible:outline-2 focus-visible:outline-[#F0A93E]";
+  const active = "bg-[#F0A93E] text-[#10131A] border-[#F0A93E] font-semibold";
+  const all = `<button class="${base} ${!route ? active : ""}" data-route="">HAMMASI</button>`;
+  const items = state.routes.map(r =>
+    `<button class="${base} ${route === r.id ? active : ""}" data-route="${esc(r.id)}">${esc(r.name)}</button>`
+  ).join("");
+  el.innerHTML = all + items;
+  el.querySelectorAll("[data-route]").forEach(b => b.addEventListener("click", () => {
+    route = b.dataset.route;
+    document.getElementById("f-route").value = route;
+    renderPills();
+    reloadAll();
+  }));
+}
+
+/* ------------------------------------------------ hero */
+function renderHero(d) {
+  const t = d.today || {};
+  const perf = t.total_trips ? Math.round(t.completed / t.total_trips * 100) : 0;
+  const probCount = (d.problems && d.problems.counts) ? Object.values(d.problems.counts).reduce((a, b) => a + b, 0) : 0;
+  const staff = (d.drivers || []).length;
+
+  const cards = [
+    ["Bajarilish", perf + "%", pctColor(perf), "teal", t.completed + " / " + t.total_trips + " reys"],
+    ["Faol birlik", t.active_buses ?? 0, "teal", "amber", t.total_buses + " ta avtobusdan"],
+    ["Muammolar", probCount, probCount > 0 ? "alert" : "teal", "alert",
+      t.not_accepted + " qab.qilm + " + (t.zero_mileage || 0) + " nollik"],
+    ["Xodimlar", staff, "amber", "amber", (d.drivers || []).length + " haydovchi faol"],
+  ];
+  document.getElementById("hero-body").innerHTML = cards.map(([l, n, nc, cls, foot]) =>
+    `<div class="kpi ${cls}"><div class="label">${l}</div>
+     <div class="num ${nc}"><span class="flap">${esc(n)}</span></div>
+     <div class="foot">${esc(foot)}</div></div>`).join("");
+  document.getElementById("hero-hint").textContent =
+    (d.filters && d.filters.date || (d.today && d.today.date || ""));
+}
+
+/* ------------------------------------------------ board */
+function tripRow(x, i) {
+  const plate = state.plates[x.vehicle_id] || x.vehicle_id || "-";
+  const dname = state.dnames[x.driver_id] || x.driver_id || "-";
+  const rt = state.routePerf[x.route_id];
+  const p1 = rt != null ? rt : 0;
+  const p2 = state.todayPerf;
+  const pt = (t => t.replace("T", " ").slice(5, 16))(x.planned_time || "");
+  const at = x.actual_time ? x.actual_time.replace("T", " ").slice(5, 16) : "—";
+  return `<tr>
+    <td><span class="badge">${i}</span></td>
+    <td><span class="who">${esc(dname)}</span><span class="who-sub">${esc(plate)}</span></td>
+    <td class="mono-cell hide-sm">${esc(pt)} → ${esc(at)}</td>
+    <td class="hide-sm"><span class="pct ${pctClass(p1)}">${p1.toFixed(1)}%</span></td>
+    <td class="hide-sm"><span class="pct ${pctClass(p2)}">${p2.toFixed(1)}%</span></td>
+    <td>${statusPill(x.status)}</td>
+  </tr>`;
+}
+
+function renderBoard(d) {
+  const t = d.today || {};
+  const trips = d.trips || [];
+  state.todayPerf = t.total_trips ? t.completed / t.total_trips * 100 : 0;
+  const rows = trips.slice(0, 60).map((x, i) => tripRow(x, i + 1));
+  document.getElementById("board-hint").textContent =
+    (d.filters && d.filters.date || "") + " · " + trips.length + " ta reysdan " + Math.min(trips.length, 60) + " ta ko'rsatilmoqda";
+  document.getElementById("board-body").innerHTML = rows.length
+    ? `<div style="overflow-x:auto"><table class="board">
+        <thead><tr><th>#</th><th>Haydovchi / Avtobus</th><th class="hide-sm">Vaqt oralig'i</th>
+        <th class="hide-sm">Yo'nalish %</th><th class="hide-sm">Umumiy %</th><th>Holat</th></tr></thead>
+        <tbody>${rows.join("")}</tbody></table></div>`
+    : '<div class="empty">Bugun uchun reyslar hali yo\'q.</div>';
+}
+
+/* ------------------------------------------------ problems */
+function renderProblems(d) {
+  const pr = d.problems || { counts: {}, items: {} };
+  const el = document.getElementById("prob-body");
+  const n = pr.counts;
+  const total = Object.values(n).reduce((a, b) => a + b, 0);
+  document.getElementById("prob-hint").textContent = total + " ta jami";
+
+  const serious = [];
+  (pr.items.technical || []).forEach(x => serious.push([x, "TEXNIK"]));
+  (pr.items.schedule || []).forEach(x => serious.push([x, "JADVAL"]));
+  (pr.items.unknown || []).forEach(x => serious.push([x, "NOMA'LUM"]));
+  const warns = (pr.items.gps || []).map(x => [x, "GPS"]);
+
+  if (!total) { el.innerHTML = '<div class="empty">Muammolar yo\'q. Hammasi reja asosida.</div>'; return; }
+
+  const item = ([x, cat]) =>
+    `<div class="problem ${cat === "GPS" ? "warn" : "serious"}"><div class="bar"></div>
+     <div><div class="p-main">${esc(cat)} · ${esc(x.route || "-")} · ${esc(x.vehicle || "-")}</div>
+     <div class="p-meta">${esc(x.driver || "-")} · ${esc(x.planned_time || "")} · ${esc(x.status || "")}</div></div></div>`;
+  el.innerHTML = [...warns, ...serious].slice(0, 25).map(item).join("");
+}
+
+/* ------------------------------------------------ system status */
+function renderSys(s) {
+  const el = document.getElementById("sys");
+  if (!el || !s) return;
+  const db = s.database || {};
+  const dbLabel = db.host
+    ? "Postgres · " + db.host + (db.port ? ":" + db.port : "")
+    : "Postgres";
+  const dbMs = db.latency_ms != null ? db.latency_ms + "ms" : "";
+  const items = [
+    ["BM API", s.api && s.api.ok, s.api && s.api.ms != null ? s.api.ms + "ms" : ""],
+    [dbLabel, db.connected, db.connected === false ? dbMs + (db.error ? " · " + db.error : "") : dbMs],
+    ["Telegram", s.telegram && s.telegram.ok, s.telegram && s.telegram.username ? "@" + s.telegram.username : ""],
+    ["Scheduler", s.scheduler && s.scheduler.ok, ""],
+  ].map(([name, ok, sub]) =>
+    `<span title="${esc(sub || "")}"><i class="dot ${ok ? "ok" : "bad"}"></i>${esc(name)}${sub ? ` <b>${esc(sub)}</b>` : ""}</span>`).join("");
+  el.innerHTML = items;
+}
+
+/* ------------------------------------------------ routes / vehicles */
+function tag(v) {
+  const s = String(v || "");
+  const ok = s === "faol" || s === "ACCEPTED";
+  return `<span class="tag ${ok ? "good" : "bad"}">${esc(s)}</span>`;
+}
+function tableHTML(cols, rows) {
+  if (!rows.length) return '<div class="empty">Ma\'lumot yo\'q</div>';
+  return `<div style="overflow-x:auto"><table class="registry">
+    <thead><tr>${cols.map(c => `<th>${esc(c)}</th>`).join("")}</tr></thead>
+    <tbody>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+}
+function renderRoutes(d) {
+  const rows = (d.routes || []).map(r => [
+    esc(r.company || "-"), esc(r.name), '<span class="muted">' + esc(r.route_id) + "</span>",
+    r.planned, r.actual, r.accepted, r.not_accepted, r.rejected, r.zero_mileage,
+    `<span class="pct ${pctClass(r.performance)}">${r.performance}%</span>`,
+  ]);
+  document.getElementById("routes-hint").textContent = rows.length + " ta yo'nalish";
+  document.getElementById("routes-tab").innerHTML = tableHTML(
+    ["Firma", "Nom", "ID", "Reja", "Amalda", "Qabul", "Qab.qilm", "Bekor", "Nollik", "Perf %"], rows);
+}
+function renderVehicles(d) {
+  const rows = (d.vehicles || []).map(v => [
+    esc(v.plate_number), esc(v.model || "-"), tag(v.status),
+    v.trips, v.issues, '<span class="muted">' + esc(v.last_activity) + "</span>",
+  ]);
+  document.getElementById("vehicles-hint").textContent = rows.length + " ta avtobus";
+  document.getElementById("vehicles-tab").innerHTML = tableHTML(
+    ["Avtobus", "Model", "Status", "Reyslar", "Issues", "Oxirgi faollik"], rows);
+}
+function avatar(x) {
+  const ch = esc(String(x.name || "?")[0] || "?");
+  return x.photo_url
+    ? `<img class="avatar" src="${esc(x.photo_url)}" alt="">`
+    : `<span class="avatar avatar-empty">${ch}</span>`;
+}
+
+/* ------------------------------------------------ driver registry */
+function driverMonth() {
+  return document.getElementById("driver-month").value || new Date().toISOString().slice(0, 7);
+}
+function docMarks(x) {
+  return `<div class="documents-mark" title="Pasport / guvohnoma">
+    <span class="doc-mark ${x.has_passport ? "ready" : ""}">P</span>
+    <span class="doc-mark ${x.has_license ? "ready" : ""}">G</span></div>`;
+}
+function driverStatus(x) {
+  if (x.blacklisted) return '<span class="tag bad"><span class="status-dot black"></span>QORA RO\'YXAT</span>';
+  return `<span class="tag ${x.working_days ? "good" : "warn"}"><span class="status-dot"></span>${x.working_days ? "FAOL" : "ISH CHIQMAGAN"}</span>`;
+}
+function renderRegistry(data) {
+  const drv = data.drivers || [];
+  const totals = data.totals || {};
+  const summary = [
+    ["Haydovchilar", totals.drivers || 0, ""], ["Faol", totals.active || 0, "var(--teal)"],
+    ["Jami km", num(totals.km) + " km", "var(--amber)"], ["Brutto", money(totals.gross_pay), ""],
+    ["Soliq (12%)", money(totals.tax), "var(--amber)"], ["Qo'liga tegishi", money(totals.net_pay), "var(--teal)"],
+    ["Jarimalar", money(totals.fines), totals.fines ? "var(--alert)" : "var(--teal)"],
+  ];
+  document.getElementById("driver-summary").innerHTML = summary.map(([l, v, c]) =>
+    `<div><span>${l}</span><b style="color:${c}">${esc(v)}</b></div>`).join("");
+  const filter = (document.getElementById("driver-search").value || "").trim().toLocaleLowerCase("uz");
+  const rows = drv.filter(x => !filter || [x.name, x.driver_id].join(" ").toLocaleLowerCase("uz").includes(filter));
+  document.getElementById("registry-body").innerHTML = rows.length
+    ? `<div style="overflow-x:auto"><table class="registry">
+        <thead><tr><th>Haydovchi</th><th>Firma / Yo'nalish</th><th>Holat</th><th>Kun / Reys</th><th>Km</th><th>Km stavka</th><th>Qo'liga tegishi</th><th>Reyting</th><th>Hujjat</th><th></th></tr></thead>
+        <tbody>${rows.map(x => `<tr class="reg-open" data-driver-id="${esc(x.driver_id)}" tabindex="0" title="Profilni ochish — ${esc(x.name)}">
+          <td><div class="avatar-row">${avatar(x)}<div><span class="driver-name">${esc(x.name)}</span><span class="driver-sub">ID: ${esc(x.driver_id)}</span></div></div></td>
+          <td class="mono muted" style="font-size:11px">${esc(x.company || "-")}${x.route_name ? `<div class="driver-sub">${esc(x.route_name)}</div>` : ""}</td>
+          <td>${driverStatus(x)}${x.notification_enabled ? '<span class="driver-sub">🔔 Telegram yoqilgan</span>' : ''}</td>
+          <td>${x.working_days} kun <span class="driver-sub">${x.trips} reys${x.manual_trips ? " + " + x.manual_trips + " qayd" : ""}</span></td>
+          <td class="pct teal">${num(x.km)} km <span class="driver-sub">${x.automatic_km ? "API: " + num(x.automatic_km) : "qo'lda kiritiladi"}</span></td>
+          <td>${money(x.km_rate)}<span class="driver-sub">1 km uchun</span></td>
+          <td><b class="pct teal">${money(x.net_pay)}</b><span class="driver-sub">brutto ${money(x.gross_pay)} · soliq ${money(x.tax)} · jarima ${money(x.fines)}</span></td>
+          <td><span class="pct ${x.rating >= 4 ? "teal" : (x.rating >= 3 ? "amber" : "alert")}">★ ${Number(x.rating || 0).toFixed(1)}</span></td>
+          <td>${docMarks(x)}</td>
+          <td><button class="button ghost driver-open" data-driver-id="${esc(x.driver_id)}">KARTA</button></td>
+        </tr>`).join("")}</tbody></table></div>`
+    : '<div class="empty">Bu oy uchun haydovchi topilmadi.</div>';
+  document.querySelectorAll(".reg-open").forEach(r => {
+    r.addEventListener("click", () => showDriver(r.dataset.driverId));
+    r.addEventListener("keydown", e => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); showDriver(r.dataset.driverId); }
+    });
+  });
+  document.querySelectorAll(".driver-open").forEach(b =>
+    b.addEventListener("click", e => { e.stopPropagation(); showDriver(b.dataset.driverId); }));
+  renderSideDrivers(data);
+}
+
+function renderSideDrivers(data) {
+  const el = document.getElementById("side-drivers");
+  if (!el) return;
+  const drv = (data.drivers || []).filter(x => x.km > 0 || x.trips > 0);
+  const t = data.totals || {};
+  document.getElementById("side-drivers-hint").textContent =
+    (drv.length ? drv.length : 0) + " faol / " + (t.drivers || 0) + " jami";
+  const top = drv.slice().sort((a, b) => (b.net_pay || 0) - (a.net_pay || 0)).slice(0, 8);
+  const rows = top.map(x =>
+    `<div class="side-drv" data-id="${esc(x.driver_id)}">
+       <span class="side-drv-name" title="${esc(x.name)}">${esc(x.name)}</span>
+       <span class="side-drv-meta">${num(x.km)} km · ${x.working_days} kun</span>
+       <b class="pct teal">${money(x.net_pay)}</b>
+     </div>`).join("");
+  el.innerHTML = `
+    <div class="side-stats">
+      <div><span>Jami</span><b>${num(t.km)} km</b></div>
+      <div><span>Faol</span><b>${t.active || 0}</b></div>
+      <div><span>Qo'liga</span><b>${money(t.net_pay)}</b></div>
+    </div>
+    ${rows || '<div class="empty">Bu oy uchun ma\'lumot yo\'q.</div>'}`;
+  el.querySelectorAll(".side-drv").forEach(r => r.addEventListener("click", () => showDriver(r.dataset.id)));
+}
+
+async function loadDriverDirectory() {
+  try {
+    const p = new URLSearchParams();
+    p.set("month", driverMonth());
+    if (route) p.set("route", route);
+    const data = await api("/api/drivers", p);
+    if (!data.ok) throw new Error(data.error || "Haydovchilar yuklanmadi");
+    state.driverDirectory = data;
+    renderRegistry(data);
+  } catch (e) {
+    document.getElementById("registry-body").innerHTML = `<div class="empty">Haydovchilar reestri yuklanmadi: ${esc(e.message || e)}</div>`;
+  }
+}
+
+function openNewDriver() {
+  const dialog = document.getElementById("driver-dialog");
+  document.getElementById("driver-dialog-content").innerHTML = `
+    <div class="driver-modal-head"><div><div id="driver-dialog-title" class="driver-modal-title">Yangi haydovchi</div>
+      <div class="driver-modal-meta">Avval asosiy profilni yarating, keyin hujjat va ish ma'lumotlarini to'ldiring.</div></div><button class="icon-button" id="driver-close" aria-label="Yopish">×</button></div>
+    <div class="driver-modal-body"><div class="driver-message" id="driver-message"></div>
+      <form id="new-driver-form" class="form-panel"><h3>Asosiy ma'lumotlar</h3><div class="form-grid">
+        ${inputField("Haydovchi ID", "driver_id", "", "text", "required placeholder=\"BM tizimidagi ID\"")}
+        ${inputField("F.I.SH.", "full_name", "", "text", "required")}
+        ${inputField("Telefon", "phone", "", "tel")}
+        ${inputField("1 km narxi (so'm)", "km_rate", "", "number", "min=0 step=1")}
+        ${inputField("Reyting (0–5)", "rating", "5", "number", "min=0 max=5 step=0.1")}
+        <div class="field"><label>Telegram eslatmasi</label><label class="check-field"><input name="notification_enabled" type="checkbox"> Eslatma yuborilsin</label></div>
+        <div class="field" style="grid-column:span 2"><label for="field-notification_target">Telegram chat ID</label><input id="field-notification_target" name="notification_target" placeholder="Masalan: 123456789"></div>
+      </div><div class="form-actions"><button class="button" type="submit">HAYDOVCHINI YARATISH</button></div></form></div>`;
+  document.getElementById("driver-close").addEventListener("click", () => dialog.close());
+  document.getElementById("new-driver-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const payload = formPayload(event.currentTarget);
+    const result = await postJSON("/api/drivers", payload);
+    if (!result.ok) { driverMessage(result.error || "Haydovchi yaratilmagan"); return; }
+    dialog.close();
+    await loadDriverDirectory();
+    showDriver(payload.driver_id);
+  });
+  if (!dialog.open) dialog.showModal();
+}
+
+function profileValue(profile, key, fallback = "") { return profile && profile[key] != null ? profile[key] : fallback; }
+function docCard(driverId, profile, kind, label) {
+  const field = {passport_front: "passport_front_path", passport_back: "passport_back_path", license_front: "license_front_path", license_back: "license_back_path"}[kind];
+  const has = Boolean(profileValue(profile, field));
+  const src = `/api/drivers/${encodeURIComponent(driverId)}/document/${kind}?v=${encodeURIComponent(profileValue(profile, "updated_at"))}`;
+  const inputId = `document-${kind}`;
+  return `<div class="document-card"><div class="document-preview">${has ? `<img src="${src}" alt="${esc(label)}">` : "Rasm yuklanmagan"}</div>
+    <footer><span>${esc(label)}</span><label class="upload-label" for="${inputId}">${has ? "ALMASHTIR" : "YUKLASH"}</label>
+    <input id="${inputId}" type="file" accept="image/jpeg,image/png,image/webp" data-upload-kind="${kind}"></footer></div>`;
+}
+function inputField(label, key, value, type = "text", attrs = "") {
+  return `<div class="field"><label for="field-${key}">${label}</label><input id="field-${key}" name="${key}" type="${type}" value="${esc(value)}" ${attrs}></div>`;
+}
+function historyTable(rows, cols, empty) {
+  if (!rows || !rows.length) return `<div class="empty">${empty}</div>`;
+  return `<div class="driver-history"><table><thead><tr>${cols.map(c => `<th>${c}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
+}
+function renderDriverDialog(data) {
+  const d = data.driver || {}, p = data.profile || {}, did = d.driver_id;
+  const dialog = document.getElementById("driver-dialog");
+  const tripRows = (data.trips || []).map(x => `<tr><td>${esc(x.date)}</td><td>${esc(x.vehicle)}</td><td>${esc(x.route)}</td><td>${esc((x.planned_time || "").slice(11) || x.planned_time || "-")}</td><td>${statusPill(x.status)}</td></tr>`);
+  const logRows = (data.work_logs || []).map(x => `<tr><td>${esc(x.date)}</td><td>${esc(x.vehicle)}</td><td>${num(x.distance_km)} km</td><td>${x.trip_count}</td><td>${esc(x.note || "-")}</td></tr>`);
+  const fineRows = (data.fine_rows || []).map(x => `<tr><td>${esc(x.date)}</td><td>${money(x.amount)}</td><td>${esc(x.reason || "-")}</td><td>${esc(x.status)}</td></tr>`);
+  const vehicleOptions = [...new Map((data.trips || []).map(x => [x.vehicle_id, x.vehicle])).entries()]
+    .map(([id, name]) => `<option value="${esc(id)}">${esc(name)} · ${esc(id)}</option>`).join("");
+  const photo = d.photo_url
+    ? `<img class="avatar avatar-lg" src="${esc(d.photo_url)}" alt="">`
+    : `<span class="avatar avatar-lg avatar-empty">${esc(String(d.name || "?")[0] || "?")}</span>`;
+  document.getElementById("driver-dialog-content").innerHTML = `
+    <div class="driver-modal-head"><div style="display:flex;align-items:center;gap:12px">${photo}
+      <div><div id="driver-dialog-title" class="driver-modal-title">${esc(d.name || did)}</div>
+      <div class="driver-modal-meta">Haydovchi ID: ${esc(did)} · ${d.blacklisted ? "⛔ Qora ro'yxatda" : "● Faol profil"}</div></div></div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <button class="icon-button" id="driver-download" title="Shaxsiy kartani yuklab olish (XLSX)" aria-label="Kartani yuklab olish">↓</button>
+        <button class="icon-button" id="driver-close" aria-label="Yopish">×</button>
+      </div></div>
+    <div class="driver-modal-body">
+      <div class="driver-message" id="driver-message"></div>
+      <div class="driver-metrics">
+        <div class="driver-metric"><label>Ish kunlari</label><b>${d.working_days || 0}</b></div>
+        <div class="driver-metric"><label>Qatnov</label><b>${d.trips || 0}</b></div>
+        <div class="driver-metric"><label>Masofa</label><b class="pct teal">${num(d.km)} km</b></div>
+        <div class="driver-metric"><label>Brutto</label><b>${money(d.gross_pay)}</b></div>
+        <div class="driver-metric"><label>Soliq (12%)</label><b class="pct amber">−${money(d.tax)}</b></div>
+        <div class="driver-metric"><label>Jarima</label><b class="pct ${d.fines ? "alert" : "teal"}">${money(d.fines)}</b></div>
+        <div class="driver-metric"><label>Qo'liga tegishi</label><b class="pct teal">${money(d.net_pay)}</b></div>
+      </div>
+      <form id="driver-profile-form">
+        <section class="form-panel"><h3>Profil va ish sozlamalari</h3><div class="form-grid">
+          ${inputField("F.I.SH.", "full_name", d.name || "")}
+          ${inputField("Telefon", "phone", profileValue(p, "phone"))}
+          ${inputField("STIR", "tin", profileValue(p, "tin"))}
+          ${inputField("Reyting (0–5)", "rating", profileValue(p, "rating", 5), "number", "min=0 max=5 step=0.1")}
+          ${inputField("1 km narxi (so'm)", "km_rate", profileValue(p, "km_rate", 0), "number", "min=0 step=1")}
+          <div class="field"><label>Holat</label><label class="check-field"><input name="blacklisted" type="checkbox" ${p.blacklisted ? "checked" : ""}> Qora ro'yxatga kiritilgan</label></div>
+          <div class="field" style="grid-column:span 2"><label for="field-blacklist_reason">Qora ro'yxat sababi</label><input id="field-blacklist_reason" name="blacklist_reason" value="${esc(profileValue(p, "blacklist_reason"))}" placeholder="Masalan: intizom buzilishi"></div>
+          <div class="field"><label for="field-notes">Izoh</label><textarea id="field-notes" name="notes" placeholder="Qo'shimcha qaydlar">${esc(profileValue(p, "notes"))}</textarea></div>
+        </div><div class="form-actions"><button class="button" type="submit">PROFILNI SAQLASH</button></div></section>
+        <section class="form-panel"><h3>Pasport va haydovchilik guvohnomasi</h3><div class="form-grid">
+          ${inputField("Pasport seriya-raqami", "passport_number", profileValue(p, "passport_number"))}
+          ${inputField("Kim tomonidan berilgan", "passport_issued_by", profileValue(p, "passport_issued_by"))}
+          ${inputField("Pasport amal muddati", "passport_expiry", profileValue(p, "passport_expiry"), "date")}
+          ${inputField("Guvohnoma raqami", "license_number", profileValue(p, "license_number"))}
+          ${inputField("Toifa", "license_category", profileValue(p, "license_category"), "text", "placeholder=\"D, DE\"")}
+          ${inputField("Guvohnoma amal muddati", "license_expiry", profileValue(p, "license_expiry"), "date")}
+        </div><div class="document-grid" style="margin-top:12px">
+          ${docCard(did, p, "passport_front", "Pasport old tomoni")}${docCard(did, p, "passport_back", "Pasport orqa tomoni")}
+          ${docCard(did, p, "license_front", "Guvohnoma old tomoni")}${docCard(did, p, "license_back", "Guvohnoma orqa tomoni")}
+        </div></section>
+        <section class="form-panel"><h3>Ishga chiqish bildirishnomasi</h3><div class="form-grid">
+          <div class="field"><label>Telegram</label><label class="check-field"><input name="notification_enabled" type="checkbox" ${p.notification_enabled ? "checked" : ""}> Eslatma yuborilsin</label></div>
+          <div class="field" style="grid-column:span 2"><label for="field-notification_target">Telegram chat ID</label><input id="field-notification_target" name="notification_target" value="${esc(profileValue(p, "notification_target"))}" placeholder="Masalan: 123456789"></div>
+        </div><div class="form-actions"><button type="button" class="button ghost" id="notification-test">SINOV XABARI YUBORISH</button></div></section>
+        <section class="form-panel"><h3>Haydovchi fotosi</h3>
+          <div class="photo-upload">
+            <img id="driver-photo-img" src="${esc(d.photo_url || "")}" alt="" style="${d.photo_url ? "" : "display:none"}">
+            <div><label class="upload-label" for="driver-photo-input" style="cursor:pointer;font-size:12px">RASM YUKLASH / ALMASHTIR</label>
+            <div class="driver-sub" style="margin-top:4px">JPG, PNG yoki WEBP · 5 MB gacha</div></div>
+          </div>
+          <input id="driver-photo-input" type="file" accept="image/jpeg,image/png,image/webp">
+        </section>
+      </form>
+      <div class="split-form">
+        <section class="form-panel"><h3>Kunlik km qaydi</h3><form id="driver-work-log"><div class="form-grid">
+          ${inputField("Sana", "date", new Date().toISOString().slice(0, 10), "date")}
+          <div class="field"><label for="log-vehicle">Avtobus</label><input id="log-vehicle" name="vehicle_id" list="driver-vehicles" placeholder="Avtobus ID"><datalist id="driver-vehicles">${vehicleOptions}</datalist></div>
+          ${inputField("Bosilgan km", "distance_km", "", "number", "min=0 step=0.1 required")}
+          ${inputField("Qo'lda reys soni", "trip_count", "", "number", "min=0 step=1")}
+          <div class="field" style="grid-column:span 2"><label for="log-note">Izoh</label><input id="log-note" name="note" placeholder="Odometr / qo'shimcha izoh"></div>
+        </div><div class="form-actions"><button class="button" type="submit">KM QAYDINI SAQLASH</button></div></form>
+        ${historyTable(logRows, ["Sana", "Avtobus", "Km", "Reys", "Izoh"], "Bu davrda qo'lda km qaydi yo'q.")}</section>
+        <section class="form-panel"><h3>Jarimalar</h3><form id="driver-fine-form"><div class="form-grid">
+          ${inputField("Sana", "date", new Date().toISOString().slice(0, 10), "date")}
+          ${inputField("Summa (so'm)", "amount", "", "number", "min=1 step=1 required")}
+          <div class="field" style="grid-column:span 2"><label for="fine-reason">Sabab</label><input id="fine-reason" name="reason" placeholder="Jarima sababi"></div>
+        </div><div class="form-actions"><button class="button danger" type="submit">JARIMA QO'SHISH</button></div></form>
+        ${historyTable(fineRows, ["Sana", "Summa", "Sabab", "Holat"], "Bu davrda jarima yo'q.")}</section>
+      </div>
+      <section class="form-panel"><h3>Avtobus va qatnovlar tarixi</h3>${historyTable(tripRows, ["Sana", "Avtobus", "Yo'nalish", "Vaqt", "Holat"], "Bu davrda qatnov yo'q.")}</section>
+    </div>`;
+  state.currentDriver = data;
+  document.getElementById("driver-close").addEventListener("click", () => dialog.close());
+  document.getElementById("driver-download").addEventListener("click", () => {
+    window.location.href = driverExportUrl("xlsx", did);
+  });
+  document.getElementById("driver-profile-form").addEventListener("submit", saveDriverProfile);
+  document.getElementById("driver-work-log").addEventListener("submit", saveWorkLog);
+  document.getElementById("driver-fine-form").addEventListener("submit", saveFine);
+  document.getElementById("notification-test").addEventListener("click", testNotification);
+  document.getElementById("driver-photo-input").addEventListener("change", uploadPhoto);
+  document.querySelectorAll("[data-upload-kind]").forEach(input => input.addEventListener("change", () => uploadDocument(input)));
+  if (!dialog.open) dialog.showModal();
+}
+function driverMessage(message, ok = false) {
+  const el = document.getElementById("driver-message");
+  if (!el) return;
+  el.className = "driver-message" + (ok ? " ok" : "");
+  el.textContent = message;
+  el.style.display = "block";
+}
+async function showDriver(driverId) {
+  try {
+    const p = new URLSearchParams({month: driverMonth()}); if (route) p.set("route", route);
+    const data = await api(`/api/drivers/${encodeURIComponent(driverId)}`, p);
+    if (!data.ok) throw new Error(data.error || "Haydovchi kartasi topilmadi");
+    renderDriverDialog(data);
+  } catch (e) { alert("Haydovchi kartasini ochib bo'lmadi: " + (e.message || e)); }
+}
+function formPayload(form) {
+  const payload = Object.fromEntries(new FormData(form).entries());
+  ["blacklisted", "notification_enabled"].forEach(key => {
+    const input = form.elements[key]; if (input) payload[key] = input.checked;
+  });
+  return payload;
+}
+async function saveDriverProfile(event) {
+  event.preventDefault();
+  const did = state.currentDriver.driver.driver_id;
+  const result = await postJSON(`/api/drivers/${encodeURIComponent(did)}/profile`, formPayload(event.currentTarget));
+  if (!result.ok) { driverMessage(result.error || "Profil saqlanmadi"); return; }
+  await loadDriverDirectory(); await showDriver(did); driverMessage("Profil saqlandi.", true);
+}
+async function saveWorkLog(event) {
+  event.preventDefault();
+  const did = state.currentDriver.driver.driver_id;
+  const result = await postJSON(`/api/drivers/${encodeURIComponent(did)}/work-log`, formPayload(event.currentTarget));
+  if (!result.ok) { driverMessage(result.error || "Km qaydi saqlanmadi"); return; }
+  await loadDriverDirectory(); await showDriver(did); driverMessage("Km qaydi saqlandi.", true);
+}
+async function saveFine(event) {
+  event.preventDefault();
+  const did = state.currentDriver.driver.driver_id;
+  const result = await postJSON(`/api/drivers/${encodeURIComponent(did)}/fine`, formPayload(event.currentTarget));
+  if (!result.ok) { driverMessage(result.error || "Jarima saqlanmadi"); return; }
+  await loadDriverDirectory(); await showDriver(did); driverMessage("Jarima qo'shildi.", true);
+}
+async function uploadDocument(input) {
+  const file = input.files && input.files[0]; if (!file) return;
+  if (file.size > 5 * 1024 * 1024) { driverMessage("Rasm 5 MB dan kichik bo'lishi kerak"); return; }
+  const dataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); });
+  const did = state.currentDriver.driver.driver_id;
+  const result = await postJSON(`/api/drivers/${encodeURIComponent(did)}/document`, {kind: input.dataset.uploadKind, data_url: dataUrl});
+  if (!result.ok) { driverMessage(result.error || "Rasm yuklanmadi"); return; }
+  await showDriver(did); driverMessage("Hujjat rasmi yuklandi.", true);
+}
+async function uploadPhoto(event) {
+  const file = event.currentTarget.files && event.currentTarget.files[0]; if (!file) return;
+  if (file.size > 5 * 1024 * 1024) { driverMessage("Rasm 5 MB dan kichik bo'lishi kerak"); return; }
+  const dataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); });
+  const did = state.currentDriver.driver.driver_id;
+  const result = await postJSON(`/api/drivers/${encodeURIComponent(did)}/photo`, {data_url: dataUrl});
+  if (!result.ok) { driverMessage(result.error || "Rasm yuklanmadi"); return; }
+  await showDriver(did); driverMessage("Foto yuklandi.", true);
+}
+async function testNotification() {
+  const did = state.currentDriver.driver.driver_id;
+  const result = await postJSON(`/api/drivers/${encodeURIComponent(did)}/notification-test`);
+  driverMessage(result.message || result.error || "Bildirishnoma yuborilmadi", Boolean(result.ok));
+}
+
+/* ------------------------------------------------ trend */
+async function loadTrend() {
+  try {
+    const p = new URLSearchParams();
+    p.set("month", new Date().toISOString().slice(0, 7));
+    if (route) p.set("route", route);
+    const data = await api("/api/month", p);
+    const days = data.days || [];
+    const labels = days.map(x => x.date.slice(8) + "." + x.date.slice(5, 7));
+    const perf = days.map(x => x.performance);
+    const accepted = days.map(x => x.accepted);
+    document.getElementById("trend-hint").textContent = (data.from || "") + " → " + (data.to || "");
+    document.getElementById("trend-foot").innerHTML =
+      `<span>O'rtacha bajarilish: <b class="pct ${pctClass(data.totals && data.totals.performance || 0)}">${(data.totals && data.totals.performance || 0).toFixed(1)}%</b></span>` +
+      `<span>Reja: ${data.totals && data.totals.planned || 0}</span>` +
+      `<span>Qabul: ${data.totals && data.totals.accepted || 0}</span>`;
+
+    const ctx = document.getElementById("trend-chart");
+    if (chart) chart.destroy();
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    chart = new Chart(ctx, {
+      type: "line",
+      data: {
+        labels,
+        datasets: [
+          { label: "Bajarilish %", data: perf, borderColor: "#F0A93E", backgroundColor: "rgba(240,169,62,.12)",
+            fill: true, tension: .35, pointRadius: 3, pointBackgroundColor: "#F0A93E", pointHoverRadius: 5,
+            borderWidth: 2, borderCapStyle: "round", yAxisID: "y" },
+          { label: "Qabul qilingan", data: accepted, borderColor: "#3FB6A8", borderDash: [4,4],
+            tension: .35, pointRadius: 0, pointHoverRadius: 4, borderWidth: 1.5, borderCapStyle: "round", yAxisID: "y1" },
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        animation: reduce ? false : { duration: 600 },
+        plugins: {
+          legend: { labels: { color: "#7C8494", font: { family: "IBM Plex Mono", size: 10 }, usePointStyle: true, boxWidth: 8, boxHeight: 8 } },
+          tooltip: { backgroundColor: "rgba(35,42,55,.96)", borderColor: "#2A3140", borderWidth: 1,
+            padding: 10, cornerRadius: 8,
+            titleColor: "#F2EFE7", bodyColor: "#9AA3B5", titleFont: { family: "IBM Plex Mono" }, bodyFont: { family: "IBM Plex Mono" } }
+        },
+        scales: {
+          x: { ticks: { color: "#7C8494", font: { family: "IBM Plex Mono", size: 10 }, maxTicksLimit: 8 }, grid: { color: "rgba(122,132,148,.08)" } },
+          y: { position: "left", min: 0, max: 100, ticks: { color: "#7C8494", font: { family: "IBM Plex Mono", size: 10 } }, grid: { color: "rgba(122,132,148,.1)" } },
+          y1: { position: "right", min: 0, ticks: { color: "#7C8494", font: { family: "IBM Plex Mono", size: 10 } }, grid: { drawOnChartArea: false } },
+        }
+      }
+    });
+  } catch (e) {
+    document.getElementById("trend-hint").textContent = "Trend yuklanmadi: " + e;
+  }
+}
+
+/* ------------------------------------------------ load */
+async function load() {
+  try {
+    const data = await api("/api/summary", qs());
+    const err = document.getElementById("err");
+    if (!data.ok) {
+      err.style.display = "block";
+      err.textContent = data.error || "Xatolik yuz berdi";
+      if (data.system) renderSys(data.system);
+      return;
+    }
+    err.style.display = "none";
+
+    // nom xaritalari
+    state.routePerf = {};
+    (data.routes || []).forEach(r => state.routePerf[r.route_id] = r.performance);
+    state.plates = {};
+    (data.vehicles || []).forEach(v => state.plates[v.vehicle_id] = v.plate_number || v.vehicle_id);
+    state.dnames = {};
+    (data.drivers || []).forEach(d => state.dnames[d.driver_id] = d.name || d.driver_id);
+
+    renderHero(data);
+    renderBoard(data);
+    renderProblems(data);
+    renderRoutes(data);
+    renderVehicles(data);
+    renderSys(data.system);
+    const updated = (data.generated_at || "").replace("T", " ").slice(0, 19);
+    document.getElementById("export-hint").textContent = "Yangilandi: " + updated;
+    state.lastData = data;
+  } catch (e) {
+    document.getElementById("err").style.display = "block";
+    document.getElementById("err").textContent = "Serverga ulanib bo'lmadi: " + e;
+  }
+}
+
+function reloadAll() { load(); loadTrend(); loadDriverDirectory(); }
+
+/* ------------------------------------------------ refresh / sync / export */
+let refreshTimer = null;
+function scheduleRefresh() {
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  const secs = parseInt(document.getElementById("f-refresh").value, 10);
+  if (secs > 0) refreshTimer = setInterval(load, secs * 1000);
+}
+function exportUrl(fmt) {
+  const p = qs();
+  p.set("format", fmt);
+  p.set("scope", "all");
+  return "/api/export?" + p.toString();
+}
+function driverExportUrl(fmt, driverId) {
+  const p = new URLSearchParams();
+  p.set("format", fmt);
+  p.set("scope", driverId ? "all" : "drivers");
+  p.set("month", driverMonth());
+  if (route) p.set("route", route);
+  if (driverId) p.set("driver", driverId);
+  return "/api/export?" + p.toString();
+}
+async function syncDaily() {
+  const btn = document.getElementById("btn-sync-daily");
+  btn.textContent = "SYNC...";
+  btn.disabled = true;
+  const today = new Date().toISOString().slice(0, 10);
+  try {
+    const r = await fetch("/api/sync", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({date: today, route: (qs().get("route") || "")}),
+    });
+    const d = await r.json();
+    btn.textContent = d.ok ? "SYNC ✓" : "SYNC ✗";
+    if (!d.ok) {
+      const err = document.getElementById("err");
+      err.style.display = "block";
+      err.textContent = d.error || "Sync xatolik bilan tugadi";
+    }
+  } catch (e) {
+    btn.textContent = "SYNC ✗";
+  }
+  setTimeout(() => { btn.textContent = "KUNLIK SYNC"; btn.disabled = false; }, 3000);
+  load();
+}
+async function syncNow() {
+  const btn = document.getElementById("btn-sync");
+  btn.textContent = "SYNC...";
+  btn.disabled = true;
+  const from = document.getElementById("f-from").value || "";
+  const to = document.getElementById("f-to").value || "";
+  try {
+    const r = await fetch("/api/sync/monthly", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({from: from, to: to, route: (qs().get("route") || "")}),
+    });
+    const d = await r.json();
+    btn.textContent = d.ok ? "SYNC ✓" : "SYNC ✗";
+    if (!d.ok) {
+      const err = document.getElementById("err");
+      err.style.display = "block";
+      err.textContent = d.error || "Sync xatolik bilan tugadi";
+    }
+  } catch (e) {
+    btn.textContent = "SYNC ✗";
+  }
+  setTimeout(() => { btn.textContent = "OYLIK SYNC"; btn.disabled = false; }, 3000);
+  load();
+}
+
+async function runCheck() {
+  const block = document.getElementById("check-block");
+  const body = document.getElementById("check-body");
+  const hint = document.getElementById("check-hint");
+  const btn = document.getElementById("btn-check");
+  btn.textContent = "Tekshirilmoqda...";
+  btn.disabled = true;
+  const params = new URLSearchParams();
+  const d = document.getElementById("f-date").value;
+  if (d) params.set("date", d);
+  if (route) params.set("route", route);
+  try {
+    const data = await api("/api/check", params);
+    block.style.display = "block";
+    if (!data.ok) {
+      hint.textContent = "Xato";
+      body.innerHTML = `<p class="err" style="display:block">${esc(data.error || "Tekshiruv muvaffaqiyatsiz")}</p>`;
+      return;
+    }
+    const rows = data.results || [];
+    hint.textContent = (data.date || "") + " · " + rows.length + " ta firma";
+    const rowsHtml = rows.map(r => {
+      const st = r.status || "ERROR";
+      const cls = st === "OK" ? "teal" : (st === "DIFF" ? "amber" : "alert");
+      const err = r.site.error ? `<div class="muted mono" style="font-size:11px;margin-top:4px">${esc(r.site.error)}</div>` : "";
+      return `<tr>
+        <td><b>${esc(r.name)}</b>${r.route_name ? `<div class="muted mono" style="font-size:11px">${esc(r.route_name)}</div>` : ""}</td>
+        <td class="mono">${esc(r.site.trips)} <span class="muted">/ ${esc(r.db.db_trips)}</span></td>
+        <td class="mono">${esc(r.site.waybills)} <span class="muted">/ ${esc(r.db.db_waybills)}</span></td>
+        <td class="mono">${num(r.site.km)} <span class="muted">/ ${num(r.db.db_km)}</span></td>
+        <td class="mono">${diffCell(r.diff)}</td>
+        <td><span class="pill-status ${cls}">${esc(st)}</span></td>
+      </tr>${err ? `<tr><td colspan="6" style="padding-top:0">${err}</td></tr>` : ""}`;
+    }).join("");
+    body.innerHTML = `<div class="table-wrap"><table class="table">
+      <thead><tr><th>Firma</th><th>Reys (sayt / DB)</th><th>Waybill (sayt / DB)</th>
+      <th>Km (sayt / DB)</th><th>Farq</th><th>Holat</th></tr></thead>
+      <tbody>${rowsHtml}</tbody></table></div>`;
+  } catch (e) {
+    block.style.display = "block";
+    hint.textContent = "Xato";
+    body.innerHTML = `<p class="err" style="display:block">${esc("Serverga ulanib bo'lmadi: " + e)}</p>`;
+  } finally {
+    btn.textContent = "Sayt ↔ Baza tekshirish";
+    btn.disabled = false;
+  }
+}
+function diffCell(diff) {
+  if (!diff) return "—";
+  const parts = [];
+  for (const [k, v] of Object.entries(diff)) {
+    if (v) parts.push(`${k}: ${v > 0 ? "+" : ""}${num(v)}`);
+  }
+  return parts.length ? parts.join(" · ") : "0";
+}
+function tickClock() {
+  const now = new Date();
+  const p = n => String(n).padStart(2, "0");
+  document.getElementById("clock").textContent =
+    p(now.getHours()) + ":" + p(now.getMinutes()) + ":" + p(now.getSeconds());
+  const weekdays = ["YAK", "DUS", "SE", "CHOR", "PAY", "JUM", "SHAN"];
+  document.getElementById("clockdate").textContent =
+    weekdays[now.getDay()] + " · " + p(now.getDate()) + "." + p(now.getMonth() + 1) + "." + now.getFullYear();
+  document.getElementById("foot-time").textContent = now.toLocaleString("uz-UZ");
+}
+
+loadRoutes();
+load();
+loadTrend();
+document.getElementById("f-date").value = new Date().toISOString().slice(0, 10);
+document.getElementById("btn-apply").addEventListener("click", () => {
+  route = document.getElementById("f-route").value;
+  renderPills();
+  reloadAll();
+});
+document.getElementById("f-refresh").addEventListener("change", scheduleRefresh);
+document.getElementById("btn-sync").addEventListener("click", syncNow);
+document.getElementById("btn-sync-daily").addEventListener("click", syncDaily);
+document.getElementById("btn-check").addEventListener("click", runCheck);
+document.querySelectorAll("[data-exp]").forEach(b => b.addEventListener("click", () => {
+  window.location.href = exportUrl(b.dataset.exp);
+}));
+document.querySelectorAll("[data-dl]").forEach(b => b.addEventListener("click", () => {
+  window.location.href = driverExportUrl(b.dataset.dl);
+}));
+document.getElementById("driver-month").value = new Date().toISOString().slice(0, 7);
+document.getElementById("driver-month").addEventListener("change", loadDriverDirectory);
+document.getElementById("driver-search").addEventListener("input", () => {
+  if (state.driverDirectory) renderRegistry(state.driverDirectory);
+});
+document.getElementById("driver-add").addEventListener("click", openNewDriver);
+document.getElementById("driver-dialog").addEventListener("click", event => {
+  if (event.target === event.currentTarget) event.currentTarget.close();
+});
+loadDriverDirectory();
+tickClock();
+setInterval(tickClock, 1000);
+scheduleRefresh();
+setInterval(loadDriverDirectory, 90000);
+</script>
+</body>
+</html>

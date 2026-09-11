@@ -1,0 +1,73 @@
+# BM (dtransport.uz) avtomatizatsiya — VDS uchun Docker Compose.
+#
+# Ishga tushirish (VDS da):
+#   docker compose up -d --build
+#
+# Xizmatlar:
+#   db         — PostgreSQL 17 (bm_loyiha bazasi avtomatik yaratiladi)
+#   bot        — Telegram bot (rejalashtirilgan hisobotlar ham shu jarayonda)
+#   dashboard  — Web dashboard (http://SERVER_IP:8081)
+#
+# Muhim: .env faylida BM_DB_DSN "localhost" ga qarasa ham Compose uni
+# "db:5432" ga almashtiradi (quyidagi environment ustun turadi).
+# Supabase — faqat ZAXIRA (BACKUP) uchun: .env'da SUPABASE_BACKUP_DSN
+# ko'rsatilsa, app avtomatik ravishda unda nusxa saqlaydi.
+# Dashboard himoyasi: .env'da DASHBOARD_TOKEN o'rnatang (bo'sh bo'lsa API ochiq).
+
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD .env faylida ko'rsatilishi shart}
+      POSTGRES_DB: ${POSTGRES_DB:-bm_loyiha}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bm} -d ${POSTGRES_DB:-bm_loyiha}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  bot:
+    build: .
+    image: bm-automation:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      BM_DB_DSN: postgresql://${POSTGRES_USER:-bm}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD kerak}@db:5432/${POSTGRES_DB:-bm_loyiha}
+    volumes:
+      - ./state:/app/state
+      - ./reports:/app/reports
+      - ./data:/app/data
+      - ./logs:/app/logs
+    command: python -m bm_automation bot
+
+  dashboard:
+    build: .
+    image: bm-automation:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      BM_DB_DSN: postgresql://${POSTGRES_USER:-bm}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD kerak}@db:5432/${POSTGRES_DB:-bm_loyiha}
+    volumes:
+      - ./state:/app/state
+      - ./reports:/app/reports
+      - ./data:/app/data
+      - ./logs:/app/logs
+    ports:
+      - "8081:8080"
+    command: python -m bm_automation dashboard --host 0.0.0.0 --port 8080 --no-browser
+
+volumes:
+  pgdata:

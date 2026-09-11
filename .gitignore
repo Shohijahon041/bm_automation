@@ -1,9 +1,12 @@
 # Secrets
 .env
-*.env.local
+.env.*
+tokens/
 tokens.json
 profiles.json
 state/
+atto_tokens.json
+backup/
 
 # Python
 __pycache__/
@@ -27,6 +30,10 @@ data/
 # Logs
 *.log
 *.err
+logs/
+
+# Freebuff workspace metadata
+.freebuff/
 
 # OS
 .DS_Store

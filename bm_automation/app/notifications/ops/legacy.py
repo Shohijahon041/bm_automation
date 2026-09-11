@@ -33,12 +33,12 @@ def _reply(chat_id: int, text: str, reply_markup=None) -> None:
 
 # ---------------------------------------------------------------- resend
 
-def do_resend(chat_id, name) -> None:
+def do_resend(chat_id, name, routes=None) -> None:
     with RESEND_LOCK:
         try:
             from ...services.daily_service import run_daily
-            run_daily(send=True, chat_id=chat_id, only=name, trigger="bot",
-                      max_attempts=6, attempt_delay=60)
+            run_daily(send=True, chat_id=chat_id, only=name, routes=routes,
+                      trigger="bot", max_attempts=6, attempt_delay=60)
         except Exception as exc:
             print(f"Resend xatosi: {exc}")
             try:
@@ -50,13 +50,22 @@ def do_resend(chat_id, name) -> None:
                 pass
 
 
-def start_resend(chat_id, name) -> None:
+def _describe(scope) -> str:
+    """Resend yo'nalishi tavsifi (xabar uchun)."""
+    if not scope:
+        return "barcha profillar"
+    if isinstance(scope, (list, tuple, set)):
+        names = [str(s) for s in scope if str(s).strip()]
+        return ", ".join(names) or "barcha profillar"
+    return str(scope)
+
+
+def start_resend(chat_id, name, routes=None) -> None:
     if RESEND_LOCK.locked():
         _reply(chat_id, "Hozir boshqa qayta yuborish ishlayapti. Tugagach qayta bosing.")
         return
-    what = name or "barcha profillar"
-    _reply(chat_id, f"Qayta yuborish boshlandi... ({what})")
-    threading.Thread(target=do_resend, args=(chat_id, name), daemon=True).start()
+    _reply(chat_id, f"Qayta yuborish boshlandi... ({_describe(name)})")
+    threading.Thread(target=do_resend, args=(chat_id, name, routes), daemon=True).start()
 
 
 # ---------------------------------------------------------------- export
@@ -165,11 +174,12 @@ def process_document(chat_id: int, file_id: str, filename: str) -> None:
         result = run(client, route, parsed["date"], parsed["rows"],
                      profile=profile, dry_run=False)
         name = profile.get("routeName") or profile.get("name") or route
-        caption = f"Jadval to'ldirildi: {name} — {parsed['date']}"
+        caption = f"📋 Jadval to'ldirildi: {name} — {parsed['date']}"
         if result.get("image"):
             send_photo(str(result["image"]), caption=caption, chat_id=chat_id)
         if result.get("excel"):
-            send_document(str(result["excel"]), caption=f"Excel: {parsed['date']}",
+            send_document(str(result["excel"]),
+                          caption=f"📊 To'ldirilgan Excel: {parsed['date']}",
                           chat_id=chat_id)
         _reply(chat_id, "Tayyor.")
     except Exception as exc:
@@ -181,6 +191,8 @@ def process_document(chat_id: int, file_id: str, filename: str) -> None:
 
 def load_pending_exports() -> dict:
     try:
+        from ...utils.cleanup import prune_pending_exports
+        prune_pending_exports()
         return json.loads(EXPORTS_STORE.read_text(encoding="utf-8"))
     except Exception:
         return {}
@@ -263,5 +275,5 @@ def recent_files(limit: int = 8) -> list[str]:
 def list_text() -> str:
     files = recent_files(limit=20)
     if not files:
-        return "Fayllar hali yo'q."
-    return "So'nggi fayllar:\n" + "\n".join(files)
+        return "📁 <b>SO'NGGI FAYLLAR</b>\n\nFayllar hali yo'q."
+    return "📁 <b>SO'NGGI FAYLLAR</b>\n" + "\n".join(files)

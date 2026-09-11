@@ -11,4 +11,7 @@ set "BM_ENV=prod"
 echo [%date% %time%] start >> schedule.log 2>&1
 "%PY%" -m bm_automation schedule --route "%ROUTE%" --notify --once --out "%OUT%" >> schedule.log 2>&1
 echo [%date% %time%] done exit=%ERRORLEVEL% >> schedule.log 2>&1
+echo [%date% %time%] db sync start >> schedule.log 2>&1
+"%PY%" -X utf8 -u sync_daily.py >> schedule.log 2>&1
+echo [%date% %time%] db sync done exit=%ERRORLEVEL% >> schedule.log 2>&1
 exit /b %ERRORLEVEL%
