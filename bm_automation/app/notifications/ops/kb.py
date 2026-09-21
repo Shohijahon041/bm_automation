@@ -12,6 +12,7 @@ from datetime import date
 NAV_ITEMS = [
     ("📊 Dashboard", "nav:dashboard"),
     ("📅 Oy", "nav:month"),
+    ("🧾 Brutto", "nav:brutto"),
     ("🚌 Avtobuslar", "nav:vehicles"),
     ("👨‍✈️ Haydovchilar", "nav:drivers"),
     ("🛣 Yo'nalishlar", "nav:routes"),
@@ -30,10 +31,11 @@ MAIN_MENU_ROWS = [
     ["📊 Dashboard", "📅 Oy", "⚠️ Muammolar"],
     ["🛣 Yo'nalishlar", "🚌 Avtobuslar", "👨‍✈️ Haydovchilar"],
     ["📋 Reyslar", "📈 Hisobot", "🏢 Firmalar"],
-    ["🖼 Grafik yuborish", "⚙️ Settings", "❓ Yordam"],
+    ["📅 Kechagi grafik", "📅 Bugungi grafik", "📅 Ertagi grafik"],
     ["🏆 Reyting", "📏 Masofa", "📋 Davomat"],
     ["🤖 AI yordamchi", "🧠 MyAI", "🗓 Reja"],
-    ["💰 Oylik", "🧠 O'zini tahlil", "💬 Suhbat"],
+    ["🧾 Brutto", "💰 Oylik", "🧠 O'zini tahlil"],
+    ["💬 Suhbat", "⚙️ Settings", "❓ Yordam"],
 ]
 
 # Ruscha menyu (til tanlash /setlang orqali yoqiladi)
@@ -41,10 +43,11 @@ MAIN_MENU_RU_ROWS = [
     ["📊 Дашборд", "📅 Месяц", "⚠️ Проблемы"],
     ["🛣 Маршруты", "🚌 Автобусы", "👨‍✈️ Водители"],
     ["📋 Рейсы", "📈 Отчёт", "🏢 Компании"],
-    ["🖼 Отправить график", "⚙️ Настройки", "❓ Помощь"],
+    ["📅 График вчера", "📅 График сегодня", "📅 График завтра"],
     ["🏆 Рейтинг", "📏 Расстояние", "📋 Посещаемость"],
     ["🤖 AI помощник", "🧠 MyAI", "🗓 План"],
-    ["💰 Зарплата", "🧠 Самоанализ", "💬 Диалог"],
+    ["🧾 Брутто", "💰 Зарплата", "🧠 Самоанализ"],
+    ["💬 Диалог", "⚙️ Настройки", "❓ Помощь"],
 ]
 
 
@@ -55,7 +58,7 @@ def _row(buttons: list[tuple[str, str]], per_row: int = 3) -> list[list[dict]]:
     ]
 
 
-_DRIVER_EXCLUDE_NAVS = {"nav:sync", "nav:plan", "nav:insights"}
+_DRIVER_EXCLUDE_NAVS = {"nav:sync", "nav:plan", "nav:insights", "nav:brutto"}
 
 
 def nav_kb(*exclude: str, chat_id: int | None = None) -> dict:
@@ -267,13 +270,24 @@ def main_menu_kb(chat_id: int | None = None) -> dict:
 
 
 def settings_kb(chat_id: int | None = None) -> dict:
-    """Settings ekrani tugmalari: km narxi (ADMIN/DISPATCHER/MANAGER) + til tanlash."""
-    from .roles import Role, resolve_role
+    """Settings ekrani tugmalari: narxlar (ADMIN/DISPATCHER/MANAGER) + til tanlash."""
+    from .roles import Role, can, resolve_role
     role = resolve_role(chat_id) if chat_id is not None else Role.ADMIN
     rows = []
     if role in (Role.ADMIN, Role.DISPATCHER, Role.MANAGER):
         rows.append([{"text": "💵 1 km narxi o'zgartirish",
                       "callback_data": "settings:kmrate"}])
+    if can(role, "salary"):
+        from . import context
+        cur = (context.filters_for(chat_id) or {}).get("route") or ""
+        if cur:
+            rows.append([{"text": "🏢 Joriy firma SKM o'zgartirish",
+                          "callback_data": "settings:rskm"}])
+        rows.append([{"text": "⚡ Elektr narxi o'zgartirish",
+                      "callback_data": "settings:elecprice"}])
+        rows.append([{"text": "📋 SKM (116-son) o'zgartirish",
+                      "callback_data": "settings:skm"}])
+        rows.append([{"text": "🕐 Sozlama tarixi", "callback_data": "settings:audit"}])
     rows.append([{"text": "🌐 Til tanlash", "callback_data": "settings:lang"}])
     return {"inline_keyboard": rows}
 

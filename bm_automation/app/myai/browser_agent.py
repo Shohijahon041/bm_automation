@@ -12,6 +12,21 @@ from ..utils.logger import get_logger
 
 log = get_logger("myai.browser_agent")
 
+# DBTool 'ning to'liq qamrovi — browser orqali passthrough qilinadigan action'lar.
+# Mana bu ro'yxat _fetch_from_db'da maxsus branch'larga ega bo'lmagan lekin
+# PostgreSQL jadvallari bilan ishlaydigan qo'shimcha so'rovlarni qamrab oladi.
+_DB_PASSTHROUGH_ACTIONS = frozenset({
+    "get_avans", "get_driver_fines", "get_waybills", "get_duties",
+    "get_dispatcher_routes", "get_documents", "get_staff", "get_sms",
+    "get_notifications", "get_reports", "get_automation_runs",
+    "get_trip_statuses", "rows", "get_errors", "get_routes",
+    "get_drivers", "get_work_logs", "get_route_daily",
+    "get_route_vehicles", "get_route_health", "get_trip_anomalies",
+    "get_vehicle_detail", "get_driver_profile", "get_route_summary",
+    "get_route_trips_detail", "get_route_overview", "get_schedules",
+    "get_attendance", "get_driver_schedule", "get_driver_work",
+})
+
 
 class BrowserAgent(BaseAgent):
     """Browser Agent — bm.dtransport.uz dan ma'lumot olish.
@@ -28,13 +43,30 @@ class BrowserAgent(BaseAgent):
             action = context.params.get("action", "get_route_data")
             route_id = context.params.get("route_id", context.route)
             date = context.params.get("date", context.date)
+            month = context.params.get("month", "")
             today = context.date or __import__("datetime").date.today().isoformat()
 
             db_primary = get_myai_config().db_primary
 
+            # 0. Qidiruv (search tool) — global qidiruv so'rovi
+            if action in ("search", "find"):
+                query = (context.params.get("query")
+                         or context.params.get("q") or "").strip()
+                data = await self._use_tool(
+                    "search", action="find", query=query,
+                )
+                self.source_note = "PostgreSQL (ma'lumotlar bazasi) — qidiruv"
+                self._finish(True, f"DB: {action} tugadi")
+                return AgentResult(success=True, data=data)
+
             # 1. DB — primary manba
             if db_primary:
-                data = await self._fetch_from_db(action, route_id, date or today)
+                data = await self._fetch_from_db(
+                    action, route_id, date or today, month=month,
+                    query=context.params.get("query", ""),
+                    driver=context.params.get("driver", ""),
+                    dispatcher_chat_id=context.params.get(
+                        "dispatcher_chat_id", ""))
                 if self._db_data_present(data):
                     self.source_note = "PostgreSQL (ma'lumotlar bazasi)"
                     self._finish(True, f"DB: {action} tugadi")
@@ -68,7 +100,12 @@ class BrowserAgent(BaseAgent):
                 log.warning("Browser xatosi: %s — DB ga o'tiladi", br_exc)
 
             # 4. Oxirgi imkoniyat — DB (primary bo'lmagan holatda ham)
-            data = await self._fetch_from_db(action, route_id, date or today)
+            data = await self._fetch_from_db(action, route_id, date or today,
+                                             month=month,
+                                             query=context.params.get("query", ""),
+                                             driver=context.params.get("driver", ""),
+                                             dispatcher_chat_id=context.params.get(
+                                                 "dispatcher_chat_id", ""))
             self.source_note = "PostgreSQL (ma'lumotlar bazasi)"
             self._finish(True, f"DB: {action} tugadi")
             return AgentResult(success=True, data=data)
@@ -105,7 +142,10 @@ class BrowserAgent(BaseAgent):
         )
         return {"method": "browser", "action": action, "note": "Browser fallback"}
 
-    async def _fetch_from_db(self, action: str, route_id: str, date: str) -> dict:
+    async def _fetch_from_db(self, action: str, route_id: str, date: str,
+                             month: str = "", query: str = "",
+                             driver: str = "",
+                             dispatcher_chat_id: str = "") -> dict:
         """DB dan ma'lumot olish — primary manba (API/browser fallback oldi)."""
         log.info("DB fetch: action=%s route=%s date=%s", action, route_id, date)
         try:
@@ -127,9 +167,18 @@ class BrowserAgent(BaseAgent):
                 return {"method": "db", "action": action, "data": data}
 
             if action in ("get_electricity", "electricity"):
-                month = date[:7] if len(date) >= 7 else date
+                month = month or (date[:7] if len(date) >= 7 else date)
                 data = await self._use_tool(
                     "db", action="get_electricity", month=month,
+                    route_id=route_id,
+                )
+                return {"method": "db", "action": action, "data": data}
+
+            if action in ("get_not_accepted_km", "not_accepted_km",
+                          "qabul_qilinmagan_km"):
+                month = month or (date[:7] if len(date) >= 7 else date)
+                data = await self._use_tool(
+                    "db", action="get_not_accepted_km", month=month,
                     route_id=route_id,
                 )
                 return {"method": "db", "action": action, "data": data}
@@ -154,12 +203,53 @@ class BrowserAgent(BaseAgent):
                 )
                 return {"method": "db", "action": action, "data": data}
 
+            if action in ("get_vehicles", "vehicles", "vehicles_list"):
+                data = await self._use_tool(
+                    "db", action="get_vehicles", route_id=route_id,
+                )
+                return {"method": "db", "action": action, "data": data}
+
+            if action in ("get_documents", "documents"):
+                data = await self._use_tool(
+                    "db", action="get_documents",
+                    query=query,
+                    driver=driver,
+                )
+                return {"method": "db", "action": action, "data": data}
+
+            if action in ("get_staff", "staff"):
+                data = await self._use_tool(
+                    "db", action="get_staff",
+                    query=query,
+                )
+                return {"method": "db", "action": action, "data": data}
+
+            if action in ("get_dispatcher_routes", "dispatcher_routes"):
+                data = await self._use_tool(
+                    "db", action="get_dispatcher_routes",
+                    dispatcher_chat_id=dispatcher_chat_id,
+                )
+                return {"method": "db", "action": action, "data": data}
+
             if action in ("get_route_data", "get_trips"):
                 # Try route_id, then route name
                 data = await self._use_tool(
                     "db", action="get_route_summary",
                     route_id=route_id, date=date,
                 )
+                return {"method": "db", "action": action, "data": data}
+
+            # Umumiy passthrough: DBTool 'ning qolgan action'lari to'g'ridan-
+            # to'g'ri chaqiriladi (agentlar barcha DB jadvallari bilan ishlaydi).
+            if action in _DB_PASSTHROUGH_ACTIONS:
+                kw: dict = {}
+                if route_id:
+                    kw["route_id"] = route_id
+                if date:
+                    kw["date"] = date
+                if month:
+                    kw["month"] = month
+                data = await self._use_tool("db", action=action, **kw)
                 return {"method": "db", "action": action, "data": data}
 
             # Default: get all routes summary

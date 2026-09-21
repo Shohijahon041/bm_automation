@@ -15,6 +15,7 @@ from .providers.factory import get_provider
 from .tools import get_tool_registry
 from .agents import BaseAgent
 from . import state
+from .events import emit, emit_task, emit_message, emit_walking, emit_waiting
 from ..utils.logger import get_logger
 
 log = get_logger("myai.orchestrator")
@@ -27,6 +28,26 @@ TOOL_SOURCE_LABELS = {
     "telegram": "Telegram messenjer",
     "excel": "Excel fayl",
     "report": "Hisobot generatori",
+    "search": "PostgreSQL (ma'lumotlar bazasi) — qidiruv",
+    "calendar": "Vaqt/sana kalkulyatori",
+}
+
+# Least privilege: har bir agent faqat o'ziga kerakli tool'larga ruxsat.
+# None = barcha tool'lar (faqat master uchun); {} = hech qaysi.
+AGENT_TOOL_ALLOWLIST: dict[str, set[str]] = {
+    "browser": {"db", "dtransport", "browser", "search", "calendar"},
+    "transport": set(),
+    "analytics": {"db", "monthly", "calendar", "search"},
+    "driver": {"db", "monthly", "search", "calendar"},
+    "route": {"db", "search", "calendar"},
+    "schedule": {"db", "dtransport", "search", "calendar"},
+    "attendance": {"db", "search", "calendar"},
+    "excel": {"excel", "db", "monthly", "calendar"},
+    "report": {"db", "monthly", "telegram", "calendar", "search"},
+    "telegram": {"telegram"},
+    "security": set(),
+    "planner": set(),
+    "reviewer": set(),
 }
 
 
@@ -110,6 +131,9 @@ class Orchestrator:
                     AttendanceAgent, ExcelAgent, ReportAgent,
                     TelegramAgent, SecurityAgent]:
             agent = cls(self._llm, self._tools)
+            allowed = AGENT_TOOL_ALLOWLIST.get(agent.name.value)
+            if allowed is not None:
+                agent.allowed_tools = set(allowed)
             self._register(agent)
             master.register_agent(agent)
 
@@ -163,7 +187,7 @@ class Orchestrator:
         if not perm:
             return None
 
-        role = "viewer"
+        role = "admin"
         try:
             chat_id = str(params.get("chat_id") or "").strip()
             if params.get("role"):
@@ -173,7 +197,7 @@ class Orchestrator:
                 role = _resolve_role(int(chat_id)).value.lower()
         except Exception as exc:  # noqa: BLE001
             log.warning("Security rollni aniqlab bo'lmadi: %s", exc)
-            role = "viewer"
+            role = "admin"
 
         from .security import ROLE_PERMISSIONS, Permission as _Perm
         allowed = ROLE_PERMISSIONS.get(role, ROLE_PERMISSIONS["viewer"])
@@ -205,7 +229,6 @@ class Orchestrator:
         Orchestrator faqat bajaradi.
         """
         self._ensure_init()
-        from .events import emit, emit_task, emit_message, emit_walking, emit_waiting
 
         # Mavjud task ni olish
         task_row = state.get_task(task_id)

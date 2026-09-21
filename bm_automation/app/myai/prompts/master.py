@@ -30,10 +30,23 @@ Mavjud intent turlari:
 - check_vehicle: avtobusni tekshirish
 - daily_summary: kunlik hisobot
 - monthly_report: oylik hisobot
-- attendance: ishga chiqish
+- monthly_driver: alohida haydovchining oylik hisoboti (haydovchi ismi + oy)
 - salary: maosh hisoblash
+- avans: haydovchining avans to'lovlari ("avans", "avanslari" so'zlari)
+- fines: haydovchining jarimalari ("jarima", "jarimalar", "fines" so'zlari)
+- documents: hujjatlar ro'yxati ("hujjat", "dokument")
+- staff: xodimlar ro'yxati ("xodimlar", "staff")
+- dispatcher_routes: dispecher biriktirilgan yo'nalishlar ("dispecher yo'nalishlari")
+- waybills: yo'l varaqalari ro'yxati ("yo'l varaqa", "waybill")
+- sms: SMS jo'natmalar tarixi ("sms tarixi", "sms log")
+- attendance: ishga chiqish
 - schedule: jadval
 - problems: muammolar (kechikish, nosozlik)
+- not_accepted_km: qabul qilinmagan kilometrlar hisoboti ("qabul qilinmagan" so'zi)
+- report_excel: Excel/fayl ko'rinishidagi hisobot ("excel", "fayl qilib")
+- telegram: xabarni yuborish ("telegramga yubor")
+- routes_list: yo'nalishlar RO'YXATI (marshrut nomi ko'rsatilmagan, "yo'nalishlar ro'yxati", "nechta yo'nalish bor")
+- vehicles_list: avtobuslar RO'YXATI (marshrut nomi ko'rsatilmagan, "avtobuslar ro'yxati", "barcha avtobuslar", "nechta avtobus bor")
 - verify: sayt-baza tekshirish
 - general: umumiy so'rov
 

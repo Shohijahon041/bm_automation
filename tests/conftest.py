@@ -15,4 +15,6 @@ import bm_automation.app.core.bot_settings as bot_settings
 def _isolate_bot_settings(monkeypatch):
     """Jonli bot sozlamalaridan (fayldan o'qiladi) testlarni izolyatsiya qiladi."""
     monkeypatch.setattr(bot_settings, "km_rate", lambda: 0.0)
+    monkeypatch.setattr(bot_settings, "route_km",
+                        lambda route_id, default=0.0: max(float(default), 0.0))
     yield

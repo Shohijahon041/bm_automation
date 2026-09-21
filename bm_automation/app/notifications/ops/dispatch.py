@@ -1,4 +1,4 @@
-"""Buyruqlar va callback'larni yo'naltirish (role-gated).
+﻿"""Buyruqlar va callback'larni yo'naltirish (role-gated).
 
 `handle_message` — matnli buyruqlar va reply-menyu tugmalari;
 `handle_callback` — inline tugmalar (nav / prob / sync / exp / rs).
@@ -39,6 +39,9 @@ MENU_MAP = {
     "🔄 sync": "sync",
     "🔄 syncmonthly": "syncmonthly",
     "🖼 grafik yuborish": "grafik",
+    "📅 bugungi grafik": "grafik_today",
+    "📅 ertagi grafik": "grafik_tomorrow",
+    "📅 kechagi grafik": "grafik_yesterday",
     "🏢 firmalar": "profiles",
     "⚙️ settings": "settings",
     "❓ yordam": "help",
@@ -58,6 +61,7 @@ MENU_MAP = {
     "🗓 plan": "plan",
     "🧠 o'zini tahlil": "insights",
     "💰 oylik": "salary_dl",
+    "🧾 brutto": "brutto",
     # Ruscha menyu (til tanlanganda)
     "📊 дашборд": "today",
     "📅 месяц": "month",
@@ -69,6 +73,9 @@ MENU_MAP = {
     "📈 отчёт": "reports",
     "🔄 синхронизация": "sync",
     "🖼 отправить график": "grafik",
+    "📅 график сегодня": "grafik_today",
+    "📅 график завтра": "grafik_tomorrow",
+    "📅 график вчера": "grafik_yesterday",
     "🏢 компании": "profiles",
     "⚙️ настройки": "settings",
     "❓ помощь": "help",
@@ -81,6 +88,7 @@ MENU_MAP = {
     "🗓 план": "plan",
     "🧠 самоанализ": "insights",
     "💰 зарплата": "salary_dl",
+    "🧾 брутто": "brutto",
 }
 
 
@@ -281,10 +289,12 @@ def start_verify(chat_id: int, month: str | None = None) -> None:
 
 # ------------------------------------------------------------- grafik (18:00 dagi)
 
-def _do_grafik(chat_id: int, route_ids: list[str] | None = None) -> None:
+def _do_grafik(chat_id: int, route_ids: list[str] | None = None,
+               day_offset: int = 1) -> None:
     try:
         import daily_grafik
-        daily_grafik.main(chat_id=str(chat_id), route_ids=route_ids)
+        daily_grafik.main(chat_id=str(chat_id), route_ids=route_ids,
+                          day_offset=day_offset)
         reply(chat_id, "✅ <b>Grafik yuborildi</b>")
     except Exception as exc:  # noqa: BLE001 - barcha xatolar foydalanuvchiga
         log.warning("grafik yuborish xatosi: %s", exc)
@@ -294,11 +304,15 @@ def _do_grafik(chat_id: int, route_ids: list[str] | None = None) -> None:
             pass
 
 
-def start_grafik(chat_id: int, route_ids: list[str] | None = None) -> None:
-    reply(chat_id, "🖼 <b>GRAFIK YUBORISH</b>\n\n"
-                   "Ertangi kun grafiklari (xlsx + rasm + statistika) "
-                   "tayyorlanmoqda. Bir necha daqiqa davom etishi mumkin...")
-    threading.Thread(target=_do_grafik, args=(chat_id, route_ids), daemon=True).start()
+def start_grafik(chat_id: int, route_ids: list[str] | None = None,
+                 day_offset: int = 1) -> None:
+    day_label = {1: "Ertangi", 0: "Bugungi", -1: "Kechagi"}.get(
+        day_offset, f"{day_offset}")
+    reply(chat_id, f"🖼 <b>{day_label.upper()} GRAFIK YUBORISH</b>\n\n"
+                   f"{day_label} kun grafiklari (xlsx + rasm + statistika) "
+                   f"tayyorlanmoqda. Bir necha daqiqa davom etishi mumkin...")
+    threading.Thread(target=_do_grafik, args=(chat_id, route_ids),
+                     kwargs={"day_offset": day_offset}, daemon=True).start()
 
 
 # ------------------------------------------------------------- company add
@@ -476,7 +490,7 @@ def handle_driver(chat_id: int, parts: list[str], f: dict) -> None:
               f"<code>{esc(arg)}</code> ism yoki ID bilan topilmadi.\n"
               "Ro'yxat: /drivers")
         return
-    reply(chat_id, *render.driver_card(driver_id, f))
+    reply(chat_id, *render.driver_card(driver_id, f, chat_id=chat_id))
 
 
 # ------------------------------------------------------ driver entry flow
@@ -516,7 +530,11 @@ def _notify_driver(driver_id: str, flow: str, data: dict) -> str:
     """
     st = get_storage()
     profile = st.find("driver_profiles", driver_id=str(driver_id)) or {}
-    target = str(profile.get("notification_target") or "").strip()
+    if profile.get("blacklisted"):
+        return "⚠️ Haydovchi qora ro'yxatda"
+    # Telegram'ga bog'langan haydovchi — shaxsiy chat'iga; aks holda eski target.
+    target = str(profile.get("telegram_chat_id") or "").strip() \
+        or str(profile.get("notification_target") or "").strip()
     enabled = profile.get("notification_enabled")
 
     if not enabled or not target:
@@ -595,7 +613,7 @@ def commit_driver_entry(chat_id: int) -> None:
     notify_result = _notify_driver(driver_id, flow, data)
     reply(chat_id, f"📨 {notify_result}")
 
-    reply(chat_id, *render.driver_card(driver_id, context.filters_for(chat_id)))
+    reply(chat_id, *render.driver_card(driver_id, context.filters_for(chat_id), chat_id=chat_id))
 
 
 # ------------------------------------------------------------- export
@@ -635,6 +653,24 @@ def start_export(chat_id: int, fmt: str, scope: str) -> None:
     reply(chat_id, "📤 Eksport tayyorlanmoqda...")
     threading.Thread(target=_do_export, args=(chat_id, fmt, scope),
                      daemon=True).start()
+
+
+def _send_settings_audit_file(chat_id: int) -> None:
+    """`/settings audit excel` — audit tarixini CSV fayl sifatida yuboradi."""
+    try:
+        from datetime import date as _date
+        csv_text = render.settings_audit_csv(chat_id)
+        if csv_text.startswith("⛔"):
+            reply(chat_id, csv_text)
+            return
+        name = f"settings_audit_{_date.today():%Y%m%d}.csv"
+        reply(chat_id, f"📎 Audit tarixi tayyor: <code>{name}</code>")
+        from ..telegram import send_bytes
+        send_bytes(name, csv_text.encode("utf-8-sig"),
+                   caption="🕐 Settings tarixi (Excel uchun CSV)",
+                   chat_id=chat_id)
+    except Exception as exc:  # noqa: BLE001
+        reply(chat_id, f"❌ Audit faylini yuborishda xatolik:\n<code>{exc}</code>")
 
 
 def _do_salary_dl(chat_id: int, from_date: str, to_date: str) -> None:
@@ -838,9 +874,12 @@ def handle_message(chat_id: int, text: str) -> None:
             from ...db import get_storage as _dbs
             _drow = _dbs().find("drivers", external_id=did) if did else None
             dname = short_name(str((_drow or {}).get("full_name") or "Haydovchi"))
+            from .render import driver_inbox as _driver_card_full
+            _msg, _mk = _driver_card_full(did, context.filters_for(chat_id),
+                                          chat_id=chat_id)
             reply(chat_id,
                   f"👋 <b>Xush kelibsiz, {dname}!</b>\n\n"
-                  "Siz haydovchi sifatida bog'langansiz.\n"
+                  f"{_msg}\n\n"
                   "Menyudan foydalaning:",
                   reply_markup=kb.main_menu_kb(chat_id))
             return
@@ -875,6 +914,55 @@ def handle_message(chat_id: int, text: str) -> None:
                   reply_markup=kb.settings_kb(chat_id))
         return
 
+    if pending_setting in ("elec_price", "brutto_skm") or \
+       (pending_setting or "").startswith("route_skm:"):
+        if not can(resolve_role(chat_id), "salary"):
+            bot_settings.clear_pending(chat_id)
+            reply(chat_id, DENIED_TEXT)
+            return
+        bot_settings.clear_pending(chat_id)
+        try:
+            value = float(text.replace(",", ".").replace(" ", "").strip())
+        except ValueError:
+            bot_settings.set_pending(chat_id, pending_setting)
+            reply(chat_id, "⚠️ Son kiriting (so'm), masalan: <code>800</code>. "
+                           "Bekor qilish: /settings")
+            return
+        value = max(value, 0.0)
+        if pending_setting == "elec_price":
+            bot_settings.set_elec_price(value)
+            if value == 0:
+                reply(chat_id, "✅ Elektr narxi asl holatga qaytarildi",
+                      reply_markup=kb.settings_kb(chat_id))
+            else:
+                reply(chat_id,
+                      "✅ ⚡ Elektr narxi o'rnatildi: "
+                      f"<b>{value:,.0f}".replace(",", " ") + " so'm/kVt</b>",
+                      reply_markup=kb.settings_kb(chat_id))
+        elif pending_setting == "brutto_skm":
+            bot_settings.set_brutto_skm(value)
+            if value == 0:
+                reply(chat_id, "✅ SKM standart qiymatga qaytarildi",
+                      reply_markup=kb.settings_kb(chat_id))
+            else:
+                reply(chat_id,
+                      "✅ 📋 SKM o'rnatildi: "
+                      f"<b>{value:,.0f}".replace(",", " ") + " so'm/km</b>",
+                      reply_markup=kb.settings_kb(chat_id))
+        else:
+            rid = pending_setting.split(":", 1)[1]
+            from ...core.bot_settings import set_route_skm
+            set_route_skm(rid, value)
+            if value == 0:
+                reply(chat_id, "✅ Firma SKM global qiymatga qaytarildi",
+                      reply_markup=kb.settings_kb(chat_id))
+            else:
+                reply(chat_id,
+                      "✅ 🏢 Firma SKM o'rnatildi: "
+                      f"<b>{value:,.0f}".replace(",", " ") + " so'm/km</b>",
+                      reply_markup=kb.settings_kb(chat_id))
+        return
+
     if pending_setting == "salary_date":
         bot_settings.clear_pending(chat_id)
         import re as _re
@@ -897,12 +985,12 @@ def handle_message(chat_id: int, text: str) -> None:
         if role is Role.DRIVER:
             did = driver_id_for_chat(chat_id)
             if did:
-                reply(chat_id, *render.driver_card(did, f))
+                reply(chat_id, *render.driver_card(did, f, chat_id=chat_id))
                 return
-        reply(chat_id, *render.today(f))
+        reply(chat_id, *render.today(f, chat_id=chat_id))
         return
     if cmd == "month":
-        reply(chat_id, *render.month(f))
+        reply(chat_id, *render.month(f, chat_id=chat_id))
         return
     if cmd == "profiles":
         reply(chat_id, *render.profiles(f, chat_id=chat_id))
@@ -945,6 +1033,14 @@ def handle_message(chat_id: int, text: str) -> None:
         return
     if cmd == "alerts":
         reply(chat_id, *render.alerts_text())
+        return
+    if cmd in ("doc", "docs"):
+        from . import doc_expiry
+        reply(chat_id, doc_expiry.status_text())
+        return
+    if cmd == "monthly":
+        from . import monthly_results
+        reply(chat_id, monthly_results.status_text())
         return
     if cmd == "daily":
         from . import daily_summary
@@ -1020,6 +1116,12 @@ def handle_message(chat_id: int, text: str) -> None:
         reply(chat_id, *render.status())
         return
     if cmd == "settings":
+        if len(parts) > 1 and parts[1].lower() in ("audit", "tarix", "hist"):
+            if len(parts) > 2 and parts[2].lower() in ("excel", "csv", "xlsx"):
+                _send_settings_audit_file(chat_id)
+                return
+            reply(chat_id, render.settings_audit_text(chat_id))
+            return
         reply(chat_id, render.settings_text(chat_id),
               reply_markup=kb.settings_kb(chat_id))
         return
@@ -1156,7 +1258,7 @@ def handle_message(chat_id: int, text: str) -> None:
         legacy.start_resend(chat_id, name)
         return
 
-    if cmd == "grafik":
+    if cmd in ("grafik", "grafik_today", "grafik_tomorrow", "grafik_yesterday"):
         if not can(role, "sync"):
             reply(chat_id, DENIED_TEXT)
             return
@@ -1167,7 +1269,10 @@ def handle_message(chat_id: int, text: str) -> None:
             route_filter = (f.get("route") or "").strip()
             rids = [t.strip() for t in route_filter.replace(",", " ").split()
                     if t.strip()] if route_filter else None
-        start_grafik(chat_id, rids)
+        offset = {"grafik_today": 0,
+                  "grafik_tomorrow": 1,
+                  "grafik_yesterday": -1}.get(cmd, 1)
+        start_grafik(chat_id, rids, day_offset=offset)
         return
 
     if cmd == "salary_dl":
@@ -1179,6 +1284,23 @@ def handle_message(chat_id: int, text: str) -> None:
               reply_markup=kb.salary_dl_kb())
         return
 
+    if cmd == "hisob":
+        if not can(role, "salary"):
+            reply(chat_id, DENIED_TEXT)
+            return
+        did = (f.get("driver_id") or f.get("driver") or "").strip().upper()
+        if not did and role != "driver":
+            m = _met()
+            did = (m.driver_card(f).get("driver_id") or "") if False else did
+        text, hm = _hisob_text(f, did)
+        reply(chat_id, text, reply_markup=hm)
+        return
+    if cmd == "brutto":
+        if not can(role, "salary"):
+            reply(chat_id, DENIED_TEXT)
+            return
+        reply(chat_id, *render.brutto(f, chat_id=chat_id))
+        return
     if cmd == "addcompany":
         if not can(role, "addcompany"):
             reply(chat_id, DENIED_TEXT)
@@ -1255,7 +1377,7 @@ def handle_callback(chat_id: int, cq: dict, data: str) -> None:
             answer(cq, str(exc))
             return
         answer(cq, f"{context.short_name(name)} tanlandi")
-        reply(chat_id, *render.today(context.filters_for(chat_id)))
+        reply(chat_id, *render.today(context.filters_for(chat_id), chat_id=chat_id))
         return
 
     if data.startswith("prof:"):
@@ -1264,7 +1386,7 @@ def handle_callback(chat_id: int, cq: dict, data: str) -> None:
             context.clear_route(chat_id)
             name = context.get_active(chat_id)
             answer(cq, "Barcha yo'nalishlar ko'rsatiladi")
-            reply(chat_id, *render.today(context.filters_for(chat_id)))
+            reply(chat_id, *render.today(context.filters_for(chat_id), chat_id=chat_id))
             return
         if name in ("", "__all__"):
             context.clear(chat_id)
@@ -1281,7 +1403,7 @@ def handle_callback(chat_id: int, cq: dict, data: str) -> None:
             answer(cq, str(exc))
             return
         answer(cq, f"{context.short_name(name)} tanlandi")
-        reply(chat_id, *render.today(context.filters_for(chat_id)))
+        reply(chat_id, *render.today(context.filters_for(chat_id), chat_id=chat_id))
         return
 
     if data.startswith("nav:"):
@@ -1316,9 +1438,17 @@ def handle_callback(chat_id: int, cq: dict, data: str) -> None:
             answer(cq)
             reply(chat_id, planning.plan_text(), reply_markup=kb.plan_kb())
             return
+        if target == "brutto":
+            if not can(role, "salary"):
+                answer(cq, "Huquq yo'q")
+                reply(chat_id, DENIED_TEXT)
+                return
+            answer(cq)
+            reply(chat_id, *render.brutto(f, chat_id=chat_id))
+            return
         handlers = {
-            "dashboard": render.today,
-            "month": render.month,
+            "dashboard": lambda fl: render.today(fl, chat_id=chat_id),
+            "month": lambda fl: render.month(fl, chat_id=chat_id),
             "vehicles": render.vehicles,
             "drivers": render.drivers,
             "routes": render.routes,
@@ -1353,6 +1483,75 @@ def handle_callback(chat_id: int, cq: dict, data: str) -> None:
         reply(chat_id,
               "🌐 <b>TIL TANLASH</b>\n\nTilingizni tanlang:",
               reply_markup=kb.lang_kb(bot_settings.lang(chat_id)))
+        return
+    if data == "settings:elecprice":
+        if not can(role, "salary"):
+            answer(cq, "Huquq yo'q")
+            reply(chat_id, DENIED_TEXT)
+            return
+        bot_settings.set_pending(chat_id, "elec_price")
+        answer(cq, "Boshlanadi")
+        reply(chat_id,
+              "⚡ <b>ELEKTR ENERGIYA NARXI</b>\n\n"
+              f"Joriy: {bot_settings.elec_price():,.0f} so'm/kVt"
+              .replace(",", " ") + "\n\n"
+              "Yangi 1 kVt/soat narxini so'mda yozing "
+              "(masalan <code>800</code>).\n"
+              "Asl holatga qaytarish uchun <code>0</code> yuboring.",
+              reply_markup=kb.back_kb("nav:settings", "❌ Bekor qilish"))
+        return
+    if data == "settings:skm":
+        if not can(role, "salary"):
+            answer(cq, "Huquq yo'q")
+            reply(chat_id, DENIED_TEXT)
+            return
+        bot_settings.set_pending(chat_id, "brutto_skm")
+        answer(cq, "Boshlanadi")
+        reply(chat_id,
+              "📋 <b>116-SON QAROR (SKM)</b>\n\n"
+              f"Joriy: {bot_settings.brutto_skm():,.0f} so'm/km"
+              .replace(",", " ") + "\n\n"
+              "Yangi 1 mashina-km narxini so'mda yozing "
+              "(masalan <code>16176</code>).\n"
+              "Standartga qaytarish uchun <code>0</code> yuboring.",
+              reply_markup=kb.back_kb("nav:settings", "❌ Bekor qilish"))
+        return
+    if data == "settings:rskm":
+        if not can(role, "salary"):
+            answer(cq, "Huquq yo'q")
+            reply(chat_id, DENIED_TEXT)
+            return
+        f = context.filters_for(chat_id)
+        rid = str(f.get("route") or "").strip()
+        if not rid:
+            answer(cq, "Firma tanlanmagan")
+            reply(chat_id, "⚠️ Avval <b>Firmalarni</b> bo'limida "
+                           "kompaniya tanlang.", reply_markup=kb.main_menu_kb(chat_id))
+            return
+        rid = rid.split()[0]
+        try:
+            from ...core.bot_settings import route_skm
+            cur = route_skm(rid) or bot_settings.brutto_skm()
+        except Exception:  # noqa: BLE001
+            cur = bot_settings.brutto_skm()
+        bot_settings.set_pending(chat_id, f"route_skm:{rid}")
+        answer(cq, "Boshlanadi")
+        reply(chat_id,
+              "🏢 <b>FIRMA SKM</b>\n\n"
+              f"Joriy: {cur:,.0f} so'm/km".replace(",", " ") + "\n\n"
+              "Yangi 1 mashina-km narxini so'mda yozing "
+              "(masalan <code>17000</code>).\n"
+              "Global qiymatga qaytarish uchun <code>0</code> yuboring.",
+              reply_markup=kb.back_kb("nav:settings", "❌ Bekor qilish"))
+        return
+    if data == "settings:audit":
+        if not can(role, "salary"):
+            answer(cq, "Huquq yo'q")
+            reply(chat_id, DENIED_TEXT)
+            return
+        answer(cq)
+        reply(chat_id, render.settings_audit_text(chat_id),
+              reply_markup=kb.settings_kb(chat_id))
         return
     if data.startswith("setlang:"):
         bot_settings.set_lang(chat_id, data[8:])
@@ -1451,7 +1650,7 @@ def handle_callback(chat_id: int, cq: dict, data: str) -> None:
 
     if data.startswith("d:"):
         answer(cq)
-        reply(chat_id, *render.driver_card(data[2:], f))
+        reply(chat_id, *render.driver_card(data[2:], f, chat_id=chat_id))
         return
 
     if data.startswith("v:"):

@@ -267,9 +267,51 @@ def test_km_rate_bot_editable_overrides_env(met, monkeypatch):
     # Driver profil 0 bo'lsa — bot_settings (2500) ishlatiladi
     storage.save_driver_profile("d1", km_rate=0)
     assert {x["driver_id"]: x["km_rate"] for x in met.drivers(f)}["d1"] == 2500
-    # Bot_settings ham 0 bo'lsa — KM_RATE env (2000) ishlatiladi
-    monkeypatch.setattr(bs, "km_rate", lambda: 0.0)
-    assert {x["driver_id"]: x["km_rate"] for x in met.drivers(f)}["d1"] == 2000
+
+
+def test_km_rate_route_level(met, monkeypatch):
+    """Yo'nalish darajasida route_km — kompaniya profilidan ustun."""
+    import bm_automation.app.core.bot_settings as bs
+    import bm_automation.app.core.profiles as pmod
+    from bm_automation.app.config.settings import km_rate_for
+    monkeypatch.setenv("KM_RATE", "")
+    monkeypatch.setattr(
+        pmod, "all_profiles",
+        lambda: [{"name": "ASL", "routeVariantId": "r1", "kmRate": 2363.8}])
+    # route_km yo'q — kompaniya profili qo'llanadi
+    assert km_rate_for("r1", 0.0) == 2363.8
+    # route_km o'rnatildi — kompaniya profilidan ustun
+    monkeypatch.setattr(bs, "route_km",
+                        lambda rid, default=0.0: 3000.0 if rid == "r1" else default)
+    assert km_rate_for("r1", 0.0) == 3000.0
+    # Haydovchi shaxsiy narxi route_km dan ham ustun
+    assert km_rate_for("r1", 4500.0) == 4500.0
+
+
+def test_update_km_rate_without_drivers(met, monkeypatch):
+    """Dashboard'dan km narx o'rnatish haydovchilar bo'lmasa ham ishlaydi."""
+    import bm_automation.app.core.bot_settings as bs
+    from bm_automation.app.dashboard.server import DashboardHandler
+    saved = {}
+    monkeypatch.setattr(bs, "set_route_km",
+                        lambda rid, val: saved.update({rid: val}) or val)
+    handler = object.__new__(DashboardHandler)
+    res = handler._update_km_rate({"route_id": "r99", "km_rate": 2500})
+    assert res["ok"] is True
+    assert res["route_id"] == "r99" and res["km_rate"] == 2500
+    assert saved == {"r99": 2500}
+    # Yaroqsiz qiymat rad etiladi
+    assert handler._update_km_rate({"route_id": "r99", "km_rate": -5})["ok"] is False
+    assert handler._update_km_rate({"km_rate": 100})["ok"] is False
+
+
+def test_routes_km_rate_field(met, monkeypatch):
+    """routes() va route_options() da km_rate maydoni mavjud."""
+    import bm_automation.app.dashboard.metrics as metrics
+    monkeypatch.setattr(metrics, "_route_km_value", lambda rid: 1234.0)
+    f = {"from": "2026-08-10", "to": "2026-08-11"}
+    rows = met.routes(f)
+    assert rows and all(r["km_rate"] == 1234.0 for r in rows)
 
 
 def test_monthly_accept_rate(met):
@@ -365,7 +407,8 @@ def test_work_logs_avto_replaces_trips_km(met):
     """AVTO (brutto-route) km trips km'ni almashtiradi; qo'lda qayd qo'shiladi."""
     storage = met.storage
     # d1 10-08 v1'da 2 ACCEPTED reys (DUTY, odo km=0) — AVTO 100.0 ustun
-    storage.save_driver_work_log("2026-08-10", "d1", "v1", 100.0, 2, note="AVTO")
+    storage.save_driver_work_log("2026-08-10", "d1", "v1", 100.0, 2, note="AVTO",
+                                 distance_plan=150.0, trip_plan=6)
     storage.save_driver_work_log("2026-08-10", "d1", "v2", 25.0, 1, note="Qo'lda")
     f = {"date": "2026-08-10", "from": "2026-08-10", "to": "2026-08-10"}
     d1 = {x["driver_id"]: x for x in met.drivers(f)}["d1"]
@@ -373,6 +416,9 @@ def test_work_logs_avto_replaces_trips_km(met):
     assert d1["automatic_km"] == 100.0  # AVTO endi avtomatik km manbasi
     assert d1["manual_trips"] == 1
     assert d1["trips"] == 2
+    # saytdagi brutto-route reja ustunlari AVTO qayddan olinadi
+    assert d1["plan_km"] == 150.0
+    assert d1["plan_trips"] == 6
     detail = met.driver_detail("d1", f)
     rows = {(r["vehicle_id"], r["note"]): r["distance_km"]
             for r in detail["work_logs"]}
@@ -622,4 +668,329 @@ def test_api_insights_default_days(monkeypatch):
     monkeypatch.setattr(_or, "configured", lambda: False)
     d = _get("/api/insights")
     assert d["ok"] is True and d["enabled"] is False
-    assert d["insights"]["days"] == 14
+
+
+def test_not_accepted_km_report_includes_manual_km(met):
+    """Qo'lda (driver_work_logs, note != 'AVTO') km/reys faqat AMALDA
+    (bajarilgan) tomonga qo'shiladi: Amalda km + Amalda reyslar. Reja
+    o'zgarmaydi — shuning uchun qabul qilinmagan (reja − amalda)
+    qo'lda qayd hisobiga kamayadi."""
+    stor = met.storage
+    stor.upsert("route_daily", ["date", "route_id", "vehicle_number"], {
+        "date": "2026-08-10", "route_id": "r1", "vehicle_id": "v1",
+        "vehicle_number": "01A123AA", "working_day": 1,
+        "trip_plan": 5, "trip_fact": 3, "distance_plan": 150.0,
+        "distance_fact": 90.0})
+    stor.save_driver_work_log("2026-08-10", "d1", "v1", 30.0, 1,
+                              note="Qo'lda")
+    d = met.not_accepted_km_report({"from": "2026-08-01", "to": "2026-08-31"})
+    rows = {r["name"]: r for r in d["rows"]}
+    assert "Aliyev Aliy" in rows
+    r = rows["Aliyev Aliy"]
+    assert r["plan_km"] == 150.0          # reja o'zgarmaydi (30 qo'lda emas)
+    assert r["fact_km"] == 120.0          # 90 amalda + 30 qo'lda
+    assert r["manual_km"] == 30.0
+    assert r["plan_reys"] == 5            # reja o'zgarmaydi (1 qo'lda emas)
+    assert r["fact_reys"] == 4            # 3 amalda + 1 qo'lda reys
+    assert r["qabul_qilinmagan"] == 1     # 5 - 4 → qo'lda qayd defitsit yopadi
+    assert r["diff"] == 30.0              # 150 - 120
+    assert d["totals"]["manual_km"] == 30.0
+    assert d["totals"]["diff"] == 30.0
+
+
+def test_not_accepted_km_report_ignores_avto_work_logs(met):
+    """AVTO (brutto-route) qaydlari fakt km'ga qo'shilmaydi — aks holda
+    ikki marta hisoblanish bo'lardi (fakt km allaqachon route_daily'dan)."""
+    stor = met.storage
+    stor.upsert("route_daily", ["date", "route_id", "vehicle_number"], {
+        "date": "2026-08-10", "route_id": "r1", "vehicle_id": "v1",
+        "vehicle_number": "01A123AA", "working_day": 1,
+        "trip_plan": 5, "trip_fact": 3, "distance_plan": 150.0,
+        "distance_fact": 90.0})
+    stor.save_driver_work_log("2026-08-10", "d1", "v1", 50.0, 2, note="AVTO")
+    d = met.not_accepted_km_report({"from": "2026-08-01", "to": "2026-08-31"})
+    r = next(r for r in d["rows"] if r["name"] == "Aliyev Aliy")
+    assert r["manual_km"] == 0.0
+    assert r["fact_km"] == 90.0  # faqat route_daily distance_fact
+
+
+def test_not_accepted_km_report_shows_all_worked_drivers(met):
+    """Xato (qabul qilinmagan reysi 0) qilmagan ishlagan haydovchilar ham
+    hisobotda chiqadi — faqat muammolilar emas."""
+    stor = met.storage
+    stor.upsert("route_daily", ["date", "route_id", "vehicle_number"], {
+        "date": "2026-08-10", "route_id": "r1", "vehicle_id": "v1",
+        "vehicle_number": "01A123AA", "working_day": 1,
+        "trip_plan": 5, "trip_fact": 3, "distance_plan": 150.0,
+        "distance_fact": 90.0})
+    stor.upsert("route_daily", ["date", "route_id", "vehicle_number"], {
+        "date": "2026-08-10", "route_id": "r1", "vehicle_id": "v2",
+        "vehicle_number": "01B456BB", "working_day": 1,
+        "trip_plan": 3, "trip_fact": 3, "distance_plan": 80.0,
+        "distance_fact": 80.0})
+    d = met.not_accepted_km_report({"from": "2026-08-01", "to": "2026-08-31"})
+    rows = {r["name"]: r for r in d["rows"]}
+    assert "Aliyev Aliy" in rows
+    assert "Karimov Karim" in rows                       # qabul qilinmagan = 0
+    assert rows["Karimov Karim"]["qabul_qilinmagan"] == 0
+    assert rows["Karimov Karim"]["fact_reys"] == 3
+    assert rows["Aliyev Aliy"]["qabul_qilinmagan"] == 2
+
+
+def test_not_accepted_report_reserve_time_split(met):
+    """Bitta grafik kuni ikki haydovchi/avtobus almashganda (buzilish →
+    reserve avtobus): reja vaqtga proporsional bo'linadi, qabul qilinmagan
+    reyslar ertalab birinchi chiqqan avtobus haydovchisiga tegishli bo'ladi.
+    Amalda (fact) rejadan ortiq bo'lsa ham manfiy ko'rsatilmaydi (clamp)."""
+    stor = met.storage
+    stor.upsert("route_daily", ["date", "route_id", "vehicle_number"], {
+        "date": "2026-08-15", "route_id": "r1", "vehicle_id": "v1",
+        "vehicle_number": "01A123AA", "working_day": 0,
+        "trip_plan": 0, "trip_fact": 3, "distance_plan": 0.0,
+        "distance_fact": 30.0})       # buzilgan avtobus — fact bor, reja yo'q
+    stor.upsert("route_daily", ["date", "route_id", "vehicle_number"], {
+        "date": "2026-08-15", "route_id": "r1", "vehicle_id": "v2",
+        "vehicle_number": "01B456BB", "working_day": 1,
+        "trip_plan": 14, "trip_fact": 8, "distance_plan": 200.0,
+        "distance_fact": 110.0})      # kunlik rejani olib yuradi
+    stor.save_schedule("2026-08-15", "r1", "P1", driver_id="d1",
+                       vehicle_id="v1", start_time="06:00:00",
+                       end_time="12:00:00", trip_count=14)
+    stor.save_schedule("2026-08-15", "r1", "P1", driver_id="d2",
+                       vehicle_id="v2", start_time="12:00:00",
+                       end_time="20:00:00", trip_count=14)
+    d = met.not_accepted_km_report({"from": "2026-08-01", "to": "2026-08-31"})
+    rows = {r["name"]: r for r in d["rows"]}
+    assert rows["Aliyev Aliy"]["plan_reys"] == 6      # 14 * 360/840
+    assert rows["Aliyev Aliy"]["fact_reys"] == 3      # o'z avtobus faktidan
+    assert rows["Aliyev Aliy"]["qabul_qilinmagan"] == 3
+    assert round(rows["Aliyev Aliy"]["plan_km"], 2) == 85.71
+    assert rows["Aliyev Aliy"]["fact_km"] == 30.0
+    assert rows["Karimov Karim"]["plan_reys"] == 8    # 14 * 480/840
+    assert rows["Karimov Karim"]["fact_reys"] == 8
+    assert rows["Karimov Karim"]["qabul_qilinmagan"] == 0
+    assert d["totals"]["plan_reys"] == 14
+    assert d["totals"]["fact_reys"] == 11
+    assert d["totals"]["qabul_qilinmagan"] == 3
+
+
+def test_not_accepted_report_clamps_negative_diff(met):
+    """Amalda (fact) rejadan (plan) ortiq bo'lsa — qabul qilinmagan reyslar
+    va km manfiy chiqmaydi (0 ga kesiladi): reja hech qachon amaldan kichik
+    ko'rsatilmaydi."""
+    stor = met.storage
+    stor.upsert("route_daily", ["date", "route_id", "vehicle_number"], {
+        "date": "2026-08-16", "route_id": "r1", "vehicle_id": "v1",
+        "vehicle_number": "01A123AA", "working_day": 1,
+        "trip_plan": 5, "trip_fact": 7, "distance_plan": 150.0,
+        "distance_fact": 210.0})      # kam reja, ortiq bajarilgan ish
+    stor.save_schedule("2026-08-16", "r1", "P1", driver_id="d1",
+                       vehicle_id="v1", start_time="06:00:00",
+                       end_time="20:00:00", trip_count=5)
+    d = met.not_accepted_km_report({"from": "2026-08-01", "to": "2026-08-31"})
+    rows = {r["name"]: r for r in d["rows"]}
+    r = rows["Aliyev Aliy"]
+    assert r["plan_reys"] == 5
+    assert r["fact_reys"] == 7
+    assert r["qabul_qilinmagan"] == 0       # 5 - 7 = -2 → 0
+    assert r["plan_km"] == 150.0
+    assert r["fact_km"] == 210.0
+    assert r["diff"] == 0.0                  # 150 - 210 = -60 → 0
+    assert r["sum_no_vat"] == 0.0
+    assert r["sum_vat"] == 0.0
+    assert d["totals"]["qabul_qilinmagan"] == 0
+    assert d["totals"]["diff"] == 0.0
+
+
+def test_not_accepted_report_unattributed_working_day(met):
+    """wd=1 lekin na schedules, na trips bo'lgan kun jami sayt bilan mos
+    bo'lishi uchun 'Atribut qilinmagan' haydovchiga kiritiladi."""
+    stor = met.storage
+    stor.upsert("route_daily", ["date", "route_id", "vehicle_number"], {
+        "date": "2026-08-16", "route_id": "r1", "vehicle_id": "v1",
+        "vehicle_number": "01A123AA", "working_day": 1,
+        "trip_plan": 5, "trip_fact": 0, "distance_plan": 100.0,
+        "distance_fact": 0.0})
+    d = met.not_accepted_km_report({"from": "2026-08-01", "to": "2026-08-31"})
+    orph = next(r for r in d["rows"] if "Atribut qilinmagan" in r["name"])
+    assert orph["plan_reys"] == 5
+    assert orph["fact_reys"] == 0
+    assert orph["qabul_qilinmagan"] == 5
+    assert orph["days"] == 1
+    assert d["totals"]["plan_reys"] == 5                      # sayt bilan mos
+    assert d["totals"]["qabul_qilinmagan"] == 5
+
+
+def test_attendance_includes_manual_work_log_days(seeded_storage, monkeypatch):
+    """Ishga chiqish kalendarida qo'lda (driver_work_logs, note != 'AVTO')
+    ish kunlari ham ko'rinadi; trips bor kunda trips ustun turadi; qo'lda
+    reys soni 0 bo'lsa ham kun ishlangan deb kiritiladi. AVTO (brutto-route)
+    ishlangan kunlar ham kalendarga kiritiladi, ammo qo'lda qayd ustun."""
+    import bm_automation.app.db.storage as dbs
+    seeded_storage.save_driver(external_id="d1", full_name="Aliyev Aliy",
+                               route_id="r1")
+    seeded_storage.save_driver_work_log("2026-08-14", "d1", "v1", 257.2, 14,
+                                        note="GPS xatoligi uchun qo'shildi")
+    seeded_storage.save_driver_work_log("2026-08-15", "d1", "v1", 257.2, 14,
+                                        note="GPS xatoligi uchun qo'shildi")
+    seeded_storage.save_driver_work_log("2026-08-16", "d1", "v1", 50.0, 0,
+                                        note="KM qaydi")
+    seeded_storage.save_driver_work_log("2026-08-10", "d1", "v1", 30.0, 3,
+                                        note="Bosib tuzatish")
+    seeded_storage.save_driver_work_log("2026-08-17", "d1", "v1", 60.0, 5,
+                                        note="AVTO", working_day=1)
+    seeded_storage.save_driver_work_log("2026-08-18", "d1", "v1", 70.0, 7,
+                                        note="AVTO", working_day=0)
+    monkeypatch.setattr(dbs, "get_storage", lambda: seeded_storage)
+    d = _get("/api/attendance?month=2026-08")
+    assert d["ok"] is True
+    by_id = {x["driver_id"]: x for x in d["drivers"]}
+    d1 = by_id["d1"]
+    assert d1["work_days"]["2026-08-10"] == 2    # trips ustun (qo'lda 3 emas)
+    assert d1["work_days"]["2026-08-14"] == 14
+    assert d1["work_days"]["2026-08-15"] == 14
+    assert d1["work_days"]["2026-08-16"] == 0    # reys 0 bo'lsa ham kiritiladi
+    assert d1["work_days"]["2026-08-17"] == 5    # AVTO sayti ishlagan kun kiritiladi
+    assert "2026-08-18" not in d1["work_days"]   # working_day=0 AVTO kiritilmaydi
+    # Yo'nalish filtri qo'lda kunlarni ham o'z ichiga oladi
+    d2 = _get("/api/attendance?month=2026-08&route=r1")
+    by_id2 = {x["driver_id"]: x for x in d2["drivers"]}
+    assert "2026-08-14" in by_id2["d1"]["work_days"]
+    d3 = _get("/api/attendance?month=2026-08&route=r2")
+    assert "d1" not in {x["driver_id"] for x in d3["drivers"]}
+
+
+def test_tabel_data_includes_manual_work_log_days(seeded_storage, monkeypatch):
+    """Oylik tabel eksportida qo'lda ish kunlari hisobga olinadi; Ish kuni
+    soni ham shu kunlarni qo'shib, mavjudlik bo'yicha sanaladi."""
+    import bm_automation.app.db.storage as dbs
+    seeded_storage.save_driver_work_log("2026-08-14", "d1", "v1", 257.2, 14,
+                                        note="GPS xatoligi uchun qo'shildi")
+    seeded_storage.save_driver_work_log("2026-08-15", "d1", "v1", 257.2, 14,
+                                        note="GPS xatoligi uchun qo'shildi")
+    seeded_storage.save_driver_work_log("2026-08-16", "d1", "v1", 50.0, 0,
+                                        note="KM qaydi")
+    seeded_storage.save_driver_work_log("2026-08-10", "d1", "v1", 30.0, 3,
+                                        note="Bosib tuzatish")
+    seeded_storage.save_driver_work_log("2026-08-17", "d1", "v1", 60.0, 5,
+                                        note="AVTO")
+    monkeypatch.setattr(dbs, "get_storage", lambda: seeded_storage)
+    _, cols, out = dexport._tabel_data("2026-08", "")
+    day_idx = {int(cols[i]): i for i in range(3, 3 + 31)}
+    total_idx = len(cols) - 1                     # "Ish kuni" ustuni
+    row = next(r for r in out if r[1] == "Aliyev Aliy")
+    assert row[day_idx[10]] == 2                  # trips ustun
+    assert row[day_idx[14]] == 14
+    assert row[day_idx[15]] == 14
+    assert row[day_idx[16]] == 0                  # reys 0 → qatorda 0
+    assert row[day_idx[17]] == ""                 # AVTO yo'q
+    assert row[total_idx] == 4                    # 10, 14, 15, 16
+
+
+def _save_route_daily(storage, date_str, route_id, vehicle_id, vehicle_number,
+                      **kw):
+    """route_daily qaydini yozadi (sync.upsert orqali)."""
+    row = {
+        "date": date_str, "route_id": route_id, "vehicle_id": vehicle_id,
+        "vehicle_number": vehicle_number,
+        "working_day": 0, "trip_plan": 0, "trip_fact": 0,
+        "trip_passed": 0, "trip_approved": 0,
+        "distance_plan": 0.0, "distance_fact": 0.0, "distance_fact_extra": 0.0,
+    }
+    row.update({k: v for k, v in kw.items()})
+    return storage.upsert("route_daily", ["date", "route_id", "vehicle_number"],
+                          row)
+
+
+def test_today_uses_route_daily_over_trips(met):
+    """Sayt brutto-route (route_daily) bo'lsa reja/amalda/faol avtobuslar
+    saytdan olinadi — trips/schedules emas."""
+    _save_route_daily(met.storage, "2026-08-10", "r1", "v1", "01A123AA",
+                      working_day=1, trip_plan=20, trip_fact=16)
+    _save_route_daily(met.storage, "2026-08-10", "r1", "v2", "01B456BB",
+                      working_day=1, trip_plan=18, trip_fact=14)
+    met.storage.save_schedule(date="2026-08-10", route_id="r1", graph_name="P1",
+                              driver_id="d1", vehicle_id="v1",
+                              start_time="06:00", trip_count=10)
+    f = {"date": "2026-08-10", "from": "2026-08-10", "to": "2026-08-10"}
+    t = met.today(f)
+    assert t["planned"] == 38            # trip_plan yig'indisi (schedules 10 emas)
+    assert t["completed"] == 30          # trip_fact yig'indisi (trips 3 emas)
+    assert t["active_buses"] == 2        # working_day>0 avtobuslar
+
+
+def test_today_falls_back_when_no_route_daily(met):
+    """route_daily qaydi bo'lmasa eski trips/schedules mantiq ishlaydi."""
+    f = {"date": "2026-08-10", "from": "2026-08-10", "to": "2026-08-10"}
+    t = met.today(f)
+    assert t["planned"] == 0             # schedules yo'q
+    assert t["completed"] == 2           # trips'dagi bajarilganlar
+    assert t["active_buses"] == 2        # trips'dagi avtobuslar
+
+
+def test_monthly_uses_route_daily_over_trips(met):
+    """monthly'da route_daily bor kun uchun planned/total/accepted saytdan."""
+    _save_route_daily(met.storage, "2026-08-10", "r1", "v1", "01A123AA",
+                      working_day=1, trip_plan=20, trip_fact=16,
+                      trip_approved=15)
+    f = {"from": "2026-08-01", "to": "2026-08-11"}
+    days = {d["date"]: d for d in met.monthly(f)["days"]}
+    d10 = days["2026-08-10"]
+    assert d10["planned"] == 20          # trip_plan (schedules 0 emas)
+    assert d10["total"] == 16            # trip_fact (trips statuslar emas)
+    assert d10["accepted"] == 15         # trip_approved
+    assert d10["completed"] == 16
+    d11 = days["2026-08-11"]             # route_daily yo'q — trips fallback
+    assert d11["planned"] == 0
+    assert d11["total"] == 0             # PENDING_ACCESS "Jami"ga kirmaydi
+
+
+def test_routes_uses_route_daily_approved(met):
+    """routes'da planned/actual/accepted route_daily'dan ustuvor."""
+    _save_route_daily(met.storage, "2026-08-10", "r1", "v1", "01A123AA",
+                      working_day=1, trip_plan=20, trip_fact=16,
+                      trip_approved=15, trip_passed=16)
+    f = {"date": "2026-08-10", "from": "2026-08-10", "to": "2026-08-10"}
+    r = [x for x in met.routes(f) if x["route_id"] == "r1"][0]
+    assert r["planned"] == 20            # trip_plan
+    assert r["actual"] == 16             # trip_fact
+    assert r["accepted"] == 15           # trip_approved (trips accepted 2 emas)
+
+
+def test_vehicles_uses_route_daily_fact(met):
+    """vehicles'da trips soni route_daily trip_fact'dan — saytdan."""
+    _save_route_daily(met.storage, "2026-08-10", "r1", "v1", "01A123AA",
+                      working_day=1, trip_plan=20, trip_fact=16)
+    _save_route_daily(met.storage, "2026-08-10", "r1", "v2", "01B456BB",
+                      working_day=0, trip_plan=18, trip_fact=0)
+    f = {"date": "2026-08-10", "from": "2026-08-10", "to": "2026-08-10"}
+    by_id = {v["vehicle_id"]: v for v in met.vehicles(f)}
+    assert by_id["v1"]["trips"] == 16    # trip_fact (trips 2 emas)
+    assert by_id["v1"]["planned"] == 20
+    assert by_id["v1"]["work_days"] == 1
+    assert by_id["v2"]["trips"] == 0     # working_day=0, trip_fact=0
+    assert by_id["v2"]["status"] == "faol emas"
+
+
+def test_brutto_uses_per_route_skm(monkeypatch, met):
+    """Brutto: har bir yo'nalish (firma) uchun alohida SKM qo'llanadi."""
+    from bm_automation.app.dashboard.metrics import brutto
+    import bm_automation.app.core.bot_settings as bs
+
+    # d1 r1'da AVTO 100.0 km — SKM r1 uchun 20000, r2 uchun 16176 (default)
+    met.storage.save_driver_work_log("2026-08-10", "d1", "v1", 100.0, 2,
+                                     note="AVTO", distance_plan=100.0,
+                                     trip_plan=2)
+    monkeypatch.setattr(bs, "route_skm", lambda rid, dflt=0.0: 20000.0
+                        if rid == "r1" else 16176.0)
+    monkeypatch.setattr(bs, "brutto_skm", lambda: 16176.0)
+    monkeypatch.setattr("bm_automation.app.dashboard.metrics.get_storage",
+                        lambda: met.storage)
+    f = {"date": "2026-08-10", "from": "2026-08-10", "to": "2026-08-10"}
+    rep = brutto(f)
+    d1 = [r for r in rep["rows"] if r["driver_id"] == "d1"][0]
+    assert d1["skm"] == 20000.0
+    assert d1["lr"] == 100.0
+    assert d1["lf"] == 100.0
+    # Lf=100=Lr, Kamal=2, Kstjb=0, Kmaq=0 → S = 20000 * 100
+    assert abs(d1["tolov"] - 20000.0 * 100.0) < 0.01

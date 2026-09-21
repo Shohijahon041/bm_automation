@@ -602,7 +602,7 @@ def assist(text: str, filters: dict | None = None,
         did = _extract_driver(text)
         if not did:
             return ("👨‍✈️ Haydovchi topilmadi. Ro'yxat: /drivers."), markup
-        return render.driver_card(did, f)
+        return render.driver_card(did, f, chat_id=chat_id)
 
     if intent == "routes":
         return render.routes(f)

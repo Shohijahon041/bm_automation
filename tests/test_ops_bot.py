@@ -183,7 +183,7 @@ def test_render_today(patch_met):
     assert "AVTOBUSLAR" in text and "REYSLAR" in text and "MUAMMOLAR" in text
     assert "Jami: 7" in text
     assert "<pre>" in text
-    assert "✅" in text or "❌" in text
+    assert any(x in text for x in ("✅", "⚠️", "❌"))
     labels = [b["text"] for row in kb_["inline_keyboard"] for b in row]
     assert any(l.startswith("⚠️ GPS") for l in labels)
     assert any(l.startswith("⚠️ texnik") for l in labels)
@@ -214,7 +214,7 @@ def test_render_month(patch_met):
 def test_render_problems(patch_met):
     text, _ = render.problems({"date": "2026-08-10"})
     assert "GPS (1)" in text and "texnik (2)" in text
-    assert "<pre>" in text and "01A006" in text
+    assert "01A006" in text
 
 
 def test_render_problem_category(patch_met):
@@ -252,6 +252,239 @@ def test_render_settings(monkeypatch):
                         lambda: _tg(admin_ids="111", dispatcher_ids="222"))
     assert "🛡 ADMIN" in render.settings_text(111)
     assert "👀 VIEWER" in render.settings_text(999)
+
+
+def test_render_settings_finance_block_gated_by_salary(monkeypatch):
+    from bm_automation.app.core import bot_settings
+    bot_settings._reset()
+    monkeypatch.setattr(roles, "telegram_settings",
+                        lambda: _tg(admin_ids="111"))
+    admin = render.settings_text(111)
+    viewer = render.settings_text(999)
+    assert "ELEKTR ENERGIYA" in admin
+    assert "116-SON QAROR" in admin
+    assert "ELEKTR ENERGIYA" not in viewer
+    assert "116-SON QAROR" not in viewer
+    assert "1 KM NARXI" in viewer
+
+
+def test_settings_kb_shows_finance_for_salary(monkeypatch):
+    from bm_automation.app.notifications.ops import kb
+    monkeypatch.setattr(roles, "telegram_settings",
+                        lambda: _tg(admin_ids="111", default_role="viewer"))
+    admin = kb.settings_kb(111)
+    viewer = kb.settings_kb(999)
+    adata = str(admin)
+    vdata = str(viewer)
+    assert "settings:elecprice" in adata
+    assert "settings:skm" in adata
+    assert "settings:elecprice" not in vdata
+    assert "settings:skm" not in vdata
+
+
+def test_settings_set_elec_price_flow(admin, monkeypatch):
+    from bm_automation.app.core import bot_settings
+    bot_settings._reset()
+    dispatch.handle_message(111, "/settings")
+    monkeypatch.setattr(dispatch, "answer", lambda cq, t="": None)
+    dispatch.handle_callback(111, {"id": "q"}, "settings:elecprice")
+    assert bot_settings.pending(111) == "elec_price"
+    dispatch.handle_message(111, "900")
+    assert bot_settings.elec_price() == 900.0
+    assert any("900" in m["text"] for m in admin)
+
+
+def test_settings_set_skm_flow(admin, monkeypatch):
+    from bm_automation.app.core import bot_settings
+    bot_settings._reset()
+    dispatch.handle_message(111, "/settings")
+    monkeypatch.setattr(dispatch, "answer", lambda cq, t="": None)
+    dispatch.handle_callback(111, {"id": "q"}, "settings:skm")
+    assert bot_settings.pending(111) == "brutto_skm"
+    dispatch.handle_message(111, "18000")
+    assert bot_settings.brutto_skm() == 18000.0
+    assert any("18 000" in m["text"] for m in admin)
+
+
+def test_settings_set_route_skm_flow(admin, monkeypatch):
+    from bm_automation.app.core import bot_settings
+    bot_settings._reset()
+    monkeypatch.setattr(dispatch.context, "filters_for",
+                        lambda cid: {"route": "r1"})
+    dispatch.handle_message(111, "/settings")
+    monkeypatch.setattr(dispatch, "answer", lambda cq, t="": None)
+    dispatch.handle_callback(111, {"id": "q"}, "settings:rskm")
+    assert bot_settings.pending(111) == "route_skm:r1"
+    dispatch.handle_message(111, "17000")
+    assert bot_settings.route_skm("r1") == 17000.0
+    assert any("17 000" in m["text"] for m in admin)
+
+
+def test_settings_audit_tracks_changes(monkeypatch, tmp_path):
+    from bm_automation.app.core import bot_settings
+    bot_settings.STATE_FILE = tmp_path / "s.json"
+    bot_settings._reset()
+    bot_settings.set_elec_price(850)
+    bot_settings.set_elec_price(850)
+    bot_settings.set_km_rate(2000)
+    rows = bot_settings.audit_log(5)
+    assert rows[0]["key"] == "km_rate"
+    assert rows[0]["old"] == 0.0 and rows[0]["new"] == 2000.0
+    assert rows[1]["key"] == "elec_price"
+    assert len(rows) == 2, "bir xil ketma-ket qiymat dublikat qilinmasligi kerak"
+
+
+def test_settings_audit_view(admin, monkeypatch):
+    from bm_automation.app.core import bot_settings
+    bot_settings._reset()
+    bot_settings.set_elec_price(850)
+    text = render.settings_audit_text(111)
+    assert "SETTINGS TARIXI" in text
+    assert "elec_price" in text
+
+
+def test_settings_audit_view_denied_for_viewer(viewer):
+    text = render.settings_audit_text(999)
+    assert "Huquq yo'q" in text
+
+
+def test_blacklisted_driver_not_resolved_as_driver(monkeypatch, tmp_path):
+    """Qora ro'yxatdagi bog'langan haydovchi DRIVER rolini olmaydi."""
+    from bm_automation.app.notifications.ops.roles import (
+        _DRIVER_CHAT_CACHE, _resolve_driver_role)
+    _DRIVER_CHAT_CACHE.clear()
+    st = storage_for(SQLiteDatabase(str(tmp_path / "bl.db")))
+    st.save_driver(external_id="db", full_name="Qorayev")
+    st.save_driver_profile("db", notification_enabled=True)
+    st.link_driver_telegram("db", 777)
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: st)
+    assert _resolve_driver_role(777) is not None
+    st.save_driver_profile("db", blacklisted=True)
+    assert _resolve_driver_role(777) is None
+
+
+def test_dashboard_settings_get_includes_finance(monkeypatch, tmp_path):
+    from bm_automation.app.core import bot_settings
+    from bm_automation.app.dashboard import server
+    bot_settings.STATE_FILE = tmp_path / "s.json"
+    bot_settings._reset()
+    bot_settings.set_elec_price(850)
+    bot_settings.set_brutto_skm(18000)
+    h = server.DashboardHandler.__new__(server.DashboardHandler)
+    out = h._get_settings()
+    assert out["global"]["elec_price"] == 850.0
+    assert out["global"]["brutto_skm"] == 18000.0
+    assert out["global"]["elec_kwh_per_km"] > 0
+    assert out["global"]["audit"]
+
+
+def test_dashboard_settings_update_finance(monkeypatch, tmp_path):
+    from bm_automation.app.core import bot_settings
+    from bm_automation.app.dashboard import server
+    bot_settings.STATE_FILE = tmp_path / "s.json"
+    bot_settings._reset()
+    h = server.DashboardHandler.__new__(server.DashboardHandler)
+    res = h._update_settings({"elec_price": 900, "brutto_skm": 17000})
+    assert res["ok"]
+    assert bot_settings.elec_price() == 900.0
+    assert bot_settings.brutto_skm() == 17000.0
+
+
+def test_dashboard_settings_update_bad_values(monkeypatch, tmp_path):
+    from bm_automation.app.core import bot_settings
+    from bm_automation.app.dashboard import server
+    bot_settings.STATE_FILE = tmp_path / "s.json"
+    bot_settings._reset()
+    h = server.DashboardHandler.__new__(server.DashboardHandler)
+    res = h._update_settings({"elec_price": -5})
+    assert not res["ok"]
+    res2 = h._update_settings({"brutto_skm": "abc"})
+    assert not res2["ok"]
+
+
+def test_settings_audit_csv(admin, monkeypatch):
+    from bm_automation.app.core import bot_settings
+    bot_settings._reset()
+    bot_settings.set_elec_price(850)
+    csv = render.settings_audit_csv(111)
+    assert csv.startswith("sep=;")
+    assert "Key" in csv
+    assert "elec_price" in csv
+    assert ";850" in csv
+
+
+def test_settings_audit_csv_denied_for_viewer(viewer):
+    assert render.settings_audit_csv(999) == "⛔ Huquq yo'q."
+
+
+def test_dashboard_export_settings_scope(tmp_path):
+    from bm_automation.app.core import bot_settings
+    from bm_automation.app.dashboard import export as ex
+    bot_settings.STATE_FILE = tmp_path / "s.json"
+    bot_settings._reset()
+    bot_settings.set_brutto_skm(12345)
+    data = ex.build_export({}, "xlsx", "settings")
+    assert data
+    data2 = ex.build_export({}, "csv", "settings")
+    assert b"brutto_skm" in data2 or b"12345" in data2
+
+
+def test_settings_audit_excel_sends_file(admin, monkeypatch):
+    """`/settings audit excel` CSV fayl sifatida yuboriladi."""
+    from bm_automation.app.core import bot_settings
+    bot_settings._reset()
+    bot_settings.set_elec_price(850)
+    sent = {}
+    monkeypatch.setattr("bm_automation.app.notifications.telegram.send_bytes",
+                        lambda name, data, caption="", chat_id=None: (
+                            sent.update(name=name, data=data), True)[1])
+    dispatch.handle_message(111, "/settings audit excel")
+    assert sent.get("name", "").startswith("settings_audit_")
+    assert sent["name"].endswith(".csv")
+    assert sent["data"].startswith(b"\xef\xbb\xbfsep=;"), "utf-8 BOM bo'lishi kerak"
+
+
+def test_settings_audit_excel_denied(viewer, monkeypatch):
+    monkeypatch.setattr("bm_automation.app.notifications.telegram.send_bytes",
+                        lambda *a, **k: None)
+    dispatch.handle_message(999, "/settings audit excel")
+    assert any("Huquq yo'q" in m["text"] for m in viewer)
+
+
+def test_bot_settings_clean_amount(tmp_path):
+    from bm_automation.app.core import bot_settings
+    import math as _m
+    bot_settings.STATE_FILE = tmp_path / "s.json"
+    bot_settings._reset()
+    assert bot_settings.set_elec_price(float("nan")) == 0.0
+    assert bot_settings.set_elec_price(float("inf")) == 0.0
+    assert bot_settings.set_km_rate(float("-inf")) == 0.0
+    assert bot_settings.set_brutto_skm(-500) == bot_settings.DEFAULT_SKM
+    huge = bot_settings.MAX_AMOUNT * 2
+    assert bot_settings.set_km_rate(huge) == bot_settings.MAX_AMOUNT
+    assert bot_settings.set_route_skm("r1", float("nan")) == 0.0
+    assert bot_settings.route_skm("r1") == 0.0
+    assert bot_settings.set_route_tariff("r2", float("nan"), float("inf")) == \
+        {"no_vat": 0.0, "vat": 0.0}
+    assert _m.isfinite(bot_settings.elec_price())
+
+
+def test_dashboard_export_tariffs_scope(monkeypatch, tmp_path):
+    from bm_automation.app.core import bot_settings
+    from bm_automation.app.dashboard import export as ex
+    bot_settings.STATE_FILE = tmp_path / "s.json"
+    bot_settings._reset()
+    bot_settings.set_brutto_skm(17000)
+    monkeypatch.setattr("bm_automation.app.dashboard.metrics.Metrics._companies",
+                        lambda self: {"r1": {"company": "ASL SUNDAY", "route_name": "B-80"}})
+    monkeypatch.setattr("bm_automation.app.dashboard.metrics.Metrics._route_names",
+                        lambda self: {"r1": "B-80"})
+    title, cols, rows = ex._data_for("tariffs",
+                                     ex.m.Metrics(), {})
+    assert cols[3] == "skm (so'm/km)"
+    assert rows and rows[0][0] == "ASL SUNDAY"
+    data = ex.build_export({}, "xlsx", "tariffs")
+    assert data
 
 
 # ------------------------------------------------- legacy lazy imports
@@ -311,6 +544,69 @@ def viewer(chat, monkeypatch):
 def test_dispatch_viewer_sync_denied(viewer):
     dispatch.handle_message(999, "/sync")
     assert viewer[-1]["text"] == DENIED_TEXT
+
+
+def test_driver_self_link_flow(viewer, monkeypatch, tmp_path):
+    """Part 2: haydovchi /start → telefon raqami → tizimga bog'lanish."""
+    from bm_automation.app.db import get_storage
+    from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE
+    _DRIVER_CHAT_CACHE.clear()
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "link.db"))))
+    st.save_driver_profile("d1", notification_target="901234567",
+                           notification_enabled=False)
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: st)
+    monkeypatch.setattr(dispatch, "get_storage", lambda: st)
+
+    with dispatch._DRIVER_LINK_LOCK:
+        dispatch._DRIVER_LINK_STATE.discard(999)
+
+    dispatch.handle_message(999, "/start")
+    assert viewer, "Haydovchidan telefon raqami so'ralishi kerak"
+    assert "902" in viewer[-1]["text"] or "raqam" in viewer[-1]["text"].lower()
+
+    dispatch.handle_message(999, "901234567")
+    assert any("Xush kelibsiz" in m["text"] for m in viewer)
+
+    profile = st.find("driver_profiles", driver_id="d1")
+    assert profile["telegram_chat_id"] == "999"
+    assert profile["notification_enabled"] == 1
+    assert roles.resolve_role(999) is roles.Role.DRIVER
+
+
+def test_driver_entry_notify_prefers_telegram_chat_id(monkeypatch, tmp_path):
+    """Kunlik qayd tasdiqlanganda bog'langan haydovchi o'z chat'iga oladi."""
+    from bm_automation.app.notifications import telegram as _tg_mod
+    from bm_automation.app.notifications.ops import driver_entry
+    sent = []
+    monkeypatch.setattr(_tg_mod, "send_message",
+                        lambda message, chat_id=None, **kw: sent.append(
+                            (message, chat_id)) or True)
+    st = storage_for(SQLiteDatabase(str(tmp_path / "notify.db")))
+    st.save_driver(external_id="d1", full_name="Aliyev")
+    st.save_driver_profile("d1", notification_target="998901234",
+                           notification_enabled=True)
+    st.link_driver_telegram("d1", 555)
+    monkeypatch.setattr(dispatch, "get_storage", lambda: st)
+
+    dispatch._notify_driver("d1", "log", {"date": "2026-08-10", "km": 120,
+                                          "trips": 5, "vehicle": "01A001"})
+    assert sent, "Haydovchiga bildirishnoma yuborilishi kerak"
+    assert sent[0][1] == "555"
+
+
+def test_driver_entry_notify_skips_blacklisted(monkeypatch, tmp_path):
+    """Qora ro'yxatdagi haydovchiga bildirishnoma yuborilmaydi."""
+    st = storage_for(SQLiteDatabase(str(tmp_path / "notify_bl.db")))
+    st.save_driver(external_id="d1", full_name="Aliyev")
+    st.save_driver_profile("d1", notification_enabled=True)
+    st.link_driver_telegram("d1", 555)
+    st.save_driver_profile("d1", blacklisted=True)
+    monkeypatch.setattr(dispatch, "get_storage", lambda: st)
+
+    res = dispatch._notify_driver("d1", "log", {"date": "2026-08-10",
+                                                "km": 120, "trips": 5,
+                                                "vehicle": "01A001"})
+    assert "qora ro'yxat" in res
 
 
 def test_dispatch_admin_sync_confirm(admin):
@@ -443,6 +739,27 @@ def test_render_driver_card(patch_met, storage):
 def test_render_driver_card_unknown(patch_met):
     text, kb_ = render.driver_card("nobody", {"month": "2026-08"})
     assert "topilmadi" in text.lower()
+
+
+def test_render_driver_card_hides_salary_for_driver(patch_met, storage,
+                                                    monkeypatch):
+    """DRIVER uchun kartada Brutto/Jarimalar/Netto ko'rinmaydi."""
+    _seed_driver_extras(storage)
+    monkeypatch.setattr(render, "resolve_role", lambda cid: Role.DRIVER)
+    text, _ = render.driver_card("d1", {"month": "2026-08"}, chat_id=555)
+    assert "HAYDOVCHI KARTASI" in text
+    assert "Brutto" not in text
+    assert "Netto" not in text
+    assert "Jarimalar" not in text
+
+
+def test_render_driver_card_shows_salary_for_admin(patch_met, storage,
+                                                   monkeypatch):
+    """ADMIN uchun kartada maosh qatorlari saqlanadi."""
+    _seed_driver_extras(storage)
+    monkeypatch.setattr(render, "resolve_role", lambda cid: Role.ADMIN)
+    text, _ = render.driver_card("d1", {"month": "2026-08"}, chat_id=111)
+    assert "Brutto" in text and "Jarimalar" in text and "Netto" in text
 
 
 def test_render_resolve_driver(patch_met):
@@ -710,7 +1027,7 @@ def test_dispatch_callback_nav_profiles(profiles_env, admin, monkeypatch):
 
 def test_dispatch_today_uses_profile_filter(profiles_env, admin, monkeypatch):
     seen = {}
-    def fake_today(filters=None):
+    def fake_today(filters=None, chat_id=None):
         seen["f"] = filters
         return ("T", {"inline_keyboard": []})
     monkeypatch.setattr(render, "today", fake_today)
@@ -1406,7 +1723,8 @@ def test_render_attendance_shows_present(patch_met):
 
 def test_render_month_accept_rate_column(patch_met):
     text, _ = render.month({"from": "2026-08-10", "to": "2026-08-10"})
-    assert "Qabul/Reja%" in text
+    assert "Qabul/Reja%" not in text
+    assert "Qabul" in text
 
 
 def test_settings_kb_admin_only_kmrate(monkeypatch):

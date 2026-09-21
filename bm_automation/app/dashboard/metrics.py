@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections import defaultdict
 from datetime import date, datetime, timedelta
 from urllib.parse import quote
 
@@ -133,6 +134,30 @@ class Metrics:
             params.append(f["status"])
         return (" AND ".join(clauses), params)
 
+    def _route_daily_where(self, f: dict) -> tuple[str, list]:
+        """route_daily uchun WHERE: date/from/to/route/vehicle (driver/status yo'q).
+
+        Sayt brutto-route byBus darajasidagi hisobotlar uchun; qolgan
+        filterlar (driver, status) route_daily'da mavjud emas — tashlab
+        yuboriladi (fallbackda trips ishlatiladi).
+        """
+        clauses, params = [], []
+        if f.get("from"):
+            clauses.append(f"date >= {self.ph}")
+            params.append(f["from"])
+        if f.get("to"):
+            clauses.append(f"date <= {self.ph}")
+            params.append(f["to"])
+        if f.get("route"):
+            rw, rp = self._route_filter(f["route"])
+            if rw:
+                clauses.append(rw)
+                params.extend(rp)
+        if f.get("vehicle"):
+            clauses.append(f"vehicle_id = {self.ph}")
+            params.append(f["vehicle"])
+        return (" AND ".join(clauses), params)
+
     # ----------------------------------------------------------------- today
 
     def today(self, f: dict) -> dict:
@@ -174,12 +199,46 @@ class Metrics:
             rows = self.storage.query(sql, tuple(params), limit=1)
             active_vehicles = rows[0]["n"] if rows else 0
 
-        # Reja — schedules trip_count yig'indisi (saytdagi "Rejadagi qatnovlar")
+        # Sayt brutto-route (route_daily): reja/amalda/faol avtobuslar
+        # saytdagi rasmiy raqamlar. route_daily qaydlari bo'lgan kunlar
+        # uchun ustuvor, bo'lmagan kunlar eski mantiq (fallback) ishlaydi.
         planned = 0
+        use_site = False
+        rd_where, rd_params = self._route_daily_where(f)
+        if rd_where and not f.get("driver") and not f.get("status"):
+            try:
+                rd_sum = self.storage.query(
+                    "SELECT COALESCE(SUM(trip_plan), 0) AS plan,"
+                    " COALESCE(SUM(trip_fact), 0) AS fact,"
+                    " COUNT(DISTINCT CASE WHEN working_day > 0 THEN vehicle_id"
+                    " END) AS buses"
+                    f" FROM route_daily WHERE {rd_where}",
+                    tuple(rd_params), limit=1)
+            except Exception:
+                rd_sum = []
+            if rd_sum:
+                rd_plan = int(rd_sum[0].get("plan") or 0)
+                rd_fact = int(rd_sum[0].get("fact") or 0)
+                # Faqat saytda qayd bor bo'lsa ustuvor — aks holda fallback
+                if rd_plan or rd_fact:
+                    use_site = True
+                    planned = rd_plan
+                    completed = rd_fact
+                    active_vehicles = int(rd_sum[0].get("buses") or 0)
+                    if not active_vehicles:
+                        rd_bus_rows = self.storage.query(
+                            "SELECT COUNT(DISTINCT vehicle_id) AS n"
+                            f" FROM route_daily WHERE {rd_where}",
+                            tuple(rd_params), limit=1)
+                        if rd_bus_rows and rd_bus_rows[0]["n"]:
+                            active_vehicles = int(rd_bus_rows[0]["n"] or 0)
+
+        # Reja — sayt route_daily bo'lmasa, schedules trip_count yig'indisi
+        # (saytdagi "Rejadagi qatnovlar" fallback).
         sf = dict(f)
         sf.pop("status", None)
         s_where, s_params = self._trip_where(sf)
-        if s_where:
+        if s_where and not use_site:
             prow = self.storage.query(
                 "SELECT COALESCE(SUM(trip_count), 0) AS n FROM schedules"
                 f" WHERE {s_where} AND trip_count > 0",
@@ -194,6 +253,7 @@ class Metrics:
             "total_buses": total_buses,
             "active_buses": active_vehicles,
             "not_active_buses": max(total_buses - active_vehicles, 0),
+            "reserve_buses": max(total_buses - active_vehicles, 0),
             "total_trips": total_trips,
             "completed": completed,
             "accepted": accepted,
@@ -296,7 +356,10 @@ class Metrics:
         if plan_where:
             rrows = self.storage.query(
                 "SELECT route_id, COALESCE(SUM(trip_plan), 0) AS plan,"
-                " COALESCE(SUM(trip_fact), 0) AS fact"
+                " COALESCE(SUM(trip_fact), 0) AS fact,"
+                " COALESCE(SUM(trip_approved), 0) AS approved,"
+                " COALESCE(SUM(trip_passed), 0) AS passed,"
+                " COALESCE(SUM(trip_fact - trip_approved), 0) AS not_accepted"
                 f" FROM route_daily WHERE {' AND '.join(plan_where)}"
                 " GROUP BY route_id",
                 tuple(plan_params),
@@ -315,6 +378,12 @@ class Metrics:
             actual = int(rd["fact"] or 0) if rd is not None \
                 else int(r["actual"] or 0)
             perf = min(round(actual / planned * 100, 1), 100.0) if planned else 0.0
+            # Qabul/tasdiqlangan — sayt route_daily ustuvor (trip_approved);
+            # route_daily yo'q bo'lsa trips statuslari fallback.
+            accepted = int(rd["approved"] or 0) if rd is not None \
+                else int(r["accepted"] or 0)
+            not_accepted = int(rd["not_accepted"] or 0) if rd is not None \
+                else int(r["not_accepted"] or 0)
             comp = companies.get(rid, {})
             out.append({
                 "route_id": rid,
@@ -323,11 +392,13 @@ class Metrics:
                 "route_name": comp.get("route_name", ""),
                 "planned": planned,
                 "actual": actual,
-                "accepted": int(r["accepted"] or 0),
-                "not_accepted": int(r["not_accepted"] or 0),
+                "accepted": accepted,
+                "not_accepted": not_accepted,
                 "rejected": int(r["rejected"] or 0),
                 "zero_mileage": int(r["zero_mileage"] or 0),
                 "performance": perf,
+                "skm": _route_skm_value(rid),
+                "km_rate": _route_km_value(rid),
             })
         return out
 
@@ -354,6 +425,26 @@ class Metrics:
         trip_rows = {r["vehicle_id"]: r for r in self.storage.query(
             trips_sql, tuple(_ISSUE_STATUSES) + tuple(params))}
 
+        # Sayt brutto-route (route_daily): har bir avtobus bo'yicha
+        # rasmiy reja/amalda — saytdagi raqamlar, trips kabi triplarni
+        # hisoblamaymiz. route_daily qaydlari bor avtobuslar uchun ustuvor.
+        rd_where, rd_params = self._route_daily_where(f)
+        rd_rows: dict[str, dict] = {}
+        if rd_where and not f.get("driver") and not f.get("status"):
+            try:
+                for r in self.storage.query(
+                        "SELECT vehicle_id,"
+                        " COALESCE(SUM(trip_plan), 0) AS plan,"
+                        " COALESCE(SUM(trip_fact), 0) AS fact,"
+                        " COUNT(DISTINCT CASE WHEN working_day > 0 THEN date"
+                        " END) AS work_days"
+                        f" FROM route_daily WHERE {rd_where}"
+                        " GROUP BY vehicle_id",
+                        tuple(rd_params)):
+                    rd_rows[str(r["vehicle_id"] or "")] = r
+            except Exception:
+                rd_rows = {}
+
         if not vehicles and not trip_rows:
             # Avtobuslar jadvali bo'sh — trips'dan aniqlaymiz
             for vid, r in sorted(trip_rows.items()):
@@ -364,7 +455,12 @@ class Metrics:
         for v in vehicles:
             vid = v["external_id"]
             t = trip_rows.get(vid, {})
-            trips = int(t.get("trips") or 0)
+            rd = rd_rows.get(vid)
+            # Saytda qayd bor bo'lsa amalda reyslar saytdan (trip_fact),
+            # aks holda trips hisobi fallback.
+            trips = int(rd["fact"] or 0) if rd is not None else int(t.get("trips") or 0)
+            planned = int(rd["plan"] or 0) if rd is not None else 0
+            work_days = int(rd["work_days"] or 0) if rd is not None else 0
             last = t.get("last_actual") or t.get("last_sync") or ""
             active = trips > 0
             out.append({
@@ -375,6 +471,8 @@ class Metrics:
                 "route_id": v.get("route_id") or "",
                 "status": "faol" if active else "faol emas",
                 "trips": trips,
+                "planned": planned,
+                "work_days": work_days,
                 "issues": int(t.get("issues") or 0),
                 "last_activity": last or "-",
             })
@@ -592,6 +690,455 @@ class Metrics:
             },
         }
 
+    # -------------------------------------------------------- not accepted km
+
+    @staticmethod
+    def _hm(value: str) -> int:
+        """'HH:MM[:SS]' → daqiqa. Bo'sh/mal'umot yo'q → 0."""
+        if not value:
+            return 0
+        parts = str(value).split(":")
+        try:
+            return int(parts[0]) * 60 + int(parts[1])
+        except (TypeError, ValueError, IndexError):
+            return 0
+
+    @staticmethod
+    def _fmt_min(mins: int) -> str:
+        """Daqiqa → 'HH:MM:SS'."""
+        mins = max(int(mins), 0)
+        return f"{mins // 60:02d}:{mins % 60:02d}:00"
+
+    def _schedule_segments(self, frm: str, to: str, route_clause: str = "",
+                           route_params: list | None = None) -> dict:
+        """Davr schedules → (date, route_id, graph_name) segment guruhlari.
+
+        Bitta grafik (date+route+graph) = bitta kunlik qatnov rejasi. Qator
+        ichida `hasSecond` bo'lsa (bitta avtobusda ikki haydovchi) — qator
+        ikkiga bo'linadi: asosiy haydovchi [start → secondStart], ikkinchi
+        haydovchi [secondStart → end]. Qaytarish: guruh → vaqt segmentlari.
+        """
+        ph = self.ph
+        where = [f"date >= {ph}", f"date <= {ph}"]
+        params: list = [frm, to]
+        if route_clause:
+            where.append(route_clause)
+            params.extend(route_params or [])
+        rows = self.storage.query(
+            "SELECT date, route_id, graph_name, driver_id, vehicle_id,"
+            " start_time, end_time, trip_count, data"
+            f" FROM schedules WHERE {' AND '.join(where)}",
+            tuple(params), limit=100000)
+        groups: dict[tuple, list] = defaultdict(list)
+        for r in rows:
+            date = r.get("date")
+            rid = r.get("route_id") or ""
+            gn = r.get("graph_name") or ""
+            did = r.get("driver_id") or ""
+            vid = r.get("vehicle_id") or ""
+            start = r.get("start_time") or ""
+            end = r.get("end_time") or ""
+            tc = int(r.get("trip_count") or 0)
+            groups[(date, rid, gn)].append({
+                "driver_id": did, "vehicle_id": vid, "start": start,
+                "end": end, "trip_count": tc, "is_second": False,
+            })
+            try:
+                raw = json.loads(r.get("data") or "{}") if r.get("data") else {}
+            except (TypeError, ValueError):
+                raw = {}
+            if not isinstance(raw, dict):
+                raw = {}
+            sec_id = str(raw.get("secondDriverId") or "")
+            sec_start = str(raw.get("secondStartTime") or "")
+            if not (bool(raw.get("hasSecond")) or (sec_id and sec_start)) \
+                    or not sec_id:
+                continue
+            split_min = self._hm(sec_start) \
+                or (self._hm(start) + self._hm(end)) // 2
+            home = self._fmt_min(split_min)
+            groups[(date, rid, gn)][-1]["end"] = home
+            groups[(date, rid, gn)].append({
+                "driver_id": sec_id, "vehicle_id": vid, "start": home,
+                "end": end, "trip_count": tc, "is_second": True,
+            })
+        for g in groups.values():
+            g.sort(key=lambda s: (self._hm(s["start"]), s["start"]))
+        return groups
+
+    def _graph_day_allocation(self, segments: list,
+                              rd_by_vehicle: dict, accepted: dict) -> list:
+        """Graf kuni uchun reja/fact segmentlarga bo'linadi.
+
+        - Reja faqat `working_day=1` avtobus route_daily'dan, segmentlarga
+          VAQT ulushiga proporsional (kumulyativ yaxlitlash — jami aniq).
+        - Fact har segmentning o'z avtobus route_daily faktidan; bitta
+          avtobus bir nechta segmentga tegishli bo'lsa (`hasSecond`) —
+          haydovchilarning qabul qilingan reyslar soniga proporsional.
+        """
+        n = len(segments)
+        if n == 0:
+            return []
+        durs = [max(self._hm(s["end"]) - self._hm(s["start"]), 0)
+                for s in segments]
+        total_dur = sum(durs)
+
+        plan_rows = [r for r in rd_by_vehicle.values()
+                     if int(r.get("working_day") or 0) == 1] \
+            or list(rd_by_vehicle.values())
+        plan_tot = sum(int(r.get("trip_plan") or 0) for r in plan_rows)
+        plan_km_tot = sum(float(r.get("distance_plan") or 0)
+                          for r in plan_rows)
+        fact_tot = sum(int(r.get("trip_fact") or 0)
+                       for r in rd_by_vehicle.values())
+        fact_km_tot = sum(float(r.get("distance_fact") or 0)
+                          for r in rd_by_vehicle.values())
+
+        # Reja — vaqt ulushiga proporsional (jami aniq saqlanadi)
+        plan_trips = [0] * n
+        plan_km = [0.0] * n
+        if plan_tot > 0:
+            running = 0.0
+            prev_cum = 0
+            for i in range(n):
+                running += durs[i] if total_dur else 0
+                frac = (running / total_dur) if total_dur else 1.0
+                cum = int(round(plan_tot * frac))
+                plan_trips[i] = cum - prev_cum
+                prev_cum = cum
+            if sum(plan_trips) != plan_tot:  # yaxlitlash himoyasi
+                plan_trips[-1] += plan_tot - sum(plan_trips)
+            ratio = plan_km_tot / plan_tot
+            km_acc = 0.0
+            for i in range(n):
+                if i == n - 1:
+                    plan_km[i] = round(plan_km_tot - km_acc, 2)
+                else:
+                    plan_km[i] = round(plan_trips[i] * ratio, 2)
+                    km_acc += plan_km[i]
+
+        # Fact — avtobusning o'z route_daily faktidan
+        veh_seg: dict[str, list[int]] = defaultdict(list)
+        for i, s in enumerate(segments):
+            veh_seg[s["vehicle_id"]].append(i)
+        fact_trips = [0] * n
+        fact_km = [0.0] * n
+        for vid, idxs in veh_seg.items():
+            rd = rd_by_vehicle.get(vid) or {}
+            vfact = int(rd.get("trip_fact") or 0)
+            vkm = float(rd.get("distance_fact") or 0)
+            if len(idxs) == 1:
+                i = idxs[0]
+                fact_trips[i] = vfact
+                fact_km[i] = vkm
+                continue
+            # bitta avtobus, bir nechta segment (hasSecond) — accepted bo'yicha
+            acc_counts = [int(accepted.get(
+                (vid, segments[i]["driver_id"]), 0)) for i in idxs]
+            tot_acc = sum(acc_counts)
+            if tot_acc > 0:
+                km_acc = 0.0
+                assigned = 0
+                for k, i in enumerate(idxs):
+                    if k == len(idxs) - 1:
+                        fact_trips[i] = vfact - assigned
+                        fact_km[i] = round(vkm - km_acc, 2)
+                        break
+                    share = acc_counts[k] / tot_acc
+                    n_t = int(round(vfact * share))
+                    fact_trips[i] = n_t
+                    assigned += n_t
+                    km = round(vkm * share, 2)
+                    fact_km[i] = km
+                    km_acc += km
+            else:
+                base_t = vfact // len(idxs)
+                rem_t = vfact % len(idxs)
+                base_km = round(vkm / len(idxs), 2)
+                km_acc = 0.0
+                for k, i in enumerate(idxs):
+                    fact_trips[i] = base_t + (1 if k < rem_t else 0)
+                    if k == len(idxs) - 1:
+                        fact_km[i] = round(vkm - km_acc, 2)
+                    else:
+                        fact_km[i] = base_km
+                        km_acc += base_km
+
+        return [{
+            "driver_id": segments[i]["driver_id"],
+            "vehicle_id": segments[i]["vehicle_id"],
+            "plan_reys": plan_trips[i],
+            "fact_reys": fact_trips[i],
+            "plan_km": plan_km[i],
+            "fact_km": fact_km[i],
+        } for i in range(n)]
+
+    def not_accepted_km_report(self, f: dict | None = None) -> dict:
+        """Qabul qilinmagan reyslar — haydovchi bo'yicha hisobot.
+
+        Sayt bilan bir xil hisob: `route_daily` dan (ishlagan sana+avtobus
+        kunlari bo'yicha) rejadagi reyslar (`trip_plan`), amalda bajarilgan
+        reyslar (`trip_fact`), rejadagi km (`distance_plan`) va amalda km
+        (`distance_fact`) jamlanadi. Qabul qilinmagan reyslar = reja − amalda.
+
+        Haydovchi/avtobusga taqsimot `schedules` grafiklari asosida:
+        bitta grafik (date+route+graph) = bitta kunlik reja; u bir necha
+        avtobus/haydovchi almashgan kunda (buzilish → reserve avtobus,
+        smena) vaqt segmentlariga bo'linadi va reja segment davomiyligiga
+        proporsional taqsimlanadi, fact har avtobusning o'z route_daily
+        satridan olinadi. Shunday qilib birinchi (ertalab) minib chiqqan
+        avtobus qabul qilinmagan reyslarni oladi. Schedule bo'lmasa —
+        eski birinchi-keldi fallback.
+
+        Filterlar: yo'nalish (`route` id), davr (`from`/`to` yoki `month`),
+        avtobus, haydovchi. Natija: BARCHA ishlagan haydovchilar `rows`
+        va `totals` hamda davr `period` (qabul qilinmagan reysi 0 bo'lganlar
+        ham chiqadi). `totals` barcha haydovchilarni qamrab oladi — sayt
+        bruto-route yig'indisiga mos bo'lishi uchun.
+        """
+        f = f or {}
+        frm, to = self._month_bounds(f)
+        ph = self.ph
+
+        # Ishlagan (sana, avtobus) kunlarini aniqlash uchun trips kerak.
+        where = [f"date >= {ph}", f"date <= {ph}"]
+        params: list = [frm, to]
+        rw, rp = self._route_filter(f.get("route"))
+        if rw:
+            where.append(rw)
+            params.extend(rp)
+        if f.get("vehicle"):
+            where.append(f"vehicle_id = {ph}")
+            params.append(f["vehicle"])
+        if f.get("driver"):
+            where.append(f"driver_id = {ph}")
+            params.append(f["driver"])
+        trips = self.storage.query(
+            "SELECT date, driver_id, vehicle_id, status"
+            " FROM trips WHERE " + " AND ".join(where),
+            tuple(params), limit=200000)
+
+        # Sayt bilan bir xil hisob — route_daily
+        # (trip_plan/trip_fact/working_day/distance_plan/distance_fact).
+        rd_params: list = [frm, to]
+        rd_where = f"date >= {ph} AND date <= {ph}"
+        rw, rp = self._route_filter(f.get("route"))
+        if rw:
+            rd_where += " AND " + rw
+            rd_params.extend(rp)
+        if f.get("vehicle"):
+            rd_where += f" AND vehicle_id = {ph}"
+            rd_params.append(f["vehicle"])
+        daily = self.storage.query(
+            "SELECT date, vehicle_id, trip_plan, trip_fact, working_day,"
+            " distance_plan, distance_fact"
+            f" FROM route_daily WHERE {rd_where}",
+            tuple(rd_params), limit=40000)
+        daily_by_key: dict[tuple, dict] = {}
+        for r in daily:
+            acc = daily_by_key.setdefault(
+                (r["date"], r["vehicle_id"]),
+                {"trip_plan": 0, "trip_fact": 0, "working_day": 0,
+                 "distance_plan": 0.0, "distance_fact": 0.0})
+            acc["trip_plan"] += int(r.get("trip_plan") or 0)
+            acc["trip_fact"] += int(r.get("trip_fact") or 0)
+            acc["working_day"] += int(r.get("working_day") or 0)
+            acc["distance_plan"] += float(r.get("distance_plan") or 0)
+            acc["distance_fact"] += float(r.get("distance_fact") or 0)
+
+        dnames = {r["external_id"]: (r["full_name"] or r["external_id"] or "")
+                  for r in self.storage.query(
+                      "SELECT external_id, full_name FROM drivers")}
+
+        per: dict[str, dict] = defaultdict(
+            lambda: {"plan_reys": 0, "fact_reys": 0, "days": set(),
+                     "plan_km": 0.0, "fact_km": 0.0, "manual_km": 0.0})
+
+        # --- Vaqtga asoslangan taqsimot: (date, route, graph) guruhlari ---
+        # Bitta grafik = bitta kunlik reja. Haydovchi/avtobus almashtirilgan
+        # kunlar (buzilish → reserve avtobus, smena almashinuvi) guruh ichida
+        # VAQT segmentlariga bo'linadi; reja davomiylikka proporsional,
+        # fact har avtobusning o'z route_daily satridan olinadi. Shu sababli
+        # qabul qilinmagan reyslar ertalab birinchi chiqqan avtobusga yoziladi.
+        groups = self._schedule_segments(frm, to, rw, rp)
+        acc_clauses = [f"date >= {ph}", f"date <= {ph}",
+                       f"status IN ({ph},{ph})"]
+        acc_params: list = [frm, to, "ACCEPTED", "APPROVED"]
+        if rw:
+            acc_clauses.append(rw)
+            acc_params.extend(rp)
+        acc_by: dict[tuple, int] = {
+            (r["date"], r["vehicle_id"], r["driver_id"]): int(r["n"] or 0)
+            for r in self.storage.query(
+                "SELECT date, vehicle_id, driver_id, COUNT(*) AS n"
+                f" FROM trips WHERE {' AND '.join(acc_clauses)}"
+                " GROUP BY date, vehicle_id, driver_id",
+                tuple(acc_params), limit=200000)
+        }
+        claimed: set[tuple] = set()
+        for (d, _rid, _gn), segs in groups.items():
+            rd_by_vehicle: dict[str, dict] = {}
+            for s in segs:
+                v = s["vehicle_id"]
+                if v and (d, v) in daily_by_key:
+                    rd_by_vehicle[v] = daily_by_key[(d, v)]
+                    claimed.add((d, v))
+            accepted = {
+                (v, s["driver_id"]): acc_by.get((d, v, s["driver_id"]), 0)
+                for s in segs}
+            for sa, s in zip(
+                    self._graph_day_allocation(segs, rd_by_vehicle, accepted),
+                    segs):
+                did = sa.get("driver_id") or ""
+                if not did:
+                    continue
+                if f.get("driver") and did != f["driver"]:
+                    continue
+                if f.get("vehicle") and s["vehicle_id"] != f["vehicle"]:
+                    continue
+                if not (sa["plan_reys"] or sa["fact_reys"]
+                        or sa["plan_km"] or sa["fact_km"]):
+                    continue
+                p = per[did]
+                p["plan_reys"] += sa["plan_reys"]
+                p["fact_reys"] += sa["fact_reys"]
+                p["plan_km"] += sa["plan_km"]
+                p["fact_km"] += sa["fact_km"]
+                p["days"].add((d, s["vehicle_id"]))
+
+        # --- Fallback: schedule ma'lumoti bo'lmagan (sana, avtobus) uchun
+        # birinchi haydovchi butun route_daily qatorini oladi.
+        for t in trips:
+            did = t.get("driver_id") or ""
+            if not did:
+                continue
+            key = (t.get("date"), t.get("vehicle_id"))
+            if key in claimed or key not in daily_by_key \
+                    or key in per[did]["days"]:
+                continue
+            per[did]["days"].add(key)
+            claimed.add(key)
+            acc = daily_by_key[key]
+            per[did]["plan_reys"] += acc["trip_plan"]
+            per[did]["fact_reys"] += acc["trip_fact"]
+            per[did]["plan_km"] += acc["distance_plan"]
+            per[did]["fact_km"] += acc["distance_fact"]
+
+        # --- Yetim ish kunlari: wd=1, lekin na schedules, na trips (haydovchi
+        # aniqlab bo'lmaydi). Jami jadvalga to'liq mos bo'lishi uchun bunday
+        # kunlar "Atribut qilinmagan" haydovchiga kiritiladi.
+        orph = "_atribut_qilinmagan_"
+        for d, v, acc in [(k[0], k[1], a) for k, a in daily_by_key.items()]:
+            if (d, v) in claimed or (d, v) in per[orph]["days"]:
+                continue
+            if not (int(acc.get("working_day") or 0) > 0):
+                continue
+            p = per[orph]
+            p["plan_reys"] += acc["trip_plan"]
+            p["fact_reys"] += acc["trip_fact"]
+            p["plan_km"] += acc["distance_plan"]
+            p["fact_km"] += acc["distance_fact"]
+            p["days"].add((d, v))
+
+        # Qo'lda kirilgan reys/km (driver_work_logs, note != 'AVTO') — sayt
+        # hisobi bilan mos bo'lish uchun faqat AMALDA (bajarilgan) reyslar va
+        # km larga qo'shiladi. Shu sababli qo'lda qayd qilingan ish qabul
+        # qilinmagan defitsitini (reja − amalda) kamaytiradi: masalan o'sha kuni
+        # reyslar yozilmagan bo'lsa, qo'lda qo'shilgan reyslar defitsitni
+        # yopadi. AVTO (brutto-route) qaydlari bu yerda emas.
+        wl_clauses, wl_params = [], [frm, to]
+        ph = self.ph
+        wl_clauses.append(f"note != {ph}")
+        wl_params.append("AVTO")
+        if f.get("vehicle"):
+            wl_clauses.append(f"vehicle_id = {ph}")
+            wl_params.append(f["vehicle"])
+        if f.get("driver"):
+            wl_clauses.append(f"driver_id = {ph}")
+            wl_params.append(f["driver"])
+        rw, rp = self._route_filter(f.get("route"))
+        if rw:
+            wl_clauses.append(
+                "vehicle_id IN (SELECT external_id FROM vehicles WHERE "
+                + rw + ")")
+            wl_params.extend(rp)
+        manual_rows = self.storage.query(
+            "SELECT driver_id, COALESCE(SUM(distance_km), 0) AS km,"
+            " COALESCE(SUM(trip_count), 0) AS trips"
+            " FROM driver_work_logs WHERE driver_id != ''"
+            f" AND date >= {self.ph} AND date <= {self.ph}"
+            f" AND {' AND '.join(wl_clauses)} GROUP BY driver_id",
+            tuple(wl_params), limit=200000)
+        for mr in manual_rows:
+            did = str(mr.get("driver_id") or "")
+            if not did or did not in per:
+                continue
+            km = float(mr.get("km") or 0)
+            tr = int(mr.get("trips") or 0)
+            if km > 0 or tr > 0:
+                per[did]["manual_km"] += km
+                per[did]["fact_km"] += km
+                per[did]["fact_reys"] += tr
+
+        # Sayt bilan bir xil hisobni ko'rsatish uchun BARCHA ishlagan
+        # haydovchilar chiqadi — qabul qilinmagan reysi 0 bo'lganlar ham.
+        # Tartib: avval muammolilar (kamayish), keyin reyslar bo'yicha.
+        rows = []
+        for did, d in per.items():
+            name = dnames.get(did, did)
+            if did == "_atribut_qilinmagan_":
+                name = "— Atribut qilinmagan —"
+            rows.append({
+                "name": name,
+                "plan_reys": d["plan_reys"],
+                "fact_reys": d["fact_reys"],
+                "qabul_qilinmagan": max(0, d["plan_reys"] - d["fact_reys"]),
+                "days": len({k[0] for k in d["days"]}),
+                "plan_km": round(d["plan_km"], 2),
+                "fact_km": round(d["fact_km"], 2),
+                "manual_km": round(d["manual_km"], 2),
+                "diff": round(max(0.0, d["plan_km"] - d["fact_km"]), 2),
+            })
+        rows.sort(key=lambda r: (-r["qabul_qilinmagan"], -r["fact_reys"]))
+
+        # JAMI — qatorlar yig'indisiga mos (ortiqcha ishlaganlar 0 ko'rsatadi).
+        totals = {
+            "plan_reys": sum(d["plan_reys"] for d in per.values()),
+            "fact_reys": sum(d["fact_reys"] for d in per.values()),
+            "qabul_qilinmagan": sum(
+                max(0, d["plan_reys"] - d["fact_reys"])
+                for d in per.values()),
+            "days": sum(len({k[0] for k in d["days"]}) for d in per.values()),
+            "plan_km": round(sum(d["plan_km"] for d in per.values()), 2),
+            "fact_km": round(sum(d["fact_km"] for d in per.values()), 2),
+            "manual_km": round(sum(d["manual_km"] for d in per.values()), 2),
+        }
+        totals["diff"] = round(
+            sum(max(0.0, d["plan_km"] - d["fact_km"])
+                for d in per.values()), 2)
+
+        # Qabul qilinmagan km'ning puldagi ifodasi (boshlang'ich narx bo'yicha).
+        from ..core.bot_settings import route_tariff
+        rid = f.get("route") or ""
+        tar = route_tariff(rid)
+        for r in rows:
+            r["sum_no_vat"] = round(r["diff"] * tar["no_vat"], 2)
+            r["sum_vat"] = round(r["diff"] * tar["vat"], 2)
+        totals["sum_no_vat"] = round(totals["diff"] * tar["no_vat"], 2)
+        totals["sum_vat"] = round(totals["diff"] * tar["vat"], 2)
+
+        rnames = self._route_names()
+        companies = self._companies()
+        return {
+            "period": {"from": frm, "to": to},
+            "route_id": rid,
+            "route_name": rnames.get(rid, rid) if rid else "Barcha yo'nalishlar",
+            "company": companies.get(rid, {}).get("company", "") if rid else "",
+            "tariff": tar,
+            "rows": rows,
+            "totals": totals,
+        }
+
     # --------------------------------------------------------------- schedule
 
     def schedule(self, f: dict | None = None) -> dict:
@@ -748,7 +1295,9 @@ class Metrics:
 
         Haydovchi oyligi km`si brutto-route (gross/route `distanceFact`)
         dan olinadi va shu kalit bo'yicha saqlanadi. Dashboard trips
-        km'ini AVTO qaydlar bilan almashtiradi (fallback: trips).
+        km'ini AVTO qaydlar bilan almashtiradi (fallback: trips). Reja
+        ko'rsatkichlari (distance_plan/trip_plan/working_day) ham AVTO
+        qatorda saqlanadi — brutto hisob Lr/Lf shundan olinadi.
         """
         clauses, params = [], []
         ph = self.ph
@@ -774,8 +1323,9 @@ class Metrics:
         params.append("AVTO")
         where = " AND ".join(clauses)
         rows = self.storage.query(
-            "SELECT date, driver_id, vehicle_id, distance_km, trip_count "
-            "FROM driver_work_logs WHERE driver_id != ''"
+            "SELECT date, driver_id, vehicle_id, distance_km, trip_count,"
+            " distance_plan, trip_plan, working_day, trip_passed, trip_approved"
+            " FROM driver_work_logs WHERE driver_id != ''"
             f"{(' AND ' + where) if where else ''}", tuple(params), limit=50000)
         return {(str(r.get("date") or ""), str(r.get("driver_id") or ""),
                  str(r.get("vehicle_id") or "")): r for r in rows}
@@ -861,14 +1411,17 @@ class Metrics:
             rid = str(r.get("route_id") or "")
             if not did:
                 continue
-            d = per.setdefault(did, {"km": 0.0, "trips": 0, "days": set(),
+            d = per.setdefault(did, {"km": 0.0, "plan_km": 0.0, "trips": 0,
+                                     "plan_trips": 0, "days": set(),
                                      "issues": 0})
             a = avto.get((str(r.get("date") or ""), did,
                           str(r.get("vehicle_id") or "")))
             if a is not None:
                 avto_km = float(a.get("distance_km") or 0)
                 d["km"] += avto_km
+                d["plan_km"] += float(a.get("distance_plan") or 0)
                 d["trips"] += int(a.get("trip_count") or 0)
+                d["plan_trips"] += int(a.get("trip_plan") or 0)
                 if rid:
                     avto_replaced.add((str(r.get("date") or ""), did,
                                        str(r.get("vehicle_id") or "")))
@@ -877,7 +1430,9 @@ class Metrics:
             else:
                 trip_km = float(r.get("km") or 0)
                 d["km"] += trip_km
+                d["plan_km"] += trip_km
                 d["trips"] += int(r.get("trips") or 0)
+                d["plan_trips"] += int(r.get("trips") or 0)
                 if rid:
                     route_km.setdefault(did, {})
                     route_km[did][rid] = route_km[did].get(rid, 0.0) + trip_km
@@ -954,6 +1509,8 @@ class Metrics:
                 "attendance": round(days / total_days * 100, 1),
                 "total_days": total_days,
                 "km": total_km,
+                "plan_km": round(p.get("plan_km", 0.0), 2),
+                "plan_trips": int(p.get("plan_trips") or 0),
                 "automatic_km": automatic_km.get(driver_id, 0.0),
                 "km_rate": rate,
                 "gross_pay": gross,
@@ -1373,6 +1930,31 @@ class Metrics:
                    + (frm, to) + tuple(params))
         day_rows = {r["date"]: r for r in self.storage.query(trips_sql, tparams)}
 
+        # Sayt brutto-route (route_daily): kun bo'yicha rasmiy reja/amalda/
+        # qabul. route_daily qaydlari bor kunda ustuvor; qayd yo'q kunda
+        # trips/schedules fallback ishlaydi. driver/status filtrlari
+        # route_daily'da mavjud emas — bunday hollarda sayt qatlami
+        # ishlatilmaydi (trips bo'limi yetarli).
+        rd_rows_daily: dict[str, dict] = {}
+        rd_filtered = not wf.get("driver") and not wf.get("status")
+        if rd_filtered:
+            rd_where_d, rd_params_d = self._route_daily_where(f)
+            if rd_where_d:
+                rd_query = (
+                    f"SELECT date, COALESCE(SUM(trip_plan), 0) AS plan,"
+                    f" COALESCE(SUM(trip_fact), 0) AS fact,"
+                    f" COALESCE(SUM(trip_approved), 0) AS approved"
+                    f" FROM route_daily WHERE {rd_where_d}"
+                    f" AND date >= {ph} AND date <= {ph}"
+                    f" GROUP BY date"
+                )
+                rd_params_all = (frm, to) + tuple(rd_params_d)
+                try:
+                    rd_rows_daily = {r["date"]: r for r in self.storage.query(
+                        rd_query, rd_params_all)}
+                except Exception:
+                    rd_rows_daily = {}
+
         # schedules — rejalashtirilgan qatnovlar (trip_count yig'indisi)
         sparam = (frm, to) + tuple(params)
         ssql = (
@@ -1389,19 +1971,27 @@ class Metrics:
         while cur <= last:
             ds = cur.isoformat()
             tr = day_rows.get(ds, {})
-            planned = plan_rows.get(ds, 0)
+            rd = rd_rows_daily.get(ds)
+            # planned: sayt route_daily trip_plan ustuvor; bo'lmasa schedules.
+            planned = int(rd["plan"] or 0) if rd is not None else plan_rows.get(ds, 0)
             actual = int(tr.get("actual") or 0)
             technical = int(tr.get("technical") or 0)
             schedule = int(tr.get("not_accepted") or 0) + int(tr.get("pending") or 0)
-            accepted = int(tr.get("accepted") or 0)
+            # accepted: sayt trip_approved ustuvor; bo'lmasa trips statusi.
+            accepted = int(rd["approved"] or 0) if rd is not None \
+                else int(tr.get("accepted") or 0)
             not_accepted = int(tr.get("not_accepted") or 0)
             zero_mileage = int(tr.get("zero_mileage") or 0)
+            # total: sayt trip_fact ustuvor; bo'lmasa trips agregati.
+            total = int(rd["fact"] or 0) if rd is not None \
+                else accepted + not_accepted + zero_mileage
+            completed = total if rd is not None else int(tr.get("completed") or 0)
             days.append({
                 "date": ds,
                 "planned": planned,
-                "total": accepted + not_accepted + zero_mileage,
+                "total": total,
                 "actual": actual,
-                "completed": int(tr.get("completed") or 0),
+                "completed": completed,
                 "accepted": accepted,
                 "not_accepted": not_accepted,
                 "pending": int(tr.get("pending") or 0),
@@ -1821,6 +2411,19 @@ def summary(filters: dict | None = None) -> dict:
     return result
 
 
+def _route_skm_value(route_id: str) -> float:
+    """Yo'nalish uchun amal qiladigan SKM (route → global fallback)."""
+    from ..core.bot_settings import brutto_skm, route_skm
+    base = brutto_skm()
+    return float(route_skm(route_id, base) or base or 0.0)
+
+
+def _route_km_value(route_id: str) -> float:
+    """Yo'nalish uchun amal qiladigan km narxi (ustunlik zanjiri bo'yicha)."""
+    from ..config.settings import km_rate_for
+    return float(km_rate_for(route_id, 0.0))
+
+
 def route_options() -> list[dict]:
     """Firma (pill) ro'yxati — faqat profiles.json'dagi ishlaydigan firmalar.
 
@@ -1835,10 +2438,118 @@ def route_options() -> list[dict]:
     for rid, info in companies.items():
         route_name = info["route_name"] or rnames.get(rid, "")
         name = info["company"] or route_name or rid
+        from ..core.bot_settings import route_tariff
+        t = route_tariff(rid)
         out.append({
             "id": rid,
             "name": name,
             "company": info["company"],
             "route_name": route_name,
+            "skm": _route_skm_value(rid),
+            "km_rate": _route_km_value(rid),
+            "tariff_no_vat": t.get("no_vat") or 0,
+            "tariff_vat": t.get("vat") or 0,
         })
     return out
+
+
+def brutto(filters: dict | None = None) -> dict:
+    """116-son qaror (32-band) bo'yicha tashuvchiga to'lov (brutto) — JSON.
+
+    Ma'lumot `drivers()` dan olinadi; km/reys saytdagi brutto-route
+    (`route_daily` → AVTO qaydlari) asosida:
+      Lf = amalda km (distance_fact), Lr = reja km (distance_plan;
+      reja bo'lmasa Lf ga ishlatiladi), Kamal = reyslar soni,
+      Kstjb = muammoli reyslar, Kmaq = 0.
+    SKM `brutto_skm` sozlamasidan (default 16176 so'm/km).
+    """
+    from pandas import DataFrame
+    from ..core.bot_settings import brutto_skm, route_skm
+    from .brutto_calculator import BruttoCalculator, Contract
+
+    f = parse_filters(filters or {})
+    m = Metrics()
+    rows = m.drivers(f) or []
+    base_skm = brutto_skm()
+
+    # Per-route SKM: har bir haydovchi o'z yo'nalishi (firma) narxi bilan
+    driver_skm: dict[str, float] = {}
+
+    def _skm(r: dict) -> float:
+        v = route_skm(str(r.get("route_id") or ""), base_skm) or base_skm
+        driver_skm[str(r.get("driver_id") or "")] = v
+        return v
+
+    contract = Contract(skm=base_skm, route_number="JAMI",
+                        carrier="Barcha haydovchilar",
+                        valid_from=date(2020, 1, 1), valid_to=date(2099, 12, 31))
+    calc = BruttoCalculator(contract)
+    source = DataFrame([{
+        "sana": str(f.get("date") or f.get("from") or ""),
+        "grafik": str(r.get("route_name") or r.get("route_id") or "-"),
+        "davlat_raqami": str(r.get("driver_id") or "-"),
+        "fio": str(r.get("name") or r.get("driver_id") or "-"),
+        "lr": float(r.get("plan_km") or 0) or float(r.get("km") or 0) or 1.0,
+        "lf": float(r.get("km") or 0),
+        "kamal": int(r.get("trips") or 0),
+        "kstjb": int(r.get("issues") or 0),
+        "kmaq": 0,
+        "skm": _skm(r),
+    } for r in rows if (r.get("km") or 0) > 0])
+    results = calc.process_report(source)
+    agg = calc.aggregate(results)
+    period = {
+        "from": f.get("from") or "",
+        "to": f.get("to") or "",
+        "month": f.get("month") or "",
+        "route": f.get("route") or "",
+    }
+    return {
+        "ok": True,
+        "period": period,
+        "skm": base_skm,
+        "rows": [
+            {
+                "driver_id": r.davlat_raqami,
+                "fio": r.fio,
+                "grafik": r.grafik,
+                "lr": r.lr,
+                "lf": r.lf,
+                "kamal": r.kamal,
+                "kstjb": r.kstjb,
+                "kmaq": r.kmaq,
+                "skm": driver_skm.get(str(r.davlat_raqami) or "", base_skm),
+                "alpha": r.alpha,
+                "beta": r.beta,
+                "gamma": r.gamma,
+                "sifat_index": r.sifat_index,
+                "tolov": r.tolov,
+                "brutto_100": r.brutto_100,
+                "jarima": r.jarima,
+                "haydovchi_ish_haqi": r.haydovchi_ish_haqi,
+                "haydovchi_soliq": r.haydovchi_soliq,
+                "haydovchi_qolga": r.haydovchi_qolga,
+                "elektr_kwt": r.elektr_kwt,
+                "elektr_summ": r.elektr_summ,
+            } for r in sorted(results, key=lambda r: r.tolov, reverse=True)
+        ],
+        "agg": agg,
+        "haydovchilar": len(results),
+        "manba_qatorlar": len(rows),
+        "period_label": _period_label_(period),
+    }
+
+
+def _period_label_(p: dict) -> str:
+    """Brutto hisobot davri yorlig'i (oy yoki sana oralig'i)."""
+    if p.get("month"):
+        try:
+            d = date.fromisoformat(p["month"] + "-01")
+            return date.strftime(d, "%B %Y")
+        except ValueError:
+            return p["month"]
+    if p.get("from") == p.get("to"):
+        return p.get("from") or ""
+    if p.get("from") and p.get("to"):
+        return f"{p['from']} → {p['to']}"
+    return p.get("from") or p.get("to") or ""

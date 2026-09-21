@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sys
 import re
+import os
 import time
 import datetime
 import traceback
@@ -71,6 +72,12 @@ def _duty_with_retry(client, rid: str, d: datetime.date, label: str) -> dict:
 # 18:00 da ishga tushsa 404 qaytaradi — grafik e'lon qilinguncha 15 daqiqada
 # qayta urinamiz (hech qanday soat cheklovi yo'q — bot har doim ishlaydi).
 DUTY_RETRY_MINUTES = 15
+
+# Rasmni har safar yangidan yaratish (saytdagi o'zgarishlar aks etishi uchun).
+# 0 = eski fayl bor bo'lsa qayta yaratilmaydi (tezroq, lekin eskirgan rasm
+# yuborilishi mumkin). BM_GRAFIK_REFRESH_IMAGE=0 bilan o'chiriladi.
+REFRESH_IMAGE = (os.getenv("BM_GRAFIK_REFRESH_IMAGE", "1").strip() not in
+                 ("0", "false", "no"))
 
 TEMPLATES = {
     "ISH": (
@@ -194,7 +201,8 @@ def fill_grafik(src, out, prefix, title_word, newdate, by_graph,
     return title, len(blocks), filled, replaced
 
 
-def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word):
+def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word,
+                   retry_until_published: bool = True):
     """Bitta yo'nalish uchun Excel + rasmni parallel bajaradi."""
     from bm_automation.app.services.export_service import build_export
     from bm_automation.app.services.driver_sheet_service import run as run_sheet
@@ -204,12 +212,25 @@ def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word):
     results = []
 
     try:
-        duty = _duty_with_retry(client, rid, d, label)
+        if retry_until_published:
+            # Ertangi kun — e'lon qilinmaguncha kutamiz (faqat kelajak kun).
+            duty = _duty_with_retry(client, rid, d, label)
+        else:
+            try:
+                duty = DutyRepository(client).by_date(rid, d.isoformat())
+            except Exception as exc:
+                if not _not_found(exc):
+                    raise
+                print(f"[{label}] {d} kun grafigi topilmadi (404) — "
+                      f"yuborilmadi: {exc}")
+                send_message(f"🚏 {label}: {d:%d.%m.%Y} kun uchun grafik "
+                             f"e'lon qilinmagan — Excel yuborilmadi.",
+                             chat_id=chat_id)
+                return results
     except Exception as exc:
-        print(f"[{label}] ertangi grafik e'lon qilinmagani uchun "
-              f"yuborilmadi: {exc}")
-        send_message(f"🚏 {label}: ertangi grafik hali e'lon qilinmagan — "
-                     f"Excel yuborilmadi.", chat_id=chat_id)
+        print(f"[{label}] {d} kun grafigi e'lon qilinmagan: {exc}")
+        send_message(f"🚏 {label}: {d:%d.%m.%Y} kun grafigi hali e'lon "
+                     f"qilinmagan — Excel yuborilmadi.", chat_id=chat_id)
         return results
 
     graphs = duty.get("graphs") or []
@@ -262,7 +283,17 @@ def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word):
 
     img = REPORTS / img_dir / f"driver-sheet_{rid[:8]}_{d.strftime('%Y%m%d')}.png"
     try:
-        if not img.exists():
+        # HAR DOIM qayta generatsiya: saytda ma'lumot o'zgargan bo'lsa
+        # (haydovchi/avtobus almashtirilgan bo'lsa) eski rasm noto'g'ri
+        # bo'lib qoladi. Keshdan foydalanish faqat --no-refresh rejimida.
+        if REFRESH_IMAGE:
+            res = run_sheet(client, rid, date_str=date_str,
+                            out_dir=str(REPORTS / img_dir),
+                            send=False, profile=profiles_map.get(rid),
+                            duty_data=duty)
+            img = Path(res["image"])
+            print(f"  [{label}] rasm yangidan yaratildi: {img.name}")
+        elif not img.exists():
             res = run_sheet(client, rid, date_str=date_str,
                             out_dir=str(REPORTS / img_dir),
                             send=False, profile=profiles_map.get(rid),
@@ -291,17 +322,26 @@ def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word):
 
 
 def main(chat_id: str | None = None,
-         route_ids: list[str] | None = None):
+         route_ids: list[str] | None = None,
+         day_offset: int = 1):
     """Grafik yuborish.
 
     route_ids — faqat shu route_id'lar uchun yuboradi (bo'sa = hammasi).
+    day_offset — qaysi kun grafigi (0=bugun, 1=ertaga, -1=kechagi).
     Parallel: barcha yo'nalishlar bir vaqtda (Excel + rasm).
     """
     today = datetime.date.today()
-    d = today + datetime.timedelta(days=1)  # ertaga
+    d = today + datetime.timedelta(days=day_offset)  # tanlangan kun
     dt = day_type(d)
     title_word = TEMPLATES[dt][-1]
-    print(f"Bugun: {today:%d.%m.%Y} | Ertaga: {d:%d.%m.%Y} ({d:%A}) | {title_word}")
+    day_label = {1: "Ertaga", 0: "Bugun", -1: "Kechagi"}.get(
+        day_offset, f"{d:%d.%m.%Y}")
+    print(f"Bugun: {today:%d.%m.%Y} | {day_label}: {d:%d.%m.%Y} "
+          f"({d:%A}) | {title_word}")
+    # Infinite qayta urinish faqat kelajak kuni uchun (grafik e'lon
+    # qilinmaguncha kutamiz). O'tgan/bugungi kun uchun 404 — shunchaki
+    # o'tkazib yuboriladi.
+    retry_until_published = d > today
 
     active_routes = ROUTES
     if route_ids:
@@ -325,7 +365,8 @@ def main(chat_id: str | None = None,
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
             pool.submit(_process_route, route, client, d,
-                        profiles_map, chat_id, title_word): route
+                        profiles_map, chat_id, title_word,
+                        retry_until_published): route
             for route in active_routes
         }
         for future in as_completed(futures):

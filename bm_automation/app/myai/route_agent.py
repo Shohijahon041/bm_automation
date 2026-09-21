@@ -21,8 +21,26 @@ class RouteAgent(BaseAgent):
             data = await self._use_tool(
                 "db", action="get_route_daily", route_id=route_id, date=date,
             )
+            enriched = dict(data or {})
+            # Real ma'lumotni boyitish: reys anomaliyalari va avtobuslar holati
+            try:
+                anomalies = await self._use_tool(
+                    "db", action="get_trip_anomalies", route=route_id, date=date,
+                )
+                if anomalies and anomalies.get("found"):
+                    enriched["trip_anomalies"] = anomalies
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                vehicles = await self._use_tool(
+                    "db", action="get_route_vehicles", route=route_id, date=date,
+                )
+                if vehicles and vehicles.get("found"):
+                    enriched["route_vehicles"] = vehicles
+            except Exception:  # noqa: BLE001
+                pass
             self._finish(True)
-            return AgentResult(success=True, data=data)
+            return AgentResult(success=True, data=enriched)
         except Exception as exc:  # noqa: BLE001
             self._finish(False, str(exc))
             return AgentResult(success=False, error=str(exc))

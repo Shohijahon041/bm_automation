@@ -42,6 +42,65 @@ class MyAIConfig:
     llm_timeout: float = field(
         default_factory=lambda: float(os.getenv("MYAI_LLM_TIMEOUT", "120"))
     )
+    # Providerlar zanjiri (fallback) — vergul bilan ajratiladi.
+    # Ulardan qaysi biri configured va ishlasa, o'sha ishlatiladi.
+    llm_providers: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            p.strip().lower() for p in os.getenv(
+                "MYAI_LLM_PROVIDERS",
+                "openrouter,gemini,groq,cerebras,openai_compat,ollama"
+            ).split(",") if p.strip()
+        )
+    )
+
+    # Gemini
+    gemini_api_key: str = field(
+        default_factory=lambda: os.getenv("GEMINI_API_KEY", "").strip()
+    )
+    gemini_model: str = field(
+        default_factory=lambda: (
+            os.getenv("GEMINI_MODEL", "").strip() or "gemini-3.6-flash"
+        )
+    )
+
+    # OpenAI-compatible boshqa bepul providerlar (legacy / umumiy)
+    openai_compat_base_url: str = field(
+        default_factory=lambda: os.getenv("MYAI_OPENAI_COMPAT_BASE_URL", "").strip()
+    )
+    openai_compat_api_key: str = field(
+        default_factory=lambda: os.getenv("MYAI_OPENAI_COMPAT_API_KEY", "").strip()
+    )
+    openai_compat_model: str = field(
+        default_factory=lambda: os.getenv("MYAI_OPENAI_COMPAT_MODEL", "").strip()
+    )
+
+    # Groq (bepul, OpenAI-mos API)
+    groq_base_url: str = field(
+        default_factory=lambda: os.getenv(
+            "MYAI_GROQ_BASE_URL",
+            "https://api.groq.com/openai/v1"
+        ).strip()
+    )
+    groq_api_key: str = field(
+        default_factory=lambda: os.getenv("MYAI_GROQ_API_KEY", "").strip()
+    )
+    groq_model: str = field(
+        default_factory=lambda: os.getenv("MYAI_GROQ_MODEL", "").strip()
+    )
+
+    # Cerebras (bepul, OpenAI-mos API)
+    cerebras_base_url: str = field(
+        default_factory=lambda: os.getenv(
+            "MYAI_CEREBRAS_BASE_URL",
+            "https://api.cerebras.ai/v1"
+        ).strip()
+    )
+    cerebras_api_key: str = field(
+        default_factory=lambda: os.getenv("MYAI_CEREBRAS_API_KEY", "").strip()
+    )
+    cerebras_model: str = field(
+        default_factory=lambda: os.getenv("MYAI_CEREBRAS_MODEL", "").strip()
+    )
 
     # Task settings
     max_retries: int = field(

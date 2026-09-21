@@ -81,6 +81,9 @@ TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
     ],
     # Manual daily odometer corrections. Automated trip counts remain the
     # source for trips; these records supplement distance/odometer data.
+    # AVTO (brutto-route) qatorlarida saytdagi reja/amalda ko'rsatkichlar
+    # ham saqlanadi: distance_plan/trip_plan (reja), distance_fact = distance_km,
+    # trip_fact = trip_count, working_day/trip_passed/trip_approved saytdan.
     "driver_work_logs": [
         ("date", "TEXT NOT NULL"),
         ("driver_id", "TEXT NOT NULL"),
@@ -88,6 +91,11 @@ TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("distance_km", "REAL NOT NULL DEFAULT 0"),
         ("trip_count", "INTEGER NOT NULL DEFAULT 0"),
         ("note", "TEXT NOT NULL DEFAULT ''"),
+        ("distance_plan", "REAL NOT NULL DEFAULT 0"),
+        ("trip_plan", "INTEGER NOT NULL DEFAULT 0"),
+        ("working_day", "INTEGER NOT NULL DEFAULT 0"),
+        ("trip_passed", "INTEGER NOT NULL DEFAULT 0"),
+        ("trip_approved", "INTEGER NOT NULL DEFAULT 0"),
     ],
     "driver_fines": [
         ("driver_id", "TEXT NOT NULL"),
@@ -371,6 +379,16 @@ _MIGRATIONS: list[str] = [
     "WHERE driver_id != ''",
     "ALTER TABLE dispatcher_routes ADD COLUMN IF NOT EXISTS "
     "phone TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE driver_work_logs ADD COLUMN IF NOT EXISTS "
+    "distance_plan REAL NOT NULL DEFAULT 0",
+    "ALTER TABLE driver_work_logs ADD COLUMN IF NOT EXISTS "
+    "trip_plan INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE driver_work_logs ADD COLUMN IF NOT EXISTS "
+    "working_day INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE driver_work_logs ADD COLUMN IF NOT EXISTS "
+    "trip_passed INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE driver_work_logs ADD COLUMN IF NOT EXISTS "
+    "trip_approved INTEGER NOT NULL DEFAULT 0",
 ]
 
 

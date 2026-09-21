@@ -69,8 +69,16 @@ def driver_id_for_chat(chat_id: int) -> str | None:
 
 
 def _resolve_driver_role(chat_id: int) -> Role | None:
-    """DB dan haydovchi aniqlansa DRIVER qaytaradi."""
-    if driver_id_for_chat(chat_id):
+    """DB dan haydovchi aniqlansa DRIVER qaytaradi (qora ro'yxatdan tashqari)."""
+    did = driver_id_for_chat(chat_id)
+    if did:
+        try:
+            from ...db import get_storage
+            profile = get_storage().find("driver_profiles", driver_id=str(did)) or {}
+            if profile.get("blacklisted"):
+                return None
+        except Exception:  # noqa: BLE001
+            pass
         return Role.DRIVER
     return None
 

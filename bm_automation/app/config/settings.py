@@ -127,14 +127,23 @@ def km_rate_for(route_id: str = "", default: float = 0.0) -> float:
     """1 km narxi (so'm) — ustunlik tartibi:
 
     1. `default` (haydovchi profilidagi shaxsiy `km_rate`, 0 dan katta);
-    2. kompaniya profilidagi `kmRate` (profiles.json, `routeVariantId` bo'yicha);
-    3. bot orqali o'rnatilgan global qiymat (Settings'dan o'zgartiladi);
-    4. `KM_RATE` env (global, hamma uchun);
-    5. aks holda 0.
+    2. yo'nalish uchun dashboard'dan o'rnatilgan `route_km`
+       (haydovchidan qat'i nazar ishlaydi);
+    3. kompaniya profilidagi `kmRate` (profiles.json, `routeVariantId` bo'yicha);
+    4. bot orqali o'rnatilgan global qiymat (Settings'dan o'zgartiriladi);
+    5. `KM_RATE` env (global, hamma uchun);
+    6. aks holda 0.
     """
     if default > 0:
         return default
     if route_id:
+        try:
+            from ..core.bot_settings import route_km
+            routed = route_km(route_id)
+            if routed > 0:
+                return routed
+        except Exception:
+            pass
         try:
             from ..core.profiles import all_profiles
             for p in all_profiles():

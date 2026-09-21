@@ -76,9 +76,34 @@ class PlannerAgent(BaseAgent):
             {"agent": "transport", "action": "normalize"},
             {"agent": "analytics", "action": "calculate"},
         ],
+        "avans": [
+            {"agent": "driver", "action": "avans"},
+        ],
+        "fines": [
+            {"agent": "driver", "action": "fines"},
+        ],
+        "documents": [
+            {"agent": "browser", "action": "get_documents"},
+        ],
+        "staff": [
+            {"agent": "browser", "action": "get_staff"},
+        ],
+        "dispatcher_routes": [
+            {"agent": "browser", "action": "get_dispatcher_routes"},
+        ],
+        "waybills": [
+            {"agent": "browser", "action": "get_waybills"},
+        ],
+        "sms": [
+            {"agent": "browser", "action": "get_sms"},
+        ],
         "problems": [
             {"agent": "browser", "action": "get_problems"},
             {"agent": "transport", "action": "normalize"},
+            {"agent": "analytics", "action": "calculate"},
+        ],
+        "not_accepted_km": [
+            {"agent": "browser", "action": "get_not_accepted_km"},
             {"agent": "analytics", "action": "calculate"},
         ],
         "verify": [
@@ -105,6 +130,21 @@ class PlannerAgent(BaseAgent):
             {"agent": "transport", "action": "normalize"},
             {"agent": "analytics", "action": "calculate"},
         ],
+        "routes_list": [
+            {"agent": "browser", "action": "get_all_routes_summary"},
+            {"agent": "transport", "action": "normalize"},
+            {"agent": "analytics", "action": "calculate"},
+        ],
+        "vehicles_list": [
+            {"agent": "browser", "action": "get_vehicles"},
+            {"agent": "transport", "action": "normalize"},
+            {"agent": "analytics", "action": "calculate"},
+        ],
+        "search": [
+            {"agent": "browser", "action": "search"},
+            {"agent": "transport", "action": "normalize"},
+            {"agent": "analytics", "action": "calculate"},
+        ],
     }
 
     INTROSPECT = {
@@ -117,10 +157,21 @@ class PlannerAgent(BaseAgent):
         "monthly_report": "Oylik hisobot",
         "monthly_driver": "Oylik haydovchi hisoboti",
         "salary": "Maosh / ish haqi",
+        "avans": "Avans to'lovlari",
+        "fines": "Jarimalar",
+        "documents": "Hujjatlar ro'yxati",
+        "staff": "Xodimlar ro'yxati",
+        "dispatcher_routes": "Dispecher yo'nalishlari",
+        "waybills": "Yo'l varaqalari",
+        "sms": "SMS tarixi / jo'natmalar",
         "problems": "Muammolar tahlili",
+        "not_accepted_km": "Qabul qilinmagan KM hisoboti",
         "verify": "Sayt-baza tekshirish",
         "telegram": "Telegram'ga xabar yuborish",
         "report_excel": "Excel hisobot yaratish",
+        "routes_list": "Yo'nalishlar ro'yxati",
+        "vehicles_list": "Avtobuslar ro'yxati",
+        "search": "Global qidiruv",
         "general": "Umumiy ma'lumot",
     }
 
@@ -156,10 +207,18 @@ class PlannerAgent(BaseAgent):
         # Maosh/oylik so'rovlarida oy ko'rsatilmagan bo'lsa — joriy oy.
         # Driver agent oylik yo'lini faqat `month` mavjud bo'lganda ishga
         # tushiradi, shuning uchun bu yerda default beramiz.
-        if intent_type in ("salary", "monthly_report", "monthly_driver"):
+        if intent_type in ("salary", "monthly_report", "monthly_driver",
+                           "not_accepted_km"):
             if not str(merged.get("month") or "").strip():
                 from datetime import date as _date
                 merged["month"] = _date.today().strftime("%Y-%m")
+        # Excel — "oylik" so'zi/moy bo'lsa oylik, aks holda kunlik hisobot.
+        if intent_type == "report_excel":
+            if not str(merged.get("month") or "").strip():
+                low_req = str(user_request or "").lower()
+                if "oylik" in low_req or "oyning" in low_req:
+                    from datetime import date as _date
+                    merged["month"] = _date.today().strftime("%Y-%m")
 
         # Avval LLM bilan urinish
         try:
@@ -179,7 +238,7 @@ class PlannerAgent(BaseAgent):
         return plan
 
     def _apply_params_to_steps(self, plan: Plan, params: dict) -> None:
-        """Har bir step'ga route/driver parametrlarini qo'shish."""
+        """Har bir step'ga route/driver/date/month parametrlarini qo'shish."""
         for step in plan.steps:
             sp = dict(step.params or {})
             if params.get("route"):
@@ -190,6 +249,9 @@ class PlannerAgent(BaseAgent):
                 sp["driver_id"] = params["driver"]
                 sp["driver"] = params["driver"]
                 sp["query"] = params["driver"]
+            for key in ("date", "month"):
+                if params.get(key) and not sp.get(key):
+                    sp[key] = params[key]
             step.params = sp
 
     def _ensure_intent_steps(self, plan: Plan, intent_type: str,

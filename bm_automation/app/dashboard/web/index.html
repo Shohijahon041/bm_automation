@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&family=Big+Shoulders+Display:wght@700;800;900&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 <script src="vendor/chart.umd.min.js"></script>
 <script src="vendor/tailwindcss.js"></script>
-<link rel="stylesheet" href="myai-office.css?v=2">
+<link rel="stylesheet" href="myai-office.css?v=4">
 <script>tailwind.config = { corePlugins: { preflight: false } };</script>
 <script>
 try { document.documentElement.dataset.theme = localStorage.getItem("bm-theme") || "light"; }
@@ -950,6 +950,9 @@ body.auth-locked .auth-overlay { display: flex; }
       <a href="#performance" data-page="performance"><i class="nav-ic" data-ic="calendar"></i><span>Performance</span></a>
       <a href="#top-performance" data-page="top-performance"><i class="nav-ic" data-ic="shield"></i><span>Top Performers</span></a>
       <a href="#electricity" data-page="electricity"><i class="nav-ic" data-ic="zap"></i><span>Energy</span></a>
+      <a href="#rejects" data-page="rejects"><i class="nav-ic" data-ic="alert-triangle"></i><span>Qabul Qilinmagan</span></a>
+      <a href="#brutto" data-page="brutto"><i class="nav-ic" data-ic="briefcase"></i><span>Brutto</span></a>
+      <a href="#tariffs" data-page="tariffs"><i class="nav-ic" data-ic="route"></i><span>Tariflar</span></a>
       <a href="#insights" data-page="insights"><i class="nav-ic" data-ic="activity"></i><span>AI Tahlil</span></a>
       <a href="#audit" data-page="audit"><i class="nav-ic" data-ic="clipboard"></i><span>Audit</span></a>
       <a href="#myai" data-page="myai"><i class="nav-ic" data-ic="bot"></i><span>MyAI Agent</span></a>
@@ -1023,6 +1026,13 @@ body.auth-locked .auth-overlay { display: flex; }
           </div>
           <div id="kmrate-body" style="display:flex;flex-wrap:wrap;gap:10px"></div>
         </section>
+        <section class="panel" style="margin-top:14px;padding:16px 18px" id="skm-block">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+            <b style="font-family:'Big Shoulders Display',sans-serif;font-size:16px">🧾 BRUTTO SKM (116-son)</b>
+            <span class="muted" style="font-size:11px;font-family:'IBM Plex Mono',monospace">Har bir firma (yo'nalish) uchun 1 mashina-km narxi</span>
+          </div>
+          <div id="skm-body" style="display:flex;flex-wrap:wrap;gap:10px"></div>
+        </section>
       </section>
 
       <section class="page" id="page-vehicles" data-page-view="vehicles">
@@ -1058,6 +1068,12 @@ body.auth-locked .auth-overlay { display: flex; }
           <select id="att-route-filter" class="input" style="width:auto;padding:6px 12px;font-size:12px;margin-left:16px" onchange="loadAttendance()">
             <option value="">Barcha yo'nalishlar</option>
           </select>
+          <button class="button ghost" onclick="attendanceExport('xlsx')" style="font-size:12px;padding:6px 14px">⬇ Tabel yuklab olish (xlsx)</button>
+          <button class="button ghost" onclick="attendanceExport('csv')" style="font-size:12px;padding:6px 14px">CSV</button>
+          <span style="font-size:12px;color:var(--muted);margin-left:8px">Kunlik:</span>
+          <input type="date" id="att-date-picker" class="input" style="padding:6px 10px;font-size:12px">
+          <button class="button ghost" onclick="attendanceExportDay('xlsx')" style="font-size:12px;padding:6px 14px">⬇ Kunlik tabel (xlsx)</button>
+          <button class="button ghost" onclick="attendanceExportDay('csv')" style="font-size:12px;padding:6px 14px">CSV</button>
         </div>
         <!-- Calendar grid -->
         <section class="panel full-page-panel" style="overflow-x:auto">
@@ -1104,6 +1120,83 @@ body.auth-locked .auth-overlay { display: flex; }
         </section>
       </section>
 
+      <section class="page" id="page-rejects" data-page-view="rejects">
+        <div class="page-hero"><div><div class="eyebrow">REJECTS</div><h2>Qabul qilinmagan KM hisoboti</h2><p>Sayt bilan bir xil hisob — haydovchi bo'yicha rejadagi, qabul qilinmagan va amalda bajarilgan reyslar hamda km.</p></div></div>
+        <div class="err" id="rejects-err" style="display:none"></div>
+        <section class="panel">
+          <div class="section-head"><div><div class="eyebrow">HISOBOT DAVRI</div><h2>Davrni tanlang <span class="hint">oy yoki sanadan–sanagacha; yo'nalish yuqoridagi filtrdan olinadi</span></h2></div>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <input class="input" id="rej-month" type="month">
+              <span style="font-size:12px;color:var(--muted)">yoki</span>
+              <input class="input" id="rej-from" type="date" style="max-width:150px">
+              <span style="font-size:12px;color:var(--muted)">→</span>
+              <input class="input" id="rej-to" type="date" style="max-width:150px">
+              <span style="font-size:12px;color:var(--muted)">Yo'nalish: <b id="rej-route-name">Barchasi</b></span>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 18px;border-top:1px solid var(--line-soft)">
+            <span style="font-size:12px;color:var(--muted)">Boshlang'ich narx (so'm/km):</span>
+            <label style="font-size:11px;color:var(--muted)" for="rej-tariff-novat">
+              <input class="input" id="rej-tariff-novat" type="number" step="any" min="0" placeholder="QQSsiz" style="max-width:130px">
+              QQSsiz
+            </label>
+            <label style="font-size:11px;color:var(--muted)" for="rej-tariff-vat">
+              <input class="input" id="rej-tariff-vat" type="number" step="any" min="0" placeholder="QQS bilan" style="max-width:130px">
+              QQS bilan
+            </label>
+            <button id="btn-save-rej-tariff" class="button ghost">SAQLASH</button>
+          </div>
+        </section>
+        <section class="panel full-page-panel">
+          <div class="section-head"><div><div class="eyebrow">HISOBOT</div><h2>Qabul qilinmagan KM <span class="hint" id="rej-hint"></span></h2></div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <button class="button ghost" id="btn-rej-xlsx">XLSX</button>
+              <button class="button ghost" id="btn-rej-xls">XLS</button>
+              <button class="button ghost" id="btn-rej-csv">CSV</button>
+              <button class="button ghost" id="btn-rej-pdf">PDF</button>
+            </div><div id="rej-er"></div></section>
+        <section class="panel">
+          <div class="section-head"><div><h2>Haydovchilar bo'yicha jadval</h2></div></div>
+          <div style="overflow-x:auto" id="rejects-body"></div>
+        </section>
+      </section>
+
+      <section class="page" id="page-brutto" data-page-view="brutto">
+        <div class="page-hero"><div><div class="eyebrow">BRUTTO</div><h2>Brutto-shartnoma to'lovi</h2><p>116-son qaror (32-band) bo'yicha tashuvchiga to'lov — DB reyslaridan avtomatik hisoblanadi: Lf (amalda km), Kamal (reyslar), Kstjb (muammoli reyslar), Kmaq (0).</p></div></div>
+        <div class="err" id="brutto-err" style="display:none"></div>
+        <section class="panel">
+          <div class="section-head"><div><div class="eyebrow">HISOBOT DAVRI</div><h2>Davrni tanlang <span class="hint">oy yoki sanadan–sanagacha; yo'nalish yuqoridagi filtrdan olinadi</span></h2></div>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <input class="input" id="brt-month" type="month">
+              <span style="font-size:12px;color:var(--muted)">yoki</span>
+              <input class="input" id="brt-from" type="date" style="max-width:150px">
+              <span style="font-size:12px;color:var(--muted)">→</span>
+              <input class="input" id="brt-to" type="date" style="max-width:150px">
+              <span style="font-size:12px;color:var(--muted)">Yo'nalish: <b id="brt-route-name">Barchasi</b></span>
+            </div>
+          </div>
+        </section>
+        <section class="panel full-page-panel">
+          <div class="section-head"><div><div class="eyebrow">HISOBOT</div><h2>Brutto to'lov <span class="hint" id="brt-hint"></span></h2></div></div>
+          <div id="brt-er"></div>
+        </section>
+        <section class="panel">
+          <div class="section-head"><div><h2>Haydovchilar bo'yicha jadval</h2></div></div>
+          <div style="overflow-x:auto" id="brutto-body"></div>
+        </section>
+      </section>
+
+      <section class="page" id="page-tariffs" data-page-view="tariffs">
+        <div class="page-hero"><div><div class="eyebrow">TARIFLAR</div><h2>Firma tariflari</h2><p>Har bir kompaniya (firma) uchun joriy SKM, 1 km narxi va QQS soliq tariflari — bot Settings va dashboard orqali o'zgartiriladigan qiymatlar.</p></div></div>
+        <div class="err" id="tariffs-err" style="display:none"></div>
+        <section class="panel full-page-panel">
+          <div class="section-head"><div><div class="eyebrow">JADVAL</div><h2>Firma / yo'nalish bo'yicha <span class="hint">SKM sozlamasi tushmagan firmalar uchun global 116-son SKM ishlatiladi</span></h2></div>
+            <button class="button ghost" onclick="tariffsExport('xlsx')" style="font-size:12px;padding:6px 14px">⬇ EKSPORT (xlsx)</button>
+          </div>
+          <div style="overflow-x:auto" id="tariffs-body"></div>
+        </section>
+      </section>
+
       <section class="page" id="page-audit" data-page-view="audit">
         <div class="page-hero"><div><div class="eyebrow">DATA QUALITY</div><h2>Sayt ↔ Baza auditi</h2><p>Saytdagi ma'lumotlar va lokal baza o'rtasidagi farqlarni tekshirish.</p></div></div>
         <section class="panel full-page-panel" id="check-block" style="display:none"><div class="section-head"><div><h2>Tekshiruv natijalari <span class="hint" id="check-hint"></span></h2></div></div><div id="check-body"></div></section>
@@ -1116,6 +1209,8 @@ body.auth-locked .auth-overlay { display: flex; }
   <div class="occ-root" id="occ-root">
     <!-- MAIN AREA -->
     <div style="display:flex;flex-direction:column;overflow:hidden">
+      <!-- MyAI status strip -->
+      <div class="occ-status-strip" id="occ-status-strip" style="display:none"></div>
       <!-- Task input bar -->
       <div class="occ-task-bar">
         <div class="occ-task-input">
@@ -1132,6 +1227,8 @@ body.auth-locked .auth-overlay { display: flex; }
           <span id="occ-sse-text">offline</span>
         </div>
       </div>
+      <!-- Quick prompt chips -->
+      <div class="occ-quick-row" id="occ-quick-row"></div>
 
       <!-- CHAT PANEL -->
       <div class="occ-chat" id="occ-chat">
@@ -1166,6 +1263,20 @@ body.auth-locked .auth-overlay { display: flex; }
           </div>
         </div>
         <span class="occ-feed-badge" id="occ-feed-count">0</span>
+      </div>
+      <div class="occ-hist-tools" id="occ-hist-tools" style="display:none">
+        <input class="occ-hist-search" id="occ-hist-search" type="text" placeholder="Qidirish..."
+               onkeyup="if(event.key==='Enter')loadOccHistory(true)"
+               oninput="clearTimeout(_occHistDeb);_occHistDeb=setTimeout(()=>loadOccHistory(true),400)">
+        <select class="occ-hist-select" id="occ-hist-status" onchange="loadOccHistory(true)">
+          <option value="">Barchasi</option>
+          <option value="pending">Loyiha</option>
+          <option value="running">Faol</option>
+          <option value="completed">Tugalgan</option>
+          <option value="failed">Xato</option>
+          <option value="cancelled">Bekor</option>
+        </select>
+        <button class="occ-btn occ-hist-more" id="occ-hist-more" onclick="loadOccHistory(false)" style="display:none">KO&apos;PROQ</button>
       </div>
       <div class="occ-feed-list" id="occ-feed-list"></div>
     </div>
@@ -1374,6 +1485,12 @@ body.auth-locked .auth-overlay { display: flex; }
         <section class="panel full-page-panel">
           <div class="section-head"><div><h2>Loglar</h2></div>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <select id="log-source" class="input" style="width:auto;padding:6px 10px;font-size:12px">
+                <option value="bm">bm.log (asosiy)</option>
+                <option value="bot">Bot stdout/stderr</option>
+                <option value="watchdog">Watchdog</option>
+                <option value="all">Hammasi (birlashgan)</option>
+              </select>
               <select id="log-level" class="input" style="width:auto;padding:6px 10px;font-size:12px">
                 <option value="">Barcha level</option>
                 <option value="ERROR">ERROR</option>
@@ -1520,10 +1637,14 @@ body.auth-locked .auth-overlay { display: flex; }
           <div class="section-head"><div><div class="eyebrow">GLOBAL</div><h2>Global sozlamalar</h2></div></div>
           <div style="padding:0 18px 18px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;align-items:end">
             <div><label style="display:block;font:10px 'IBM Plex Mono',monospace;color:var(--muted);margin-bottom:4px">1 KM NARXI (so'm)</label><input class="input" id="s-km-rate" type="number" min="0" step="0.01" oninput="this.value=this.value.replace(',', '.')"></div>
+            <div><label style="display:block;font:10px 'IBM Plex Mono',monospace;color:var(--muted);margin-bottom:4px">ELEKTR NARXI (so'm/kVt)</label><input class="input" id="s-elec-price" type="number" min="0" step="0.01" oninput="this.value=this.value.replace(',', '.')"></div>
+            <div><label style="display:block;font:10px 'IBM Plex Mono',monospace;color:var(--muted);margin-bottom:4px">SKM 116-SON (so'm/km)</label><input class="input" id="s-brutto-skm" type="number" min="0" step="0.01" oninput="this.value=this.value.replace(',', '.')"></div>
             <div><label style="display:block;font:10px 'IBM Plex Mono',monospace;color:var(--muted);margin-bottom:4px">BACKUP INTERVAL (soat)</label><div class="input" id="s-backup-interval" style="cursor:default"></div></div>
             <div><label style="display:block;font:10px 'IBM Plex Mono',monospace;color:var(--muted);margin-bottom:4px">BACKUP STATUS</label><div class="input" id="s-backup-status" style="cursor:default"></div></div>
           </div>
+          <div id="global-audit" style="padding:0 18px 14px;font:10px 'IBM Plex Mono',monospace;color:var(--muted);line-height:1.6"></div>
           <div style="padding:0 18px 18px;display:flex;gap:10px;justify-content:flex-end">
+            <button class="button ghost" onclick="window.location.href=settingsExportUrl('xlsx')" style="font-size:12px;padding:6px 14px">⬇ AUDIT (xlsx)</button>
             <button class="button" id="settings-save" onclick="saveSettings()">SAQLASH</button>
           </div>
         </section>
@@ -1532,13 +1653,17 @@ body.auth-locked .auth-overlay { display: flex; }
           <div class="section-head"><div><div class="eyebrow">COMPANIES</div><h2>Kompaniya kredensiallari</h2></div><span class="hint">BM API login/parol — har bir kompaniya uchun alohida</span></div>
           <div id="companies-body" style="padding:0 18px 18px"></div>
         </section>
-        <!-- Disk holati -->
+      </section>
+
+      <!-- DISK PAGE -->
+      <section class="page" id="page-disk" data-page-view="disk">
+        <div class="page-hero"><div><div class="eyebrow">STORAGE</div><h2>Disk holati</h2><p>Papkalar, baza hajmi va 30 kunlik o'sish tendensiyasi — qo'lda tekshirib o'tirish shart emas.</p></div></div>
         <section class="panel" style="margin-bottom:14px">
-          <div class="section-head"><div><div class="eyebrow">STORAGE</div><h2>Disk holati va o'sish</h2></div><span class="hint" id="disk-updated"></span></div>
+          <div class="section-head"><div><div class="eyebrow">STORAGE</div><h2>Papkalar</h2></div><span class="hint" id="disk-updated"></span></div>
           <div style="padding:0 18px 18px" id="disk-folders"></div>
         </section>
         <section class="panel" style="margin-bottom:14px">
-          <div class="section-head"><div><div class="eyebrow">DATABASE</div><h2>Baza hajmi va o'sish</h2></div></div>
+          <div class="section-head"><div><div class="eyebrow">DATABASE</div><h2>Baza hajmi va o'sish</h2></div><button class="button" onclick="loadDisk()">YANGILASH</button></div>
           <div style="padding:0 18px 18px" id="disk-db"></div>
         </section>
       </section>
@@ -1785,7 +1910,8 @@ function renderHero(d) {
 
   const cards = [
     ["Bajarilish", "check-circle", perf + "%", pctColor(perf), "teal", t.completed + " / " + t.total_trips + " reys", perf, "teal"],
-    ["Faol birlik", "truck", t.active_buses ?? 0, "teal", "amber", t.total_buses + " ta avtobusdan",
+    ["Faol birlik", "truck", t.active_buses ?? 0, "teal", "amber",
+      t.total_buses + " ta avtobusdan, " + (t.reserve_buses ?? t.not_active_buses ?? 0) + " rezerv",
       t.total_buses ? Math.round((t.active_buses ?? 0) / t.total_buses * 100) : 0, "amber"],
     ["Muammolar", "alert-triangle", probCount, probCount > 0 ? "alert" : "teal", "alert",
       t.not_accepted + " qab.qilm + " + (t.zero_mileage || 0) + " nollik",
@@ -1930,14 +2056,62 @@ function renderRoutes(d) {
   document.getElementById("routes-tab").innerHTML = tableHTML(
     ["Firma", "Nom", "ID", "Reja", "Amalda", "Qabul", "Qab.qilm", "Bekor", "Nollik", "Perf %"], rows);
   renderKmRates(d.routes || []);
+  renderSkms(d.routes || []);
 }
+function renderSkms(routes) {
+  const seen = {};
+  const items = [];
+  for (const r of routes) {
+    if (!r.route_id) continue;
+    if (seen[r.route_id]) continue;
+    seen[r.route_id] = true;
+    items.push({route_id: r.route_id, company: r.company || "", name: r.name || "", skm: r.skm || 0});
+  }
+  if (!items.length) { document.getElementById("skm-body").innerHTML = '<div class="empty">Yo\'nalishlar topilmadi</div>'; return; }
+  document.getElementById("skm-body").innerHTML = items.map(it =>
+    `<div style="background:var(--bg-deep);border:1px solid var(--line);border-radius:var(--radius-sm);padding:12px 14px;display:inline-flex;align-items:center;gap:10px;min-width:280px;flex:1 1 300px">
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(it.company)}</div>
+        <div style="font-size:11px;color:var(--muted);font-family:'IBM Plex Mono',monospace">${esc(it.name)}</div>
+      </div>
+      <input class="input skm-input" data-route-id="${esc(it.route_id)}" type="number" step="1" min="0" oninput="this.value=this.value.replace(',', '.')" style="width:110px;text-align:right;font-family:'IBM Plex Mono',monospace" placeholder="SKM (so'm/km)" title="Brutto SKM: 1 mashina-km narxi (so'm)">
+      <button class="button ghost skm-save" data-route-id="${esc(it.route_id)}" style="white-space:nowrap">Saqlash</button>
+    </div>`
+  ).join("");
+  for (const it of items) {
+    const inp = document.querySelector(`.skm-input[data-route-id="${CSS.escape(it.route_id)}"]`);
+    if (inp && it.skm) inp.value = it.skm;
+  }
+}
+document.addEventListener("click", async e => {
+  const btn = e.target.closest(".skm-save");
+  if (!btn) return;
+  const rid = btn.dataset.routeId;
+  const inp = document.querySelector(`.skm-input[data-route-id="${CSS.escape(rid)}"]`);
+  if (!inp) return;
+  const val = parseFloat(inp.value) || 0;
+  btn.textContent = "...";
+  btn.disabled = true;
+  try {
+    const resp = await bmFetch("/api/route-skm", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({route_id: rid, skm: val})
+    });
+    const res = await resp.json();
+    if (res.ok) { btn.textContent = "Saqlandi ✓"; btn.style.color = "var(--teal)"; }
+    else { btn.textContent = "Xatolik"; btn.style.color = "var(--alert)"; }
+  } catch(ex) { btn.textContent = "Xatolik"; btn.style.color = "var(--alert)"; }
+  setTimeout(() => { btn.textContent = "Saqlash"; btn.style.color = ""; btn.disabled = false; }, 2000);
+});
 function renderKmRates(routes) {
   const seen = {};
   const items = [];
   for (const r of routes) {
+    if (!r.route_id) continue;
     if (seen[r.route_id]) continue;
     seen[r.route_id] = true;
-    items.push({route_id: r.route_id, company: r.company || "", name: r.name || ""});
+    items.push({route_id: r.route_id, company: r.company || "", name: r.name || "", km_rate: r.km_rate || 0});
   }
   if (!items.length) { document.getElementById("kmrate-body").innerHTML = '<div class="empty">Yo\'nalishlar topilmadi</div>'; return; }
   document.getElementById("kmrate-body").innerHTML = items.map(it =>
@@ -1950,20 +2124,9 @@ function renderKmRates(routes) {
       <button class="button ghost kmrate-save" data-route-id="${esc(it.route_id)}" style="white-space:nowrap">Saqlash</button>
     </div>`
   ).join("");
-  loadKmRates(items.map(i => i.route_id));
-}
-async function loadKmRates(routeIds) {
-  for (const rid of routeIds) {
-    try {
-      const resp = await bmFetch("/api/drivers?" + new URLSearchParams({route: rid}));
-      const data = await resp.json();
-      const drivers = data.drivers || [];
-      if (drivers.length) {
-        const rate = drivers[0].km_rate || 0;
-        const inp = document.querySelector(`.kmrate-input[data-route-id="${CSS.escape(rid)}"]`);
-        if (inp && rate) inp.value = rate;
-      }
-    } catch(e) {}
+  for (const it of items) {
+    const inp = document.querySelector(`.kmrate-input[data-route-id="${CSS.escape(it.route_id)}"]`);
+    if (inp && it.km_rate) inp.value = it.km_rate;
   }
 }
 document.addEventListener("click", async e => {
@@ -2191,9 +2354,13 @@ function renderDriverDialog(data) {
   const d = data.driver || {}, p = data.profile || {}, did = d.driver_id;
   const dialog = document.getElementById("driver-dialog");
   const tripRows = (data.trips || []).map(x => `<tr><td>${esc(x.date)}</td><td>${esc(x.vehicle)}</td><td>${esc(x.route)}</td><td>${esc((x.planned_time || "").slice(11) || x.planned_time || "-")}</td><td>${statusPill(x.status)}</td></tr>`);
-  const logRows = (data.work_logs || []).map(x => `<tr><td>${esc(x.date)}</td><td>${esc(x.vehicle)}</td><td>${num(x.distance_km)} km</td><td>${x.trip_count}</td><td>${esc(x.note || "-")}</td></tr>`);
+  const logRows = (data.work_logs || []).map(x => `<tr><td>${esc(x.date)}</td><td>${esc(x.vehicle)}</td><td>${num(x.distance_km)} km</td><td>${x.trip_count}</td><td>${esc(x.note || "-")}</td><td><button class="button danger" data-wl-date="${esc(x.date)}" data-wl-vehicle="${esc(x.vehicle_id || "")}" style="font-size:11px;padding:3px 8px">O'chirish</button></td></tr>`);
   const fineRows = (data.fine_rows || []).map(x => `<tr><td>${esc(x.date)}</td><td>${money(x.amount)}</td><td>${esc(x.reason || "-")}</td><td>${esc(x.status)}</td></tr>`);
-  const vehicleOptions = [...new Map((data.trips || []).map(x => [x.vehicle_id, x.vehicle])).entries()]
+  const fleet = (state._vehiclesAll && state._vehiclesAll.length)
+    ? state._vehiclesAll
+    : (data.trips || []).map(x => ({vehicle_id: x.vehicle_id, plate_number: x.vehicle}));
+  const vehicleOptions = [...new Map(fleet.map(v => [v.vehicle_id, v.plate_number || v.vehicle_id])).entries()]
+    .sort((a, b) => String(a[1]).localeCompare(String(b[1])))
     .map(([id, name]) => `<option value="${esc(id)}">${esc(name)} · ${esc(id)}</option>`).join("");
   const photo = d.photo_url
     ? `<img class="avatar avatar-lg" src="${esc(d.photo_url)}" alt="">`
@@ -2261,7 +2428,7 @@ function renderDriverDialog(data) {
           ${inputField("Qo'lda reys soni", "trip_count", "", "number", "min=0 step=1")}
           <div class="field" style="grid-column:span 2"><label for="log-note">Izoh</label><input id="log-note" name="note" placeholder="Odometr / qo'shimcha izoh"></div>
         </div><div class="form-actions"><button class="button" type="submit">KM QAYDINI SAQLASH</button></div></form>
-        ${historyTable(logRows, ["Sana", "Avtobus", "Km", "Reys", "Izoh"], "Bu davrda qo'lda km qaydi yo'q.")}</section>
+        ${historyTable(logRows, ["Sana", "Avtobus", "Km", "Reys", "Izoh", ""], "Bu davrda qo'lda km qaydi yo'q.")}</section>
         <section class="form-panel"><h3>Jarimalar</h3><form id="driver-fine-form"><div class="form-grid">
           ${inputField("Sana", "date", new Date().toISOString().slice(0, 10), "date")}
           ${inputField("Summa (so'm)", "amount", "", "number", "min=1 step=1 required")}
@@ -2282,6 +2449,7 @@ function renderDriverDialog(data) {
   document.getElementById("notification-test").addEventListener("click", testNotification);
   document.getElementById("driver-photo-input").addEventListener("change", uploadPhoto);
   document.querySelectorAll("[data-upload-kind]").forEach(input => input.addEventListener("change", () => uploadDocument(input)));
+  document.querySelectorAll("[data-wl-date]").forEach(b => b.addEventListener("click", () => deleteWorkLog(b.dataset.wlDate, b.dataset.wlVehicle)));
   // Telegram user info
   loadTelegramUserInfo(did);
   if (!dialog.open) dialog.showModal();
@@ -2359,6 +2527,13 @@ async function saveWorkLog(event) {
   const result = await postJSON(`/api/drivers/${encodeURIComponent(did)}/work-log`, formPayload(event.currentTarget));
   if (!result.ok) { driverMessage(result.error || "Km qaydi saqlanmadi"); return; }
   await loadDriverDirectory(); await showDriver(did); driverMessage("Km qaydi saqlandi.", true);
+}
+async function deleteWorkLog(date, vehicleId) {
+  if (!confirm("Bu km qaydini o'chirishni tasdiqlaysizmi?")) return;
+  const did = state.currentDriver.driver.driver_id;
+  const result = await postJSON(`/api/drivers/${encodeURIComponent(did)}/work-log-delete`, {date, vehicle_id: vehicleId});
+  if (!result.ok) { driverMessage(result.error || "O'chirilmadi"); return; }
+  await loadDriverDirectory(); await showDriver(did); driverMessage("Km qaydi o'chirildi.", true);
 }
 async function saveFine(event) {
   event.preventDefault();
@@ -2546,6 +2721,25 @@ function attendanceNext() {
   loadAttendance();
 }
 
+function attendanceExport(fmt) {
+  const sel = document.getElementById('att-route-filter');
+  const route = sel ? sel.value : '';
+  const p = new URLSearchParams({scope: 'tabel', month: _attMonth, format: fmt});
+  if (route) p.set('route', route);
+  window.location.href = '/api/export?' + p.toString();
+}
+
+function attendanceExportDay(fmt) {
+  const el = document.getElementById('att-date-picker');
+  const date = el ? el.value : '';
+  if (!date) { alert('Avval sanani tanlang'); return; }
+  const sel = document.getElementById('att-route-filter');
+  const route = sel ? sel.value : '';
+  const p = new URLSearchParams({scope: 'tabel', date: date, format: fmt});
+  if (route) p.set('route', route);
+  window.location.href = '/api/export?' + p.toString();
+}
+
 async function loadAttendance() {
   const err = document.getElementById('attendance-err');
   const picker = document.getElementById('attendance-month-picker');
@@ -2611,12 +2805,14 @@ async function loadAttendance() {
       for (let d = 1; d <= daysInMonth; d++) {
         const dateStr = _attMonth + '-' + String(d).padStart(2, '0');
         const trips = workDays[dateStr];
+        const worked = trips !== undefined;
         const dt = new Date(y, m - 1, d);
         const dow = dt.getDay();
-        if (trips) {
+        if (worked) {
           totalDays++;
+          const label = trips ? trips : '•';
           h += '<td style="text-align:center;border-bottom:1px solid var(--line);padding:4px 2px">';
-          h += '<div style="width:24px;height:24px;border-radius:6px;background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;cursor:default" title="' + dateStr + ': ' + trips + ' reys">' + trips + '</div>';
+          h += '<div style="width:24px;height:24px;border-radius:6px;background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;cursor:default" title="' + dateStr + ': ' + (trips || 0) + ' reys">' + label + '</div>';
           h += '</td>';
         } else {
           let cellBg = 'transparent';
@@ -2706,6 +2902,19 @@ function electricityExportUrl(fmt) {
   p.set("scope", "electricity");
   const mEl = document.getElementById("elec-month");
   p.set("month", (mEl && mEl.value) || localMonth());
+  return "/api/export?" + p.toString();
+}
+function rejectsExportUrl(fmt) {
+  const p = new URLSearchParams();
+  p.set("format", fmt);
+  p.set("scope", "rejects");
+  const rng = rejRange();
+  if (rng.both) { p.set("from", rng.f); p.set("to", rng.t); }
+  else {
+    const mEl = document.getElementById("rej-month");
+    p.set("month", (mEl && mEl.value) || localMonth());
+  }
+  if (route) p.set("route", route);
   return "/api/export?" + p.toString();
 }
 function localToday() {
@@ -2987,23 +3196,28 @@ function diffCell(diff) {
   }
   return parts.length ? parts.join(" · ") : "0";
 }
+function tashkentNow() {
+  // Asia/Tashkent doimiy UTC+5 (DST yo'q). getTime() absolyut epoch —
+  // brauzerning mahalliy zonasi yoki Intl zona bazasidan mustaqil,
+  // shuning uchun hatto eski brauzerlarda ham to'g'ri ishlaydi.
+  return new Date(Date.now() + 5 * 3600000);
+}
 function tickClock() {
-  const now = new Date();
-  const TZ = "Asia/Tashkent";
-  const p = n => String(n).padStart(2, "0");
-  const h = Number(now.toLocaleString("en-GB", {timeZone: TZ, hour: "numeric", hour12: false}));
-  const m = Number(now.toLocaleString("en-GB", {timeZone: TZ, minute: "numeric"}));
-  const s = Number(now.toLocaleString("en-GB", {timeZone: TZ, second: "numeric"}));
-  document.getElementById("clock").textContent = p(h) + ":" + p(m) + ":" + p(s);
-  const weekdays = ["YAK", "DUS", "SE", "CHOR", "PAY", "JUM", "SHAN"];
-  const dayName = now.toLocaleDateString("en-US", {timeZone: TZ, weekday: "short"});
-  const wMap = {Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6};
-  const dd = Number(now.toLocaleString("en-GB", {timeZone: TZ, day: "numeric"}));
-  const mm = Number(now.toLocaleString("en-GB", {timeZone: TZ, month: "numeric"}));
-  const yyyy = now.toLocaleString("en-GB", {timeZone: TZ, year: "numeric"});
-  document.getElementById("clockdate").textContent =
-    weekdays[wMap[dayName] || 0] + " · " + p(dd) + "." + p(mm) + "." + yyyy;
-  document.getElementById("foot-time").textContent = now.toLocaleString("uz-UZ", {timeZone: TZ});
+  try {
+    const now = tashkentNow();
+    const p = n => String(n).padStart(2, "0");
+    document.getElementById("clock").textContent =
+      p(now.getUTCHours()) + ":" + p(now.getUTCMinutes()) + ":" + p(now.getUTCSeconds());
+    const weekdays = ["YAK", "DUS", "SE", "CHOR", "PAY", "JUM", "SHAN"];
+    document.getElementById("clockdate").textContent =
+      weekdays[now.getUTCDay()] + " · " + p(now.getUTCDate()) + "." +
+      p(now.getUTCMonth() + 1) + "." + now.getUTCFullYear();
+    document.getElementById("foot-time").textContent =
+      p(now.getUTCHours()) + ":" + p(now.getUTCMinutes()) + ":" + p(now.getUTCSeconds()) +
+      " · " + p(now.getUTCDate()) + "." + p(now.getUTCMonth() + 1) + "." + now.getUTCFullYear();
+  } catch (e) {
+    // hech qanday xato soatni butunlay o'chirib qo'ymasligi kerak
+  }
 }
 
 
@@ -3017,6 +3231,9 @@ const PAGE_META = {
   performance:{title:'ISHGRA CHIQISH',subtitle:'Haydovchilar ishga chiqish jadvali',crumb:'ISHGRA CHIQISH'},
   'top-performance':{title:'TOP PERFORMANCE',subtitle:'Eng yaxshi haydovchilar va yuqori ish ko‘rsatkichlari',crumb:'RANKING'},
   electricity:{title:'Elektr energiya',subtitle:'Oylik elektr energiya xisoboti (km×0.955×narx)',crumb:'ENERGY'},
+  rejects:{title:'Qabul qilinmagan KM',subtitle:'Qabul qilinmagan reyslar — haydovchi bo\'yicha ish kuni, reja va amalda km',crumb:'REJECTS'},
+  brutto:{title:'Brutto-shartnoma to\'lovi',subtitle:'116-son qaror (32-band) — DB reyslaridan tashuvchiga to\'lov',crumb:'BRUTTO'},
+  tariffs:{title:'Firma tariflari',subtitle:'Kompaniyalar kesimida SKM, 1 km narxi va QQS tariflari',crumb:'TARIFLAR'},
   insights:{title:'AI tahlil',subtitle:'Haydovchilar va tizim tahlili',crumb:'AI TAHHLIL'},
   audit:{title:'Sayt ↔ Baza auditi',subtitle:'Tashqi sayt va lokal baza ma’lumotlarini taqqoslash',crumb:'DATA QUALITY'},
   myai:{title:'MyAI Agent',subtitle:'Multi-agent AI tizimi',crumb:'MYAI AGENT'},
@@ -3051,6 +3268,9 @@ function showPage(name, updateHash=true){
   if(name==='settings') { loadSettings(); loadCompanies(); }
   if(name==='disk') loadDisk();
   if(name==='electricity') { bindElectricity(); loadElectricity(); }
+  if(name==='rejects') { bindRejects(); loadRejects(); }
+  if(name==='brutto') { bindBrutto(); loadBrutto(); }
+  if(name==='tariffs') loadTariffs();
   if(name==='myai') initOccPage();
 }
 /* ---- Disk holati (storage panel) ---- */
@@ -3241,6 +3461,17 @@ async function loadSettings() {
     if (dbSt) dbSt.style.color = s.database.host ? "var(--teal)" : "var(--warn)";
     // Global
     document.getElementById("s-km-rate").value = s.global.km_rate || 0;
+    document.getElementById("s-elec-price").value = s.global.elec_price || 0;
+    document.getElementById("s-brutto-skm").value = s.global.brutto_skm || 0;
+    const auditEl = document.getElementById("global-audit");
+    if (auditEl) {
+      const rows = (s.global.audit || []).slice(0, 6);
+      auditEl.innerHTML = rows.length
+        ? "OXIRGI O'ZGARISHLAR<br>" + rows.map(r =>
+            `&middot; ${r.when} &mdash; <b>${r.key}</b>: ${r.old}&rarr;${r.new} (${r.by})`
+          ).join("<br>")
+        : "Sozlamalar tarixi bo'sh";
+    }
     setText("s-backup-interval", s.backup.interval_hours + " soat");
     setText("s-backup-status", s.backup.enabled ? "YOQILGAN (" + (s.backup.host || "...") + ")" : "O'CHIRILGAN");
   } catch (e) {
@@ -3248,13 +3479,20 @@ async function loadSettings() {
   }
 }
 function setText(id, val) { const el = document.getElementById(id); if (el) el.textContent = val || "—"; }
+async function settingsExportUrl(fmt) {
+  return "/api/export?scope=settings&format=" + encodeURIComponent(fmt);
+}
 async function saveSettings() {
   const btn = document.getElementById("settings-save");
   btn.disabled = true; btn.textContent = "SAQLANMOQDA...";
   const errEl = document.getElementById("settings-err");
   if (errEl) errEl.style.display = "none";
   try {
-    const body = { km_rate: parseFloat(document.getElementById("s-km-rate").value) || 0 };
+    const body = {
+      km_rate: parseFloat(document.getElementById("s-km-rate").value) || 0,
+      elec_price: parseFloat(document.getElementById("s-elec-price").value) || 0,
+      brutto_skm: parseFloat(document.getElementById("s-brutto-skm").value) || 0
+    };
     const d = await postJSON("/api/settings", body);
     if (!d.ok) throw new Error(d.error || "Xatolik");
     btn.textContent = "SAQLANDI ✓"; btn.style.color = "#22c55e";
@@ -3417,7 +3655,7 @@ function bindElectricity() {
     mEl.addEventListener("change", () => loadElectricity());
     mEl.dataset.bound = "1";
   }
-  [["btn-elec-xlsx", "xlsx"], ["btn-elec-xls", "xls"], ["btn-elec-csv", "csv"]].forEach(([id, fmt]) => {
+[["btn-elec-xlsx", "xlsx"], ["btn-elec-xls", "xls"], ["btn-elec-csv", "csv"]].forEach(([id, fmt]) => {
     const b = document.getElementById(id);
     if (b && b.dataset.bound !== "1") {
       b.addEventListener("click", () => { window.location.href = electricityExportUrl(fmt); });
@@ -3426,6 +3664,255 @@ function bindElectricity() {
   });
 }
 
+/* ------------------------------------------------ QABUL QILINMAGAN KM */
+function rejMonth() {
+  const el = document.getElementById("rej-month");
+  return (el && el.value) || localMonth();
+}
+function rejRange() {
+  const from = document.getElementById("rej-from");
+  const to = document.getElementById("rej-to");
+  const f = (from && from.value) || "";
+  const t = (to && to.value) || "";
+  return { f: f, t: t, both: !!(f && t) };
+}
+function localMonthPrev() {
+  const d = new Date();
+  const m = new Date(d.getFullYear(), d.getMonth() - 1, 1);
+  return m.getFullYear() + "-" + String(m.getMonth() + 1).padStart(2, "0");
+}
+function currentRoute() {
+  const sel = document.getElementById("f-route");
+  return (route || (sel ? sel.value : "")) || "";
+}
+function routeNameLabel(routeId) {
+  const opt = document.querySelector('#f-route option[value="' + routeId + '"]');
+  return opt ? opt.textContent : (routeId || "Barchasi");
+}
+function bindRejects() {
+  const mEl = document.getElementById("rej-month");
+  if (mEl && mEl.dataset.bound !== "1") {
+    if (!mEl.value) mEl.value = localMonthPrev();
+    mEl.addEventListener("change", () => loadRejects());
+    mEl.dataset.bound = "1";
+  }
+  ["rej-from", "rej-to"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el && el.dataset.bound !== "1") {
+      el.addEventListener("change", () => loadRejects());
+      el.dataset.bound = "1";
+    }
+  });
+  [["btn-rej-xlsx", "xlsx"], ["btn-rej-xls", "xls"], ["btn-rej-csv", "csv"], ["btn-rej-pdf", "pdf"]].forEach(([id, fmt]) => {
+    const b = document.getElementById(id);
+    if (b && b.dataset.bound !== "1") {
+      b.addEventListener("click", () => { window.location.href = rejectsExportUrl(fmt); });
+      b.dataset.bound = "1";
+    }
+  });
+  const sv = document.getElementById("btn-save-rej-tariff");
+  if (sv && sv.dataset.bound !== "1") {
+    sv.addEventListener("click", saveRejectsTariff);
+    sv.dataset.bound = "1";
+  }
+}
+async function saveRejectsTariff() {
+  const rid = currentRoute();
+  if (!rid) { alert("Avval yo'nalishni tanlang"); return; }
+  const nv = parseFloat(document.getElementById("rej-tariff-novat")?.value || "0");
+  const vt = parseFloat(document.getElementById("rej-tariff-vat")?.value || "0");
+  const d = await postJSON("/api/rejects/tariff", { route_id: rid, no_vat: nv, vat: vt });
+  if (d && d.ok) {
+    alert("Narx saqlandi: " + elecNum(d.no_vat, 0) + " / " + elecNum(d.vat, 0) + " so'm/km");
+    loadRejects();
+  } else {
+    alert((d && d.error) || "Saqlashda xatolik");
+  }
+}
+async function loadRejects() {
+  const errEl = document.getElementById("rejects-err");
+  if (errEl) errEl.style.display = "none";
+  const rid = currentRoute();
+  const rn = document.getElementById("rej-route-name");
+  if (rn) rn.textContent = routeNameLabel(rid);
+  if (rid) {
+    try {
+      const tp = await api("/api/rejects/tariff?route=" + encodeURIComponent(rid));
+      if (tp && tp.ok) {
+        const nv = document.getElementById("rej-tariff-novat");
+        const vt = document.getElementById("rej-tariff-vat");
+        if (nv) nv.value = tp.no_vat || "";
+        if (vt) vt.value = tp.vat || "";
+      }
+    } catch (e) { /* tarif yuklanmasa ham hisobot davom etadi */ }
+  }
+  try {
+    const p = new URLSearchParams();
+    const rng = rejRange();
+    if (rng.both) { p.set("from", rng.f); p.set("to", rng.t); }
+    else p.set("month", rejMonth());
+    if (rid) p.set("route", rid);
+    const d = await api("/api/rejects", p);
+    if (!d.ok) throw new Error(d.error || "Xatolik");
+    renderRejects(d);
+  } catch (e) {
+    if (errEl) { errEl.style.display = "block"; errEl.textContent = "Yuklanmadi: " + e.message; }
+  }
+}
+function renderRejects(d) {
+  const hint = document.getElementById("rej-hint");
+  const per = d.period || {};
+  hint.textContent = per.from + " → " + per.to;
+  const t = d.totals || {};
+  const er = document.getElementById("rej-er");
+  er.innerHTML = '<section class="performance-summary">'
+    + '<div class="metric-box"><span>HAYDOVCHILAR</span><b>' + (d.rows || []).length + '</b></div>'
+    + '<div class="metric-box"><span>QABUL QILINMAGAN REYS</span><b>' + (t.qabul_qilinmagan || 0) + '</b></div>'
+    + '<div class="metric-box"><span>AMALDA BAJARILGAN REYS</span><b>' + (t.fact_reys || 0) + '</b></div>'
+    + '<div class="metric-box"><span>REJA KM</span><b>' + elecNum(t.plan_km, 1) + '</b></div>'
+    + '<div class="metric-box"><span>AMALDA KM</span><b>' + elecNum(t.fact_km, 1) + '</b></div>'
+    + '<div class="metric-box"><span>QABUL QILINMAGAN (QQSIZ)</span><b>' + elecMoney(t.sum_no_vat) + '</b></div>'
+    + '<div class="metric-box"><span>QABUL QILINMAGAN (QQS BILAN)</span><b>' + elecMoney(t.sum_vat) + '</b></div>'
+    + '</section>';
+
+  const rows = (d.rows || []).map((x, i) => [
+    i + 1, esc(x.name), x.days, x.plan_reys,
+    '<b>' + x.qabul_qilinmagan + '</b>', x.fact_reys,
+    elecNum(x.plan_km, 1) + " km", elecNum(x.fact_km, 1) + " km",
+    elecNum(x.diff, 1) + " km", elecMoney(x.sum_no_vat), elecMoney(x.sum_vat)
+  ]);
+  rows.push([
+    '<b>JAMI</b>', rows.length + " haydovchi", t.days || 0, t.plan_reys || 0,
+    '<b>' + (t.qabul_qilinmagan || 0) + '</b>', t.fact_reys || 0,
+    elecNum(t.plan_km, 1) + " km", elecNum(t.fact_km, 1) + " km",
+    elecNum(t.diff, 1) + " km", elecMoney(t.sum_no_vat), elecMoney(t.sum_vat)
+  ]);
+  document.getElementById("rejects-body").innerHTML =
+    rows.length ? tableHTML(["№", "Haydovchi (F.I.Sh.)", "Ish kuni", "Jami reys",
+      "Qabul qilinmagan reys", "Amalda bajarilgan reyslar", "Rejadagi km",
+      "Amalda km", "Farq", "Qabul qilinmagan so'm (QQSsiz)",
+      "Qabul qilinmagan so'm (QQS bilan)"], rows)
+      : '<div class="empty">Bu oy / yo’nalish uchun qabul qilinmagan reys topilmadi.</div>';
+}
+
+/* ------------------------------------------------ BRUTTO (116-son qaror) */
+function brtMonth() {
+  const el = document.getElementById("brt-month");
+  if (el && el.value) return el.value;
+  return localMonthPrev();
+}
+function brtRange() {
+  const f = document.getElementById("brt-from");
+  const t = document.getElementById("brt-to");
+  const fv = (f && f.value) || "";
+  const tv = (t && t.value) || "";
+  if (fv && tv) return { f: fv, t: tv, both: true };
+  if (fv && !tv) return { f: fv, t: fv, both: true };
+  return { f: "", t: "", both: false };
+}
+function bindBrutto() {
+  const mEl = document.getElementById("brt-month");
+  if (mEl && mEl.dataset.bound !== "1") {
+    if (!mEl.value) mEl.value = localMonthPrev();
+    mEl.addEventListener("change", () => loadBrutto());
+    mEl.dataset.bound = "1";
+  }
+  ["brt-from", "brt-to"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el && el.dataset.bound !== "1") {
+      el.addEventListener("change", () => loadBrutto());
+      el.dataset.bound = "1";
+    }
+  });
+}
+async function loadBrutto() {
+  const errEl = document.getElementById("brutto-err");
+  if (errEl) errEl.style.display = "none";
+  const rid = currentRoute();
+  const rn = document.getElementById("brt-route-name");
+  if (rn) rn.textContent = routeNameLabel(rid);
+  try {
+    const p = new URLSearchParams();
+    const rng = brtRange();
+    if (rng.both) { p.set("from", rng.f); p.set("to", rng.t); }
+    else p.set("month", brtMonth());
+    if (rid) p.set("route", rid);
+    const d = await api("/api/brutto", p);
+    if (!d.ok) throw new Error(d.error || "Xatolik");
+    renderBrutto(d);
+  } catch (e) {
+    if (errEl) { errEl.style.display = "block"; errEl.textContent = "Yuklanmadi: " + e.message; }
+  }
+}
+function renderBrutto(d) {
+  const hint = document.getElementById("brt-hint");
+  if (hint) hint.textContent = d.period_label || (d.period && d.period.month) || "";
+  const agg = d.agg || {};
+  const er = document.getElementById("brt-er");
+  er.innerHTML = '<section class="performance-summary">'
+    + '<div class="metric-box"><span>HAYDOVCHILAR</span><b>' + (d.haydovchilar || 0) + '</b></div>'
+    + '<div class="metric-box"><span>AMALDA KM (Lf)</span><b>' + elecNum(agg.lf || 0, 1) + '</b></div>'
+    + '<div class="metric-box"><span>REYS (Kamal)</span><b>' + elecNum(agg.kamal || 0, 0) + '</b></div>'
+    + '<div class="metric-box"><span>MUAMMOLI REYS (Kstjb)</span><b>' + (agg.kstjb || 0) + '</b></div>'
+    + '<div class="metric-box"><span>ALFA (a)</span><b>' + elecNum((agg.alpha || 0)*100, 1) + "%" + '</b></div>'
+    + '<div class="metric-box"><span>BETA (b)</span><b>' + elecNum((agg.beta || 0)*100, 1) + "%" + '</b></div>'
+    + '<div class="metric-box"><span>GAMMA (g)</span><b>' + elecNum((agg.gamma || 0)*100, 1) + "%" + '</b></div>'
+    + '<div class="metric-box"><span>JAMI TO\'LOV</span><b>' + elecMoney(agg.tolov) + '</b></div>'
+    + '<div class="metric-box"><span>SKM</span><b>' + elecMoney(d.skm) + '/km</b></div>'
+    + '</section>';
+
+  const rows = (d.rows || []).map((x, i) => [
+    i + 1, esc(x.fio), esc(x.driver_id), esc(x.grafik), elecNum(x.lf, 1) + " km",
+    elecMoney(x.skm || d.skm) + "/km",
+    x.kamal, x.kstjb, x.kmaq, elecNum((x.alpha||0)*100, 1) + "%", elecNum((x.beta||0)*100, 1) + "%", elecNum((x.gamma||0)*100, 1) + "%",
+    elecNum((x.sifat_index||0)*100, 1) + "%", elecMoney(x.tolov)
+  ]);
+  if (rows.length) {
+    rows.push([
+      '<b>JAMI</b>', '<b>' + rows.length + ' haydovchi</b>', "", "",
+      elecNum(agg.lf, 1) + " km", elecMoney(d.skm) + "/km",
+      agg.kamal, agg.kstjb, agg.kmaq,
+      elecNum((agg.alpha||0)*100, 1) + "%", elecNum((agg.beta||0)*100, 1) + "%", elecNum((agg.gamma||0)*100, 1) + "%", "",
+      '<b>' + elecMoney(agg.tolov) + '</b>'
+    ]);
+  }
+  document.getElementById("brutto-body").innerHTML =
+    rows.length ? tableHTML(["№", "Haydovchi (F.I.Sh.)", "ID", "Grafik",
+      "Lf (amalda km)", "SKM (so'm/km)", "Kamal (reys)", "Kstjb (muammoli)", "Kmaq",
+      "Alfa a", "Beta b", "Gamma g", "Sifat indeksi", "To'lov (so'm)"], rows)
+      : '<div class="empty">Bu davr / yo’nalish uchun haydovchi topilmadi.</div>';
+}
+
+async function loadTariffs() {
+  const errEl = document.getElementById("tariffs-err");
+  if (errEl) errEl.style.display = "none";
+  try {
+    const d = await api("/api/routes");
+    if (!d.ok) throw new Error(d.error || "Xatolik");
+    renderTariffs(d.routes || []);
+  } catch (e) {
+    if (errEl) { errEl.style.display = "block"; errEl.textContent = "Yuklanmadi: " + e.message; }
+  }
+}
+function renderTariffs(routes) {
+  const rows = routes.map((r) => [
+    esc(r.company || "—"), esc(r.name), esc(r.id),
+    elecMoney(r.skm) + "/km",
+    (r.km_rate && r.km_rate > 0)
+      ? elecMoney(r.km_rate) + " so'm"
+      : '<span style="color:var(--muted)">o\'rnatilmagan</span>',
+    (r.tariff_no_vat && r.tariff_no_vat > 0) ? elecMoney(r.tariff_no_vat) + " so'm" : "—",
+    (r.tariff_vat && r.tariff_vat > 0) ? elecMoney(r.tariff_vat) + " so'm" : "—",
+  ]);
+  document.getElementById("tariffs-body").innerHTML =
+    rows.length ? tableHTML(["Firma", "Yo'nalish", "Route ID",
+      "SKM (so'm/km)", "1 km narxi", "Tarif QQSsiz", "Tarif QQS bilan"], rows)
+      : '<div class="empty">Firmalar topilmadi.</div>';
+}
+function tariffsExport(fmt) {
+  const p = new URLSearchParams({ scope: "tariffs", format: fmt });
+  window.location.href = "/api/export?" + p.toString();
+}
 
 
 function insightsRow(label, value, cls) {
@@ -4842,9 +5329,10 @@ function loadLogs() {
   const level = document.getElementById("log-level").value;
   const search = document.getElementById("log-search").value;
   const count = document.getElementById("log-count").value;
+  const source = document.getElementById("log-source") ? document.getElementById("log-source").value : "bm";
   const body = document.getElementById("log-body");
   const status = document.getElementById("log-status");
-  let url = "/api/logs?lines=" + count;
+  let url = "/api/logs?lines=" + count + "&source=" + encodeURIComponent(source);
   if (level) url += "&level=" + encodeURIComponent(level);
   if (search) url += "&q=" + encodeURIComponent(search);
   bmFetch(url, {headers: {"Authorization": "Bearer " + (sessionStorage.getItem("bm-token") || "")}})
@@ -4892,6 +5380,7 @@ document.getElementById("log-auto").addEventListener("change", function() {
   if (this.checked) startLogPoll(); else stopLogPoll();
 });
 document.getElementById("log-level").addEventListener("change", loadLogs);
+document.getElementById("log-source").addEventListener("change", loadLogs);
 document.getElementById("log-count").addEventListener("change", loadLogs);
 document.getElementById("log-search").addEventListener("keydown", function(e) {
   if (e.key === "Enter") loadLogs();
@@ -4899,7 +5388,17 @@ document.getElementById("log-search").addEventListener("keydown", function(e) {
 
 /* ============================================================ MYAI AGENT CONTROL CENTER */
 let _occSSE = null, _occAgents = {}, _occFeedItems = [], _occTaskId = null, _occPoll = null;
+let _occHistOffset = 0, _occHistTotal = 0, _occHistLoading = false, _occHistDeb = null;
 const _occChatMsgs = {};
+
+const OCC_QUICK_PROMPTS = [
+  "B-80 yo'nalishini tekshir",
+  "B-80 yo'nalishini 13-sentabr uchun tekshir",
+  "Kechagi ishga chiqish holati",
+  "Oxirgi 7 kun muammolari",
+  'Qabul qilinmagan KM (avgust)',
+  "A-101 haydovchi kuni"
+];
 
 /* ── Agent State Machine ──────────────────────────────────────────── */
 const AGENT_STATE = {};
@@ -4943,6 +5442,7 @@ function renderWorkstation(a) {
     </div>
     <div class="occ-action" id="action-${a.id}">${escHtml(s.action || '')}</div>
     <div class="occ-progress"><div class="occ-progress-fill" id="prog-${a.id}" style="width:${s.progress||0}%;background:${a.color}"></div></div>
+    <div class="occ-agent-tools">${(a.tools||[]).slice(0,3).map(t=>`<span>${escHtml(t)}</span>`).join('')}</div>
   </div>`;
 }
 
@@ -5064,25 +5564,61 @@ function chatRemoveTyping(agentId) {
 }
 
 function chatShowResult(text, taskId) {
-  chatRemoveTyping('master');
+  chatRemoveAllTyping();
   chatAddAgentMsg(formatChatResponse(text), 'master', 'Yakuniy javob');
   _pollStop();
   document.getElementById('myai-send-btn').disabled = false;
   document.getElementById('myai-send-btn').textContent = 'YUBORISH';
+  loadMyAIStatus();
 }
 
 function chatShowError(text) {
-  chatRemoveTyping('master');
+  chatRemoveAllTyping();
   chatAddAgentMsg(`<span style="color:var(--occ-error)">${escHtml(text)}</span>`, 'master', 'Xatolik');
   _pollStop();
   document.getElementById('myai-send-btn').disabled = false;
   document.getElementById('myai-send-btn').textContent = 'YUBORISH';
+  loadMyAIStatus();
+}
+
+function chatRemoveAllTyping() {
+  document.querySelectorAll('.occ-msg-step .occ-typing').forEach(el => {
+    const step = el.closest('.occ-msg-step');
+    if (step) step.remove();
+  });
 }
 
 function formatChatResponse(text) {
   if (!text) return '<em>Bo\'sh javob</em>';
-  // Convert newlines to <br>, preserve formatting
-  return escHtml(text).replace(/\n/g, '<br>');
+  const lines = String(text).split('\n');
+  const parts = [];
+  let inSources = false;
+  for (const raw of lines) {
+    const line = String(raw).replace(/\s+$/, '');
+    const t = line.trim();
+    if (!t) { parts.push('<div class="occ-ans-gap"></div>'); continue; }
+    const e = escHtml(t);
+    if (t === 'Manbalar:' || t === 'Manbalar') {
+      inSources = true;
+      parts.push('<div class="occ-ans-title">' + e + '</div>');
+      continue;
+    }
+    if (/^•\s/.test(t)) {
+      const label = t.replace(/^•\s+/, '');
+      parts.push('<div class="occ-ans-bullet">' + escHtml(label) + '</div>');
+      continue;
+    }
+    if (/^-\s/.test(t)) {
+      parts.push('<div class="occ-ans-sub">' + e + '</div>');
+      continue;
+    }
+    if (inSources && /^[A-Za-z0-9_]+:/.test(t)) {
+      parts.push('<div class="occ-ans-sub">' + e + '</div>');
+      continue;
+    }
+    parts.push('<div class="occ-ans-line">' + e + '</div>');
+  }
+  return '<div class="occ-chat-answer">' + parts.join('') + '</div>';
 }
 
 /* ── Task Polling ─────────────────────────────────────────────────── */
@@ -5257,7 +5793,13 @@ function switchOccFeed(mode) {
   const hist = document.getElementById('feed-tab-history');
   if (live) live.classList.toggle('active', mode === 'live');
   if (hist) hist.classList.toggle('active', mode === 'history');
-  if (mode === 'history') loadOccHistory();
+  const tools = document.getElementById('occ-hist-tools');
+  if (tools) tools.style.display = mode === 'history' ? 'flex' : 'none';
+  if (mode === 'history') {
+    loadOccHistory(true);
+  } else if (mode === 'live') {
+    loadOccFeedHistory();
+  }
 }
 
 function _feedEmpty(text) {
@@ -5265,34 +5807,71 @@ function _feedEmpty(text) {
   if (list) list.innerHTML = `<div class="occ-feed-empty">${escHtml(text)}</div>`;
 }
 
-async function loadOccHistory() {
+async function loadOccHistory(reset) {
   const list = document.getElementById('occ-feed-list');
   if (!list) return;
-  _feedEmpty('Yuklanmoqda...');
-  try {
-    const d = await api('/api/myai/tasks?limit=20');
-    if (!d.ok) { _feedEmpty('Yuklab bo' + "'" + 'lmadi'); return; }
-    const items = d.tasks || [];
-    if (!items.length) { _feedEmpty('Vazifalar yo' + "'" + 'q'); return; }
+  if (reset === undefined) reset = true;
+  if (reset) {
+    _occHistOffset = 0;
     list.innerHTML = '';
+  }
+  if (_occHistLoading) return;
+  _occHistLoading = true;
+  const moreBtn = document.getElementById('occ-hist-more');
+  if (moreBtn) { moreBtn.disabled = true; moreBtn.textContent = 'Yuklanmoqda...'; }
+  try {
+    const q = (document.getElementById('occ-hist-search') || {}).value || '';
+    const st = (document.getElementById('occ-hist-status') || {}).value || '';
+    let url = '/api/myai/tasks?limit=20&offset=' + _occHistOffset;
+    if (st) url += '&status=' + encodeURIComponent(st);
+    if (q.trim()) url += '&q=' + encodeURIComponent(q.trim());
+    const d = await api(url);
+    if (!d.ok) throw new Error('xato');
+    const items = d.tasks || [];
+    _occHistTotal = d.total || items.length;
+    if (!items.length && _occHistOffset === 0) {
+      _feedEmpty('Vazifalar yo' + "'" + 'q');
+      if (moreBtn) { moreBtn.style.display = 'none'; moreBtn.disabled = false; }
+      return;
+    }
     for (const t of items) {
-      const st = t.status || 'pending';
-      const color = STATUS_COLORS[st] || '#5a6274';
-      const time = t.created_at ? new Date(t.created_at).toLocaleTimeString('uz-UZ', {hour:'2-digit',minute:'2-digit'}) : '';
-      const icon = (st === 'completed') ? '✅' : ((st === 'failed' || st === 'error' || st === 'cancelled') ? '❌' : '●');
+      const stv = t.status || 'pending';
+      const color = STATUS_COLORS[stv] || '#5a6274';
+      const dt = t.created_at ? new Date(t.created_at) : null;
+      const dateStr = dt ? (dt.toLocaleDateString('uz-UZ') + ' ' + dt.toLocaleTimeString('uz-UZ', {hour:'2-digit',minute:'2-digit'})) : '';
+      const icon = (stv === 'completed') ? '✅' : ((stv === 'failed' || stv === 'error' || stv === 'cancelled') ? '❌' : '●');
+      const running = (stv === 'running' || stv === 'pending');
       const el = document.createElement('div');
       el.className = 'occ-feed-item occ-history-row';
       el.innerHTML = `<div class="occ-feed-icon" style="color:${color};border-color:${color}30">${icon}</div>
         <div class="occ-feed-body">
-          <div class="occ-feed-text">${escHtml(t.user_request || '(bo\'sh)')}</div>
-          <div class="occ-feed-time">${st.toUpperCase()} · ${t.progress || 0}% · ${time}</div>
-        </div>`;
+          <div class="occ-feed-title">${escHtml(t.user_request || '(bo\'sh)')}</div>
+          <div class="occ-feed-time">${stv.toUpperCase()} · ${t.progress || 0}%${t.current_agent ? ' · ' + escHtml(t.current_agent) : ''}</div>
+          <div class="occ-feed-time">${dateStr}</div>
+          ${running ? `<div class="occ-progress"><div class="occ-progress-fill" style="width:${t.progress || 0}%;background:${color}"></div></div>` : ''}
+        </div>
+        <button class="occ-rerun" title="Qayta ishga tushirish" onclick="event.stopPropagation();quickOccText(${JSON.stringify(escAttr(t.user_request))})">↻</button>`;
       el.onclick = () => openOccHistoryTask(t.task_id);
       list.appendChild(el);
     }
+    _occHistOffset += items.length;
+    if (moreBtn) {
+      const hasMore = _occHistOffset < _occHistTotal;
+      moreBtn.disabled = false;
+      moreBtn.textContent = hasMore
+        ? 'KO\'PROQ (' + Math.min(_occHistTotal - _occHistOffset, 20) + ')'
+        : 'Barchasi yuklandi';
+      moreBtn.style.display = hasMore ? '' : 'none';
+    }
   } catch(e) {
-    _feedEmpty('Yuklab bo' + "'" + 'lmadi');
+    if (_occHistOffset === 0) _feedEmpty('Yuklab bo' + "'" + 'lmadi');
+  } finally {
+    _occHistLoading = false;
   }
+}
+
+function escAttr(v) {
+  return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 async function openOccHistoryTask(taskId) {
@@ -5566,6 +6145,46 @@ function initOccPage() {
   initOccAgents();
   connectSSE();
   loadOccFeedHistory();
+  loadMyAIStatus();
+  renderOccQuick();
+}
+
+async function loadMyAIStatus() {
+  const strip = document.getElementById('occ-status-strip');
+  if (!strip) return;
+  try {
+    const d = await api('/api/myai/status');
+    const st = (d && d.stats) || {};
+    const prov = (d && d.provider) || '—';
+    strip.innerHTML =
+      '<span class="occ-stat"><b>' + escHtml(prov) + '</b> provider</span>' +
+      '<span class="occ-stat"><b>' + (st.total || 0) + '</b> jami</span>' +
+      '<span class="occ-stat acc"><b>' + (st.active || 0) + '</b> faol</span>' +
+      '<span class="occ-stat ok"><b>' + (st.completed || 0) + '</b> tugalgan</span>' +
+      '<span class="occ-stat bad"><b>' + (st.failed || 0) + '</b> xato</span>';
+    strip.style.display = d && d.ok ? '' : 'none';
+  } catch(e) {
+    strip.style.display = 'none';
+  }
+}
+
+function renderOccQuick() {
+  const row = document.getElementById('occ-quick-row');
+  if (!row) return;
+  row.innerHTML = OCC_QUICK_PROMPTS.map((p, i) =>
+    `<button class="occ-chip" onclick="quickOccTask(${i})" title="${escHtml(p)}">${escHtml(p)}</button>`
+  ).join('');
+}
+
+function quickOccTask(i) {
+  const p = OCC_QUICK_PROMPTS[i];
+  if (p) quickOccText(p);
+}
+
+function quickOccText(text) {
+  const input = document.getElementById('myai-input');
+  if (input) input.value = text;
+  sendMyAITask();
 }
 
 async function loadOccFeedHistory() {

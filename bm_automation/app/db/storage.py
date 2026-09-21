@@ -1,11 +1,11 @@
-"""Saqlash (storage) qatlami — idempotent upsert va voqea jurnallari.
+﻿"""Saqlash (storage) qatlami вЂ” idempotent upsert va voqea jurnallari.
 
 `Storage` barcha 14 jadval bilan ishlaydi:
 
 - **Sync jadvallari** (profiles, routes, vehicles, drivers, duties, schedules,
-  waybills, trips, reports, trip_statuses) — natural kalit bo'yicha upsert,
+  waybills, trips, reports, trip_statuses) вЂ” natural kalit bo'yicha upsert,
   dublikat yaratilmaydi, qayta yuklash mavjud yozuvni buzmaydi.
-- **Voqea jurnallari** (report_runs, errors, notifications, automation_runs) —
+- **Voqea jurnallari** (report_runs, errors, notifications, automation_runs) вЂ”
   append-only.
 
 Agar DB ishlamasa (`get_storage()` `enabled=False`) barcha metodlar no-op
@@ -55,14 +55,14 @@ class Storage:
         self._forced_enabled = enabled  # None = auto (init_db + o'z-o'zini tiklash)
         self._schema_ready = False
         if not self.enabled:
-            log.info("DB rejimi o'chirilgan — barcha DB yozuvlar o'tkazib yuboriladi.")
+            log.info("DB rejimi o'chirilgan вЂ” barcha DB yozuvlar o'tkazib yuboriladi.")
 
     @property
     def enabled(self) -> bool:
         """DB hozir mavjudmi.
 
         Dastlabki ulanish muvaffaqiyatsiz bo'lsa ham, har bir tekshiruvda
-        qayta urinish (``probe``, backoff) bajariladi — Supabase qayta tiklangach
+        qayta urinish (``probe``, backoff) bajariladi вЂ” Supabase qayta tiklangach
         xizmatni qayta ishga tushirmasdan yozish davom etadi. Sxema bir marta
         yaratiladi; DB tiklangach idempotent ``init_db`` qayta bajariladi.
         """
@@ -126,18 +126,18 @@ class Storage:
 
     def bulk_upsert(self, table: str, key_cols: list[str],
                     rows: list[dict], chunk: int = 200) -> tuple[int, int]:
-        """Ko'p yozuvli upsert — (inserted, updated) sonini qaytaradi.
+        """Ko'p yozuvli upsert вЂ” (inserted, updated) sonini qaytaradi.
 
         Har bir chunk BIR ko'p-qatorli `INSERT ... ON CONFLICT DO UPDATE`
         bilan bajariladi (PostgreSQL). Row-by-row (`upsert`) bilan 522
-        qatorli waybill hisoboti ~1000 ta so'rov talab qilardi — bu
+        qatorli waybill hisoboti ~1000 ta so'rov talab qilardi вЂ” bu
         Supabase `statement_timeout`'iga uchiradi; batch bilan 3-4 so'rov.
-        SQLite (faqat test) row-by-row ishlaydi — natijalar bir xil.
+        SQLite (faqat test) row-by-row ishlaydi вЂ” natijalar bir xil.
         """
         if not self.enabled or not rows:
             return 0, 0
         # Bitta INSERT ichida ON CONFLICT dublikat kalitni qabul qilmaydi;
-        # row-by-row upsert semantikasi — oxirgi qiymat yutadi.
+        # row-by-row upsert semantikasi вЂ” oxirgi qiymat yutadi.
         seen = {}
         for r in rows:
             k = tuple(str(r.get(c) or "") for c in key_cols)
@@ -400,11 +400,11 @@ class Storage:
         return None
 
     def resolve_driver_by_identifier(self, identifier: str) -> str:
-        """Birlashtirilgan haydovchi qidiruv: JSHSHR → Guvohnoma → Pasport → Tel.
+        """Birlashtirilgan haydovchi qidiruv: JSHSHR в†’ Guvohnoma в†’ Pasport в†’ Tel.
 
         Muvaffaqiyatli topilgan driver_id qaytaradi, topilmasa bo'sh qator.
-        Qidiruv tartibi: JSHSHR (1-o'rin) → Haydovchilik guvohnomasi (2)
-        → Pasport (3) → Telefon raqami (4).
+        Qidiruv tartibi: JSHSHR (1-o'rin) в†’ Haydovchilik guvohnomasi (2)
+        в†’ Pasport (3) в†’ Telefon raqami (4).
         """
         identifier = (identifier or "").strip()
         if not identifier:
@@ -430,7 +430,7 @@ class Storage:
         return ""
 
     def resolve_driver_profile(self, identifier: str) -> dict | None:
-        """Birlashtirilgan qidiruv — to'liq profil qaytaradi (driver_id + profile)."""
+        """Birlashtirilgan qidiruv вЂ” to'liq profil qaytaradi (driver_id + profile)."""
         identifier = (identifier or "").strip()
         if not identifier:
             return None
@@ -467,13 +467,14 @@ class Storage:
         return None
 
     def link_driver_telegram(self, driver_id: str, chat_id: int) -> None:
-        """Haydovchiga Telegram chat_id bog'laydi."""
+        """Haydovchiga Telegram chat_id bog'laydi + bildirishnomani yoqadi."""
         if not self.enabled:
             return
         try:
             self._exec(
                 "UPDATE driver_profiles SET telegram_chat_id = "
-                f"{self.db.ph} WHERE driver_id = {self.db.ph}",
+                f"{self.db.ph}, notification_enabled = 1 "
+                "WHERE driver_id = " f"{self.db.ph}",
                 (str(chat_id), driver_id),
             )
         except Exception:  # noqa: BLE001
@@ -511,7 +512,7 @@ class Storage:
     def set_dispatcher_routes(self, chat_id: int, routes: list[dict]) -> list[dict]:
         """Dispetcher yo'nalishlari to'plamini almashtiradi (avvalgisini o'chiradi).
 
-        `routes` — [{"route_id": ..., "route_name": ..., "company": ...}, ...].
+        `routes` вЂ” [{"route_id": ..., "route_name": ..., "company": ...}, ...].
         Qaytadi: yangi biriktirilgan ro'yxat.
         """
         if not self.enabled:
@@ -535,7 +536,7 @@ class Storage:
         return routes
 
     def dispatcher_routes(self, chat_id: int | None = None) -> list[dict]:
-        """Dispetcher yo'nalishlari ro'yxati. chat_id berilsa — bitta
+        """Dispetcher yo'nalishlari ro'yxati. chat_id berilsa вЂ” bitta
         dispetcher uchun, aks holda hammasi."""
         if not self.enabled:
             return []
@@ -583,7 +584,9 @@ class Storage:
 
     def save_driver_work_log(self, date: str, driver_id: str, vehicle_id: str = "",
                              distance_km: float = 0, trip_count: int = 0,
-                             note: str = "") -> str:
+                             note: str = "", distance_plan: float = 0,
+                             trip_plan: int = 0, working_day: int = 0,
+                             trip_passed: int = 0, trip_approved: int = 0) -> str:
         try:
             distance = max(float(distance_km or 0), 0.0)
         except (TypeError, ValueError):
@@ -592,11 +595,48 @@ class Storage:
             trips = max(int(trip_count or 0), 0)
         except (TypeError, ValueError):
             trips = 0
+        try:
+            d_plan = max(float(distance_plan or 0), 0.0)
+        except (TypeError, ValueError):
+            d_plan = 0.0
+        try:
+            t_plan = max(int(trip_plan or 0), 0)
+        except (TypeError, ValueError):
+            t_plan = 0
+        try:
+            wd = max(int(working_day or 0), 0)
+        except (TypeError, ValueError):
+            wd = 0
+        try:
+            passed = max(int(trip_passed or 0), 0)
+        except (TypeError, ValueError):
+            passed = 0
+        try:
+            approved = max(int(trip_approved or 0), 0)
+        except (TypeError, ValueError):
+            approved = 0
         return self.upsert("driver_work_logs", ["date", "driver_id", "vehicle_id"], {
             "date": str(date or ""), "driver_id": str(driver_id or ""),
             "vehicle_id": str(vehicle_id or ""), "distance_km": distance,
             "trip_count": trips, "note": str(note or ""),
+            "distance_plan": d_plan, "trip_plan": t_plan,
+            "working_day": wd, "trip_passed": passed, "trip_approved": approved,
         })
+
+    def delete_driver_work_log(self, date: str, driver_id: str,
+                               vehicle_id: str = "") -> bool:
+        """Kunlik km qaydini o'chiradi (noto'g'ri kiritilgan bo'lsa).
+
+        Natural kalit: (date, driver_id, vehicle_id) вЂ” shu kalitdagi
+        yagona qayd o'chiriladi."""
+        if not self.enabled:
+            return False
+        return self._exec(
+            "DELETE FROM driver_work_logs WHERE date = " + self.db.ph
+            + " AND driver_id = " + self.db.ph
+            + " AND vehicle_id = " + self.db.ph,
+            (str(date or ""), str(driver_id or ""), str(vehicle_id or "")),
+        ) == 1
 
     def add_driver_fine(self, driver_id: str, date: str, amount: float,
                         reason: str = "", status: str = "ACTIVE") -> bool:
@@ -705,7 +745,7 @@ class Storage:
                 )
                 deleted += 1
             return deleted
-        # PostgreSQL: BIR ko'p-kalitli DELETE (unnest orqali) — 522 kalit
+        # PostgreSQL: BIR ko'p-kalitli DELETE (unnest orqali) вЂ” 522 kalit
         # uchun 522 so'rov o'rniga 1 so'rov, statement timeout bo'lmaydi.
         # Har bir ustun o'z text[] array'ida bitta parametr sifatida uzatiladi;
         # unnest() satrlarni ustunlar bo'yicha biriktirib qaytaradi.
@@ -750,7 +790,7 @@ class Storage:
 
     # Bir xil xato (source+message) shu vaqt ichida takrorlanmasin.
     # Monitor/error-markazini "flood" qilmaslik uchun (mavjud xato qayta
-    # qayd etilmaydi — yangi xatolar esa darhol ko'rinadi).
+    # qayd etilmaydi вЂ” yangi xatolar esa darhol ko'rinadi).
     # 0 bo'lsa dedup o'chirilgan.
     error_dedup_minutes: int = 30
 
@@ -765,7 +805,7 @@ class Storage:
             with _err_dedup_lock:
                 ts = _err_dedup.get(key)
                 if ts is not None and (now_ts - ts) < window * 60:
-                    return False  # yaqinda bir xil xato qayd etilgan — skip
+                    return False  # yaqinda bir xil xato qayd etilgan вЂ” skip
                 _err_dedup[key] = now_ts
                 if len(_err_dedup) > 10000:  # eskirgan yozuvlarni tozalash
                     cutoff = now_ts - 60 * 60 * 6

@@ -591,7 +591,8 @@ def sync_work_logs(storage: Storage, from_date: str = "", to_date: str = "",
         rd_scope.append(f"route_id = {ph}")
         rd_bind.append(route_id)
     rd_sql = ("SELECT date, route_id, vehicle_id, vehicle_number, "
-              "trip_fact, distance_fact FROM route_daily"
+              "trip_fact, distance_fact, trip_plan, distance_plan, "
+              "working_day, trip_passed, trip_approved FROM route_daily"
               + (f" WHERE {' AND '.join(rd_scope)}" if rd_scope else ""))
     rd_rows = storage.query(rd_sql, tuple(rd_bind), limit=50000)
     rd_by_vd = {(str(r.get("date") or ""), str(r.get("vehicle_id") or "")): r
@@ -631,6 +632,13 @@ def sync_work_logs(storage: Storage, from_date: str = "", to_date: str = "",
         a = agg[key]
         return float(a["km"]), int(a["cnt"])
 
+    def _rd_row(key: tuple) -> dict | None:
+        """(date, driver, vehicle) asosiy haydovchiga tegishli route_daily satori."""
+        vd = (key[0], key[2])
+        if rd_by_vd.get(vd) is not None and main_by_vd.get(vd) == key:
+            return rd_by_vd[vd]
+        return None
+
     with storage.db.transaction():
         for r in avto_rows:
             key = (str(r.get("date") or ""), str(r.get("driver_id") or ""),
@@ -645,8 +653,14 @@ def sync_work_logs(storage: Storage, from_date: str = "", to_date: str = "",
             if key in existing_manual:
                 continue  # qo'lda qayd mavjud — AVTO ustiga yozilmaydi
             km, cnt = _km_cnt(key)
+            rd = _rd_row(key)
             status = storage.save_driver_work_log(
-                key[0], key[1], key[2], km, cnt, note="AVTO")
+                key[0], key[1], key[2], km, cnt, note="AVTO",
+                distance_plan=float(rd.get("distance_plan") or 0) if rd else 0.0,
+                trip_plan=int(rd.get("trip_plan") or 0) if rd else 0,
+                working_day=int(rd.get("working_day") or 0) if rd else 0,
+                trip_passed=int(rd.get("trip_passed") or 0) if rd else 0,
+                trip_approved=int(rd.get("trip_approved") or 0) if rd else 0)
             if status == "inserted":
                 result.inserted += 1
             else:

@@ -28,6 +28,10 @@ class BaseAgent(ABC):
     name: AgentType
     description: str = ""
 
+    # Agar None bo'lsa — barcha tool'lar ruxsat etilgan (master uchun).
+    # Bo'sh set — hech qanday tool ruxsat etilmaydi.
+    allowed_tools: set[str] | None = None
+
     def __init__(self, llm: LLMProvider, tools: Any = None):
         self.llm = llm
         self.tools = tools
@@ -36,6 +40,25 @@ class BaseAgent(ABC):
         self._status = AgentStatus(agent=self.name)
         self._last_tool: tuple[str, str] | None = None
         self.source_note = ""
+        self.allowed_tools: set[str] | None = None
+
+    def list_allowed_tools(self) -> list[str]:
+        """Agent ruxsat etilgan tool nomlari (None = hammasi)."""
+        if self.allowed_tools is None:
+            if self.tools is None:
+                return []
+            return self.tools.list_tools()
+        return sorted(self.allowed_tools)
+
+    def _check_tool_allowed(self, tool_name: str) -> None:
+        """Tool agent uchun ruxsat etilganligini tekshiradi (least privilege)."""
+        if self.allowed_tools is None:
+            return
+        if tool_name not in self.allowed_tools:
+            allowed = ", ".join(sorted(self.allowed_tools))
+            raise PermissionError(
+                f"{self.name.value} agent {tool_name!r} tool'iga ruxsatga ega emas "
+                f"(ruxsat etilgan: {allowed})")
 
     @property
     def last_tool(self) -> tuple[str, str] | None:
@@ -111,6 +134,7 @@ class BaseAgent(ABC):
 
     async def _use_tool(self, tool_name: str, **kwargs) -> Any:
         """Tool chaqirig'i."""
+        self._check_tool_allowed(tool_name)
         if self.tools is None:
             raise RuntimeError(f"Tools mavjud emas: {tool_name}")
         tool = self.tools.get(tool_name)
@@ -131,6 +155,76 @@ class BaseAgent(ABC):
         except Exception as exc:  # noqa: BLE001
             self.logger.debug("Event emit xatosi (tool_result): %s", exc)
         return result
+
+    async def _llm_tool_hint(self, task: str, choices: list[dict]) -> dict | None:
+        """LLM yordamida maqsadli tool tanlash (optional, LLM sozlanganida).
+
+        Deterministik natija bo'sh/xato bo'lganda agent LLM dan berilgan
+        choices ichidan eng mos tool/action'ni tanlashni so'raydi.
+        LLM yo'q yoki JSON noto'g'ri bo'lsa — None (xavfsiz fallback),
+        deterministik yo'l o'zgarmaydi.
+
+        choices: [{"tool": ..., "action": ..., "args": {...}, "desc": ...}]
+        Qaytadi: tanlangan choice dict (allowed_tools bilan tekshirilgan)
+        yoki None.
+        """
+        if not choices:
+            return None
+        try:
+            if self.llm is None or not self.llm.configured():
+                return None
+        except Exception:  # noqa: BLE001
+            return None
+
+        import json as _json
+        listed = "\n".join(
+            f"- [{i}] tool={c.get('tool')}, action={c.get('action')}, "
+            f"args={_json.dumps(c.get('args') or {}, ensure_ascii=False)}, "
+            f"nima: {c.get('desc', '')}"
+            for i, c in enumerate(choices)
+        )
+        system = (
+            "Siz transport AI tizimi uchun tool-dispetchersiz. "
+            "Foydalanuvchi topshirig'i va mavjud tool variantlariga qarab "
+            "ENG MOS bittasini tanlaysiz. Faqat JSON qaytaring: "
+            '{"tool": ..., "action": ..., "args": {...}}'
+        )
+        user = (
+            f"Topshiriq: {task}\n\n"
+            f"Mavjud variantlar:\n{listed}\n\n"
+            "Eng mos variant indeksini aniq JOIN qiling va JSON qaytaring. "
+            "Hech biri mos bo'lmasa bo'sh JSON {} qaytaring."
+        )
+        try:
+            response = await self._call_llm(system, user, max_tokens=100)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.debug("LLM tool hint xatosi: %s", exc)
+            return None
+        response = (response or "").strip()
+        if response.startswith("```"):
+            import re as _re
+            m = _re.search(r"```(?:json)?\s*(.*?)```", response, _re.S)
+            response = m.group(1).strip() if m else response
+        try:
+            data = _json.loads(response)
+        except Exception:  # noqa: BLE001
+            return None
+        tool = (data.get("tool") or "").strip()
+        action = (data.get("action") or "").strip()
+        args = data.get("args") or {}
+        for c in choices:
+            if c.get("tool") == tool and c.get("action") == action:
+                try:
+                    self._check_tool_allowed(tool)
+                except PermissionError:
+                    return None
+                merged = dict(c.get("args") or {})
+                merged.update({k: v for k, v in args.items()
+                               if k in (c.get("args") or {})})
+                self.logger.info("LLM tool hint: %s.%s", tool, action)
+                return {"tool": tool, "action": action,
+                        "args": merged, "desc": c.get("desc", "")}
+        return None
 
     def _start(self, task_id: str = "", action: str = "") -> None:
         """Agent ish boshladi."""

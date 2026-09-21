@@ -1,4 +1,4 @@
-"""Ko'rsatkichlarni Telegram matniga aylantirish (render).
+﻿"""Ko'rsatkichlarni Telegram matniga aylantirish (render).
 
 "Jo'nash taxtasi" (departure board) uslubi: emoji-semantik sarlavhalar,
 bo'limlar bo'sh qator bilan ajratiladi, ko'p qatorli raqamli ma'lumot
@@ -10,18 +10,30 @@ navigatsiya (muammo tugmalari / nav) yoki `None`.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
+
+from pandas import DataFrame
 
 from ...dashboard.metrics import Metrics, parse_filters
+from ...dashboard.hisob import brutto as _brutto, hisob_text as _hisob_text
+from ...dashboard.brutto_calculator import BruttoCalculator as _BruttoCalculator
+from ...dashboard.brutto_calculator import Contract as _Contract
 from ...db.models import TripStatus, json_loads
 from ...db.storage import get_storage
+from ...core.bot_settings import brutto_skm
 from ...utils.logger import get_logger
 from ...utils.names import short_name
-from ...utils.tgformat import badge, badge_plain, esc, fmt, table
+from ...utils.tgformat import badge, badge_plain, esc, fmt, pct, table
 from . import context, kb
-from .roles import Role, configured_roles, resolve_role, role_label
+from .roles import Role, can, configured_roles, resolve_role, role_label
 
 log = get_logger("bm_automation.bot")
+
+# Ish haqi (salary) faqat ADMIN/DISPATCHER/MANAGER ga ko'rinadi.
+def _can_view_salary(chat_id: int | None) -> bool:
+    if chat_id is None:
+        return True  # ichki/skeduler chaqiruvlar uchun boshqaruv rejimi
+    return can(resolve_role(chat_id), "salary")
 
 _WEEKDAYS = ["dushanba", "seshanba", "chorshanba", "payshanba",
              "juma", "shanba", "yakshanba"]
@@ -74,8 +86,23 @@ PROBLEM_LABELS = {
     "unknown": "noma'lum",
 }
 
+_STATUS_SHORT = {
+    "ACCEPTED": "Qabul",
+    "APPROVED": "Tasdiq",
+    "NOT_ACCEPTED": "Qab.yoq",
+    "REJECTED": "Rad",
+    "PENDING_ACCESS": "Kutilmoqda",
+    "ZERO_MILEAGE": "Nollik",
+}
 
-def today(filters: dict | None = None) -> tuple[str, dict]:
+
+def _status_label(status: str) -> str:
+    """Statusni qisqa o'zbekcha belgiga aylantiradi (mobil o'qish uchun)."""
+    s = str(status or "").strip().upper()
+    return _STATUS_SHORT.get(s, esc(s) or "-")
+
+
+def today(filters: dict | None = None, chat_id: int | None = None) -> tuple[str, dict]:
     f = parse_filters(filters)
     m = _met()
     t = m.today(f)
@@ -92,7 +119,7 @@ def today(filters: dict | None = None) -> tuple[str, dict]:
         "",
         "<b>🚌 AVTOBUSLAR</b>",
         f"Jami: {t['total_buses']}  |  🔄 Faol: {t['active_buses']}  |  "
-        f"❌ Muammoli: {t['not_active_buses']}",
+        f"🅿️ Rezerv: {t.get('reserve_buses', t['not_active_buses'])}",
         "",
         "<b>📋 REYSLAR</b>",
         f"Reja: {fmt(t['planned'], 0)}  |  Amalda: {fmt(t['completed'], 0)}  |  "
@@ -110,6 +137,24 @@ def today(filters: dict | None = None) -> tuple[str, dict]:
     if status_rows:
         lines.append("")
         lines.append(table(["Holat", "Soni"], status_rows))
+    did = (f.get("driver_id") or f.get("driver") or "").strip()
+    if did:
+        b = _brutto(f, did)
+    else:
+        rows = m.drivers(f) or []
+        b = {
+            "gross_full": sum(float(r.get("gross_pay") or 0) for r in rows),
+            "tax": sum(float(r.get("tax") or 0) for r in rows),
+            "fines": sum(float(r.get("fines") or 0) for r in rows),
+            "net_pay": sum(float(r.get("net_pay") or 0) for r in rows),
+        }
+    if b.get("gross_full") and _can_view_salary(chat_id):
+        lines += [
+            "",
+            "<b>💰 ISH HAQI</b>",
+            f"Brutto: {fmt(b['gross_full'], 0)}  |  Soliq: {fmt(b['tax'], 0)}  |  "
+            f"Jarima: {fmt(b['fines'], 0)}  |  <b>Netto: {fmt(b['net_pay'], 0)}</b>",
+        ]
     lines += [
         "",
         "<b>⚠️ MUAMMOLAR</b>",
@@ -125,14 +170,15 @@ def today(filters: dict | None = None) -> tuple[str, dict]:
 def _problem_table(items: list[dict], limit: int = 6) -> list[str]:
     if not items:
         return ["  yo'q ✓"]
-    rows = [
-        [it.get("planned_time") or "--:--",
-         it.get("vehicle") or "-",
-         short_name(str(it.get("driver") or "-")),
-         it.get("status") or "-"]
-        for it in items[:limit]
-    ]
-    lines = [table(["Vaqt", "Avtobus", "Haydovchi", "Holat"], rows)]
+    # Mobil Telegram: keng `<pre>` jadval o'rniga ixcham inline qatorlar —
+    # har bir reys bitta qatorda, ekranda osongina o'qiladi.
+    lines = []
+    for it in items[:limit]:
+        vt = it.get("planned_time") or "--:--"
+        veh = esc(it.get("vehicle") or "-")
+        drv = esc(short_name(str(it.get("driver") or "-")))
+        stt = it.get("status") or "-"
+        lines.append(f"  {vt}  {veh}  {drv}  {_status_label(stt)}")
     if len(items) > limit:
         lines.append(f"  ... yana {len(items) - limit} ta")
     return lines
@@ -315,8 +361,87 @@ def resolve_driver(arg: str, filters: dict | None = None) -> str:
     return ""
 
 
-def driver_card(driver_id: str, filters: dict | None = None) -> tuple[str, dict]:
-    """Bitta haydovchining to'liq kartasi (profil + oy statistikasi + tarix)."""
+_EXPIRY_SOON_DAYS = 30
+
+
+def _expiry_state(value: str) -> tuple[str, str] | None:
+    """Muddat holatini aniqlaydi: (status_badge, detail).
+
+    Yetmagan → None; muddati o'tgan → '❌'; 30 kundan kam qolgan → '⚠️';
+    aks holda '✅'. `value` ISO sana (YYYY-MM-DD) deb qabul qilinadi.
+    """
+    try:
+        d = date.fromisoformat(str(value or "")[:10])
+    except ValueError:
+        return None
+    from datetime import date as _d2
+    today = _d2.today()
+    delta = (d - today).days
+    if delta < 0:
+        return "❌ o'tgan", str(value)
+    if delta <= _EXPIRY_SOON_DAYS:
+        return "⚠️ yaqin", str(value)
+    return "✅", str(value)
+
+
+def driver_shortcomings(data: dict) -> list[str]:
+    """Haydovchi profilidagi jiddiy kamchiliklar ro'yxati (profil to'ldirish).
+
+    Belgilangan maydonlar kiritilmagan yoki muddati o'tayotgan hujjatlar
+    haqida ogohlantirish qatorlarini qaytaradi. Kamchilik bo'lmasa — bo'sh.
+    """
+    d = data.get("driver") or {}
+    p = data.get("profile") or {}
+    out: list[str] = []
+
+    if d.get("blacklisted"):
+        out.append("⛔ Qora ro'yxatda — admin bilan bog'laning")
+
+    if not str(p.get("phone") or "").strip():
+        out.append("📱 Telefon raqam kiritilmagan")
+    if not str(p.get("passport_number") or "").strip():
+        out.append("🪪 Passport raqami kiritilmagan")
+    elif (st := _expiry_state(p.get("passport_expiry"))) and st[0] != "✅":
+        out.append(f"🪪 Passport muddati: {st[0]} ({esc(st[1])})")
+    if not str(p.get("license_number") or "").strip():
+        out.append("🚘 Guvohnoma raqami kiritilmagan")
+    elif (st := _expiry_state(p.get("license_expiry"))) and st[0] != "✅":
+        out.append(f"🚘 Guvohnoma muddati: {st[0]} ({esc(st[1])})")
+    if not p.get("notification_enabled"):
+        out.append("🔕 Telegram bildirishnoma yoqilmagan")
+    return out
+
+
+def driver_inbox(driver_id: str, filters: dict | None = None,
+                 chat_id: int | None = None) -> tuple[str, dict]:
+    """Haydovchi o'zi uchun: profil kartasi + kamchiliklar (inbox uslubi).
+
+    `/start` da haydovchi o'z profilini ko'radi; Brutto/Netto satrlari
+    `chat_id` gating orqali yashiriladi. Kamchiliklar bo'lmasa, profil
+    kartasi toza chiqadi.
+    """
+    did = str(driver_id or "").strip()
+    text, markup = driver_card(did, filters or None, chat_id=chat_id)
+
+    # Kamchiliklar uchun profil data'sini qayta so'raymiz (rendering uchun).
+    from ...dashboard.metrics import Metrics as _MM, parse_filters as _pf
+    _f = _default_month(_pf(filters or {}), filters or {})
+    data = _MM().driver_detail(did, _f)
+    gaps = driver_shortcomings(data) if data else []
+    gaps = [g for g in gaps if "Telegram bildirishnoma" not in g]
+    if gaps:
+        block = ["", "⚠️ <b>KAMCHILIKLAR</b>"] + [f"  {g}" for g in gaps]
+        text = f"{text}\n\n" + "\n".join(block)
+    return text, markup
+
+
+def driver_card(driver_id: str, filters: dict | None = None,
+                chat_id: int | None = None) -> tuple[str, dict]:
+    """Bitta haydovchining to'liq kartasi (profil + oy statistikasi + tarix).
+
+    `chat_id` berilsa maosh (Brutto/Jarimalar/Netto) faqat ruxsat etilgan
+    (ADMIN/DISPATCHER/MANAGER) foydalanuvchilarga ko'rsatiladi.
+    """
     driver_id = str(driver_id or "").strip()
     f = _default_month(parse_filters(filters or {}), filters or {})
     data = _met().driver_detail(driver_id, f)
@@ -366,15 +491,19 @@ def driver_card(driver_id: str, filters: dict | None = None) -> tuple[str, dict]
     qatnov = fmt(d.get("trips") or 0, 0) + (f" (+{fmt(manual, 0)} qo'l)" if manual else "")
     auto_km = d.get("automatic_km") or 0
     km = fmt(d.get("km") or 0, 1) + (f" (API {fmt(auto_km, 1)})" if auto_km else "")
-    parts.append(table(["Ko'rsatkich", "Qiymat"], [
+    rows = [
         ["Ish kunlari", fmt(d.get("working_days") or 0, 0)],
         ["Qatnov", qatnov],
         ["Km", km],
-        ["Brutto", fmt(d.get("gross_pay") or 0, 0)],
-        ["Jarimalar", fmt(d.get("fines") or 0, 0)],
-        ["Netto", fmt(d.get("net_pay") or 0, 0)],
-        ["Qatnashish", badge_plain(d.get("attendance"))],
-    ]))
+    ]
+    if _can_view_salary(chat_id):
+        rows += [
+            ["Brutto", fmt(d.get("gross_pay") or 0, 0)],
+            ["Jarimalar", fmt(d.get("fines") or 0, 0)],
+            ["Netto", fmt(d.get("net_pay") or 0, 0)],
+        ]
+    rows.append(["Qatnashish", badge_plain(d.get("attendance"))])
+    parts.append(table(["Ko'rsatkich", "Qiymat"], rows))
 
     logs = data.get("work_logs") or []
     if logs:
@@ -676,7 +805,7 @@ def _trip_line(t: dict) -> str:
     except (TypeError, ValueError):
         missed = "-"
     return (f"{icon.get(status, '❓')} {t.get('planned_time') or '--:--'} | "
-            f"{esc(route)} | {esc(plate)} | {esc(status)}\n"
+            f"{esc(route)} · {esc(plate)} · {_status_label(status)}\n"
             f"   🧑 {esc(driver)} · sifatsizlik: {esc(quality)} · "
             f"o'tkazib yuborilgan bekat: {missed}")
 
@@ -704,7 +833,27 @@ def _day_label(value: str) -> str:
     return f"{value[8:10]}.{value[5:7]}"
 
 
-def month(filters: dict | None = None) -> tuple[str, dict]:
+def _pct_plain(value) -> str:
+    """Emojisiz foiz (mono-jadval ichi uchun): `98%` / `-`."""
+    p = pct(value)
+    if p is None:
+        return "-"
+    return f"{p:g}%"
+
+
+def _icon_by_index(value) -> str:
+    """Sifat indeksi bo'yicha status emoji (95+/80+/past)."""
+    p = pct(value)
+    if p is None:
+        return "⬜"
+    if p >= 95:
+        return "✅"
+    if p >= 80:
+        return "⚠️"
+    return "❌"
+
+
+def month(filters: dict | None = None, chat_id: int | None = None) -> tuple[str, dict]:
     f = parse_filters(filters or {})
     orig = filters or {}
     if (not str(f.get("month") or "").strip()
@@ -727,15 +876,116 @@ def month(filters: dict | None = None) -> tuple[str, dict]:
     else:
         trows = [
             [_day_label(d["date"]), fmt(d["planned"], 0), fmt(d["accepted"], 0),
-             badge_plain(d["accept_rate"]), badge_plain(d["performance"])]
+             _pct_plain(d["performance"])]
             for d in data["days"]
         ]
         t = data["totals"]
         trows.append(["JAMI", fmt(t["planned"], 0), fmt(t["accepted"], 0),
-                      badge_plain(t["accept_rate"]), badge_plain(t["performance"])])
-        parts.append(table(["Sana", "Reja", "Qabul", "Qabul/Reja%", "Foiz"],
-                           trows))
+                  _pct_plain(t["performance"])])
+        parts.append(table(["Sana", "Reja", "Qabul", "Foiz"], trows))
+    m = _met()
+    did = (f.get("driver_id") or f.get("driver") or "").strip()
+    if did:
+        b = _brutto(f, did)
+    else:
+        rows = m.drivers(f) or []
+        b = {
+            "gross_full": sum(float(r.get("gross_pay") or 0) for r in rows),
+            "tax": sum(float(r.get("tax") or 0) for r in rows),
+            "fines": sum(float(r.get("fines") or 0) for r in rows),
+            "net_pay": sum(float(r.get("net_pay") or 0) for r in rows),
+        }
+    if b.get("gross_full") and _can_view_salary(chat_id):
+        parts += [
+            "",
+            "<b>💰 ISH HAQI</b>",
+            f"Brutto: {fmt(b['gross_full'], 0)}  |  Soliq: {fmt(b['tax'], 0)}  |  "
+            f"Jarima: {fmt(b['fines'], 0)}  |  <b>Netto: {fmt(b['net_pay'], 0)}</b>",
+        ]
     return "\n".join(parts), _combine(_profile_bar(f), kb.nav_kb("nav:month"))
+
+
+# --------------------------------------------------------------- /brutto
+
+def brutto(filters: dict | None = None, chat_id: int | None = None) -> tuple[str, dict]:
+    """116-son qaror (32-band) bo'yicha tashuvchiga to'lov (brutto).
+
+    Ma'lumot `metrics.drivers()` dan olinadi; km/reys saytdagi
+    brutto-route (`route_daily` → AVTO qaydlari) asosida:
+      Lf = amalda km (distance_fact), Lr = reja km (distance_plan;
+      reja bo'lmasa Lf ga ishlatiladi), Kamal = reyslar soni,
+      Kstjb = muammoli reyslar, Kmaq = 0.
+    SKM `brutto_skm` sozlamasidan (default 16176 so'm/km).
+    """
+    f = parse_filters(filters or {})
+    orig = filters or {}
+    if (not str(f.get("month") or "").strip()
+            and not str(orig.get("from") or "").strip()
+            and not str(orig.get("to") or "").strip()
+            and not str(orig.get("date") or "").strip()):
+        f["month"] = date.today().strftime("%Y-%m")
+    m = _met()
+    rows = m.drivers(f) or []
+    if not rows:
+        return ("🧾 <b>BRUTTO-SHARTNOMA</b>\n"
+                + f"Davr: {_period_label(f)}\n\nMa'lumot yo'q."), {}
+    skm = brutto_skm()
+    from ...core.bot_settings import route_skm
+
+    # Per-route SKM: har bir haydovchi o'z yo'nalishi (firma) narxi bilan
+    route_map = dict(
+        (str(r.get("route_id") or ""),
+         route_skm(str(r.get("route_id") or ""), skm) or skm)
+        for r in rows if (r.get("km") or 0) > 0
+    )
+    contract = _Contract(skm=skm, route_number="JAMI",
+                         carrier="Barcha haydovchilar",
+                         valid_from=date(2020, 1, 1), valid_to=date(2099, 12, 31))
+    calc = _BruttoCalculator(contract)
+    source = DataFrame([{
+        "sana": str(r.get("date") or f.get("month") or ""),
+        "grafik": str(r.get("route_name") or r.get("route_id") or "-"),
+        "davlat_raqami": str(r.get("driver_id") or "-"),
+        "fio": str(r.get("name") or r.get("driver_id") or "-"),
+        "lr": float(r.get("plan_km") or 0) or float(r.get("km") or 0) or 1.0,
+        "lf": float(r.get("km") or 0),
+        "kamal": int(r.get("trips") or 0),
+        "kstjb": int(r.get("issues") or 0),
+        "kmaq": 0,
+        "skm": route_map.get(str(r.get("route_id") or ""), skm),
+    } for r in rows if (r.get("km") or 0) > 0])
+    results = calc.process_report(source)
+    if not results:
+        return ("🧾 <b>BRUTTO-SHARTNOMA</b>\n"
+                + f"Davr: {_period_label(f)}\n\nMa'lumot yo'q."), {}
+    agg = calc.aggregate(results)
+    # Ixcham ro'yxat: eng katta to'lov tartibida, mobil ekranga mos
+    ordered = sorted(results, key=lambda r: r.tolov, reverse=True)
+    dlines = []
+    for r in ordered[:24]:
+        dlines.append(
+            f"{_icon_by_index(r.sifat_index)} <b>{esc(short_name(str(r.fio)))}</b>"
+            f" — {fmt(r.lf, 1)} km · {fmt(r.tolov, 0)} so'm"
+        )
+    if len(results) > 24:
+        dlines.insert(0, f"… jami {len(results)} ta haydovchi:")
+    parts = [
+        "🧾 <b>BRUTTO-SHARTNOMA</b> (116-son, 32-band)",
+        f"Davr: {_period_label(f)}",
+        "",
+        *dlines[:24],
+        "",
+        "<b>JAMI</b>",
+        f"Haydovchilar: {agg['qatorlar']}  |  Lf: {fmt(agg['lf'], 1)} km"
+        f"  |  Kamal: {fmt(agg['kamal'], 0)}",
+        f"O'rtacha a: {fmt(agg['alpha'] * 100, 1)}%"
+        f"  |  b: {fmt(agg['beta'] * 100, 1)}%"
+        f"  |  g: {fmt(agg['gamma'] * 100, 1)}%",
+        "",
+        f"<b>TO'LOV: {fmt(agg['tolov'], 0)} so'm</b>",
+        f"SKM: {fmt(skm, 0)} so'm/km",
+    ]
+    return "\n".join(parts), kb.nav_kb("nav:month")
 
 
 # --------------------------------------------------------------- /reports
@@ -865,15 +1115,63 @@ def settings_text(chat_id: int | None) -> str:
     open_mode = not roles
     owned = context.allowed_names(chat_id) if chat_id is not None else []
     owned_txt = ", ".join(context.short_name(n) for n in owned) or "yo'q"
+    show_finance = chat_id is not None and can(role, "salary")
 
     try:
-        from ...core.bot_settings import km_rate, lang
+        from ...core.bot_settings import (ELEC_KWH_PER_KM, brutto_skm,
+                                           elec_price, km_rate, lang)
         rate = km_rate()
+        el = elec_price()
+        skm = brutto_skm()
         lang_txt = "🇷🇺 Русский" if lang(chat_id) == "ru" else "🇺🇿 O'zbek"
     except Exception:  # noqa: BLE001 - sozlama bo'lmasa standart qiymat
-        rate, lang_txt = 0.0, "🇺🇿 O'zbek"
+        rate, el, skm, lang_txt = 0.0, 0.0, 16176.0, "🇺🇿 O'zbek"
+        ELEC_KWH_PER_KM = 0.955
     rate_txt = (f"{rate:,.0f}".replace(",", " ") + " so'm"
                 if rate > 0 else "o'rnatilmagan (env / profil bo'yicha)")
+    el_txt = (f"{el:,.0f}".replace(",", " ") + " so'm"
+              if el > 0 else "o'rnatilmagan")
+    skm_txt = (f"{skm:,.0f}".replace(",", " ") + " so'm/km"
+               if skm > 0 else "o'rnatilmagan")
+
+    route_txt = ""
+    if show_finance:
+        try:
+            from ...core.bot_settings import (route_km as _route_km,
+                                              route_skm as _route_skm,
+                                              route_tariff as _route_tariff)
+            f = context.filters_for(chat_id)
+            rid = str(f.get("route") or "").strip()
+            if rid:
+                rid_first = rid.split()[0]
+                t = _route_tariff(rid_first)
+                lines = [
+                    "",
+                    "🏢 <b>FIRMA TARIFLARI</b>",
+                    f"  Yo'nalish: {context.short_name(rid_first)}",
+                ]
+                try:
+                    rskm = _route_skm(rid_first, skm)
+                    lines.append(f"  SKM: {rskm:,.0f} so'm/km"
+                                 .replace(",", " "))
+                except Exception:
+                    pass
+                try:
+                    rkm = _route_km(rid_first)
+                    if rkm > 0:
+                        lines.append(f"  Haydovchi 1 km: {rkm:,.0f} so'm"
+                                     .replace(",", " "))
+                except Exception:
+                    pass
+                if t.get("no_vat") or t.get("vat"):
+                    lines.append(
+                        f"  Tarif: {t.get('no_vat', 0):,.0f}".replace(",", " ")
+                        + " (QQSsiz) / "
+                        + f"{t.get('vat', 0):,.0f}".replace(",", " ")
+                        + " (QQS)")
+                route_txt = "\n".join(lines)
+        except Exception:  # noqa: BLE001 - kichik bezak
+            pass
 
     parts = [
         "⚙️ <b>SETTINGS</b>",
@@ -891,6 +1189,20 @@ def settings_text(chat_id: int | None) -> str:
         "",
         "💵 <b>1 KM NARXI</b>",
         f"  {rate_txt}",
+    ]
+    if show_finance:
+        parts += [
+            "",
+            "⚡ <b>ELEKTR ENERGIYA</b>",
+            f"  1 kVt/soat narxi: {el_txt}",
+            f"  1 km iste'moli: {ELEC_KWH_PER_KM} kVt/soat",
+            "",
+            "📋 <b>116-SON QAROR (SKM)</b>",
+            f"  1 mashina-km narxi: {skm_txt}",
+        ]
+        if route_txt:
+            parts += route_txt.splitlines()
+    parts += [
         "",
         "🌐 <b>TIL</b>",
         f"  {lang_txt}",
@@ -901,3 +1213,120 @@ def settings_text(chat_id: int | None) -> str:
     except Exception:  # noqa: BLE001 - kichik bezak, xato bo'lsa o'tkazib yuboramiz
         pass
     return "\n".join(parts)
+
+
+def settings_audit_text(chat_id: int | None, limit: int = 20) -> str:
+    """`/settings audit` ekrani: sozlama o'zgarishlari tarixi."""
+    from .roles import can
+    role = resolve_role(chat_id)
+    if not can(role, "salary"):
+        return "⛔ Huquq yo'q."
+    from ...core.bot_settings import audit_log
+    rows = audit_log(limit)
+    lines = ["🕐 <b>SETTINGS TARIXI</b>\n"]
+    if not rows:
+        lines.append("Hozircha o'zgarishlar yo'q.")
+        return "\n".join(lines)
+    for r in rows:
+        key = str(r.get("key") or "?")
+        old, new = r.get("old"), r.get("new")
+        by = r.get("by") or "dashboard"
+        lines.append(
+            f"<b>{key}</b>\n"
+            f"  {old} → <b>{new}</b>\n"
+            f"  🕐 {r.get('when')} | 👤 {by}"
+        )
+    return "\n".join(lines)
+
+
+def settings_audit_csv(chat_id: int | None, limit: int = 200) -> str:
+    """`/settings audit excel` — sozlamalar tarixini Excel'da ochiladigan
+    CSV ko'rinishida qaytaradi."""
+    from .roles import can
+    role = resolve_role(chat_id)
+    if not can(role, "salary"):
+        return "⛔ Huquq yo'q."
+    from ...core.bot_settings import audit_log
+    rows = audit_log(limit)
+
+    def _cell(v) -> str:
+        s = "" if v is None else str(v)
+        if any(c in s for c in (';', '"', '\n')):
+            return '"' + s.replace('"', '""') + '"'
+        return s
+
+    lines = ["sep=;", "Key;Eski qiymat;Yangi qiymat;Vaqt;O'zgartiruvchi"]
+    for r in rows:
+        lines.append(";".join([
+            _cell(r.get("key")),
+            _cell(r.get("old")),
+            _cell(r.get("new")),
+            _cell(r.get("when")),
+            _cell(r.get("by") or "dashboard"),
+        ]))
+    return "\n".join(lines)
+
+# ------------------------------------------------------------ /daily_package
+
+def daily_package(filters: dict | None = None,
+                  full: bool = False) -> tuple[str, dict]:
+    """Kunlik avto-paket (18:00 xulosa / 22:00 toliq paket).
+
+    `full=False` → 18:00: bugungi holat + muammolar + reyslar
+    `full=True`  → 22:00: oy tarixi + muammolar + reyslar
+
+    Ops poll sikli soatga qarab `full` ni quradi va `/daily_package`
+    orqali hub-spetsifik chat'larga avto-yuboradi.
+    """
+    f = parse_filters(filters or {})
+    parts: list[str] = []
+    kbs: list[dict | None] = []
+
+    if full:
+        text, kb = month(f)
+        parts.append(text)
+        kbs.append(kb)
+    else:
+        text, kb = today(f)
+        parts.append(text)
+        kbs.append(kb)
+
+    text, kb = problems(f)
+    parts.append(text)
+    kbs.append(kb)
+
+    text, kb = trips(f)
+    parts.append(text)
+    kbs.append(kb)
+
+    return "\n\n".join(parts), _combine(*kbs) or {}
+
+# ------------------------------------------------------------ /daily_package
+
+def daily_package(filters: dict | None = None,
+                  full: bool = False) -> tuple[str, dict]:
+    """Kunlik avto-paket (Blok 1).
+
+    - `full=False` → 18:00 qisqa xulosa: bugungi holat + muammolar + reyslar
+    - `full=True`  → 22:00 to'liq paket: oy tarixi + muammolar + reyslar
+
+    Ops poll sikli soatga qarab `full` ni o'zi belgilaydi (18:00/22:00).
+    """
+    f = parse_filters(filters or {})
+    parts: list[str] = []
+    kbs: list[dict | None] = []
+
+    fn = month if full else today
+    text, kb = fn(f)
+    parts.append(text)
+    kbs.append(kb)
+
+    text, kb = problems(f)
+    parts.append(text)
+    kbs.append(kb)
+
+    text, kb = trips(f)
+    parts.append(text)
+    kbs.append(kb)
+
+    return "\n".join(parts), _combine(*kbs) or {}

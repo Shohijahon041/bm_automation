@@ -792,3 +792,443 @@
     animation: none !important;
   }
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   STATUS STRIP — provider + task statistics
+   ══════════════════════════════════════════════════════════════════════ */
+.occ-status-strip {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 8px 16px;
+  background: var(--occ-panel);
+  border-bottom: 1px solid var(--occ-line);
+  font: 9px var(--occ-font);
+  color: var(--occ-muted);
+}
+
+.occ-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 2px 8px;
+  background: var(--occ-bg);
+  border: 1px solid var(--occ-line);
+  border-radius: 4px;
+}
+
+.occ-stat b {
+  color: var(--occ-text);
+  font-weight: 600;
+}
+
+.occ-stat.acc b { color: var(--occ-teal); }
+.occ-stat.ok b { color: var(--occ-completed); }
+.occ-stat.bad b { color: var(--occ-error); }
+
+/* ══════════════════════════════════════════════════════════════════════
+   QUICK PROMPT CHIPS
+   ══════════════════════════════════════════════════════════════════════ */
+.occ-quick-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 8px 16px 4px;
+  background: var(--occ-bg);
+}
+
+.occ-chip {
+  appearance: none;
+  border: 1px solid var(--occ-line);
+  background: var(--occ-panel);
+  color: var(--occ-muted);
+  font: 9px var(--occ-font);
+  padding: 4px 10px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.occ-chip:hover {
+  border-color: rgba(0, 184, 148, 0.4);
+  color: var(--occ-accent);
+  background: rgba(0, 184, 148, 0.08);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   AGENT CARD TOOLS
+   ══════════════════════════════════════════════════════════════════════ */
+.occ-agent-tools {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 5px;
+}
+
+.occ-agent-tools span {
+  font: 6.5px var(--occ-font);
+  color: var(--occ-muted);
+  background: var(--occ-bg);
+  border: 1px solid var(--occ-line);
+  border-radius: 3px;
+  padding: 1px 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   PROGRESS BAR (workstations, chat, detail)
+   ══════════════════════════════════════════════════════════════════════ */
+.occ-progress {
+  width: 100%;
+  margin-top: 5px;
+  height: 3px;
+  background: var(--occ-bg);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.occ-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--occ-accent);
+  transition: width 0.3s ease;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   STEP STATUS PILLS (chat)
+   ══════════════════════════════════════════════════════════════════════ */
+.occ-step-status {
+  font: 600 8px var(--occ-font);
+  padding: 1px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: rgba(90, 98, 116, 0.2);
+  color: var(--occ-idle);
+}
+
+.occ-step-status.working { background: rgba(0, 184, 148, 0.15); color: var(--occ-working); }
+.occ-step-status.completed,
+.occ-step-status.done { background: rgba(0, 184, 148, 0.15); color: var(--occ-completed); }
+.occ-step-status.error,
+.occ-step-status.failed { background: rgba(232, 90, 79, 0.15); color: var(--occ-error); }
+.occ-step-status.waiting,
+.occ-step-status.pending { background: rgba(240, 169, 62, 0.15); color: var(--occ-amber); }
+
+/* ══════════════════════════════════════════════════════════════════════
+   CHAT BUBBLE (JS .occ-msg-bubble)
+   ══════════════════════════════════════════════════════════════════════ */
+.occ-msg-bubble {
+  background: var(--occ-panel);
+  padding: 10px 14px;
+  border-radius: 8px;
+  font: 12px var(--occ-font);
+  color: var(--occ-text);
+  line-height: 1.5;
+  border: 1px solid var(--occ-line);
+}
+
+.occ-msg.user .occ-msg-bubble {
+  background: rgba(0, 184, 148, 0.15);
+  border-color: rgba(0, 184, 148, 0.2);
+}
+
+/* Yakuniy javobni tuzilgan holda ko'rsatish (JS .occ-chat-answer) */
+.occ-chat-answer {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.occ-ans-gap { height: 6px; }
+
+.occ-ans-line { color: var(--occ-text); }
+
+.occ-ans-title {
+  color: var(--occ-muted);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-top: 6px;
+  border-top: 1px solid var(--occ-line);
+  padding-top: 6px;
+}
+
+.occ-ans-bullet {
+  color: var(--occ-text);
+  padding-left: 14px;
+  position: relative;
+}
+
+.occ-ans-bullet::before {
+  content: '»';
+  position: absolute;
+  left: 2px;
+  color: var(--occ-accent);
+  opacity: 0.7;
+}
+
+.occ-ans-sub {
+  color: var(--occ-muted);
+  padding-left: 18px;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   FEED TABS + BADGE + TYPING
+   ══════════════════════════════════════════════════════════════════════ */
+.occ-feed-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.occ-feed-tab {
+  appearance: none;
+  border: 1px solid var(--occ-line);
+  background: transparent;
+  color: var(--occ-muted);
+  font: 9px var(--occ-font);
+  padding: 3px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.occ-feed-tab.active {
+  border-color: rgba(0, 184, 148, 0.4);
+  color: var(--occ-accent);
+  background: rgba(0, 184, 148, 0.1);
+}
+
+.occ-feed-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--occ-bg);
+  border: 1px solid var(--occ-line);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font: 600 9px var(--occ-font);
+  color: var(--occ-muted);
+}
+
+.occ-typing {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  padding: 6px 0;
+}
+
+.occ-typing-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--occ-muted);
+  animation: occ-bounce 1.2s infinite;
+}
+
+.occ-typing-dot:nth-child(2) { animation-delay: 0.15s; }
+.occ-typing-dot:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes occ-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   HISTORY TOOLBAR (search / filter / more)
+   ══════════════════════════════════════════════════════════════════════ */
+.occ-hist-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--occ-line);
+  background: var(--occ-panel);
+}
+
+.occ-hist-search,
+.occ-hist-select {
+  width: 100%;
+  background: var(--occ-bg);
+  border: 1px solid var(--occ-line);
+  border-radius: var(--occ-radius);
+  padding: 6px 8px;
+  font: 10px var(--occ-font);
+  color: var(--occ-text);
+  outline: none;
+}
+
+.occ-hist-search:focus,
+.occ-hist-select:focus {
+  border-color: var(--occ-accent);
+}
+
+.occ-hist-more {
+  width: 100%;
+  font-size: 10px;
+  text-align: center;
+}
+
+.occ-rerun {
+  appearance: none;
+  border: 1px solid var(--occ-line);
+  background: var(--occ-bg);
+  color: var(--occ-muted);
+  font-size: 12px;
+  line-height: 1;
+  border-radius: 4px;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: all 0.15s;
+  align-self: flex-start;
+}
+
+.occ-rerun:hover {
+  border-color: rgba(0, 184, 148, 0.5);
+  color: var(--occ-accent);
+  background: rgba(0, 184, 148, 0.1);
+}
+
+.occ-history-row .occ-progress {
+  margin-top: 3px;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   TASK CHAIN NODES
+   ══════════════════════════════════════════════════════════════════════ */
+.occ-task-chain .occ-chain-node {
+  padding: 2px 6px;
+  background: var(--occ-bg);
+  border-radius: 3px;
+  border: 1px solid var(--occ-line);
+  color: var(--occ-muted);
+  white-space: nowrap;
+}
+
+.occ-task-chain .occ-chain-node.active {
+  background: rgba(0, 184, 148, 0.12);
+  border-color: rgba(0, 184, 148, 0.3);
+  color: var(--occ-accent);
+}
+
+.occ-task-chain .occ-chain-node.done {
+  color: var(--occ-completed);
+  border-color: rgba(0, 184, 148, 0.3);
+}
+
+.occ-task-chain .occ-chain-node.error {
+  background: rgba(232, 90, 79, 0.12);
+  border-color: rgba(232, 90, 79, 0.35);
+  color: var(--occ-error);
+}
+
+.occ-task-chain .occ-chain-arrow {
+  color: var(--occ-muted);
+  opacity: 0.5;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   DETAIL OVERLAY (fix — HTML classlariga mos stillar)
+   ══════════════════════════════════════════════════════════════════════ */
+.occ-detail-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  background: rgba(10, 10, 14, 0.55);
+  display: none;
+}
+
+.occ-detail-overlay.open {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.occ-detail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  border-bottom: 1px solid var(--occ-line);
+}
+
+.occ-detail-agent {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.occ-detail-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  background: var(--occ-bg);
+  border: 2px solid var(--occ-line);
+  flex-shrink: 0;
+}
+
+.occ-detail-name {
+  font: 600 15px var(--occ-font);
+  color: var(--occ-text);
+}
+
+.occ-detail-role {
+  font: 11px var(--occ-font);
+  color: var(--occ-muted);
+  margin-top: 2px;
+}
+
+.occ-detail-section {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--occ-line);
+}
+
+.occ-detail-label {
+  font: 600 9px var(--occ-font);
+  color: var(--occ-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 4px;
+}
+
+.occ-detail-value {
+  font: 12px var(--occ-font);
+  color: var(--occ-text);
+}
+
+.occ-detail-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.occ-detail-tool {
+  font: 9px var(--occ-font);
+  color: var(--occ-muted);
+  background: var(--occ-bg);
+  border: 1px solid var(--occ-line);
+  border-radius: 3px;
+  padding: 2px 6px;
+}
+
+.occ-detail-tool.active {
+  color: var(--occ-accent);
+  border-color: rgba(0, 184, 148, 0.4);
+  background: rgba(0, 184, 148, 0.1);
+}
+
+.occ-detail .icon-button {
+  color: var(--occ-muted);
+}

@@ -160,7 +160,7 @@ def test_driver_profile_and_financial_records(storage):
     storage.save_driver(external_id="d1", full_name="Aliyev")
     storage.save_driver_profile(
         "d1", phone="998901234567", rating=4.7, km_rate=1250,
-        notification_enabled=True, passport_number="AB1234567")
+notification_enabled=True, passport_number="AB1234567")
     storage.save_driver_work_log("2026-08-10", "d1", "v1", 128.5, 7, "Kundalik qayd")
     assert storage.add_driver_fine("d1", "2026-08-10", 50000, "Kechikish")
     profile = storage.find("driver_profiles", driver_id="d1")
@@ -168,6 +168,20 @@ def test_driver_profile_and_financial_records(storage):
     assert profile["notification_enabled"] == 1
     assert storage.query("SELECT distance_km FROM driver_work_logs")[0]["distance_km"] == 128.5
     assert storage.query("SELECT amount FROM driver_fines")[0]["amount"] == 50000
+
+
+def test_delete_driver_work_log(storage):
+    """Kunlik km qaydi natural kalit (date, driver, vehicle) bo'yicha
+    o'chiriladi; boshqa qaydga ta'sir qilmaydi."""
+    storage.save_driver_work_log("2026-08-10", "d1", "v1", 100.0, 2, "A")
+    storage.save_driver_work_log("2026-08-10", "d1", "v2", 25.0, 1, "B")
+    storage.save_driver_work_log("2026-08-11", "d1", "v1", 80.0, 3, "C")
+    assert not storage.delete_driver_work_log("2026-08-10", "d2", "v1")
+    assert storage.delete_driver_work_log("2026-08-10", "d1", "v1")
+    rows = storage.query("SELECT date, vehicle_id, distance_km FROM driver_work_logs ORDER BY date, vehicle_id")
+    assert len(rows) == 2
+    assert rows[0]["vehicle_id"] == "v2"
+    assert rows[1]["distance_km"] == 80.0
 
 
 def test_driver_schedule_notification_is_deduplicated(storage, monkeypatch):
@@ -187,6 +201,57 @@ def test_driver_schedule_notification_is_deduplicated(storage, monkeypatch):
     assert first["sent"] == 1 and not first["failed"]
     assert second["skipped"] == 1
     assert len(sent) == 1 and sent[0][1] == "12345"
+
+
+def test_driver_schedule_prefers_telegram_chat_id(storage, monkeypatch):
+    from bm_automation.app.notifications import driver_schedule
+
+    storage.save_driver(external_id="d2", full_name="Karimov Karim")
+    storage.save_vehicle(external_id="v2", plate_number="01B456AA", route_id="r1")
+    storage.save_driver_profile("d2", notification_enabled=True,
+                                notification_target="99890123")
+    storage.link_driver_telegram("d2", 777)
+    storage.save_schedule("2026-08-10", "r1", "G-2", "d2", "v2",
+                          start_time="07:00")
+    sent = []
+    monkeypatch.setattr(driver_schedule, "send_message",
+                        lambda message, chat_id: sent.append((message, chat_id)) or True)
+    res = driver_schedule.send_driver_schedule_notifications(storage, "r1", "2026-08-10")
+    assert res["sent"] == 1 and not res["failed"]
+    assert len(sent) == 1 and sent[0][1] == "777"
+
+
+def test_link_driver_telegram_enables_notifications(storage):
+    storage.save_driver(external_id="d3", full_name="Toshev Toshe")
+    storage.save_driver_profile("d3", notification_enabled=False,
+                                notification_target="99890124")
+    storage.link_driver_telegram("d3", 888)
+    profile = storage.find("driver_profiles", driver_id="d3")
+    assert profile is not None
+    assert profile.get("telegram_chat_id") == "888"
+    assert profile.get("notification_enabled") == 1
+
+
+def test_notification_recipients_skip_blacklisted(storage, monkeypatch):
+    from bm_automation.app.notifications.ops import doc_expiry, monthly_results
+    storage.save_driver(external_id="d4", full_name="Nosirov")
+    storage.save_driver(external_id="d5", full_name="Murodov")
+    storage.save_driver_profile("d4", notification_enabled=True)
+    storage.save_driver_profile("d5", notification_enabled=True)
+    storage.link_driver_telegram("d4", 400)
+    storage.link_driver_telegram("d5", 500)
+    storage.save_driver_profile("d4", blacklisted=True)
+
+    monkeypatch.setattr(doc_expiry, "get_storage", lambda: storage)
+    monkeypatch.setattr(monthly_results, "get_storage", lambda: storage)
+
+    exp = doc_expiry._recipients()
+    rids = sorted(str(r["driver_id"]) for r in exp)
+    assert "d4" not in rids and "d5" in rids
+
+    mon = monthly_results._recipients()
+    mrids = sorted(str(r["driver_id"]) for r in mon)
+    assert "d4" not in mrids and "d5" in mrids
 
 
 def test_driver_schedule_message_shows_shift_summary():
@@ -736,6 +801,12 @@ def test_sync_work_logs_uses_gross_km(storage):
     assert log["distance_km"] == pytest.approx(232.4)
     assert log["trip_count"] == 16
     assert log["note"] == "AVTO"
+    # saytdagi brutto-route qo'shimcha ustunlari AVTO qaydga yoziladi
+    assert log["distance_plan"] == pytest.approx(250.0)
+    assert log["trip_plan"] == 20
+    assert log["working_day"] == 1
+    assert log["trip_passed"] == 16
+    assert log["trip_approved"] == 15
 
 
 def test_sync_work_logs_gross_fallback_to_odo(storage):

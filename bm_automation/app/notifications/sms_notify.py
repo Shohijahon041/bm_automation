@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import threading
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 
 from ..config.settings import sms_gateway_configured, sms_gateway_settings
 from ..db.storage import Storage, get_storage
@@ -37,6 +37,25 @@ _FINAL_FAILED = {"FAILED", "CANCELLED"}
 
 _SMS_TIMEOUT_S = 40.0
 _HTTP_TIMEOUT_S = 20.0
+
+# PENDING holati shuncha soatdan ortiq qolsa "stale" hisoblanadi: holati
+# gateway'dan qayta so'raladi, aniq chiqmasa xabar qayta yuboriladi.
+_STALE_PENDING_H = 1.0
+# Fon tekshiruvi orasidagi minimal interval (bot tsikli tez aylanadi —
+# gateway'ni spamlamaslik uchun).
+_STALE_POLL_INTERVAL_S = 3600.0
+_LAST_STALE_POLL = 0.0
+
+# Bitta haydovchiga kuniga ko'pi bilan shuncha SMS yuboriladi. Qoida:
+# kunga 1 ta smena xabari; grafik o'zgarsa 1 ta tuzatish (UPDATED) —
+# jami 2. Bundan ko'p yuborish dublikat hisoblanadi va bloklanadi
+# (SMS balans tejash uchun).
+_MAX_DAY_SMS = 2
+# Kunlik limitni hisoblashda "yuborilgan" deb hisoblanadigan statuslar —
+# gateway'ga murojaat qilingan (balans sarflagan) har qanday urinish.
+_DAY_SEND_STATUSES = (_SENT_STATUSES | {"PENDING", "PROCESSED", "UNKNOWN",
+                                        "ANNULLED", "REMOVED", "OFF",
+                                        "FAILED", "CANCELLED"})
 
 
 def _state_value(state) -> str:
@@ -553,10 +572,36 @@ def _sent_before(storage: Storage, schedule_date: str, route_id: str,
     return False
 
 
+def _day_send_count(storage: Storage, schedule_date: str,
+                    driver_id: str, phone: str) -> int:
+    """Shu kun+haydovchi uchun gateway'ga qilingan SMS urinishlar soni.
+
+    Kunlik limit (``_MAX_DAY_SMS``) uchun: yuborilgan (balans sarflagan)
+    har qanday urinish hisoblanadi — SENT/DELIVERED, PENDING, FAILED va
+    "chiqarildi" (ANNULLED/etc.) hammasi. Shunday qilib bir haydovchiga
+    kuniga ko'pi bilan 2 marta yuboriladi (1 smena + 1 tuzatish), qolgan
+    loop'lar dublikat sifatida bloklanadi.
+    """
+    if not storage.enabled:
+        return 0
+    ph = storage.db.ph
+    in_ph = ", ".join([ph] * len(_DAY_SEND_STATUSES))
+    rows = storage.query(
+        f"SELECT COUNT(*) AS n FROM sms_log "
+        f"WHERE schedule_date = {ph} AND driver_id = {ph} AND phone = {ph} "
+        f"AND status IN ({in_ph})",
+        (schedule_date, driver_id, phone, *_DAY_SEND_STATUSES))
+    return int((rows[0] or {}).get("n") or 0) if rows else 0
+
+
 # Chiqarilgan haydovchi bildirishnomasi sifatida yoziladigan statuslar.
 # `_sent_before` ularni muvaffaqiyatli yuborilgan deb hisoblamaydi, shuning
 # uchun ajratib tekshiriladi — takroriy "chiqarildi" SMS yuqmaydi.
 _OFF_STATUSES = {"ANNULLED", "REMOVED", "OFF"}
+# "Chiqarildi" xabari yuborilganini ko'rsatadigan "kutuvchi" statuslar:
+# gateway tasdiqlashi kechiksa SMS PENDING bo'lib qoladi — uni ham ANNULLED
+# deb hisoblasak, keyingi tekshiruvlar takroriy "chiqarildi" yubormaydi.
+_OFF_PENDING_STATUSES = {"PENDING", "PROCESSED", "UNKNOWN"}
 
 
 def _annulled_before(storage: Storage, schedule_date: str, route_id: str,
@@ -571,6 +616,18 @@ def _annulled_before(storage: Storage, schedule_date: str, route_id: str,
         f"AND route_id = {ph} AND driver_id = {ph} AND phone = {ph} "
         f"AND status IN ({in_ph}) LIMIT 1",
         (schedule_date, route_id, driver_id, phone, *_OFF_STATUSES))
+    if rows:
+        return True
+    # Tasdiq kelmagan (PENDING) "chiqarildi" xabari ham bor bo'lsa —
+    # qayta yuborilmaydi (aks holda har 15 daqiqada dublikat ketardi).
+    in_pnd = ", ".join([ph] * len(_OFF_PENDING_STATUSES))
+    rows = storage.query(
+        f"SELECT id FROM sms_log WHERE schedule_date = {ph} "
+        f"AND route_id = {ph} AND driver_id = {ph} AND phone = {ph} "
+        f"AND status IN ({in_pnd}) "
+        f"AND message LIKE {ph} LIMIT 1",
+        (schedule_date, route_id, driver_id, phone, *_OFF_PENDING_STATUSES,
+         "%chiqarildi%"))
     return bool(rows)
 
 
@@ -605,8 +662,18 @@ def _notify_removed(storage: Storage, schedule_date: str, route_id: str,
         f"AND status IN ({in_ph}) "
         f"ORDER BY id DESC",
         (schedule_date, route_id, "", "", *_SENT_STATUSES))
+    # Stale PENDING yozuvlar ham hisobga olinadi: holati tasdiqlanmagan
+    # (PENDING) bo'lsa ham ushbu haydovchi avval grafikda bo'lgan — endi
+    # grafikdan chiqarilgan bo'lsa "chiqarildi" xabari yetib borishi kerak.
+    pend_rows = storage.query(
+        f"SELECT driver_id, name, phone FROM sms_log "
+        f"WHERE schedule_date = {ph} AND route_id = {ph} "
+        f"AND driver_id != {ph} AND phone != {ph} "
+        f"AND status IN ({ph}, {ph}) "
+        f"ORDER BY id DESC",
+        (schedule_date, route_id, "", "", "PENDING", "PROCESSED"))
     prev: dict[str, dict] = {}
-    for r in rows:
+    for r in rows + pend_rows:
         d = str(r.get("driver_id") or "")
         if d and d not in prev:
             prev[d] = {"name": str(r.get("name") or d),
@@ -622,6 +689,11 @@ def _notify_removed(storage: Storage, schedule_date: str, route_id: str,
         if not phone:
             continue
         if _annulled_before(storage, schedule_date, route_id, d_id, phone):
+            continue
+        # Kunlik limit — haydovchi allaqachon kuniga 2 ta SMS olgan
+        # bo'lsa "chiqarildi" xabari ham bloklanadi.
+        if _day_send_count(storage, schedule_date, d_id, phone) \
+                >= _MAX_DAY_SMS:
             continue
         name = old["name"]
         entry = {"driver_id": d_id, "name": name, "phone": phone,
@@ -719,6 +791,29 @@ def _poll_sms_update(storage: Storage, message_id: str,
     return last
 
 
+def _sent_success_elsewhere(storage: Storage, schedule_date: str,
+                            route_id: str, driver_id: str, phone: str,
+                            exclude_row_id: int) -> bool:
+    """Shu kun+yo'nalish+haydovchi uchun BOSHQA yozuv allaqachon muvaffaqiyatlimi.
+
+    ``exclude_row_id`` — qayta urinilayotgan yozuvning o'zi (FAILED/PENDING)
+    hisobga olinmaydi; aks holda u o'zini "allaqachon yuborilgan" deb
+    hisoblab, qayta yuborishni bloklardi.
+    """
+    if not storage.enabled:
+        return False
+    ph = storage.db.ph
+    in_ph = ", ".join([ph] * len(_SENT_STATUSES))
+    rows = storage.query(
+        f"SELECT id FROM sms_log "
+        f"WHERE schedule_date = {ph} AND route_id = {ph} "
+        f"AND driver_id = {ph} AND phone = {ph} "
+        f"AND status IN ({in_ph}) AND id != {ph} LIMIT 1",
+        (schedule_date, route_id, driver_id, phone, *_SENT_STATUSES,
+         int(exclude_row_id)))
+    return bool(rows)
+
+
 def _msg_key(text: str) -> str:
     """Xabarni solishtirish uchun sarlavha (header) qismini tashlab beradi.
 
@@ -734,23 +829,181 @@ def _msg_key(text: str) -> str:
     return t.strip().lower()
 
 
+def resolve_route_name(storage: Storage, route_id: str, fallback: str = "") -> str:
+    """Yo'nalishning yagona (kanonik) nomi — barcha oqimlar uchun.
+
+    Tartib: profiles.json (routeName) → routes jadvali → route_daily →
+    fallback. Profil birinchi: u har doim mavjud va boshqa manbalarga
+    qaraganda barqaror ("10-yo'nalish", "B-80"...). Bu funksiyadan
+    foydalanish sms_log'da bir yo'nalish ikki xil nom ("10-YO'NALISH" /
+    "10-yo'nalish") bilan yozilishining oldini oladi.
+    """
+    rid = str(route_id or "").strip()
+    try:
+        from ..core.profiles import all_profiles  # noqa: PLC0415
+        for p in all_profiles():
+            if str(p.get("routeVariantId") or "").strip() == rid:
+                n = str(p.get("routeName") or "").strip()
+                if n:
+                    return n
+    except Exception:  # noqa: BLE001
+        pass
+    if storage.enabled:
+        try:
+            import json as _json  # noqa: PLC0415
+            r = storage.find("routes", external_id=rid) or {}
+            n = str(r.get("name") or "").strip()
+            if n:
+                return n
+            rows = storage.query(
+                f"SELECT data FROM route_daily WHERE route_id = {storage.db.ph} "
+                "AND data LIKE %s ORDER BY date DESC LIMIT 1",
+                (rid, '%"routeName"%')) if storage.db.ph == "%s" else []
+            if rows:
+                d = _json.loads(str((rows[0] or {}).get("data") or "{}"))
+                n = str(d.get("routeName") or "").strip()
+                if n:
+                    return n
+        except Exception:  # noqa: BLE001
+            pass
+    return str(fallback or "").strip()
+
+
+def retry_stale_pending(
+    storage: Storage | None = None,
+    stale_hours: float = _STALE_PENDING_H,
+    limit: int = 100,
+) -> dict:
+    """1 soatdan ortiq PENDING qolgan SMS'larni avtomatik qayta urinadi.
+
+    Avval gateway'dan xabar holati qayta so'raladi (dublikat yuborilmasligi
+    uchun): aniq status chiqsa — jurnal shunchaki yangilanadi. Aniq chiqmasa
+    (UNKNOWN/yo'q): shu haydovchiga boshqa urinishdan allaqachon muvaffaqiyatli
+    SMS ketgan bo'lsa eski yozuv SUPERSEDED deb belgilanadi (qayta urinilmaydi,
+    haydovchiga dublikat ketmaydi); aks holda xabar QAYTA YUBORILADI va yangi
+    natija jurnalga yoziladi (eski PENDING yozuv tarix uchun joyida qoladi).
+    Bot fon tsiklida soatiga bir marta chaqiriladi.
+    """
+    global _LAST_STALE_POLL
+    now_mono = datetime.now().timestamp()
+    st = storage or get_storage()
+    result = {"polled": 0, "resolved": 0, "resent": 0, "failed": 0,
+              "skipped": 0, "errors": []}
+    if not st.enabled or not sms_gateway_configured():
+        return result
+    if now_mono - _LAST_STALE_POLL < _STALE_POLL_INTERVAL_S:
+        return result
+    _LAST_STALE_POLL = now_mono
+
+    cutoff = (datetime.now(timezone.utc)
+              - timedelta(hours=stale_hours)).isoformat()
+    ph = st.db.ph
+    rows = st.query(
+        f"SELECT * FROM sms_log WHERE status = {ph} "
+        f"AND created_at < {ph} AND phone != {ph} "
+        f"AND schedule_date >= {ph} "
+        f"ORDER BY id LIMIT {max(int(limit), 1)}",
+        ("PENDING", cutoff, "",
+         (date.today() - timedelta(days=2)).isoformat()),
+    )
+    if not rows:
+        return result
+    log.info("Stale PENDING SMS tekshiruvi: %s yozuv", len(rows))
+    for row in rows:
+        row_id = int(row.get("id") or 0)
+        mid = str(row.get("message_id") or "")
+        phone = _normalize_phone(row.get("phone"))
+        message = str(row.get("message") or "")
+        result["polled"] += 1
+        # 1) Gateway'dan haqiqiy holatni so'raymiz
+        final = ""
+        if mid:
+            try:
+                stt = fetch_sms_status(mid)
+                state = str((stt or {}).get("state") or "").upper()
+            except Exception:  # noqa: BLE001
+                state = ""
+            if state in _SENT_STATUSES:
+                st.update_sms_status(row_id, status=state,
+                                     message_id=mid, error="")
+                result["resolved"] += 1
+                continue
+            if state in _FINAL_FAILED:
+                st.update_sms_status(row_id, status=state,
+                                     message_id=mid,
+                                     error=str((stt or {}).get("error") or ""))
+                result["failed"] += 1
+                continue
+        # 2) Aniq bo'lmasa — shu haydovchiga BOSHQA urinishdan muvaffaqiyatli
+        #    SMS ketgan-yetmaganini tekshiramiz (dublikatdan himoya).
+        if _sent_success_elsewhere(st, str(row.get("schedule_date") or ""),
+                                   str(row.get("route_id") or ""),
+                                   str(row.get("driver_id") or ""), phone,
+                                   exclude_row_id=row_id):
+            # Haydovchi xabarni allaqachon olgan — eski PENDING yozuvni
+            # "SUPERSEDED" deb belgilaymiz (qayta urinilmaydi).
+            st.update_sms_status(row_id, status="SUPERSEDED",
+                                 message_id=mid, error="")
+            result["skipped"] += 1
+            continue
+        if not phone or not message:
+            result["skipped"] += 1
+            continue
+        # Kunlik limit: haydovchi bugun allaqachon 2 tadan ortiq SMS olgan
+        # bo'lmasligi kerak (qayta urinish ham dublikat hisoblanadi).
+        if _day_send_count(st, str(row.get("schedule_date") or ""),
+                           str(row.get("driver_id") or ""), phone) \
+                >= _MAX_DAY_SMS:
+            st.update_sms_status(row_id, status="SUPERSEDED",
+                                 message_id=mid, error="")
+            result["skipped"] += 1
+            continue
+        payload = send_sms(phone, message)
+        status = payload.get("status") or "FAILED"
+        st.record_sms(
+            driver_id=str(row.get("driver_id") or ""),
+            name=str(row.get("name") or ""),
+            phone=phone,
+            route_id=str(row.get("route_id") or ""),
+            route_name=str(row.get("route_name") or ""),
+            schedule_date=str(row.get("schedule_date") or ""),
+            message=message, status=status,
+            message_id=payload.get("message_id") or "",
+            error=payload.get("error") or "")
+        if status in _SENT_STATUSES:
+            result["resent"] += 1
+        else:
+            result["failed"] += 1
+    log.info("Stale PENDING natija: %s", {k: v for k, v in result.items()
+                                          if k != "errors"})
+    return result
+
+
 def _previous_message(storage: Storage, schedule_date: str, route_id: str,
-                      driver_id: str, phone: str) -> str:
-    """Shu kun+haydovchi uchun oxirgi muvaffaqiyatli yuborilgan SMS matni.
+                      driver_id: str, phone: str,
+                      include_pending: bool = False) -> str:
+    """Shu kun+haydovchi uchun oxirgi yuborilgan SMS matni.
 
     Grafik o'zgarishini aniqlash uchun: hozirgi matn avval yuborilganidan
     farq qilsa — haydovchiga tuzatish (UPDATED) xabari yuboriladi.
+
+    ``include_pending=True`` bo'lsa PENDING/PROCESSED yozuvlar ham
+    hisobga olinadi: tasdiqlash kelmagan (stale PENDING) yozuvdan keyin
+    grafik o'zgargan bo'lsa, haydovchi baribir yangi ma'lumotni olishi
+    kerak ("chiqarildi" holatida esa umuman yozuv bo'lmasligi mumkin).
     """
     if not storage.enabled:
         return ""
     ph = storage.db.ph
-    in_ph = ", ".join([ph] * len(_SENT_STATUSES))
+    statuses = _SENT_STATUSES | ({"PENDING", "PROCESSED", "UNKNOWN"}
+                                 if include_pending else set())
+    in_ph = ", ".join([ph] * len(statuses))
     rows = storage.query(
         f"SELECT message FROM sms_log "
         f"WHERE schedule_date = {ph} AND route_id = {ph} "
         f"AND driver_id = {ph} AND phone = {ph} "
         f"AND status IN ({in_ph}) ORDER BY id DESC LIMIT 1",
-        (schedule_date, route_id, driver_id, phone, *_SENT_STATUSES))
+        (schedule_date, route_id, driver_id, phone, *statuses))
     if not rows:
         return ""
     return str((rows[0] or {}).get("message") or "")
@@ -775,10 +1028,13 @@ def _send_one(storage: Storage, key, rows: list[dict], schedule_date: str,
         "error": "", "message_id": "",
     }
 
+    # Stale PENDING: gateway'dan tasdiqlash kelmagan yozuv. Shunday yozuv
+    # bo'lsa ham matn o'zgargan bo'lsa KORREKSIYA yuboriladi (dublikat emas —
+    # yangi ma'lumot); matn bir xil bo'lsa o'tkazib yuboriladi.
     correction = False
     if _sent_before(storage, schedule_date, route_id, driver_id, phone):
         prev = _previous_message(storage, schedule_date, route_id,
-                                 driver_id, phone)
+                                 driver_id, phone, include_pending=True)
         if prev and _msg_key(prev) != _msg_key(message):
             correction = True
         else:
@@ -786,6 +1042,17 @@ def _send_one(storage: Storage, key, rows: list[dict], schedule_date: str,
             entry["status"] = "SKIPPED"
             result["drivers"].append(entry)
             return entry
+
+    # Kunlik limit: bir haydovchiga kuniga ko'pi bilan _MAX_DAY_SMS ta SMS
+    # (1 smena + 1 tuzatish). Grafik shunchaki almashsaham yoki gateway
+    # PENDING qolsa ham qayta-yuborish bloklanadi.
+    if _day_send_count(storage, schedule_date, driver_id, phone) \
+            >= _MAX_DAY_SMS:
+        result["skipped"] += 1
+        entry["status"] = "SKIPPED"
+        entry["error"] = "kunlik limit (2) to'ldi"
+        result["drivers"].append(entry)
+        return entry
 
     if not phone:
         result["invalid"] += 1
@@ -845,45 +1112,8 @@ def _send_one(storage: Storage, key, rows: list[dict], schedule_date: str,
 
 
 def _route_label(storage: Storage, route_id: str) -> str:
-    """Yo'nalish uchun kanonik nom (SMS matni/jurnali uchun).
-
-    Tartib: `routes` jadvali -> profiles.json (routeVariantId) ->
-    `route_daily.data` (routeName). Ba'zi yo'nalishlar (masalan
-    "10-YO'NALISH") BM katalog daraxtida bo'lmaydi, shuning uchun birinchi
-    manbada topilmasa keyingilarga o'tamiz — aks holda SMS'am markasi bo'sh
-    bo'lib qolib, bitta yo'nalish ikki xil ("nomli" + "nomsiz") deb
-    ko'rinishga olib kelardi.
-    """
-    route_id = str(route_id or "").strip()
-    if not route_id or not storage.enabled:
-        return ""
-    r = storage.find("routes", external_id=route_id) or {}
-    name = str(r.get("route_name") or r.get("name") or "").strip()
-    if name:
-        return name
-    try:
-        from ..core.profiles import all_profiles  # noqa: PLC0415
-        for p in all_profiles():
-            if str(p.get("routeVariantId") or "").strip() == route_id:
-                n = str(p.get("routeName") or "").strip()
-                if n:
-                    return n
-    except Exception:  # noqa: BLE001 - profil bo'lmasa davom etamiz
-        pass
-    try:
-        import json  # noqa: PLC0415
-        rows = storage.query(
-            f"SELECT data FROM route_daily WHERE route_id = {storage.db.ph} "
-            "AND data LIKE %s ORDER BY date DESC LIMIT 1",
-            (route_id, '%"routeName"%'))
-        if rows:
-            d = json.loads(str((rows[0] or {}).get("data") or "{}"))
-            n = str(d.get("routeName") or "").strip()
-            if n:
-                return n
-    except Exception:  # noqa: BLE001
-        pass
-    return ""
+    """Yo'nalish uchun yagona kanonik nom (sms_log'ga bir xil yozilishi uchun)."""
+    return resolve_route_name(storage, route_id)
 
 
 def send_driver_schedule_sms(
@@ -1043,7 +1273,11 @@ def sms_route_set(storage: Storage | None = None, route_id: str = "",
 
 
 def retry_failed_sms(storage: Storage | None = None, limit: int = 50) -> dict:
-    """``FAILED``/``INVALID`` SMS'larni qayta yuboradi (dashboard tugmasi)."""
+    """``FAILED``/``INVALID`` va stale ``PENDING`` SMS'larni qayta yuboradi.
+
+    Dashboard tugmasi. PENDING/PROCESSED — gateway tasdiqlashi kelmayan
+    (qotib qolgan) yozuvlar: qayta urinish ularni hal qiladi (SENT/FAILED).
+    """
     st = storage or get_storage()
     result = {"sent": 0, "failed": 0, "skipped": 0, "errors": [],
               "retried": []}
@@ -1055,10 +1289,13 @@ def retry_failed_sms(storage: Storage | None = None, limit: int = 50) -> dict:
         return result
 
     ph = st.db.ph
+    # Diqqat: o'zi `_sent_before`ga murojaat qilmaydi — PENDING yozuvning
+    # o'zi blok qo'yib, hech narsani qayta yubormaslikka olib kelardi.
+    # FAILED/INVALID + stale PENDING/PROCESSED to'g'ridan-to'g'ri qayta uriniladi.
     rows = st.query(
-        f"SELECT * FROM sms_log WHERE status IN ({ph}, {ph}, {ph}) "
+        f"SELECT * FROM sms_log WHERE status IN ({ph}, {ph}, {ph}, {ph}, {ph}) "
         f"ORDER BY id DESC LIMIT {max(int(limit or 50), 1)}",
-        ("FAILED", "INVALID", "CANCELLED"),
+        ("FAILED", "INVALID", "CANCELLED", "PENDING", "PROCESSED"),
     )
     for row in reversed(rows):
         row_id = int(row.get("id") or 0)
@@ -1066,10 +1303,21 @@ def retry_failed_sms(storage: Storage | None = None, limit: int = 50) -> dict:
         if not phone:
             result["skipped"] += 1
             continue
-        if _sent_before(st, str(row.get("schedule_date") or ""),
-                        str(row.get("route_id") or ""),
-                        str(row.get("driver_id") or ""), phone):
-            # Avval muvaffaqiyatli yozuv bor — dublikatga yo'l qo'ymaymiz.
+        # DIQQAT: bu yerda `_sent_before` CHAQIRILMAYDI — qotib qolgan
+        # PENDING yozuvning o'zi blok qo'yib, retry hech narsani qayta
+        # yubormasligiga olib kelardi (dashboard tugmasi samarasiz bo'lardi).
+        # Faqat BOSHQA yozuv allaqachon muvaffaqiyatli bo'lsa dublikat yo'q.
+        if _sent_success_elsewhere(st, str(row.get("schedule_date") or ""),
+                                   str(row.get("route_id") or ""),
+                                   str(row.get("driver_id") or ""), phone,
+                                   exclude_row_id=row_id):
+            result["skipped"] += 1
+            continue
+        # Kunlik limit: haydovchi bugun allaqachon 2 ta SMS olgan bo'lsa
+        # qo'lda (dashboard) qayta yuborish ham bloklanadi.
+        if _day_send_count(st, str(row.get("schedule_date") or ""),
+                           str(row.get("driver_id") or ""), phone) \
+                >= _MAX_DAY_SMS:
             result["skipped"] += 1
             continue
         payload = send_sms(phone, str(row.get("message") or ""))

@@ -207,6 +207,67 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     log.info("Mijoz faylni o'qiimasdan ulanishni yopdi (%s)", self.path)
                     return
 
+    def _is_loopback(self) -> bool:
+        """Mijoz shu kompyuterdan (localhost) kiryaptimi?"""
+        hint = (self.client_address[0] if self.client_address else "") or ""
+        hint = hint.lower().rstrip(".")
+        return (
+            hint in ("127.0.0.1", "::1", "localhost")
+            or hint.startswith("127.")
+            or "::ffff:127." in hint
+        )
+
+    def _serve_index(self) -> None:
+        """SPA sahifasini beradi.
+
+        Token(lar) o'rnatilgan bo'lsa va mijoz malakali (loopback) bo'lsa —
+        token sahifaga qo'shiladi, brauzer uni localStorage/cookie'ga o'zi
+        yozadi va foydalanuvchi tokenni qo'lda kiritmaydi. Tashqaridan kirgan
+        mijozlarga token in'ektsiya qilinmaydi (himoya saqlanadi).
+        """
+        if INDEX_FILE.exists():
+            body = INDEX_FILE.read_bytes()
+        else:
+            self._json({"error": "fayl topilmadi"}, 404)
+            return
+        auto_auth = bool(_DASHBOARD_TOKEN and self._is_loopback())
+        if auto_auth:
+            token_lit = json.dumps(_DASHBOARD_TOKEN)
+            script = (
+                "<script>(function(){try{var t=" + token_lit + ";"
+                'if(t){localStorage.setItem("bm-token",t);'
+                'document.cookie="bm_token="+encodeURIComponent(t)'
+                '+"; path=/; SameSite=Lax";}})catch(e){}})();'
+                "</script>"
+            ).encode("utf-8")
+            head_idx = body.lower().find(b"<head")
+            if head_idx >= 0:
+                tag_end = body.find(b">", head_idx)
+                if tag_end >= 0:
+                    body = body[:tag_end + 1] + script + body[tag_end + 1:]
+                else:
+                    body = script + body
+            else:
+                body = script + body
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        if auto_auth:
+            # Server tomonidan cookie — JS'ga bog'liq emas. API chaqiruvlari
+            # Authorization header'siz ham cookie orqali ishlaydi.
+            self.send_header(
+                "Set-Cookie",
+                f"bm_token={_DASHBOARD_TOKEN}; Path=/; SameSite=Lax",
+            )
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Frame-Options", "DENY")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            log.info("Mijoz sahifani o'qiimasdan ulanishni yopdi (%s)", self.path)
+
     def _send_bytes(self, data: bytes, content_type: str, filename: str) -> None:
         self.send_response(200)
         self.send_header("Content-Type", content_type)
@@ -308,8 +369,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return {"ok": True, **detail}
 
     def _update_km_rate(self, payload: dict) -> dict:
-        """Yo'nalish uchun 1 km narxini yangilaydi."""
-        from ..db.storage import get_storage
+        """Yo'nalish uchun 1 km narxini yangilaydi (route darajasida saqlanadi).
+
+        Haydovchilar bo'lmagan yo'nalishlar uchun ham ishlaydi. Haydovchi
+        profilidagi shaxsiy km_rate bo'lsa u route darajasidagi qiymatdan
+        ustun turadi.
+        """
+        from ..core.bot_settings import set_route_km
         route_id = str(payload.get("route_id") or "").strip()
         km_rate = payload.get("km_rate")
         if not route_id:
@@ -321,21 +387,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not math.isfinite(km_rate) or km_rate < 0:
             return {"ok": False, "error": "km narxi manfiy yoki yaroqsiz"}
         km_rate = min(km_rate, 10_000_000_000.0)
-        storage = get_storage()
-        if not storage.enabled:
-            return {"ok": False, "error": "DB rejimi o'chirilgan"}
-        result = storage.db.execute(
-            "UPDATE driver_profiles SET km_rate = %s "
-            "WHERE driver_id IN ("
-            "  SELECT external_id FROM drivers WHERE route_id = %s"
-            ")",
-            (km_rate, route_id),
-        )
-        updated = int(result or 0)
-        if updated == 0:
-            return {"ok": False, "error": "Bu yo'nalishda haydovchilar topilmadi",
-                    "route_id": route_id, "km_rate": km_rate, "updated": 0}
-        return {"ok": True, "updated": updated, "route_id": route_id,
+        set_route_km(route_id, km_rate)
+        return {"ok": True, "updated": 0, "route_id": route_id,
                 "km_rate": km_rate}
 
     def _update_elec_price(self, payload: dict) -> dict:
@@ -351,6 +404,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
         rate = min(rate, 100_000_000_000.0)
         set_elec_price(rate)
         return {"ok": True, "rate": rate, "kwh_per_km": ELEC_KWH_PER_KM}
+
+    def _update_rejects_tariff(self, payload: dict) -> dict:
+        """Yo'nalish uchun 1 km boshang'ich narxini o'rnatadi (so'm/km)."""
+        from ..core.bot_settings import set_route_tariff
+        rid = str(payload.get("route_id") or "").strip()
+        if not rid:
+            return {"ok": False, "error": "route_id kerak"}
+        out = {}
+        for key in ("no_vat", "vat"):
+            raw = payload.get(key)
+            try:
+                val = float(raw)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "Narx son bo'lishi kerak"}
+            if not math.isfinite(val) or val < 0:
+                return {"ok": False, "error": "Narx manfiy yoki yaroqsiz"}
+            out[key] = min(val, 100_000_000_000_000.0)
+        saved = set_route_tariff(rid, out["no_vat"], out["vat"])
+        return {"ok": True, "route_id": rid, **saved}
+
+    def _update_route_skm(self, payload: dict) -> dict:
+        """Yo'nalish (firma) uchun 1 mashina-km SKM narxini o'rnatadi."""
+        from ..core.bot_settings import set_route_skm
+        rid = str(payload.get("route_id") or "").strip()
+        if not rid:
+            return {"ok": False, "error": "route_id kerak"}
+        raw = payload.get("skm")
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "SKM son bo'lishi kerak"}
+        if not math.isfinite(val) or val < 0:
+            return {"ok": False, "error": "SKM manfiy yoki yaroqsiz"}
+        val = min(val, 100_000_000_000_000.0)
+        saved = set_route_skm(rid, val)
+        return {"ok": True, "route_id": rid, "skm": saved}
 
     def _save_driver(self, payload: dict, driver_id: str = "") -> dict:
         """Haydovchi va uning ichki profil sozlamalarini saqlaydi."""
@@ -531,6 +620,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
         )
         return self._driver_detail(did, {"month": log_date[:7]})
 
+    def _delete_work_log(self, driver_id: str, payload: dict) -> dict:
+        from ..db.storage import get_storage
+
+        did = self._driver_id(driver_id)
+        log_date = self._text(payload.get("date"), 10)
+        if not log_date:
+            raise ValueError("Sana kiritilishi kerak")
+        try:
+            date.fromisoformat(log_date)
+        except ValueError as exc:
+            raise ValueError("Sana YYYY-MM-DD formatida bo'lishi kerak") from exc
+        removed = get_storage().delete_driver_work_log(
+            log_date, did, self._text(payload.get("vehicle_id"), 128))
+        if not removed:
+            raise ValueError("Bunday km qaydi topilmadi")
+        return self._driver_detail(did, {"month": log_date[:7]})
+
     def _save_fine(self, driver_id: str, payload: dict) -> dict:
         from ..db.storage import get_storage
 
@@ -614,7 +720,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if scope not in {"trips", "today", "routes", "vehicles", "drivers",
                          "all", "distance", "schedule", "attendance", "rating",
-                         "electricity"}:
+                         "electricity", "rejects", "tabel", "settings", "tariffs"}:
             self._json({"error": "scope noto'g'ri"}, 400)
             return
         try:
@@ -650,7 +756,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
         try:
             if path in ("/", "/index.html"):
-                self._file(INDEX_FILE, "text/html; charset=utf-8")
+                self._serve_index()
+                return
             elif path.startswith("/vendor/"):
                 vendor_file = (WEB_DIR / path.lstrip("/")).resolve()
                 if vendor_file.is_relative_to(WEB_DIR.resolve()) and vendor_file.exists() and vendor_file.is_file():
@@ -668,9 +775,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif path == "/api/summary":
                 from . import metrics as m
                 self._json(m.summary(_parse(qs)))
+            elif path == "/api/rejects":
+                from . import metrics as m
+                rep = m.Metrics().not_accepted_km_report(
+                    m.parse_filters(_parse(qs)))
+                rep["ok"] = True
+                self._json(rep)
+            elif path == "/api/brutto":
+                from . import metrics as m
+                self._json(m.brutto(_parse(qs)))
+            elif path == "/api/rejects/tariff":
+                from ..core.bot_settings import route_tariff
+                rid = (qs.get("route") or [""])[0].strip()
+                self._json({"ok": True, "route_id": rid,
+                            **route_tariff(rid)})
             elif path == "/api/routes":
                 from . import metrics as m
                 self._json({"ok": True, "routes": m.route_options()})
+            elif path == "/api/route-skm":
+                from ..core.bot_settings import route_skm
+                rid = (qs.get("route") or [""])[0].strip()
+                skm = route_skm(rid)
+                self._json({"ok": True, "route_id": rid, "skm": skm})
             elif path == "/api/users":
                 from ..core.bot_users import get_users, user_count
                 self._json({"ok": True, "count": user_count(),
@@ -892,9 +1018,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError):
                     limit, offset = 20, 0
                 status = (qs.get("status") or [""])[0].strip()
-                tasks = list_tasks(limit=limit, status=status, offset=offset)
+                q = (qs.get("q") or [""])[0].strip()
+                tasks = list_tasks(limit=limit, status=status, offset=offset, q=q)
                 self._json({"ok": True, "tasks": tasks,
-                            "total": count_tasks(status=status),
+                            "total": count_tasks(status=status, q=q),
                             "limit": limit, "offset": offset})
             elif path == "/api/myai/status":
                 try:
@@ -1072,40 +1199,65 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 lines = min(lines, 2000)
                 level_filter = (qs.get("level") or [""])[0].upper()
                 search = (qs.get("q") or [""])[0]
-                # Har 3 soniyada to'liq faylni qayta o'qimaymiz —
-                # faqat oxirgi qism (tail) o'qiladi. Filtr qo'llanilsa
-                # (kamdan-kam) to'liq fayl skanerlanadi.
-                try:
-                    size = FILE_LOG.stat().st_size
-                except Exception:
-                    size = 0
-                if size == 0:
-                    all_lines = []
-                elif not level_filter and not search:
-                    # taxminan 120 belgi/satr — kerakli satrlardan biroz ko'proq
-                    read_n = min(size, max(lines * 160 + 8192, 65536))
+                source = (qs.get("source") or ["bm"])[0].strip().lower()
+
+                def _tail_lines(path: Path, n: int) -> list[str]:
+                    """Fayl oxiridan ~n qatorni tez o'qish."""
                     try:
-                        with open(FILE_LOG, "rb") as _f:
+                        size = path.stat().st_size
+                    except OSError:
+                        return []
+                    if size == 0:
+                        return []
+                    read_n = min(size, max(n * 200 + 8192, 65536))
+                    try:
+                        with open(path, "rb") as _f:
                             _f.seek(size - read_n)
                             raw = _f.read(read_n)
-                        all_lines = raw.decode("utf-8", errors="replace").splitlines()
-                    except Exception:
-                        all_lines = []
+                        return raw.decode("utf-8", errors="replace").splitlines()[-n:]
+                    except OSError:
+                        return []
+
+                bot_log = Path("state") / "watchdog_bot.out.log"
+                wd_log = Path("state") / "watchdog.log"
+                if source == "bot":
+                    all_lines = _tail_lines(bot_log, lines)
+                elif source == "watchdog":
+                    all_lines = _tail_lines(wd_log, lines)
+                elif source == "all":
+                    # Barcha manbalar: har biridan oxirgi qatorlar, prefiks bilan.
+                    per = max(lines // 3, 20)
+                    bm_tail = _tail_lines(FILE_LOG, per)
+                    all_lines = ([f"[BOT] {l}" for l in _tail_lines(bot_log, per)]
+                                 + [f"[WD] {l}" for l in _tail_lines(wd_log, per)]
+                                 + [f"[BM] {l}" for l in bm_tail])
                 else:
+                    # Standart: bm.log (asosiy tizim logi)
                     try:
-                        all_lines = FILE_LOG.read_text(
-                            encoding="utf-8", errors="replace").splitlines()
-                    except Exception:
+                        size = FILE_LOG.stat().st_size
+                    except OSError:
+                        size = 0
+                    if size == 0:
                         all_lines = []
-                    if level_filter:
-                        all_lines = [l for l in all_lines
-                                     if f"| {level_filter}" in l]
-                    if search:
-                        sl = search.lower()
-                        all_lines = [l for l in all_lines if sl in l.lower()]
+                    else:
+                        # taxminan 120 belgi/satr — kerakli satrlardan biroz ko'proq
+                        read_n = min(size, max(lines * 160 + 8192, 65536))
+                        try:
+                            with open(FILE_LOG, "rb") as _f:
+                                _f.seek(size - read_n)
+                                raw = _f.read(read_n)
+                            all_lines = raw.decode("utf-8", errors="replace").splitlines()
+                        except OSError:
+                            all_lines = []
+                if level_filter:
+                    all_lines = [l for l in all_lines
+                                 if f"| {level_filter}" in l]
+                if search:
+                    sl = search.lower()
+                    all_lines = [l for l in all_lines if sl in l.lower()]
                 tail_lines = all_lines[-lines:]
                 self._json({"ok": True, "lines": tail_lines,
-                            "total": len(all_lines)})
+                            "total": len(all_lines), "source": source})
             # --- Haydovchi SMS jurnali ---
             elif path == "/api/sms-log":
                 from ..notifications.sms_notify import sms_log
@@ -1352,6 +1504,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 result = self._update_company_creds(self._payload())
             elif path == "/api/electricity/price":
                 result = self._update_elec_price(self._payload())
+            elif path == "/api/rejects/tariff":
+                result = self._update_rejects_tariff(self._payload())
+            elif path == "/api/route-skm":
+                result = self._update_route_skm(self._payload())
             elif path == "/api/drivers":
                 result = self._save_driver(self._payload())
             elif path.startswith("/api/drivers/"):
@@ -1369,6 +1525,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     result = self._save_document(driver_id, payload)
                 elif action == "work-log":
                     result = self._save_work_log(driver_id, payload)
+                elif action == "work-log-delete":
+                    result = self._delete_work_log(driver_id, payload)
                 elif action == "fine":
                     result = self._save_fine(driver_id, payload)
                 elif action == "notification-test":
@@ -1535,17 +1693,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         else:
             to_date = f"{y}-{m + 1:02d}-01"
         # trips jadvalidan haydovchilar ish kunlarini olish
+        ph = storage.db.ph
         query = (
             "SELECT d.external_id AS driver_id, d.full_name, d.route_id, "
             "  t.date, COUNT(*) AS trip_count "
             "FROM trips t "
             "JOIN drivers d ON d.external_id = t.driver_id "
-            "WHERE t.date >= %s AND t.date < %s "
+            f"WHERE t.date >= {ph} AND t.date < {ph} "
             "  AND t.status IN ('ACCEPTED','APPROVED') "
         )
         args: list = [from_date, to_date]
         if route_filter:
-            query += " AND d.route_id = %s "
+            query += f" AND d.route_id = {ph} "
             args.append(route_filter)
         query += " GROUP BY d.external_id, d.full_name, d.route_id, t.date ORDER BY d.full_name, t.date"
         try:
@@ -1565,6 +1724,71 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "work_days": {},
                 }
             drivers_map[did]["work_days"][r["date"]] = r["trip_count"]
+
+        # Qo'lda kirilgan ish kunlari (driver_work_logs, note != 'AVTO') ham
+        # kalendarga kiritiladi — tizimda reys qayd etilmagan kuni haydovchi
+        # ishlagan deb ko'rinadi. Shu kuni allaqachon trips bo'lsa,
+        # trips miqdori ustun turadi (qo'lda qayd qo'shilmaydi).
+        # Qo'lda qayd kiritilgan (driver, sana) juftlari eslab qolinadi —
+        # AVTO (brutto-route) hisobi ularni ustiga yozmaydi.
+        manual_keys: set = set()
+        try:
+            wl_query = (
+                "SELECT d.external_id AS driver_id, d.full_name, d.route_id,"
+                "  w.date, COALESCE(w.trip_count, 0) AS trip_count"
+                " FROM driver_work_logs w"
+                " JOIN drivers d ON d.external_id = w.driver_id"
+                f" WHERE w.note <> {ph} AND w.driver_id <> ''"
+                f"  AND w.date >= {ph} AND w.date < {ph} ")
+            wl_args: list = ["AVTO", from_date, to_date]
+            if route_filter:
+                wl_query += f" AND d.route_id = {ph} "
+                wl_args.append(route_filter)
+            for r in storage.db.query(wl_query, wl_args) or []:
+                did = r["driver_id"]
+                if did not in drivers_map:
+                    drivers_map[did] = {
+                        "driver_id": did,
+                        "full_name": r["full_name"],
+                        "route_id": r["route_id"],
+                        "work_days": {},
+                    }
+                manual_keys.add((did, r["date"]))
+                if r["date"] not in drivers_map[did]["work_days"]:
+                    drivers_map[did]["work_days"][r["date"]] = r["trip_count"]
+        except Exception:
+            log.exception("attendance work_log query error")
+
+        # AVTO (brutto-route / route_daily) ish kunlari — saytdagi rasmiy
+        # hisob: faqat ishlangan (working_day) kunlar kalendarga kiritiladi.
+        # Trip bilan takrorlangan kunda sayt qiymati ustun turadi; qo'lda
+        # (dlog) qayd kiritilgan kun o'zgarmaydi.
+        try:
+            avto_query = (
+                "SELECT d.external_id AS driver_id, d.full_name, d.route_id,"
+                "  w.date, COALESCE(w.trip_count, 0) AS trip_count"
+                " FROM driver_work_logs w"
+                " JOIN drivers d ON d.external_id = w.driver_id"
+                f" WHERE w.note = {ph} AND w.driver_id <> ''"
+                f"  AND w.date >= {ph} AND w.date < {ph}"
+                f"  AND COALESCE(w.working_day, 0) > 0 ")
+            avto_args: list = ["AVTO", from_date, to_date]
+            if route_filter:
+                avto_query += f" AND d.route_id = {ph} "
+                avto_args.append(route_filter)
+            for r in storage.db.query(avto_query, avto_args) or []:
+                did = r["driver_id"]
+                if did not in drivers_map:
+                    drivers_map[did] = {
+                        "driver_id": did,
+                        "full_name": r["full_name"],
+                        "route_id": r["route_id"],
+                        "work_days": {},
+                    }
+                if (did, r["date"]) not in manual_keys:
+                    drivers_map[did]["work_days"][r["date"]] = r["trip_count"]
+        except Exception:
+            log.exception("attendance avto query error")
         drivers = sorted(drivers_map.values(), key=lambda d: d["full_name"])
         return {"ok": True, "month": month, "drivers": drivers}
 
@@ -1853,6 +2077,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             },
             "global": {
                 "km_rate": bot_settings.km_rate(),
+                "elec_price": bot_settings.elec_price(),
+                "elec_kwh_per_km": bot_settings.ELEC_KWH_PER_KM,
+                "brutto_skm": bot_settings.brutto_skm(),
+                "audit": bot_settings.audit_log(10),
             },
         }
 
@@ -1871,6 +2099,40 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 changed.append("km_rate")
             except (ValueError, TypeError):
                 return {"ok": False, "error": "km_rate noto'g'ri qiymat"}
+
+        ep = payload.get("elec_price")
+        if ep is not None:
+            try:
+                val = float(ep)
+                if not math.isfinite(val) or val < 0:
+                    return {"ok": False, "error": "elec_price noto'g'ri qiymat"}
+                bot_settings.set_elec_price(min(val, 100_000_000_000.0))
+                changed.append("elec_price")
+            except (ValueError, TypeError):
+                return {"ok": False, "error": "elec_price noto'g'ri qiymat"}
+
+        skm = payload.get("brutto_skm")
+        if skm is not None:
+            try:
+                val = float(skm)
+                if not math.isfinite(val) or val < 0:
+                    return {"ok": False, "error": "brutto_skm noto'g'ri qiymat"}
+                bot_settings.set_brutto_skm(min(val, 100_000_000_000_000.0))
+                changed.append("brutto_skm")
+            except (ValueError, TypeError):
+                return {"ok": False, "error": "brutto_skm noto'g'ri qiymat"}
+
+        rskm = payload.get("route_skm")
+        if isinstance(rskm, dict):
+            rid = str(rskm.get("route_id") or "").strip()
+            if not rid:
+                return {"ok": False, "error": "route_id kerak"}
+            raw = rskm.get("value")
+            if not isinstance(raw, (int, float)) or \
+                    not math.isfinite(float(raw)) or float(raw) < 0:
+                return {"ok": False, "error": "route_skm noto'g'ri qiymat"}
+            bot_settings.set_route_skm(rid, float(raw))
+            changed.append(f"route_skm:{rid}")
 
         return {"ok": True, "changed": changed}
 

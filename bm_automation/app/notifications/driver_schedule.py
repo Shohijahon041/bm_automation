@@ -136,14 +136,15 @@ def send_driver_schedule_notifications(
     rows = storage.query(
         "SELECT s.driver_id, s.graph_name, s.start_time, s.end_time, "
         "s.trip_count, s.shift_name, s.vehicle_id, "
-        "d.full_name, p.notification_target, v.plate_number "
+        "d.full_name, p.notification_target, p.telegram_chat_id, "
+        "v.plate_number "
         "FROM schedules s "
         "JOIN driver_profiles p ON p.driver_id = s.driver_id "
         "LEFT JOIN drivers d ON d.external_id = s.driver_id "
         "LEFT JOIN vehicles v ON v.external_id = s.vehicle_id "
         f"WHERE s.date = {ph} AND s.route_id = {ph} AND s.driver_id != '' "
         "AND p.notification_enabled = 1 AND p.blacklisted = 0 "
-        "AND p.notification_target != '' "
+        "AND (p.notification_target != '' OR p.telegram_chat_id != '') "
         "ORDER BY s.driver_id, s.start_time",
         (schedule_date, route_id),
     )
@@ -152,7 +153,10 @@ def send_driver_schedule_notifications(
         row["vehicle"] = row.get("plate_number") or row.get("vehicle_id") or ""
         name = str(row.get("full_name") or row.get("driver_id") or "Haydovchi")
         name = short_name(name)
-        grouped[(str(row["driver_id"]), str(row["notification_target"]), name)].append(row)
+        # Telegram'ga bog'langan haydovchi — shaxsiy chat'iga; aks holda target.
+        target = str(row.get("telegram_chat_id") or "").strip() \
+            or str(row.get("notification_target") or "").strip()
+        grouped[(str(row["driver_id"]), target, name)].append(row)
 
     for driver_id, target, name in grouped:
         message = _message(name, schedule_date, grouped[(driver_id, target, name)])

@@ -108,12 +108,31 @@ def build_rows(client: BMClient, route_id: str, date_str: str,
         names = konechka_names(client, route_id, date_str)
 
     groups = {"UP": [], "DOWN": []}
+
+    # Har grafikning yo'nalishini PARALLEL aniqlaymiz: har biri 1-2 API
+    # so'rovi bo'lgani uchun ketma-ket yig'ilishi (16 grafik ~30 so'rov)
+    # rasm generatsiyasini 30-60 soniyaga cho'zardi.
+    graphs = duty.get("graphs") or []
+
+    def _direction_of(g: dict) -> str:
+        try:
+            direction = graph_start_direction(
+                client, g.get("shiftGraphId") or "", g.get("startTime") or "")
+        except Exception as exc:  # noqa: BLE001 - bitta grafik to'smaydi
+            print(f"  [build_rows] graph_times xatolik: {exc}")
+            direction = None
+        return direction or "UP"  # aniqlanmagan bo'lsa shartli
+
+    from concurrent.futures import ThreadPoolExecutor
+    if graphs:
+        with ThreadPoolExecutor(max_workers=min(8, len(graphs))) as pool:
+            directions = list(pool.map(_direction_of, graphs))
+    else:
+        directions = []
+
     best = {}  # (direction, graph, shiftGraphId) -> qator indeksi
-    for g in duty.get("graphs") or []:
+    for g, direction in zip(graphs, directions):
         shift_graph_id = g.get("shiftGraphId") or ""
-        direction = graph_start_direction(client, shift_graph_id, g.get("startTime"))
-        if not direction:
-            direction = "UP"  # aniqlanmagan bo'lsa shartli
         driver = g.get("driverName") or ""
         if g.get("hasSecond") and g.get("secondDriverName"):
             driver = f"{driver} / {g.get('secondDriverName')}"

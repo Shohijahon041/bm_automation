@@ -23,7 +23,10 @@ class DBTool(BaseTool):
     """PostgreSQL database queries."""
 
     name = "db"
-    description = "Database queries — routes, drivers, vehicles, schedules, trips, attendance"
+    description = ("Database queries — routes, drivers, vehicles, schedules, "
+                   "trips, attendance, not-accepted km report, avans, "
+                   "fines, waybills, duties, documents, staff, SMS, "
+                   "notifications, reports, dispatcher routes")
 
     async def execute(self, action: str = "", **kwargs) -> Any:
         actions = {
@@ -48,8 +51,25 @@ class DBTool(BaseTool):
             "get_daily_summary": self._get_daily_summary,
             "get_problems": self._get_problems,
             "get_electricity": self._get_electricity,
+            "get_not_accepted_km": self._get_not_accepted_km,
             "get_vehicle_detail": self._get_vehicle_detail,
             "get_route_overview": self._get_route_overview,
+            "get_route_vehicles": self._get_route_vehicles,
+            "get_trip_anomalies": self._get_trip_anomalies,
+            "get_route_health": self._get_route_health,
+            "get_avans": self._get_avans,
+            "get_driver_fines": self._get_driver_fines,
+            "get_waybills": self._get_waybills,
+            "get_duties": self._get_duties,
+            "get_dispatcher_routes": self._get_dispatcher_routes,
+            "get_documents": self._get_documents,
+            "get_staff": self._get_staff,
+            "get_sms": self._get_sms,
+            "get_notifications": self._get_notifications,
+            "get_reports": self._get_reports,
+            "get_automation_runs": self._get_automation_runs,
+            "get_trip_statuses": self._get_trip_statuses,
+            "rows": self._rows,
         }
         handler = actions.get(action)
         if handler is None:
@@ -91,6 +111,95 @@ class DBTool(BaseTool):
             return row[0]["external_id"], row[0]["name"]
         return route_id, route_id
 
+    async def _resolve_route_uid(self, route_id: str = "") -> str:
+        """route_id (UUID yoki yo'nalish nomi) → UUID qaytaradi.
+
+        Nom ("B-80") berilsa routes jadvalidan UUID topiladi; topilmasa
+        asl qiymat qaytadi (to'g'ridan-to'g'ri so'rovda mos kelmasa bo'sh).
+        """
+        rid = (route_id or "").strip()
+        if not rid:
+            return ""
+        uid, _ = await self._resolve_route(rid)
+        return uid or rid
+
+    async def _route_no_data(self, uid: str, date: str) -> tuple[bool, str]:
+        """(no_data, latest_date) — route_daily da berilgan sana uchun yozuv
+        yo'qligi va oxirgi mavjud sana haqida ma'lumot qaytaradi.
+
+        no_data=True bo'lsa o'sha sana uchun hech qanday yozuv yo'q
+        (ma'lumot hali yuklanmagan bo'lishi mumkin); latest_date — shu
+        sanagacha bo'lgan oxirgi yozuv sanasi ("" bo'lsa umuman yo'q).
+        """
+        if not uid or not date:
+            return False, ""
+        rows = self._storage().query(
+            "SELECT MAX(date) AS m FROM route_daily "
+            "WHERE route_id = %s AND date <= %s", (uid, date))
+        latest = rows[0]["m"] if rows and rows[0].get("m") else ""
+        has_day = bool(latest) and str(latest) == str(date)
+        return (not has_day), (str(latest) if latest else "")
+
+    def _normalize_date(self, value: str) -> str:
+        """Istalgan sana formatini ISO (YYYY-MM-DD) ga keltiradi.
+
+        "13-sentabr", "13 sentyabr 2026", "13.09.2026", "13.09",
+        "2026-09-13" → "2026-09-13". Agar aniqlanmasa asl qiymat qaytadi.
+        """
+        from datetime import date as _date
+        import re as _re
+        v = (value or "").strip()
+        if not v:
+            return ""
+        from datetime import timedelta as _td
+        if v.lower() in ("kecha", "bugun", "ertaga"):
+            base = _date.today()
+            if v.lower() == "kecha":
+                return (base - _td(days=1)).isoformat()
+            if v.lower() == "ertaga":
+                return (base + _td(days=1)).isoformat()
+            return base.isoformat()
+        if _re.match(r"^\d{4}-\d{2}-\d{2}$", v):
+            try:
+                return _date(*map(int, v.split("-"))).isoformat()
+            except (TypeError, ValueError):
+                return v
+        m = _re.match(r"^(\d{1,2})[.\/](\d{1,2})[.\/](\d{2,4})$", v)
+        if m:
+            d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            y = 2000 + y if y < 100 else y
+            try:
+                return _date(y, mo, d).isoformat()
+            except (TypeError, ValueError):
+                return v
+        m = _re.match(r"^(\d{1,2})[.\/](\d{1,2})$", v)
+        if m:
+            try:
+                return _date(_date.today().year, int(m.group(2)),
+                             int(m.group(1))).isoformat()
+            except (TypeError, ValueError):
+                return v
+        months = {
+            "yanvar": 1, "fevral": 2, "mart": 3, "aprel": 4, "may": 5,
+            "iyun": 6, "iyul": 7, "avgust": 8, "sentabr": 9, "sentyabr": 9,
+            "oktabr": 10, "oktyabr": 10, "noyabr": 11, "dekabr": 12,
+        }
+        low = v.lower()
+        year = _date.today().year
+        ym = _re.search(r"\b(20\d{2})\b", low)
+        if ym:
+            year = int(ym.group(1))
+        for name, num in sorted(
+                months.items(), key=lambda kv: len(kv[0]), reverse=True):
+            m = _re.search(
+                r"\b(\d{1,2})\s*[-–']?\s*" + name + r"(?:dagi|da|gi)?\b", low)
+            if m:
+                try:
+                    return _date(year, num, int(m.group(1))).isoformat()
+                except (TypeError, ValueError):
+                    continue
+        return v
+
     async def _query(self, sql: str = "", params: tuple = (), **kwargs) -> dict:
         rows = self._storage().query(sql, params)
         return {"rows": rows, "count": len(rows)}
@@ -114,11 +223,12 @@ class DBTool(BaseTool):
 
     async def _get_vehicles(self, route_id: str = "", **kwargs) -> dict:
         storage = self._storage()
-        if route_id:
+        rid = await self._resolve_route_uid(route_id)
+        if rid:
             rows = storage.query(
                 "SELECT external_id, plate_number, garage_number, model, route_id "
                 "FROM vehicles WHERE route_id = %s ORDER BY plate_number",
-                (route_id,),
+                (rid,),
             )
         else:
             rows = storage.query(
@@ -141,8 +251,10 @@ class DBTool(BaseTool):
         where = ["date = %s"]
         params: list[Any] = [date]
         if route_id:
-            where.append("route_id = %s")
-            params.append(route_id)
+            rid = await self._resolve_route_uid(route_id)
+            if rid:
+                where.append("route_id = %s")
+                params.append(rid)
         if driver_id:
             where.append("driver_id = %s")
             params.append(driver_id)
@@ -165,13 +277,16 @@ class DBTool(BaseTool):
         present = trip_fact > 0 bo'lganlar.
         """
         storage = self._storage()
+        date = self._normalize_date(date)
         if not date:
             date = self._today()
         where = ["date = %s"]
         params: list[Any] = [date]
         if route_id:
-            where.append("route_id = %s")
-            params.append(route_id)
+            rid = await self._resolve_route_uid(route_id)
+            if rid:
+                where.append("route_id = %s")
+                params.append(rid)
         rows = storage.query(
             f"SELECT {_ROUTE_DAILY_COLS} FROM route_daily "
             f"WHERE {' AND '.join(where)} ORDER BY route_id, vehicle_number",
@@ -218,21 +333,38 @@ class DBTool(BaseTool):
 
     async def _get_route_daily(self, route_id: str = "", date: str = "", **kwargs) -> dict:
         storage = self._storage()
+        date = self._normalize_date(date)
         if not date:
             date = self._today()
         if route_id:
-            rows = storage.query(
-                f"SELECT {_ROUTE_DAILY_COLS} FROM route_daily "
-                "WHERE route_id = %s AND date = %s ORDER BY vehicle_number",
-                (route_id, date),
-            )
+            rid = await self._resolve_route_uid(route_id)
+            if rid:
+                rows = storage.query(
+                    f"SELECT {_ROUTE_DAILY_COLS} FROM route_daily "
+                    "WHERE route_id = %s AND date = %s ORDER BY vehicle_number",
+                    (rid, date),
+                )
+            else:
+                rows = storage.query(
+                    f"SELECT {_ROUTE_DAILY_COLS} FROM route_daily "
+                    f"WHERE route_id = %s AND date = %s ORDER BY vehicle_number",
+                    (route_id, date),
+                )
         else:
             rows = storage.query(
                 f"SELECT {_ROUTE_DAILY_COLS} FROM route_daily "
                 "WHERE date = %s ORDER BY route_id, vehicle_number",
                 (date,),
             )
-        return {"route_id": route_id, "date": date, "data": rows}
+        _, route_name = await self._resolve_route(route_id)
+        has = bool(rows)
+        no_data, latest = (False, "")
+        if route_id:
+            rid2 = await self._resolve_route_uid(route_id)
+            no_data, latest = await self._route_no_data(rid2, date)
+        return {"route_id": route_id, "route_name": route_name,
+                "date": date, "data": rows, "found": has,
+                "no_data": no_data, "latest_date": latest}
 
     async def _get_drivers(
         self, route_id: str = "", query: str = "", limit: int = 200, **kwargs
@@ -241,8 +373,10 @@ class DBTool(BaseTool):
         where = []
         params: list[Any] = []
         if route_id:
-            where.append("d.route_id = %s")
-            params.append(route_id)
+            rid = await self._resolve_route_uid(route_id)
+            if rid:
+                where.append("d.route_id = %s")
+                params.append(rid)
         if query:
             where.append("(d.full_name ILIKE %s OR d.tin LIKE %s OR d.external_id = %s)")
             params.extend((f"%{query}%", query, query))
@@ -299,6 +433,259 @@ class DBTool(BaseTool):
         if not row:
             return driver, driver
         return row[0]["external_id"], row[0]["full_name"]
+
+    async def _get_avans(self, driver: str = "", driver_id: str = "",
+                         month: str = "", **kwargs) -> dict:
+        """Haydovchi/oy uchun avans to'lovlari (avans jadvali)."""
+        storage = self._storage()
+        if not driver_id:
+            driver_id, _ = await self._resolve_driver(driver)
+        if not driver_id:
+            return {"driver": driver, "avans": [], "count": 0, "total": 0}
+        rows = storage.query(
+            "SELECT a.pay_date, a.amount, a.route_name, a.note "
+            "FROM avans a WHERE a.driver_id = %s ORDER BY a.pay_date DESC",
+            (driver_id,))
+        rows = [dict(r) for r in rows]
+        if month:
+            rows = [r for r in rows
+                    if str(r.get("pay_date", "")).startswith(
+                        str(month).replace(".", "-")[:7])]
+        total = sum(int(r.get("amount", 0) or 0) for r in rows)
+        return {"driver": driver, "month": month or "",
+                "avans": rows, "count": len(rows), "total": total}
+
+    async def _get_driver_fines(self, driver: str = "", driver_id: str = "",
+                                month: str = "", date: str = "",
+                                **kwargs) -> dict:
+        """Haydovchi jarimalari (driver_fines jadvali)."""
+        storage = self._storage()
+        if not driver_id:
+            driver_id, _ = await self._resolve_driver(driver)
+        if not driver_id:
+            return {"driver": driver, "fines": [], "count": 0, "total": 0}
+        sql = ("SELECT f.date, f.amount, f.reason, f.status FROM driver_fines f "
+               "WHERE f.driver_id = %s")
+        params: list = [driver_id]
+        if month:
+            sql += " AND CAST(f.date AS TEXT) LIKE %s"
+            params.append(str(month).replace(".", "-")[:7] + "%")
+        elif date:
+            sql += " AND CAST(f.date AS TEXT) = %s"
+            params.append(self._normalize_date(date) or date)
+        sql += " ORDER BY f.date DESC"
+        rows = [dict(r) for r in storage.query(sql, tuple(params))]
+        total = sum(int(r.get("amount", 0) or 0) for r in rows)
+        return {"driver": driver, "month": month or "", "date": date or "",
+                "fines": rows, "count": len(rows), "total": total}
+
+    async def _get_waybills(self, route_id: str = "", date: str = "",
+                            limit: int = 50, **kwargs) -> dict:
+        """Yo'l varaqalari (waybills jadvali)."""
+        storage = self._storage()
+        if route_id:
+            uid, _ = await self._resolve_route(route_id)
+        else:
+            uid = ""
+        sql = ("SELECT w.date, COALESCE(r.name, w.route_id::text) AS route_name, "
+               "w.plate_number, COALESCE(d.full_name, w.driver_id::text) AS driver_name, "
+               "w.direction, w.status "
+               "FROM waybills w "
+               "LEFT JOIN routes r ON r.external_id = w.route_id "
+               "LEFT JOIN drivers d ON d.external_id = w.driver_id "
+               "WHERE 1=1")
+        params: list = []
+        if uid:
+            sql += " AND w.route_id = %s"
+            params.append(uid)
+        if date:
+            sql += " AND CAST(w.date AS TEXT) = %s"
+            params.append(self._normalize_date(date) or date)
+        sql += " ORDER BY w.date DESC LIMIT %s"
+        params.append(int(limit))
+        rows = [dict(r) for r in storage.query(sql, tuple(params))]
+        return {"count": len(rows), "date": date or "", "waybills": rows}
+
+    async def _get_duties(self, route_id: str = "", date: str = "",
+                          **kwargs) -> dict:
+        """Navbatchilik ro'yxati (duties jadvali)."""
+        storage = self._storage()
+        if route_id:
+            uid, _ = await self._resolve_route(route_id)
+        else:
+            uid = ""
+        sql = ("SELECT d.date, COALESCE(r.name, d.route_id::text) AS route_name, "
+               "d.shift_id, d.data "
+               "FROM duties d "
+               "LEFT JOIN routes r ON r.external_id = d.route_id "
+               "WHERE 1=1")
+        params: list = []
+        if uid:
+            sql += " AND d.route_id = %s"
+            params.append(uid)
+        if date:
+            sql += " AND CAST(d.date AS TEXT) = %s"
+            params.append(self._normalize_date(date) or date)
+        sql += " ORDER BY d.date DESC LIMIT 100"
+        rows = [dict(r) for r in storage.query(sql, tuple(params))]
+        return {"count": len(rows), "date": date or "", "duties": rows}
+
+    async def _get_dispatcher_routes(self, dispatcher_chat_id: str = "",
+                                     **kwargs) -> dict:
+        """Dispecher biriktirilgan yo'nalishlar (dispatcher_routes jadvali)."""
+        storage = self._storage()
+        sql = ("SELECT dispatcher_chat_id, route_name, company, phone "
+               "FROM dispatcher_routes")
+        params: list = []
+        if dispatcher_chat_id:
+            sql += " WHERE dispatcher_chat_id = %s"
+            params.append(dispatcher_chat_id)
+        sql += " ORDER BY route_name"
+        rows = [dict(r) for r in storage.query(sql, tuple(params))]
+        return {"count": len(rows), "routes": rows}
+
+    async def _get_documents(self, query: str = "", driver: str = "",
+                             limit: int = 20, **kwargs) -> dict:
+        """Sotilgan hujjatlar ro'yxati (documents jadvali)."""
+        storage = self._storage()
+        sql = ("SELECT d.title, d.category, d.status, d.created_at, "
+               "COALESCE(dr.full_name, d.driver_id::text) AS driver_name "
+               "FROM documents d "
+               "LEFT JOIN drivers dr ON dr.external_id = d.driver_id "
+               "WHERE 1=1")
+        params: list = []
+        if driver:
+            did, _ = await self._resolve_driver(driver)
+            if did:
+                sql += " AND d.driver_id = %s"
+                params.append(did)
+        if query:
+            sql += " AND (LOWER(d.title) LIKE LOWER(%s) "
+            sql += " OR LOWER(d.category) LIKE LOWER(%s))"
+            params.append(f"%{query}%")
+            params.append(f"%{query}%")
+        sql += " ORDER BY d.created_at DESC LIMIT %s"
+        params.append(int(limit))
+        rows = [dict(r) for r in storage.query(sql, tuple(params))]
+        return {"count": len(rows), "query": query or "", "documents": rows}
+
+    async def _get_staff(self, query: str = "", limit: int = 30,
+                         **kwargs) -> dict:
+        """Xodimlar (staff jadvali)."""
+        storage = self._storage()
+        sql = ("SELECT name, position, company, salary_type, rate, days "
+               "FROM staff WHERE 1=1")
+        params: list = []
+        if query:
+            sql += " AND (LOWER(name) LIKE LOWER(%s) OR LOWER(position) LIKE LOWER(%s))"
+            params.append(f"%{query}%")
+            params.append(f"%{query}%")
+        sql += " ORDER BY name LIMIT %s"
+        params.append(int(limit))
+        rows = [dict(r) for r in storage.query(sql, tuple(params))]
+        return {"count": len(rows), "query": query or "", "staff": rows}
+
+    async def _get_sms(self, driver: str = "", route_id: str = "",
+                       limit: int = 50, **kwargs) -> dict:
+        """Haydovchilarga yuborilgan SMS log (sms_log jadvali)."""
+        storage = self._storage()
+        sql = ("SELECT s.name, s.phone, COALESCE(r.name, s.route_id::text) "
+               "AS route_name, s.schedule_date, s.message, s.status, s.send_at "
+               "FROM sms_log s "
+               "LEFT JOIN routes r ON r.external_id = s.route_id "
+               "WHERE 1=1")
+        params: list = []
+        if driver:
+            sql += " AND LOWER(s.name) LIKE LOWER(%s)"
+            params.append(f"%{driver}%")
+        if route_id:
+            uid, _ = await self._resolve_route(route_id)
+            if uid:
+                sql += " AND s.route_id = %s"
+                params.append(uid)
+        sql += " ORDER BY s.created_at DESC LIMIT %s"
+        params.append(int(limit))
+        rows = [dict(r) for r in storage.query(sql, tuple(params))]
+        return {"count": len(rows), "sms": rows}
+
+    async def _get_notifications(self, unread_only: bool = False,
+                                 limit: int = 20, **kwargs) -> dict:
+        """Bildirishnomalar (notifications jadvali)."""
+        storage = self._storage()
+        params: list = []
+        sql = ("SELECT channel, target, message, status, sent_at "
+               "FROM notifications WHERE 1=1")
+        if unread_only:
+            sql += " AND status = ANY(%s)"
+            params.append(["pending", "new", "failed"])
+        sql += " ORDER BY created_at DESC LIMIT %s"
+        params.append(int(limit))
+        rows = [dict(r) for r in storage.query(sql, tuple(params))]
+        return {"count": len(rows), "notifications": rows}
+
+    async def _get_reports(self, limit: int = 10, **kwargs) -> dict:
+        """Saqlangan hisobotlar (reports jadvali)."""
+        storage = self._storage()
+        rows = [dict(r) for r in storage.query(
+            "SELECT name, report_type, period_date, file_path, created_at "
+            "FROM reports ORDER BY created_at DESC LIMIT %s", (int(limit),))]
+        return {"count": len(rows), "reports": rows}
+
+    async def _get_automation_runs(self, limit: int = 10, **kwargs) -> dict:
+        """Avtomatlashtirish ishga tushirishlar (automation_runs jadvali)."""
+        storage = self._storage()
+        rows = [dict(r) for r in storage.query(
+            "SELECT trigger, started_at, finished_at, status, summary, "
+            "sheet_date, month FROM automation_runs "
+            "ORDER BY created_at DESC LIMIT %s", (int(limit),))]
+        return {"count": len(rows), "runs": rows}
+
+    async def _get_trip_statuses(self, **kwargs) -> dict:
+        """Reys holatlarining izohlari (trip_statuses jadvali)."""
+        storage = self._storage()
+        rows = [dict(r) for r in storage.query(
+            "SELECT code, name, description FROM trip_statuses ORDER BY code")]
+        return {"count": len(rows), "statuses": rows}
+
+    async def _rows(self, table: str = "", key: str = "", value: str = "",
+                    limit: int = 50, **kwargs) -> dict:
+        """Istalgan jadvaldan so'rov (xavfsiz whitelist).
+
+        Faqat ma'lum jadvallarga ruxsat; key/value bo'yicha LIKE qidiruv.
+        """
+        allowed = {
+            "routes", "vehicles", "drivers", "schedules", "avans",
+            "driver_fines", "waybills", "duties", "documents", "staff",
+            "sms_log", "notifications", "reports", "dispatcher_routes",
+            "trip_statuses", "automation_runs", "errors",
+        }
+        table = (table or "").strip().lower()
+        if table not in allowed:
+            return {"count": 0, "error": f"Ruxsat berilmagan jadval: {table}",
+                    "rows": []}
+        storage = self._storage()
+        params: list = []
+        limit = max(1, min(int(limit), 100))
+        try:
+            cols = [c["column_name"] for c in storage.query(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = %s",
+                (table,))]
+        except Exception:  # noqa: BLE001
+            cols = []
+        if not cols:
+            return {"count": 0, "error": "Jadval ustunlari topilmadi", "rows": []}
+        sql = f'SELECT * FROM "{table}" WHERE 1=1'
+        if key and key in cols and value:
+            sql += f' AND CAST("{key}" AS TEXT) LIKE %s'
+            params.append(f"%{value}%")
+        sql += f" ORDER BY {cols[0]} LIMIT %s"
+        params.append(limit)
+        try:
+            rows = [dict(r) for r in storage.query(sql, tuple(params))]
+        except Exception as exc:  # noqa: BLE001
+            return {"count": 0, "error": str(exc), "rows": []}
+        return {"count": len(rows), "table": table, "rows": rows}
 
     async def _get_driver_trips(self, driver: str = "", driver_id: str = "",
                                 date: str = "", **kwargs) -> dict:
@@ -420,9 +807,10 @@ class DBTool(BaseTool):
 
     async def _get_trips(self, route_id: str = "", date: str = "", **kwargs) -> dict:
         storage = self._storage()
+        rid = await self._resolve_route_uid(route_id)
         rows = storage.query(
             "SELECT * FROM trips WHERE route_id = %s AND date = %s",
-            (route_id, date),
+            (rid or route_id, date),
         )
         return {"trips": rows, "count": len(rows)}
 
@@ -456,6 +844,7 @@ class DBTool(BaseTool):
     async def _get_route_summary(self, route_id: str = "", date: str = "", **kwargs) -> dict:
         """Bitta yo'nalish bo'yicha kunlik xulosa — DB dan."""
         storage = self._storage()
+        date = self._normalize_date(date)
         if not date:
             date = self._today()
         route_uuid, route_name = await self._resolve_route(route_id)
@@ -566,6 +955,7 @@ class DBTool(BaseTool):
     async def _get_route_trips_detail(self, route_id: str = "", date: str = "", **kwargs) -> dict:
         """Yo'nalish bo'yicha batafsil reyslar."""
         storage = self._storage()
+        date = self._normalize_date(date)
         if not date:
             date = self._today()
         route_uuid, route_name = await self._resolve_route(route_id)
@@ -618,6 +1008,20 @@ class DBTool(BaseTool):
             f["route"] = rid
         return f
 
+    async def _build_period_filter(self, month: str = "", date: str = "",
+                                   route_id: str = "") -> dict:
+        """_period_filter + route nomini UUID'ga resolve qilish.
+
+        Metrics filter'i route UUID kutaradi; "B-80" kabi nom berilsa
+        avval UUID'ga o'tkaziladi (aks holda filter nol natija beradi).
+        """
+        rid = str(route_id or "").strip()
+        if rid:
+            uid = await self._resolve_route_uid(rid)
+            if uid:
+                rid = uid
+        return self._period_filter(month=month, date=date, route_id=rid)
+
     async def _get_daily_summary(self, date: str = "", route_id: str = "",
                                  month: str = "", **kwargs) -> dict:
         """Rich kunlik/davr xulosasi — Metrics.monthly() asosida.
@@ -626,16 +1030,28 @@ class DBTool(BaseTool):
         accept_rate kabi ko'rsatkichlar bilan (single/day bo'yicha).
         """
         m = self._metrics()
-        f = self._period_filter(month=month, date=date, route_id=route_id)
+        date = self._normalize_date(date)
+        f = await self._build_period_filter(month=month, date=date, route_id=route_id)
         try:
             mon = m.monthly(dict(f))
         except Exception as exc:  # noqa: BLE001
             log.warning("get_daily_summary xatosi: %s", exc)
             return {"found": False, "error": str(exc)}
         days = mon.get("days") or []
-        t = mon.get("totals", {})
+        t = dict(mon.get("totals", {}))
         # Readable route name (if route_id given as name, resolve)
         route_uuid, route_name = await self._resolve_route(route_id)
+        # Route uchun kun davomida ishga chiqqan avtobuslar soni (route_daily)
+        if route_uuid:
+            try:
+                st = self._storage()
+                rows = st.query(
+                    "SELECT count(*) AS c FROM route_daily "
+                    "WHERE route_id = %s AND date = %s AND trip_fact > 0",
+                    (route_uuid, str(f.get("from", ""))))
+                t["vehicles_out"] = int(rows[0]["c"]) if rows else 0
+            except Exception as exc:  # noqa: BLE001
+                log.warning("vehicles_out xatosi: %s", exc)
         return {
             "found": bool(days),
             "date": f.get("from", ""),
@@ -645,26 +1061,15 @@ class DBTool(BaseTool):
             "days": len(days),
             "period": {"from": f.get("from", ""), "to": f.get("to", "")},
             "daily": days[:40],
-            "totals": {
-                "planned": t.get("planned", 0),
-                "actual": t.get("actual", 0),
-                "completed": t.get("completed", 0),
-                "accepted": t.get("accepted", 0),
-                "not_accepted": t.get("not_accepted", 0),
-                "pending": t.get("pending", 0),
-                "rejected": t.get("rejected", 0),
-                "zero_mileage": t.get("zero_mileage", 0),
-                "problems_total": t.get("problems_total", 0),
-                "performance": t.get("performance", 0.0),
-                "accept_rate": t.get("accept_rate", 0.0),
-            },
+            "totals": t,
         }
 
     async def _get_problems(self, date: str = "", route_id: str = "",
                             month: str = "", **kwargs) -> dict:
         """Muammolar tahlili — GPS, texnik, jadval (Metrics.monthly dan)."""
         m = self._metrics()
-        f = self._period_filter(month=month, date=date, route_id=route_id)
+        date = self._normalize_date(date)
+        f = await self._build_period_filter(month=month, date=date, route_id=route_id)
         try:
             mon = m.monthly(dict(f))
         except Exception as exc:  # noqa: BLE001
@@ -703,7 +1108,8 @@ class DBTool(BaseTool):
         Haydovchi / yo'nalish / kompaniya bo'yicha kVt·soat va so'm.
         """
         m = self._metrics()
-        f = self._period_filter(month=month, date=date, route_id=route_id)
+        date = self._normalize_date(date)
+        f = await self._build_period_filter(month=month, date=date, route_id=route_id)
         # electricity_report kunlik blur olishi uchun month/from+to kerak
         try:
             rep = m.electricity_report(dict(f))
@@ -718,6 +1124,43 @@ class DBTool(BaseTool):
             "totals": rep.get("totals", {}),
             "drivers": rep.get("drivers", [])[:200],
             "routes": rep.get("routes", []),
+        }
+
+    async def _get_not_accepted_km(self, month: str = "", date: str = "",
+                                   route_id: str = "", driver: str = "",
+                                   **kwargs) -> dict:
+        """Qabul qilinmagan reyslar — haydovchi bo'yicha hisobot.
+
+        Sayt bilan bir xil hisob (route_daily): har bir haydovchi uchun
+        rejadagi reyslar, amalda bajarilgan reyslar, qabul qilinmagan
+        (reja − amalda), ish kuni, rejadagi km, amalda km va farq.
+        """
+        m = self._metrics()
+        date = self._normalize_date(date)
+        f = await self._build_period_filter(month=month, date=date, route_id=route_id)
+        drv = str(driver or "").strip()
+        if drv:
+            try:
+                drv_id, _ = await self._resolve_driver(drv)
+                f["driver"] = drv_id or drv
+            except Exception:  # noqa: BLE001
+                f["driver"] = drv
+        try:
+            rep = m.not_accepted_km_report(dict(f))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("get_not_accepted_km xatosi: %s", exc)
+            return {"found": False, "error": str(exc)}
+        route_uuid, route_name = await self._resolve_route(route_id)
+        return {
+            "found": bool(rep.get("rows")),
+            "period": rep.get("period", {}),
+            "month": f.get("month", ""),
+            "route_id": route_uuid or route_id or "",
+            "route_name": route_name or rep.get("route_name", ""),
+            "company": rep.get("company", ""),
+            "totals": rep.get("totals", {}),
+            "drivers": rep.get("rows", []),
+            "drivers_count": len(rep.get("rows", [])),
         }
 
     async def _resolve_vehicle(self, plate: str = "") -> tuple[str, str]:
@@ -752,6 +1195,7 @@ class DBTool(BaseTool):
         if not rows:
             return {"found": False, "query": vehicle or plate or ""}
         veh = rows[0]
+        date = self._normalize_date(date)
         if not date:
             date = self._today()
         daily = storage.query(
@@ -807,4 +1251,178 @@ class DBTool(BaseTool):
             "profile": prof,
             "daily": daily,
             "problems": problems,
+        }
+
+    async def _get_route_vehicles(self, route: str = "", route_id: str = "",
+                                  date: str = "", **kwargs) -> dict:
+        """Yo'nalish (nom yoki ID) bo'yicha avtobuslar ro'yxati.
+
+        Har bir avtobus uchun kunlik real holat (isha chiqqanmi, reyslar,
+        km) ham qo'shiladi — agent "qaysi avtobuslar yo'lda" degan savolga
+        javob bera oladi.
+        """
+        storage = self._storage()
+        rid = (route_id or route or "").strip()
+        if not rid:
+            return {"found": False, "route": "", "vehicles": [], "count": 0}
+        uid, name = await self._resolve_route(rid)
+        if not uid:
+            return {"found": False, "route": route or route_id, "vehicles": [], "count": 0}
+        date = self._normalize_date(date)
+        if not date:
+            date = self._today()
+        veh = await self._get_vehicles(route_id=uid)
+        rows = veh.get("vehicles", [])
+        daily_map: dict[str, list] = {}
+        daily = storage.query(
+            f"SELECT {_ROUTE_DAILY_COLS} FROM route_daily "
+            "WHERE route_id = %s AND date = %s", (uid, date))
+        for r in daily:
+            for key in (r.get("vehicle_number"), r.get("vehicle_id")):
+                if key:
+                    daily_map.setdefault(str(key), []).append(r)
+        vehicles = []
+        for r in rows:
+            day = (
+                daily_map.get(str(r.get("plate_number", "") or ""))
+                or daily_map.get(str(r.get("garage_number", "") or ""))
+                or daily_map.get(str(r.get("external_id", "")))
+            )
+            rec = day[0] if day else None
+            vehicles.append({
+                "id": r.get("external_id", ""),
+                "plate_number": r.get("plate_number", ""),
+                "garage_number": r.get("garage_number", ""),
+                "model": r.get("model", ""),
+                "working_day": int(rec.get("working_day", 0) or 0) if rec else 0,
+                "trip_plan": int(rec.get("trip_plan", 0) or 0) if rec else 0,
+                "trip_fact": int(rec.get("trip_fact", 0) or 0) if rec else 0,
+                "distance_plan": round(float(rec.get("distance_plan", 0) or 0), 2) if rec else 0,
+                "distance_fact": round(float(rec.get("distance_fact", 0) or 0), 2) if rec else 0,
+                "shift_name": (rec.get("shift_name", "") if rec else ""),
+                "on_route": bool(rec and int(rec.get("trip_fact", 0) or 0) > 0),
+            })
+        on_route = sum(1 for v in vehicles if v["on_route"])
+        no_data, latest = (False, "")
+        if not daily:
+            no_data, latest = await self._route_no_data(uid, date)
+        return {
+            "found": True,
+            "no_data": no_data,
+            "latest_date": latest,
+            "route_id": uid,
+            "route_name": name,
+            "date": date,
+            "vehicles_count": len(vehicles),
+            "on_route": on_route,
+            "off_route": len(vehicles) - on_route,
+            "vehicles": vehicles,
+        }
+
+    async def _get_trip_anomalies(self, route: str = "", route_id: str = "",
+                                  date: str = "", min_diff: int = 1,
+                                  **kwargs) -> dict:
+        """Rejaga nisbatan reyslar yetmayotgan (anomaliya) avtobuslar.
+
+        working_day=1 bo'lgan avtobuslarda trip_plan > trip_fact bo'lsa
+        aniqlanadi. min_diff — minimal farq (kelish shovqinni kamaytirish).
+        """
+        storage = self._storage()
+        date = self._normalize_date(date)
+        uid = route_id or ""
+        name = ""
+        if uid or route:
+            uid, name = await self._resolve_route(uid or route)
+        if not uid:
+            return {"found": False, "route": route or route_id,
+                    "date": date, "anomalies": [], "count": 0}
+        rows = storage.query(
+            f"SELECT {_ROUTE_DAILY_COLS} FROM route_daily "
+            "WHERE route_id = %s AND date = %s AND working_day = 1 "
+            "ORDER BY vehicle_number", (uid, date))
+        anomalies = []
+        plan_total = fact_total = 0
+        for r in rows:
+            plan = int(r.get("trip_plan", 0) or 0)
+            fact = int(r.get("trip_fact", 0) or 0)
+            diff = plan - fact
+            plan_total += plan
+            fact_total += fact
+            if diff >= max(int(min_diff or 1), 1):
+                anomalies.append({
+                    "vehicle_number": r.get("vehicle_number", ""),
+                    "vehicle_brand": r.get("vehicle_brand", ""),
+                    "shift_name": r.get("shift_name", ""),
+                    "trip_plan": plan,
+                    "trip_fact": fact,
+                    "diff": diff,
+                    "distance_fact": round(float(r.get("distance_fact", 0) or 0), 2),
+                })
+        no_data, latest = (False, "")
+        found = bool(rows)
+        if not rows:
+            no_data, latest = await self._route_no_data(uid, date)
+            found = not no_data
+        return {
+            "found": found,
+            "no_data": no_data,
+            "latest_date": latest,
+            "route_id": uid,
+            "route_name": name,
+            "date": date,
+            "anomalies_count": len(anomalies),
+            "trip_plan_total": plan_total,
+            "trip_fact_total": fact_total,
+            "missing_trips_total": plan_total - fact_total,
+            "anomalies": anomalies,
+        }
+
+    async def _get_route_health(self, route: str = "", route_id: str = "",
+                                days: int = 7, **kwargs) -> dict:
+        """Yo'nalish salomatligi — oxirgi N kundagi ishchi avtobuslar,
+        reja/fakt reyslari va masofa ko'rsatkichlari tendensiyasi."""
+        storage = self._storage()
+        if not route_id and not route:
+            return {"found": False, "route": "", "days": days}
+        uid, name = await self._resolve_route(route_id or route)
+        if not uid:
+            return {"found": False, "route": route or route_id, "days": days}
+        days = max(min(int(days or 7), 60), 1)
+        rows = storage.query(
+            "SELECT date, COUNT(*) FILTER (WHERE working_day = 1) AS buses, "
+            "SUM(trip_plan) AS plan, SUM(trip_fact) AS fact, "
+            "SUM(distance_plan) AS dplan, SUM(distance_fact) AS dfact "
+            "FROM route_daily "
+            "WHERE route_id = %s AND date >= TO_CHAR(CURRENT_DATE - %s, 'YYYY-MM-DD') "
+            "GROUP BY date ORDER BY date",
+            (uid, days - 1))
+        history = []
+        for r in rows:
+            plan = int(r.get("plan", 0) or 0)
+            fact = int(r.get("fact", 0) or 0)
+            history.append({
+                "date": str(r.get("date", "")),
+                "buses_worked": int(r.get("buses", 0) or 0),
+                "trip_plan": plan,
+                "trip_fact": fact,
+                "missing_trips": plan - fact,
+                "distance_plan": round(float(r.get("dplan", 0) or 0), 2),
+                "distance_fact": round(float(r.get("dfact", 0) or 0), 2),
+            })
+        worked = [h for h in history if h["buses_worked"] > 0]
+        avg_pct = 0.0
+        if worked:
+            avgs = [
+                (h["trip_fact"] / h["trip_plan"] * 100)
+                for h in worked if h["trip_plan"] > 0
+            ]
+            avg_pct = round(sum(avgs) / len(avgs), 1) if avgs else 0.0
+        return {
+            "found": bool(history),
+            "route_id": uid,
+            "route_name": name,
+            "days": days,
+            "history": history,
+            "avg_execution_pct": avg_pct,
+            "last_day": history[-1] if history else None,
         }

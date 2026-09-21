@@ -178,24 +178,28 @@ def update_task(task_id: str, **kwargs) -> bool:
 
 
 def list_tasks(limit: int = 20, status: str = "",
-               offset: int = 0) -> list[dict]:
+               offset: int = 0, q: str = "") -> list[dict]:
     """Topshiriqlar ro'yxati — dict list qaytaradi.
 
-    Paginatsiya: limit + offset. status filtri bo'yicha ham filtrlash.
+    Paginatsiya: limit + offset. status va q (matn qidiruv) bo'yicha filtrlash.
     """
     storage = get_storage()
+    where = []
+    params: list[Any] = []
     if status:
-        rows = storage.query(
-            "SELECT * FROM myai_tasks WHERE status = %s "
-            "ORDER BY created_at DESC LIMIT %s OFFSET %s",
-            (status, limit, offset),
-        )
-    else:
-        rows = storage.query(
-            "SELECT * FROM myai_tasks ORDER BY created_at DESC "
-            "LIMIT %s OFFSET %s",
-            (limit, offset),
-        )
+        where.append("status = %s")
+        params.append(status)
+    q = (q or "").strip()
+    if q:
+        where.append("user_request ILIKE %s")
+        params.append(f"%{q}%")
+    where_sql = f" WHERE {' AND '.join(where)}" if where else ""
+    params.extend((limit, offset))
+    rows = storage.query(
+        f"SELECT * FROM myai_tasks{where_sql} "
+        "ORDER BY created_at DESC LIMIT %s OFFSET %s",
+        tuple(params),
+    )
     tasks = []
     for row in rows:
         result = {}
@@ -220,16 +224,22 @@ def list_tasks(limit: int = 20, status: str = "",
     return tasks
 
 
-def count_tasks(status: str = "") -> int:
-    """Topshiriqlar soni — status bo'yicha filtrlash mumkin."""
+def count_tasks(status: str = "", q: str = "") -> int:
+    """Topshiriqlar soni — status va q bo'yicha filtrlash mumkin."""
     storage = get_storage()
+    where = []
+    params: list[Any] = []
     if status:
-        rows = storage.query(
-            "SELECT COUNT(*) AS n FROM myai_tasks WHERE status = %s",
-            (status,),
-        )
-    else:
-        rows = storage.query("SELECT COUNT(*) AS n FROM myai_tasks", [])
+        where.append("status = %s")
+        params.append(status)
+    q = (q or "").strip()
+    if q:
+        where.append("user_request ILIKE %s")
+        params.append(f"%{q}%")
+    where_sql = f" WHERE {' AND '.join(where)}" if where else ""
+    rows = storage.query(
+        f"SELECT COUNT(*) AS n FROM myai_tasks{where_sql}", tuple(params),
+    )
     return rows[0]["n"] if rows else 0
 
 

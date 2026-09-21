@@ -21,6 +21,39 @@ class DriverAgent(BaseAgent):
     name = AgentType.DRIVER
     description = "Haydovchi ma'lumotlarini tahlil qiladi (kunlik, oylik)"
 
+    async def _llm_refine_driver(self, driver: str) -> str:
+        """LLM yordamida haydovchi so'rovini takomillashtirish (optional).
+
+        Aniq natija topilmaganda LLM ismni to'g'irlashi mumkin
+        (masalan "XALILOV NUR" → "XALILOV NURMUHAMMAD", yoki kiril/lotin
+        transliteratsiyasini tuzatish). LLM yo'q/xato bo'lsa — asl qiymat.
+        """
+        try:
+            if self.llm is None or not self.llm.configured():
+                return driver
+        except Exception:  # noqa: BLE001
+            return driver
+        system = (
+            "Siz transport bazasi uchun ism-normalizatorisiz. "
+            "Foydalanuvchi haydovchi ismini noto'g'ri/kiril-lotin aralash "
+            "yozgan bo'lishi mumkin. Eng ehtimoliy to'g'ri yozilishini "
+            "qaytaring. FAQAT ismni qaytaring, boshqa hech narsa yo'q."
+        )
+        try:
+            response = await self._call_llm(
+                system,
+                f"Haydovchi so'rovi: {driver}\nTo'g'ri ism:",
+                max_tokens=40,
+            )
+            refined = (response or "").strip().strip('"')
+            if refined and len(refined) <= 80 and refined.lower() != driver.lower():
+                self.logger.info("LLM haydovchi ismini tuzatdi: %s → %s",
+                                 driver, refined)
+                return refined
+        except Exception as exc:  # noqa: BLE001
+            self.logger.debug("LLM refine xatosi: %s", exc)
+        return driver
+
     async def run(self, context: AgentContext) -> AgentResult:
         self._start()
         try:
@@ -68,6 +101,25 @@ class DriverAgent(BaseAgent):
                     self._finish(True, "Driver: oylik reyting tugadi")
                     return AgentResult(success=True, data=data)
 
+                # --- Avans to'lovlari va jarimalar (avans/driver_fines) ---
+                if action in ("avans", "advance", "fines", "jarima", "jarimalar"):
+                    if not driver:
+                        raise ValueError(
+                            "Avans/jarima so'rovi uchun haydovchi ko'rsatilishi kerak")
+                    is_avans = action in ("avans", "advance")
+                    data = await self._use_tool(
+                        "db", action="get_avans" if is_avans else "get_driver_fines",
+                        driver=driver, month=month,
+                        date="" if is_avans else date,
+                    )
+                    self.source_note = "PostgreSQL (ma'lumotlar bazasi)"
+                    self._finish(True, f"Driver: {action} tugadi")
+                    return AgentResult(
+                        success=True,
+                        data={"driver": data, "driver_name": driver,
+                              "money_type": "avans" if is_avans else "fines"},
+                    )
+
                 try:
                     # Ayrim haydovchi so'ralgan bo'lsa — chuqur tahlil
                     if driver:
@@ -75,6 +127,13 @@ class DriverAgent(BaseAgent):
                             "db", action="get_drivers", query=driver,
                         )
                         matched = data.get("drivers") or []
+                        if not matched:
+                            refined = await self._llm_refine_driver(driver)
+                            if refined and refined != driver:
+                                data = await self._use_tool(
+                                    "db", action="get_drivers", query=refined,
+                                )
+                                matched = data.get("drivers") or []
                         if matched:
                             driver_id = matched[0]["external_id"]
                             rich = {

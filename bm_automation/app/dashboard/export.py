@@ -44,6 +44,26 @@ def _expand_period(met: m.Metrics, f: dict) -> dict:
 
 def _data_for(scope: str, met: m.Metrics, f: dict) -> tuple[str, list, list[list]]:
     """scope -> (sarlavha, ustunlar, qatorlar)."""
+    if scope == "settings":
+        from ..core.bot_settings import audit_log
+        rows = []
+        for r in audit_log(500):
+            rows.append([r.get("when", ""), r.get("key", ""),
+                         r.get("old", ""), r.get("new", ""),
+                         r.get("by") or "dashboard"])
+        cols = ["vaqt", "kalit", "eski qiymat", "yangi qiymat", "o'zgartiruvchi"]
+        return "Sozlamalar tarixi (audit)", cols, rows
+
+    if scope == "tariffs":
+        routes = m.route_options()
+        cols = ["firma", "yo'nalish", "route_id", "skm (so'm/km)",
+                "1 km narxi", "tarif QQSsiz", "tarif QQS bilan"]
+        rows = [[r.get("company") or "", r.get("name") or "",
+                 r.get("id") or "", r.get("skm") or 0,
+                 r.get("km_rate") or 0, r.get("tariff_no_vat") or 0,
+                 r.get("tariff_vat") or 0] for r in routes]
+        return "Firma tariflari", cols, rows
+
     if scope == "today":
         t = met.today(f)
         cols = ["ko'rsatkich", "qiymat"]
@@ -125,6 +145,14 @@ def _data_for(scope: str, met: m.Metrics, f: dict) -> tuple[str, list, list[list
         cols = ["driver_id", "ism", "kelmadi"]
         return f"Davomat ({a['date']})", cols, rows
 
+    if scope == "tabel":
+        from datetime import date as _d
+        d_date = f.get("date") or ""
+        mth = f.get("month") or (f.get("from") or "")[:7] or _d.today().strftime("%Y-%m")
+        if d_date and len(str(d_date)) >= 10:
+            return _tabel_day(str(d_date)[:10], route=f.get("route", ""))
+        return _tabel_data(mth, route=f.get("route", ""))
+
     if scope == "electricity":
         e = met.electricity_report(f)
         cols = ["firma", "yo'nalish", "haydovchi", "km", "kVt/soat",
@@ -178,6 +206,22 @@ def _data_for(scope: str, met: m.Metrics, f: dict) -> tuple[str, list, list[list
                  d["attendance"], d["net_pay"]] for d in drivers]
         return "Haydovchilar reytingi", cols, rows
 
+    if scope == "rejects":
+        rep = met.not_accepted_km_report(f)
+        cols = ["№", "Haydovchi (F.I.Sh.)", "Ish kuni", "Jami reys",
+                "Qabul qilinmagan reys", "Amalda bajarilgan reyslar",
+                "Rejadagi km", "Amalda km", "Farq (reja - amalda)",
+                "Qabul qilinmagan so'm (QQSsiz)", "Qabul qilinmagan so'm (QQS bilan)"]
+        rows = [[i, r["name"], r["days"], r["plan_reys"],
+                 r["qabul_qilinmagan"], r["fact_reys"], r["plan_km"],
+                 r["fact_km"], r["diff"], r["sum_no_vat"], r["sum_vat"]]
+                for i, r in enumerate(rep["rows"], 1)]
+        t = rep["totals"]
+        rows.append(["JAMI", "", t["days"], t["plan_reys"],
+                     t["qabul_qilinmagan"], t["fact_reys"], t["plan_km"],
+                     t["fact_km"], t["diff"], t["sum_no_vat"], t["sum_vat"]])
+        return "Qabul qilinmagan KM reys", cols, rows
+
     # trips (default)
     cols = ["id", "date", "route_id", "vehicle_id", "driver_id",
             "planned_time", "actual_time", "status", "source"]
@@ -185,6 +229,254 @@ def _data_for(scope: str, met: m.Metrics, f: dict) -> tuple[str, list, list[list
              t.get("driver_id"), t.get("planned_time"), t.get("actual_time"),
              t.get("status"), t.get("source")] for t in met.trips(f)]
     return "Reyslar", cols, rows
+
+
+def _tabel_data(month: str, route: str = "") -> tuple[str, list, list[list]]:
+    """Oylik ishga chiqish tabeli (kalendar) — haydovchi × kun.
+
+    Sahifadagi Performance jadvali bilan bir xil: har bir haydovchi
+    uchun oy kunlari bo'yicha reyslar soni (ACCEPTED/APPROVED).
+    """
+    from datetime import date as _d
+    from calendar import monthrange
+
+    from ..db.storage import get_storage
+
+    storage = get_storage()
+    if not storage or not storage.enabled:
+        return "Tabel", ["Haydovchi"], [["DB o'chirilgan"]]
+
+    month = (month or _d.today().strftime("%Y-%m"))
+    y, mo = int(month[:4]), int(month[5:7])
+    last = monthrange(y, mo)[1]
+    from_date = month + "-01"
+    to_date = f"{y + 1}-01-01" if mo == 12 else f"{y}-{mo + 1:02d}-01"
+
+    rnames: dict[str, str] = {}
+    try:
+        for r in storage.db.query("SELECT external_id, name FROM routes") or []:
+            rnames[str(r["external_id"])] = str(r["name"] or "")
+    except Exception:  # noqa: BLE001
+        pass
+
+    routes_set = [t.strip() for t in str(route or "").replace(",", " ").split()
+                  if t.strip()]
+    ph = storage.db.ph
+    query = (
+        "SELECT d.external_id AS driver_id, d.full_name, d.route_id, "
+        "  t.date, COUNT(*) AS trip_count "
+        "FROM trips t JOIN drivers d ON d.external_id = t.driver_id "
+        f"WHERE t.date >= {ph} AND t.date < {ph} "
+        "  AND t.status IN ('ACCEPTED','APPROVED')")
+    args: list = [from_date, to_date]
+    if routes_set:
+        marks = ", ".join([ph] * len(routes_set))
+        query += f" AND d.route_id IN ({marks})"
+        args += routes_set
+    query += " GROUP BY d.external_id, d.full_name, d.route_id, t.date"
+    try:
+        rows = storage.db.query(query, args) or []
+    except Exception:  # noqa: BLE001
+        return f"Tabel ({month})", ["Haydovchi"], [["Query xatosi"]]
+
+    drivers_map: dict[str, dict] = {}
+    for r in rows:
+        did = str(r["driver_id"])
+        if did not in drivers_map:
+            drivers_map[did] = {
+                "full_name": str(r["full_name"] or did),
+                "route_id": str(r["route_id"] or ""),
+                "days": {},
+            }
+        drivers_map[did]["days"][str(r["date"])] = int(r["trip_count"] or 0)
+
+    # Qo'lda kirilgan ish kunlari (driver_work_logs, note != 'AVTO') —
+    # Performance sahifasi bilan bir xil bo'lishi uchun kunlar qatoriga
+    # kiritiladi; trips bor kunda trips miqdori ustun turadi. Qo'lda qayd
+    # kiritilgan (driver, sana) juftlari eslab qolinadi — AVTO ularni
+    # ustiga yozmaydi.
+    manual_keys: set = set()
+    try:
+        wl_query = (
+            "SELECT d.external_id AS driver_id, d.full_name, d.route_id,"
+            "  w.date, COALESCE(w.trip_count, 0) AS trip_count"
+            " FROM driver_work_logs w"
+            " JOIN drivers d ON d.external_id = w.driver_id"
+            f" WHERE w.note <> {ph} AND w.driver_id <> ''"
+            f" AND w.date >= {ph} AND w.date < {ph} ")
+        wl_args: list = ["AVTO", from_date, to_date]
+        if routes_set:
+            marks = ", ".join([ph] * len(routes_set))
+            wl_query += f" AND d.route_id IN ({marks})"
+            wl_args += routes_set
+        for r in storage.db.query(wl_query, wl_args) or []:
+            did = str(r["driver_id"])
+            if did not in drivers_map:
+                drivers_map[did] = {
+                    "full_name": str(r["full_name"] or did),
+                    "route_id": str(r["route_id"] or ""),
+                    "days": {},
+                }
+            date_str = str(r["date"])
+            manual_keys.add((did, date_str))
+            if date_str not in drivers_map[did]["days"]:
+                drivers_map[did]["days"][date_str] = int(r["trip_count"] or 0)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # AVTO (brutto-route / route_daily) ish kunlari — saytdagi rasmiy
+    # hisob: faqat ishlangan (working_day) kunlar tabelga kiritiladi.
+    # Trip bilan takrorlangan kunda sayt qiymati ustun turadi; qo'lda
+    # (dlog) qayd kiritilgan kun o'zgarmaydi.
+    try:
+        avto_query = (
+            "SELECT d.external_id AS driver_id, d.full_name, d.route_id,"
+            "  w.date, COALESCE(w.trip_count, 0) AS trip_count"
+            " FROM driver_work_logs w"
+            " JOIN drivers d ON d.external_id = w.driver_id"
+            f" WHERE w.note = {ph} AND w.driver_id <> ''"
+            f" AND w.date >= {ph} AND w.date < {ph}"
+            f" AND COALESCE(w.working_day, 0) > 0 ")
+        avto_args: list = ["AVTO", from_date, to_date]
+        if routes_set:
+            marks = ", ".join([ph] * len(routes_set))
+            avto_query += f" AND d.route_id IN ({marks})"
+            avto_args += routes_set
+        for r in storage.db.query(avto_query, avto_args) or []:
+            did = str(r["driver_id"])
+            if did not in drivers_map:
+                drivers_map[did] = {
+                    "full_name": str(r["full_name"] or did),
+                    "route_id": str(r["route_id"] or ""),
+                    "days": {},
+                }
+            date_str = str(r["date"])
+            if (did, date_str) not in manual_keys:
+                drivers_map[did]["days"][date_str] = int(r["trip_count"] or 0)
+    except Exception:  # noqa: BLE001
+        pass
+
+    drivers = sorted(drivers_map.values(), key=lambda d: d["full_name"])
+    cols = ["№", "Haydovchi", "Yo'nalish"] + [str(dd) for dd in range(1, last + 1)] + ["Ish kuni"]
+    out: list[list] = []
+    for i, drv in enumerate(drivers, 1):
+        rname = rnames.get(drv["route_id"], "")
+        r = [i, drv["full_name"], rname]
+        total = 0
+        for dd in range(1, last + 1):
+            date_str = f"{month}-{dd:02d}"
+            worked = date_str in drv["days"]
+            trips = drv["days"].get(date_str, 0)
+            r.append(trips if worked else "")
+            total += 1 if worked else 0
+        r.append(total)
+        out.append(r)
+
+    # JAMI qatori
+    jami = ["", "JAMI", ""]
+    col_sums = [0] * last
+    for drv in drivers:
+        for dd in range(1, last + 1):
+            date_str = f"{month}-{dd:02d}"
+            if date_str in drv["days"]:
+                col_sums[dd - 1] += 1
+    jami += [s if s else "" for s in col_sums]
+    jami.append(len(drivers))
+    out.append(jami)
+
+    route_label = ""
+    if len(routes_set) == 1:
+        route_label = f" — {rnames.get(routes_set[0], routes_set[0])}"
+    return f"Tabel ({month}){route_label}", cols, out
+
+
+def _tabel_day(date_str: str, route: str = "") -> tuple[str, list, list[list]]:
+    """Bir kunlik tabel — yo'nalishdagi haydovchilar ro'yhati.
+
+    Ustunlar: haydovchi, yo'nalish, shu kungi reyslar soni, davomat
+    (keldi / kelmadi). Haydovchi ro'yxati — yo'nalishga biriktirilganlar
+    (reis qilmaganlar ham kiritiladi → davomat aniq ko'rinadi).
+    """
+    from ..db.storage import get_storage
+
+    storage = get_storage()
+    if not storage or not storage.enabled:
+        return "Tabel", ["Haydovchi"], [["DB o'chirilgan"]]
+
+    routes_set = [t.strip() for t in str(route or "").replace(",", " ").split()
+                  if t.strip()]
+
+    rnames: dict[str, str] = {}
+    try:
+        for r in storage.db.query("SELECT external_id, name FROM routes") or []:
+            rnames[str(r["external_id"])] = str(r["name"] or "")
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Shu kuni reys qilgan haydovchilar (reja emas — amalda reyslar)
+    present: dict[str, int] = {}
+    query = (
+        "SELECT d.external_id AS driver_id, d.full_name, d.route_id, "
+        "  COUNT(*) AS trip_count "
+        "FROM trips t JOIN drivers d ON d.external_id = t.driver_id "
+        "WHERE t.date = %s AND t.status IN ('ACCEPTED','APPROVED')")
+    args: list = [date_str]
+    if routes_set:
+        marks = ", ".join(["%s"] * len(routes_set))
+        query += f" AND d.route_id IN ({marks})"
+        args += routes_set
+    query += " GROUP BY d.external_id, d.full_name, d.route_id"
+    try:
+        for r in storage.db.query(query, args) or []:
+            present[str(r["driver_id"])] = int(r["trip_count"] or 0)
+    except Exception:  # noqa: BLE001
+        return f"Tabel ({date_str})", ["Haydovchi"], [["Query xatosi"]]
+
+    # Yo'nalishga biriktirilgan barcha haydovchilar (roster)
+    roster: dict[str, dict] = {}
+    dquery = "SELECT external_id, full_name, route_id FROM drivers"
+    dargs: list = []
+    if routes_set:
+        marks = ", ".join(["%s"] * len(routes_set))
+        dquery += f" WHERE route_id IN ({marks})"
+        dargs = list(routes_set)
+    try:
+        for r in storage.db.query(dquery, dargs) or []:
+            roster[str(r["external_id"])] = {
+                "full_name": str(r["full_name"] or r["external_id"]),
+                "route_id": str(r["route_id"] or ""),
+            }
+    except Exception:  # noqa: BLE001
+        pass
+    # Reys qilgan, lekin ro'yxatda yo'q haydovchilar ham qo'shiladi
+    for did in present:
+        roster.setdefault(did, {
+            "full_name": did,
+            "route_id": "",
+        })
+    present_ids = set(present)
+
+    cols = ["№", "Haydovchi", "Yo'nalish", "Reyslar", "Davomat"]
+    out: list[list] = []
+    total_trips = 0
+    keldi = 0
+    for i, (did, info) in enumerate(
+            sorted(roster.items(), key=lambda kv: kv[1]["full_name"]), 1):
+        trips = present.get(did, 0)
+        total_trips += trips
+        state = "Keldi" if trips else "Kelmadi"
+        if trips:
+            keldi += 1
+        out.append([i, info["full_name"],
+                    rnames.get(info["route_id"], ""),
+                    trips if trips else "", state])
+    out.append(["", "JAMI", "", total_trips if total_trips else "",
+                f"{keldi}/{len(roster)}"])
+
+    route_label = ""
+    if len(routes_set) == 1:
+        route_label = f" — {rnames.get(routes_set[0], routes_set[0])}"
+    return f"Tabel ({date_str}){route_label}", cols, out
 
 
 def export_csv(filters: dict, scope: str = "trips") -> bytes:
@@ -216,7 +508,7 @@ def export_xlsx(filters: dict, scope: str = "trips") -> bytes:
     if scope == "all":
         scopes = ["today", "routes", "vehicles", "drivers", "trips",
                   "distance", "schedule", "attendance", "rating",
-                  "electricity"]
+                  "electricity", "rejects", "tabel"]
     else:
         scopes = [scope]
 
@@ -250,7 +542,7 @@ def export_xls(filters: dict, scope: str = "trips") -> bytes:
     if scope == "all":
         scopes = ["today", "routes", "vehicles", "drivers", "trips",
                   "distance", "schedule", "attendance", "rating",
-                  "electricity"]
+                  "electricity", "rejects", "tabel"]
     else:
         scopes = [scope]
 

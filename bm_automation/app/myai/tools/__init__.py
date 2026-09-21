@@ -73,6 +73,8 @@ def _register_default_tools(registry: ToolRegistry) -> None:
     from .db import DBTool
     from .monthly import MonthlyTool
     from .telegram import TelegramTool
+    from .calendar import CalendarTool
+    from .search import SearchTool
 
     registry.register(BrowserTool())
     registry.register(DTransportTool())
@@ -80,3 +82,5 @@ def _register_default_tools(registry: ToolRegistry) -> None:
     registry.register(DBTool())
     registry.register(MonthlyTool())
     registry.register(TelegramTool())
+    registry.register(CalendarTool())
+    registry.register(SearchTool())

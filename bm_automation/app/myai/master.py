@@ -162,6 +162,26 @@ class MasterAgent(BaseAgent):
                     # qo'shiladi — aks holda qadam plan'ga tushmasdi.
                     rp = result.setdefault("params", {})
                     self._apply_send_flag(rp, user_request.lower())
+                    # LLM noto'g'ri umumiy intent tanlasa va so'rovda
+                    # yo'nalish/avtobus/haydovchi ishorasi bo'lsa — aniq
+                    # deterministik intent ustun bo'ladi (model noaniqligi).
+                    det = self._classify_deterministic(user_request)
+                    strong = ("check_route", "check_vehicle", "check_driver",
+                              "attendance", "schedule", "not_accepted_km",
+                              "routes_list", "vehicles_list", "avans", "fines",
+                              "documents", "staff", "dispatcher_routes",
+                              "waybills", "sms")
+                    if (det.get("params") or {}).get("route"):
+                        strong += ("daily_summary",)
+                    if (det.get("intent") in strong
+                            and result.get("intent") in (
+                                "monthly_report", "monthly_driver",
+                                "daily_summary", "monthly", "general",
+                                "check_route", "check_vehicle")):
+                        det.setdefault("params", {})
+                        self._apply_send_flag(det["params"],
+                                              user_request.lower())
+                        return det
                     return result
             except json.JSONDecodeError:
                 log.warning("Intent JSON emas (%s) — deterministik tahlil", response[:80])
@@ -201,6 +221,37 @@ class MasterAgent(BaseAgent):
         for name, num in _MONTH_NAMES.items():
             if name in lower:
                 return f"{year}-{num:02d}"
+        return ""
+
+    @staticmethod
+    def _parse_daydate(lower: str) -> str:
+        """Kun ko'rsatilgan oy nomini sanaga aylantiradi → ISO date.
+
+        "13-sentabr", "13 sentyabr 2026", "13-sentabrda" → "2026-09-13".
+        Faqat oy nomi ("avgust") bo'lsa — bo'sh qaytadi (month emas).
+        """
+        months = {
+            "yanvar": 1, "fevral": 2, "mart": 3, "aprel": 4, "may": 5,
+            "iyun": 6, "iyul": 7, "avgust": 8, "sentabr": 9, "sentyabr": 9,
+            "oktabr": 10, "oktyabr": 10, "noyabr": 11, "dekabr": 12,
+        }
+        year = datetime.now().year
+        ym = re.search(r"\b(20\d{2})\b", lower)
+        if ym:
+            try:
+                year = int(ym.group(1))
+            except (TypeError, ValueError):
+                year = datetime.now().year
+        for name, num in sorted(
+                months.items(), key=lambda kv: len(kv[0]), reverse=True):
+            m = re.search(
+                r"\b(\d{1,2})\s*[-–']?\s*" + name + r"(?:dagi|da|gi)?\b",
+                lower)
+            if m:
+                try:
+                    return datetime(year, num, int(m.group(1))).date().isoformat()
+                except (TypeError, ValueError):
+                    continue
         return ""
 
     @staticmethod
@@ -254,10 +305,16 @@ class MasterAgent(BaseAgent):
             params["driver"] = driver_hint.group(1).strip()
 
         # Oylik aniqlash — oy nomi/sanasi va 'oylik' so'zlari.
+        # Kun ko'rsatilgan oy nomi ("13-sentabr") — sana, oy emas:
+        # bunday holatda month o'rniga date param qo'yiladi.
         if not params.get("month"):
-            month = MasterAgent._extract_month(lower)
-            if month:
-                params["month"] = month
+            day_dt = MasterAgent._parse_daydate(lower)
+            if day_dt and not params.get("date"):
+                params["date"] = day_dt
+            if not params.get("date"):
+                month = MasterAgent._extract_month(lower)
+                if month:
+                    params["month"] = month
 
         # Telegram'ga yuborish so'rovi bormi? — flag sifatida saqlanadi.
         MasterAgent._apply_send_flag(params, lower)
@@ -266,6 +323,21 @@ class MasterAgent(BaseAgent):
                        "barcha yo'nalish", "kunlik", "hozirgi holat",
                        "kundalik", "qancha avtobus chiqqan")
 
+        # Reyting / top / eng yaxshi haydovchi so'rovlari
+        _SORT_HINTS = (
+            ("reyting bo'yicha", "rating"), ("reyting", "rating"),
+            ("baho", "rating"), ("eng yaxshi", "rating"),
+            ("eng ko'p km", "km"), ("eng kop km", "km"),
+            ("eng ko'p qatnov", "trips"), ("eng kop qatnov", "trips"),
+            ("eng ko'p reys", "trips"), ("eng kop reys", "trips"),
+        )
+        for _phrase, _s in _SORT_HINTS:
+            if _phrase in lower:
+                params["sort"] = _s
+                break
+        if re.search(r"\btop\b", lower):
+            params.setdefault("sort", "rating")
+
         # Avval aniq intentlar tekshiriladi (daily umumiy so'zlaridan oldin)
         if any(w in lower for w in ("attendance", "ishga chiqish", "qatnashish",
                                     "davomati", "keldimi", "davomat", "qatnashdi")):
@@ -273,6 +345,18 @@ class MasterAgent(BaseAgent):
         if any(w in lower for w in ("jadval", "smеna", "grafik", "schedule",
                                     "smеna jadvali", "smеnasi")):
             return {"intent": "schedule", "params": params}
+        # Qabul qilinmagan KM hisoboti (oylik blokdan oldin — o'z aniq intenti)
+        if ("qabul qilinmagan" in lower or "not accepted" in lower
+                or "not_accepted" in lower):
+            return {"intent": "not_accepted_km", "params": params}
+        # Reyting/top haydovchi → oylik reyting (month o'zi yoziladi)
+        if params.get("sort") and ("haydovchi" in lower or "driver" in lower):
+            return {"intent": "monthly_report", "params": params}
+        # Excel / fayl ko'rinishidagi hisobot so'rovi — oylik/daily bloklaridan
+        # oldin tekshiriladi ("oylik hisobotni excel qilib" → report_excel).
+        if any(w in lower for w in ("excel", "xlsx", "fayl qilib", "jadval qilib",
+                                    "yuklab ol", "fil yukla", ".xlsx")):
+            return {"intent": "report_excel", "params": params}
         # Oylik so'rov (maosh/daily so'zlaridan oldin — 'oylik maosh'/'oylik
         # hisobot' kabi iboralar oylik hisobga tushadi).
         if params.get("month") or any(w in lower for w in _MONTH_KEYWORDS):
@@ -282,19 +366,73 @@ class MasterAgent(BaseAgent):
         if any(w in lower for w in ("maosh", "salary", "oklad", "ish haqi",
                                     "hisobla")):
             return {"intent": "salary", "params": params}
+        # Avans to'lovlari
+        if any(w in lower for w in ("avans", "avanslari", "avansim",
+                                    "oldindan to'lov")):
+            if not params.get("driver"):
+                _nm = re.search(
+                    r"\b([А-ЯЁA-Z]{3,}(?:\s+[А-ЯЁA-Z]{3,}){0,3})\b", text)
+                if _nm:
+                    params["driver"] = _nm.group(1).strip()
+            return {"intent": "avans", "params": params}
+        # Jarimalar
+        if any(w in lower for w in ("jarima", "jarimalari", "jarimalar",
+                                    "jarimasi", "fines", "fine", "shtraf")):
+            if not params.get("driver"):
+                _nm = re.search(
+                    r"\b([А-ЯЁA-Z]{3,}(?:\s+[А-ЯЁA-Z]{3,}){0,3})\b", text)
+                if _nm:
+                    params["driver"] = _nm.group(1).strip()
+            return {"intent": "fines", "params": params}
+        # Hujjatlar
+        if any(w in lower for w in ("hujjat", "hujjatlar", "dokument",
+                                    "documents", "spravka")):
+            return {"intent": "documents", "params": params}
+        # Xodimlar
+        if any(w in lower for w in ("xodimlar", "xodim", "staff", "hodimlar",
+                                    "hodim")):
+            return {"intent": "staff", "params": params}
+        # Dispecher yo'nalishlari
+        if ("dispecher yo'nalish" in lower or "dispatcher routes" in lower
+                or "dispecher yoʻnalish" in lower
+                or "dispecher yo`nalish" in lower):
+            return {"intent": "dispatcher_routes", "params": params}
+        # Yo'l varaqalari
+        if any(w in lower for w in ("yo'l varaqa", "yo'l varaqasi",
+                                    "yoʻl varaqa", "yo`l varaqa",
+                                    "waybill", "putevoy list")):
+            return {"intent": "waybills", "params": params}
+        # SMS tarixi / jo'natmalar
+        if any(w in lower for w in ("sms tarixi", "sms log", "smslar",
+                                    "jo'natmalar", "yuborilgan sms",
+                                    "sms jo'natma")):
+            return {"intent": "sms", "params": params}
         if any(w in lower for w in ("muammo", "problems", "nosoz", "kechik")):
             return {"intent": "problems", "params": params}
-        # Excel / fayl ko'rinishidagi hisobot so'rovi
-        if any(w in lower for w in ("excel", "xlsx", "fayl qilib", "jadval qilib",
-                                    "yuklab ol", "fil yukla", ".xlsx")):
-            return {"intent": "report_excel", "params": params}
         if any(w in lower for w in daily_words):
             return {"intent": "daily_summary", "params": params}
+        # Ro'yxatlar — oylik/daily bloklaridan keyin (route'ga bog'lanmaganlar)
+        if not params.get("route") and any(w in lower for w in (
+                "yo'nalishlar ro'yxati", "barcha yo'nalishlar",
+                "qancha yo'nalish", "nechta yo'nalish", "yo'nalishlar soni")):
+            return {"intent": "routes_list", "params": params}
+        if not params.get("route") and any(w in lower for w in (
+                "avtobuslar ro'yxati", "barcha avtobuslar", "avtobus parki",
+                "qancha avtobus bor", "nechta avtobus bor",
+                "avtobuslar soni", "avtobuslari ro'yxati")):
+            return {"intent": "vehicles_list", "params": params}
         if driver_hint and ("drivers" in lower or params.get("driver")
                             or "haydovchi" in lower or "shofyor" in lower):
             return {"intent": "check_driver", "params": params}
         if params.get("route"):
-            if "avtobus" in lower or "mashina" in lower or "transport" in lower:
+            veh_words = ("avtobus" in lower or "mashina" in lower
+                         or "transport" in lower)
+            list_words = any(w in lower for w in (
+                "qancha", "nechta", "ro'yxati", "barcha", "holati",
+                "chiqqan", "chiqgan", "yo'lda", "harakatda"))
+            if veh_words and list_words:
+                return {"intent": "check_route", "params": params}
+            if veh_words:
                 return {"intent": "check_vehicle", "params": params}
             return {"intent": "check_route", "params": params}
         if "marshrut" in lower or "yo'nalish" in lower:
@@ -382,6 +520,148 @@ class MasterAgent(BaseAgent):
                     f"Haydovchi topilmadi yoki bu davrda ma'lumot yo'q: "
                     f"{d.get('query', drv.get('query', '-'))}")
 
+        # 0.4. Avans / jarimalar (driver agent — avans/driver_fines)
+        if isinstance(drv, dict):
+            _mtype = drv.get("money_type")
+            _minner = drv.get("driver")
+            if _mtype and isinstance(_minner, dict):
+                _mname = drv.get("driver_name") or _minner.get("driver", "")
+                if _mtype == "avans":
+                    lines.append(
+                        f"💰 Avans ({_mname}): jami {_minner.get('total', 0)} "
+                        f"so'm — {_minner.get('count', 0)} ta to'lov.")
+                    for a0 in (_minner.get("avans") or [])[:10]:
+                        lines.append(
+                            f"  • {str(a0.get('pay_date', ''))[:10]}: "
+                            f"{a0.get('amount', 0)} so'm — "
+                            f"{a0.get('note', '')} ({a0.get('route_name', '')})")
+                else:
+                    lines.append(
+                        f"⚠️ Jarimalar ({_mname}): jami {_minner.get('total', 0)} "
+                        f"so'm — {_minner.get('count', 0)} ta.")
+                    for f0 in (_minner.get("fines") or [])[:10]:
+                        lines.append(
+                            f"  • {str(f0.get('date', ''))[:10]}: "
+                            f"{f0.get('amount', 0)} so'm — "
+                            f"{f0.get('reason', '')} [{f0.get('status', '')}]")
+
+        # 0.5. Qabul qilinmagan KM hisoboti (browser get_not_accepted_km)
+        br = results.get("browser")
+        br_inner = br.get("data") if isinstance(br, dict) else None
+        if isinstance(br_inner, dict) and br_inner.get("month") \
+                and br_inner.get("drivers"):
+            rej = br_inner
+            rej_totals = rej.get("totals") or {}
+            lines.append(
+                f"📉 Qabul qilinmagan KM ({rej.get('month')}): "
+                f"{rej.get('drivers_count', len(rej.get('drivers') or []))} "
+                f"ta haydovchi — reja {rej_totals.get('plan_reys', 0)} / "
+                f"amalda {rej_totals.get('fact_reys', 0)} reys, "
+                f"qabul qilinmagan {rej_totals.get('qabul_qilinmagan', 0)} reys, "
+                f"masofa farqi {rej_totals.get('diff', 0)} km.")
+            for r in (rej.get("drivers") or [])[:8]:
+                nc = int(r.get("qabul_qilinmagan", 0) or 0)
+                if nc:
+                    lines.append(
+                        f"  • {r.get('name', '-')}: "
+                        f"qabul {nc} reys, "
+                        f"masofa farq {r.get('diff', 0)} km, "
+                        f"ish kuni {r.get('days', 0)}")
+            rejects_shown = True
+        else:
+            rejects_shown = False
+
+        # 0.6. Yo'nalishlar ro'yxati (browser get_all_routes_summary)
+        routes_shown = False
+        if isinstance(br_inner, dict) and br_inner.get("routes") \
+                and isinstance(br_inner.get("summary"), dict) \
+                and "daily" not in br_inner:
+            routes_shown = True
+            rts = br_inner.get("routes") or []
+            rt_t = br_inner.get("summary") or {}
+            lines.append(
+                f"🗺️ Yo'nalishlar ({br_inner.get('date', '')}): "
+                f"jami {len(rts)} ta yo'nalish, "
+                f"{rt_t.get('total_trips', 0)} reys, "
+                f"qabul {rt_t.get('accepted', 0)}, "
+                f"jami km {rt_t.get('total_km', 0)}.")
+            for r0 in rts[:15]:
+                lines.append(
+                    f"  • {r0.get('route_name', '-')}: "
+                    f"{r0.get('total_trips', 0)} reys "
+                    f"({r0.get('completion_rate', 0)}%), "
+                    f"{r0.get('total_km', 0)} km, "
+                    f"{r0.get('total_vehicles', 0)} avtobus")
+
+        # 0.7. Avtobuslar ro'yxati (db get_vehicles)
+        if isinstance(br_inner, dict) and br_inner.get("vehicles") \
+                and "count" in br_inner and "summary" not in br_inner:
+            vlist = br_inner.get("vehicles") or []
+            lines.append(
+                f"🚌 Avtobuslar: jami {br_inner.get('count', len(vlist))} ta")
+            for v0 in vlist[:20]:
+                lines.append(
+                    f"  • {v0.get('plate_number', '-')} — "
+                    f"{v0.get('model', '')}, "
+                    f"garaj №{v0.get('garage_number', '')}")
+
+        # 0.8. Hujjatlar ro'yxati (db get_documents)
+        if isinstance(br_inner, dict) and br_inner.get("documents"):
+            dlist = br_inner.get("documents") or []
+            lines.append(
+                f"📄 Hujjatlar: {br_inner.get('count', len(dlist))} ta")
+            for d0 in dlist[:15]:
+                lines.append(
+                    f"  • {d0.get('title', '-')} ({d0.get('category', '')}) — "
+                    f"{d0.get('status', '')}, {d0.get('driver_name', '-')}")
+
+        # 0.9. Xodimlar (db get_staff)
+        if isinstance(br_inner, dict) and br_inner.get("staff"):
+            slist = br_inner.get("staff") or []
+            lines.append(
+                f"👥 Xodimlar: {br_inner.get('count', len(slist))} ta")
+            for s0 in slist[:15]:
+                lines.append(
+                    f"  • {s0.get('name', '-')} — {s0.get('position', '')} "
+                    f"({s0.get('company', '')}), "
+                    f"{s0.get('rate', 0)} so'm/{s0.get('salary_type', '')}")
+
+        # 0.10. Dispecher yo'nalishlari (db get_dispatcher_routes)
+        if isinstance(br_inner, dict) and br_inner.get("routes") \
+                and "summary" not in br_inner and "vehicles" not in br_inner \
+                and "daily" not in br_inner:
+            drlist = br_inner.get("routes") or []
+            lines.append(
+                f"📡 Dispecher yo'nalishlari: "
+                f"{br_inner.get('count', len(drlist))} ta")
+            for dr0 in drlist[:10]:
+                lines.append(
+                    f"  • {dr0.get('route_name', '-')} — "
+                    f"{dr0.get('company', '')} ({dr0.get('phone', '')})")
+
+        # 0.11. Yo'l varaqalari (db get_waybills)
+        if isinstance(br_inner, dict) and br_inner.get("waybills"):
+            wlist = br_inner.get("waybills") or []
+            lines.append(
+                f"🧾 Yo'l varaqalari: {br_inner.get('count', len(wlist))} ta")
+            for w0 in wlist[:15]:
+                lines.append(
+                    f"  • {str(w0.get('date', ''))[:10]} "
+                    f"{w0.get('plate_number', '-')} — "
+                    f"{w0.get('driver_name', '-')}, {w0.get('route_name', '')}, "
+                    f"{w0.get('direction', '')} {w0.get('status', '')}")
+
+        # 0.12. SMS tarixi (db get_sms)
+        if isinstance(br_inner, dict) and br_inner.get("sms"):
+            mlist = br_inner.get("sms") or []
+            lines.append(
+                f"📱 SMS tarixi: {br_inner.get('count', len(mlist))} ta")
+            for m0 in mlist[:10]:
+                lines.append(
+                    f"  • {str(m0.get('send_at', ''))[:16]} → "
+                    f"{m0.get('name', '-')} ({m0.get('phone', '')}): "
+                    f"{m0.get('status', '')}")
+
         # 1. Haydovchi ma'lumoti
         if driver_data:
             d = driver_data.get("driver") or {}
@@ -425,7 +705,7 @@ class MasterAgent(BaseAgent):
                         f"{st.get('vehicles', 0)} avtobus, {st['km']:.1f} km")
 
         # 2. Yo'nalish / marshrut — asosiy birlik: QATNOV, avtobus emas
-        elif ana.get("total_trips") and not attendance_data:
+        elif ana.get("total_trips") and not attendance_data and not routes_shown:
             vehicles = ana.get("total_vehicles", 0)
             lines.append(
                 f"🚏 Qatnovlar: jami {ana.get('total_trips')} — "
@@ -455,7 +735,72 @@ class MasterAgent(BaseAgent):
                     "Kelmaganlar: " + ", ".join(
                         a.get("vehicle_number", "") for a in absent[:10]))
 
-        # 4. Umumiy / boshqa
+        # 3.5. Yo'nalish DB natijalari (RouteAgent — get_route_daily + boyitma)
+        route_step = results.get("route")
+        if isinstance(route_step, dict):
+            rname = route_step.get("route_name") or "Yo'nalish"
+            rdate = route_step.get("date") or ""
+            daily = route_step.get("data") or []
+            if route_step.get("no_data"):
+                lines.append(
+                    f"🚏 {rname}: {rdate} uchun ma'lumot yo'q — "
+                    f"oxirgi yozuv: {route_step.get('latest_date') or 'topilmadi'}.")
+            elif daily:
+                plan = sum(int(r.get("trip_plan", 0) or 0) for r in daily)
+                fact = sum(int(r.get("trip_fact", 0) or 0) for r in daily)
+                working = sum(1 for r in daily
+                              if int(r.get("working_day", 0) or 0))
+                on = sum(1 for r in daily
+                         if int(r.get("trip_fact", 0) or 0) > 0)
+                lines.append(
+                    f"🚏 {rname}: {rdate} — {len(daily)} ta avtobus "
+                    f"(ishchi {working}, ishda {on}), "
+                    f"reja {plan} / amalda {fact} reys, "
+                    f"yetmagan {plan - fact}.")
+            else:
+                lines.append(f"🚏 {rname}: {rdate} — Kunlik yozuv yo'q.")
+            anom = route_step.get("trip_anomalies")
+            if isinstance(anom, dict) and anom.get("found"):
+                lines.append(
+                    f"⚠️ Reys anomaliyalari: {anom.get('anomalies_count', 0)} ta "
+                    f"avtobusda jami {anom.get('missing_trips_total', 0)} reys "
+                    f"yetmagan (reja {anom.get('trip_plan_total', 0)} / "
+                    f"amalda {anom.get('trip_fact_total', 0)}).")
+            veh = route_step.get("route_vehicles")
+            if isinstance(veh, dict) and veh.get("found"):
+                lines.append(
+                    f"🚌 Avtobuslar: jami {veh.get('vehicles_count', 0)}, "
+                    f"yo'lda {veh.get('on_route', 0)} "
+                    f"(tashqarida {veh.get('off_route', 0)}).")
+
+        # 4. Qidiruv natijalari (search tool)
+        sr = results.get("search")
+        if isinstance(sr, dict) and (sr.get("found") or sr.get("count")):
+            lines.append(
+                f"🔎 “{sr.get('query', '')}” bo'yicha qidiruv: "
+                f"{sr.get('count', 0)} ta topildi.")
+            s_routes = sr.get("routes") or []
+            if s_routes:
+                lines.append("  🗺️ Yo'nalishlar: " + ", ".join(
+                    str(x.get("name", "")) for x in s_routes[:10]))
+            s_drivers = sr.get("drivers") or []
+            if s_drivers:
+                lines.append("  👤 Haydovchilar: " + ", ".join(
+                    str(x.get("full_name", "")) for x in s_drivers[:10]))
+            s_vehicles = sr.get("vehicles") or []
+            if s_vehicles:
+                lines.append("  🚌 Avtobuslar: " + ", ".join(
+                    str(x.get("plate_number", "")) for x in s_vehicles[:10]))
+
+        # 4.5. Report agent matni (kunlik xulosa ko'rsatilmagan bo'lsa)
+        rep = results.get("report")
+        if isinstance(rep, dict) and rep.get("report"):
+            has_daily_summary = (isinstance(ana, dict)
+                                 and isinstance(ana.get("db_daily"), dict))
+            if not has_daily_summary:
+                lines.append(str(rep["report"]))
+
+        # 5. Umumiy / boshqa
         if not lines:
             for agent_name, data in results.items():
                 if isinstance(data, dict) and not data.get("error"):
@@ -465,7 +810,9 @@ class MasterAgent(BaseAgent):
                     lines.append(f"• {agent_name}: xato — {data['error']}")
 
         # 5. Rich DB ma'lumotlari — analytics tomonidan olib o'tilgan
-        if isinstance(ana, dict):
+        #    (rejects hisoboti ko'rsatilgan bo'lsa, bo'sh "Kunlik xulosa" o'tkazib
+        #    yuboriladi — chalkashtirmaslik uchun).
+        if isinstance(ana, dict) and not rejects_shown:
             db_daily = ana.get("db_daily")
             if isinstance(db_daily, dict):
                 tot = db_daily.get("totals", {})
@@ -478,6 +825,9 @@ class MasterAgent(BaseAgent):
                     f"qabul qilinmagan {tot.get('not_accepted', 0)}, "
                     f"muammolar {tot.get('problems_total', 0)}. "
                     f"Perf {perf}% | Accept {acc}%.")
+                if tot.get("vehicles_out"):
+                    lines.append(
+                        f"🚌 Ishda: {tot['vehicles_out']} ta avtobus.")
             db_problems = ana.get("db_problems")
             if isinstance(db_problems, dict):
                 p = db_problems.get("problems", {})
@@ -487,7 +837,7 @@ class MasterAgent(BaseAgent):
                     f"jadval {p.get('schedule', 0)} — "
                     f"jami {p.get('total', 0)}.")
             db_elec = ana.get("db_electricity")
-            if isinstance(db_elec, dict):
+            if isinstance(db_elec, dict) and not routes_shown:
                 t = db_elec.get("totals", {})
                 lines.append(
                     f"⚡ Elektr xisoboti: {t.get('km', 0)} km → "

@@ -28,6 +28,8 @@ HELP_TEXT = (
     "📈 <b>Amallar</b>\n"
     "/export — eksport (xlsx|csv|pdf) [scope]\n"
     "/plan — ertangi reja (haydovchi/grafik qo'shish)\n"
+    "/brutto — brutto-shartnoma to'lovi (116-son qaror, salary)\n"
+    "/hisob — haydovchi oylik hisobi (salary)\n"
     "/sync — sinxronlash (kunlik)\n"
     "/syncmonthly — oylik sinxronlash (oy boshidan bugunga)\n"
     "/addcompany — yangi firma ro'yxatdan o'tkazish (ADMIN)\n"
