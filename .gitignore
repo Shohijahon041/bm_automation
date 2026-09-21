@@ -15,8 +15,8 @@ __pycache__/
 .venv/
 venv/
 
-# Reports / data output
-reports/
+# Reports / data output (faqat loyiha ildizidagi reports/-ni ignore qiladi)
+/reports/
 output/
 *.xlsx
 *.csv
