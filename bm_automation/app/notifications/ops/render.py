@@ -74,6 +74,8 @@ def _combine(*kbs) -> dict | None:
 def _profile_bar(filters: dict | None) -> dict | None:
     """Faol kompaniya bo'lsa 'chiqish' tugmasi qatorini qaytaradi."""
     name = (filters or {}).get("profile")
+    if not name or name in ("__none__", "__deny__"):
+        return None
     return kb.profile_bar(context.short_name(name)) if name else None
 
 
@@ -535,8 +537,13 @@ def driver_card(driver_id: str, filters: dict | None = None,
                 f"{icons.get(t.get('status') or '', '❓')} "
                 f"{esc(t.get('date') or '-')} {esc(t.get('planned_time') or '--:--')} | "
                 f"{esc(t.get('route') or '-')} | {esc(t.get('vehicle') or '-')}")
-    return "\n".join(parts), _combine(kb.driver_card_kb(driver_id),
-                                      _profile_bar(f), kb.nav_kb("nav:drivers"))
+    is_driver = chat_id is not None and resolve_role(chat_id) is Role.DRIVER
+    kbs: list[dict | None] = []
+    if not is_driver:
+        kbs.append(kb.driver_card_kb(driver_id))
+    kbs.append(_profile_bar(f))
+    kbs.append(kb.nav_kb("nav:drivers", chat_id=chat_id))
+    return "\n".join(parts), _combine(*kbs)
 
 
 # ------------------------------------------------------- vehicle card
@@ -1108,6 +1115,18 @@ def status(system: dict | None = None) -> tuple[str, dict]:
 
 def settings_text(chat_id: int | None) -> str:
     role = resolve_role(chat_id)
+    # Haydovchi: faqat o'z profili ko'rsatiladi (kompaniya/admin
+    # ma'lumotlari emas) — `settings_kb` bilan birga yuboriladi.
+    if role is Role.DRIVER and chat_id is not None:
+        from .roles import driver_id_for_chat
+        did = driver_id_for_chat(chat_id)
+        if did:
+            try:
+                text, _mk = driver_inbox(did, context.filters_for(chat_id),
+                                         chat_id=chat_id)
+                return text
+            except Exception:  # noqa: BLE001 - profil chiqmasa umumiy matn
+                log.warning("Haydovchi profili ko'rsatilmadi: did=%s", did)
     roles = configured_roles()
     admins = sum(1 for r in roles.values() if r is Role.ADMIN)
     dispatchers = sum(1 for r in roles.values() if r is Role.DISPATCHER)

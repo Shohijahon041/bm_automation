@@ -58,18 +58,25 @@ def _row(buttons: list[tuple[str, str]], per_row: int = 3) -> list[list[dict]]:
     ]
 
 
-_DRIVER_EXCLUDE_NAVS = {"nav:sync", "nav:plan", "nav:insights", "nav:brutto"}
+# Haydovchilar faqat o'z kartasi (Dashboard) va Settings'ga kirishadi —
+# kompaniya miqyosidagi bo'limlar (muammolar, reyslar, firma va h.k.) yashirin.
+_DRIVER_ALLOW_NAVS = {"nav:dashboard", "nav:settings"}
 
 
 def nav_kb(*exclude: str, chat_id: int | None = None) -> dict:
     """Asosiy inline navigatsiya klaviaturasi (3 ustunli).
 
-    Haydovchilar uchun sync/reja/insights yashiriladi.
+    Haydovchilar uchun faqat Dashboard va Settings ko'rsatiladi.
     """
     from .roles import Role, resolve_role
     is_driver = chat_id is not None and resolve_role(chat_id) is Role.DRIVER
-    items = [(t, d) for t, d in NAV_ITEMS if d not in exclude
-             and not (is_driver and d in _DRIVER_EXCLUDE_NAVS)]
+    items = []
+    for text, data in NAV_ITEMS:
+        if data in exclude:
+            continue
+        if is_driver and data not in _DRIVER_ALLOW_NAVS:
+            continue
+        items.append((text, data))
     return {"inline_keyboard": _row(items)}
 
 
@@ -242,12 +249,17 @@ def main_menu_kb(chat_id: int | None = None) -> dict:
         except Exception:
             pass
     if is_driver:
+        rows = [["📊 Dashboard", "⚙️ Settings"], ["❓ Yordam"]]
+        ru_rows = [["📊 Дашборд", "⚙️ Настройки"], ["❓ Помощь"]]
+        if chat_id is not None:
+            try:
+                from ...core.bot_settings import lang
+                if lang(chat_id) == "ru":
+                    rows = ru_rows
+            except Exception:  # noqa: BLE001 - til aniqlanmasa o'zbekcha qoladi
+                pass
         return {
-            "keyboard": [
-                ["📊 Dashboard", "👨‍✈️ Haydovchilar", "🛣 Yo'nalishlar"],
-                ["📋 Reyslar", "📅 Oy", "📈 Hisobot"],
-                ["🏆 Reyting", "📏 Masofa", "❓ Yordam"],
-            ],
+            "keyboard": rows,
             "resize_keyboard": True,
             "one_time_keyboard": False,
         }

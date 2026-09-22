@@ -1963,3 +1963,86 @@ def test_dispatch_verify_do_reports(admin, monkeypatch):
     text = admin[-1]["text"]
     assert "OYLIK TEKSHIRISH" in text
     assert "FERGANATEX" in text
+
+
+# ----------------------------------------------------- haydovchi (DRIVER)
+
+def test_driver_nav_kb_limited(monkeypatch, tmp_path):
+    """Haydovchi nav_kb faqat Dashboard + Settings ko'rsatadi."""
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "drv_nav.db"))))
+    st.save_driver_profile("d1", notification_target="901234567",
+                           notification_enabled=True)
+    st.link_driver_telegram("d1", 999)
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: st)
+
+    kb_ = kb.nav_kb(chat_id=999)
+    data = [b["callback_data"] for row in kb_["inline_keyboard"] for b in row]
+    assert data == ["nav:dashboard", "nav:settings"]
+
+
+def test_driver_main_menu_limited(monkeypatch, tmp_path):
+    """Haydovchi reply-menuda faqat Dashboard/Settings/Yordam ko'radi."""
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "drv_mm.db"))))
+    st.save_driver_profile("d1", notification_target="901234567",
+                           notification_enabled=True)
+    st.link_driver_telegram("d1", 999)
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: st)
+
+    menu = kb.main_menu_kb(999)
+    buttons = [b for row in menu["keyboard"] for b in row]
+    assert buttons == ["📊 Dashboard", "⚙️ Settings", "❓ Yordam"]
+
+
+def test_driver_company_sections_denied(viewer, monkeypatch, tmp_path):
+    """Haydovchiga kompaniya bo'limlari DENIED_TEXT qaytaradi."""
+    from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE
+    _DRIVER_CHAT_CACHE.clear()
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "drv_deny.db"))))
+    st.save_driver_profile("d1", notification_target="901234567",
+                           notification_enabled=True)
+    st.link_driver_telegram("d1", 999)
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: st)
+    monkeypatch.setattr(dispatch, "get_storage", lambda: st)
+
+    for cmd in ("/drivers", "/problems", "/vehicles", "/routes", "/trips",
+                "/reports", "/profiles", "/top", "/distance"):
+        dispatch.handle_message(999, cmd)
+        assert viewer[-1]["text"] == DENIED_TEXT, cmd
+
+
+def test_driver_nav_callback_denied(viewer, monkeypatch, tmp_path):
+    """Haydovchi nav callback'da faqat dashboard/settings ishlaydi."""
+    from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE
+    _DRIVER_CHAT_CACHE.clear()
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "drv_cb.db"))))
+    st.save_driver_profile("d1", notification_target="901234567",
+                           notification_enabled=True)
+    st.link_driver_telegram("d1", 999)
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: st)
+    monkeypatch.setattr(dispatch, "get_storage", lambda: st)
+
+    dispatch.handle_callback(999, {"id": "q"}, "nav:problems")
+    assert viewer[-1]["text"] == DENIED_TEXT
+
+
+def test_driver_self_link_9_digit_phone(viewer, monkeypatch, tmp_path):
+    """Part 2b: 9 xonali raqam (998 prefiksiz) ham bog'lanadi."""
+    from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE
+    _DRIVER_CHAT_CACHE.clear()
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "link9.db"))))
+    st.save_driver_profile("d1", phone="998901112233",
+                           notification_target="",
+                           notification_enabled=False)
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: st)
+    monkeypatch.setattr(dispatch, "get_storage", lambda: st)
+    with dispatch._DRIVER_LINK_LOCK:
+        dispatch._DRIVER_LINK_STATE.discard(999)
+
+    dispatch.handle_message(999, "/start")
+    assert viewer, "Haydovchidan telefon raqami so'ralishi kerak"
+
+    dispatch.handle_message(999, "901112233")
+    assert any("Xush kelibsiz" in m["text"] for m in viewer)
+    profile = st.find("driver_profiles", driver_id="d1")
+    assert profile["telegram_chat_id"] == "999"
+    assert roles.resolve_role(999) is roles.Role.DRIVER

@@ -237,7 +237,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "<script>(function(){try{var t=" + token_lit + ";"
                 'if(t){localStorage.setItem("bm-token",t);'
                 'document.cookie="bm_token="+encodeURIComponent(t)'
-                '+"; path=/; SameSite=Lax";}})catch(e){}})();'
+                '+"; path=/; SameSite=Lax";}}catch(e){}})();'
                 "</script>"
             ).encode("utf-8")
             head_idx = body.lower().find(b"<head")

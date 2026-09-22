@@ -815,7 +815,7 @@ def _try_link_driver(chat_id: int, text: str) -> None:
                 _DRIVER_LINK_STATE.add(chat_id)
             return
         st = get_storage()
-        row = st.find_driver_by_notification(phone)
+        row = st.find_driver_by_phone(phone)
         if not row:
             row = st.find_driver_by_notification(text_clean)
         if not row:
@@ -885,6 +885,14 @@ def handle_message(chat_id: int, text: str) -> None:
             return
         reply(chat_id, WELCOME_TEXT if cmd == "start" else HELP_TEXT,
               reply_markup=kb.main_menu_kb(chat_id))
+        return
+
+    # Haydovchilar faqat o'z kartasi (today) va settings bilan ishlaydi —
+    # kompaniya miqyosidagi bo'limlar (muammolar, reyslar, firma va h.k.)
+    # va admin/dispetcher amallari yopiq.
+    if role is Role.DRIVER and cmd not in ("today", "settings", "help",
+                                           "myrole"):
+        reply(chat_id, DENIED_TEXT)
         return
 
     f = context.filters_for(chat_id)
@@ -1408,6 +1416,11 @@ def handle_callback(chat_id: int, cq: dict, data: str) -> None:
 
     if data.startswith("nav:"):
         target = data[4:]
+        # Haydovchi faqat o'z kartasi va settings'ga o'tadi.
+        if role is Role.DRIVER and target not in ("dashboard", "settings"):
+            answer(cq, "Sizga bu bo'lim yopiq")
+            reply(chat_id, DENIED_TEXT)
+            return
         if target == "sync":
             if not can(role, "sync"):
                 answer(cq, "Huquq yo'q")
