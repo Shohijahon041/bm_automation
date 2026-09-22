@@ -87,6 +87,14 @@ class DriverAgent(BaseAgent):
                             "query": driver,
                             "driver": data,
                         }
+                        # Self-check: oylik yakuniy raqamlar invariant bilan
+                        # tekshiriladi (jami = bajarilgan + bajarilmagan).
+                        # Norm (bot ko'rsatadigan) ustida ham, xom metrics
+                        # ustida ham shu qoidalar mavjud bo'lsa tekshiramiz.
+                        if isinstance(data, dict) and (
+                                data.get("total_trips") is not None
+                                or data.get("trips") is not None):
+                            await self.self_check(data, "driver_monthly")
                         self.source_note = "PostgreSQL (ma'lumotlar bazasi) — oylik statistika"
                         self._finish(True, "Driver: oylik hisob tugadi")
                         return AgentResult(success=True, data=rich)
@@ -97,6 +105,11 @@ class DriverAgent(BaseAgent):
                         sort=context.params.get("sort", "net_pay"),
                         top=context.params.get("top", 0),
                     )
+                    # Self-check: oylik yakuniy raqamlar invariant bilan
+                    # tekshiriladi (jami = qabul + qabul qilinmagan va h.k.)
+                    if isinstance(data, dict) and isinstance(
+                            data.get("totals"), dict):
+                        data = await self.self_check(data, "driver_monthly_rank")
                     self.source_note = "PostgreSQL (ma'lumotlar bazasi) — oylik statistika"
                     self._finish(True, "Driver: oylik reyting tugadi")
                     return AgentResult(success=True, data=data)

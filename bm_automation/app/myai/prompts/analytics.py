@@ -1,6 +1,8 @@
 """Analytics Agent prompts."""
 
-ANALYTICS_SYSTEM = """Siz transport tizimi uchun analytics agentsiz.
+from .shared import SHARED_PREAMBLE
+
+ANALYTICS_SYSTEM = SHARED_PREAMBLE + """Siz transport tizimi uchun analytics agentsiz.
 
 Hisob-kitoblarni DETERMINISTIC Python code orqali bajarasiz.
 LLM matematik hisoblashning yagona manbasi EMAS.

@@ -26,6 +26,19 @@ class ScheduleAgent(BaseAgent):
                 route_id=route_id, date=date, driver_id=driver_id,
             )
             if data.get("count", 0) > 0:
+                # Self-check: count va qaytgan ro'yxat mosligi
+                rows = data.get("data") or data.get("schedules") or []
+                if isinstance(rows, list) and len(rows) != data.get("count"):
+                    data = dict(data)
+                    data["_self_check"] = {
+                        "ok": False,
+                        "source": "schedule_db",
+                        "errors": [
+                            f"Jadval soni mos emas: count={data.get('count')}, "
+                            f"ro'yxat={len(rows)}"
+                        ],
+                        "corrections": [f"count = {len(rows)}"],
+                    }
                 self.source_note = "PostgreSQL (ma'lumotlar bazasi)"
                 self._finish(True, "DB: get_schedules tugadi")
                 return AgentResult(success=True, data=data)

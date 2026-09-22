@@ -64,6 +64,12 @@ class ReportAgent(BaseAgent):
                     log.warning("DB hisobot xatosi: %s", db_exc)
 
             report = self._daily_report(analytics_data, summary)
+            # Self-check: hisobot asosidagi summu invariantlar bilan
+            # tekshiriladi (accepted+not_accepted == total). Xato bo'lsa
+            # natijaga _self_check bloki qo'shiladi, lekin hisobot o'zi
+            # ko'rsatiladi (insonga haqiqatdan ko'ra shaffoflik muhim).
+            if summary:
+                await self.self_check(summary, "report_daily")
             self._finish(True)
             return AgentResult(success=True, data={"report": report})
         except Exception as exc:  # noqa: BLE001

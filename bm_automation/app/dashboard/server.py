@@ -1135,6 +1135,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             **avans_data(get_storage(), month=month,
                                          driver_id=driver_id,
                                          route_id=route_id)})
+            elif path == "/api/admin/fines":
+                from ..db.storage import get_storage
+                from .admin_service import fines_data
+                month = (qs.get("month") or [""])[0]
+                driver_id = (qs.get("driver_id") or [""])[0]
+                route_id = (qs.get("route_id") or [""])[0]
+                self._json({"ok": True,
+                            **fines_data(get_storage(), month=month,
+                                         driver_id=driver_id,
+                                         route_id=route_id)})
             elif path == "/api/admin/staff":
                 from ..db.storage import get_storage
                 from .admin_service import staff_summary, STAFF_POSITIONS
@@ -1444,6 +1454,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError):
                     row_id = 0
                 res = avans_remove(get_storage(), row_id)
+                self._json(res, 200 if res.get("ok") else 400)
+                return
+            elif path == "/api/admin/fines/delete":
+                from ..db.storage import get_storage
+                from .admin_service import fine_remove
+                payload = self._payload()
+                try:
+                    row_id = int(payload.get("id") or 0)
+                except (TypeError, ValueError):
+                    row_id = 0
+                res = fine_remove(get_storage(), row_id)
                 self._json(res, 200 if res.get("ok") else 400)
                 return
             elif path == "/api/admin/staff":

@@ -39,6 +39,10 @@ class RouteAgent(BaseAgent):
                     enriched["route_vehicles"] = vehicles
             except Exception:  # noqa: BLE001
                 pass
+            # Self-check: yo'nalish kunlik ma'lumotlari invariantlar bilan
+            # tekshiriladi (rejalashtirilgan/bajarilgan raqamlar shaffofligi).
+            if isinstance(enriched, dict):
+                await self.self_check(enriched, "route_daily")
             self._finish(True)
             return AgentResult(success=True, data=enriched)
         except Exception as exc:  # noqa: BLE001

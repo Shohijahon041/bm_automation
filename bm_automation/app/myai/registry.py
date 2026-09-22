@@ -76,7 +76,7 @@ AGENT_REGISTRY: dict[str, AgentInfo] = {
         icon="🔍",
         color="#E85A4F",
         description="Natijani tekshiradi va tasdiqlaydi",
-        tools=["llm", "rules"],
+        tools=["llm", "rules", "vault"],
         order=5,
     ),
     "driver": AgentInfo(

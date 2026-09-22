@@ -1004,12 +1004,56 @@ class Storage:
         return {str(r.get("driver_id") or ""): float(r.get("s") or 0)
                 for r in self.query(sql, tuple(params))}
 
+    def fines_list(self, driver_id: str = "", month: str = "",
+                   limit: int = 500) -> list:
+        """Haydovchi jarimalari ro'yxati (eng oxirgisi birinchi)."""
+        if not self.enabled:
+            return []
+        where = []
+        params: list = []
+        if driver_id:
+            where.append(f"driver_id = {self.db.ph}")
+            params.append(driver_id)
+        if month:  # YYYY-MM
+            where.append(f"substr(date, 1, 7) = {self.db.ph}")
+            params.append(month)
+        sql = ("SELECT * FROM driver_fines"
+               + (" WHERE " + " AND ".join(where) if where else "")
+               + " ORDER BY date DESC, id DESC LIMIT "
+               + str(max(int(limit or 500), 1)))
+        return self.query(sql, tuple(params))
+
+    def fines_total(self, driver_id: str = "", month: str = "") -> float:
+        """Berilgan filtr bo'yicha jarima summasi yig'indisi."""
+        if not self.enabled:
+            return 0.0
+        where = []
+        params: list = []
+        if driver_id:
+            where.append(f"driver_id = {self.db.ph}")
+            params.append(driver_id)
+        if month:
+            where.append(f"substr(date, 1, 7) = {self.db.ph}")
+            params.append(month)
+        sql = ("SELECT COALESCE(SUM(amount), 0) AS s FROM driver_fines"
+               + (" WHERE " + " AND ".join(where) if where else ""))
+        rows = self.query(sql, tuple(params))
+        return float((rows[0] or {}).get("s") or 0)
+
     def delete_avans(self, row_id: int) -> bool:
         """Avans yozuvini o'chiradi (noto'g'ri kiritilgan bo'lsa)."""
         if not self.enabled:
             return False
         return self._exec(
             f"DELETE FROM avans WHERE id = {self.db.ph}", (int(row_id),)
+        ) == 1
+
+    def delete_fine(self, row_id: int) -> bool:
+        """Haydovchi jirimasi yozuvini o'chiradi (noto'g'ri kiritilsa)."""
+        if not self.enabled:
+            return False
+        return self._exec(
+            f"DELETE FROM driver_fines WHERE id = {self.db.ph}", (int(row_id),)
         ) == 1
 
     # --------------------------------------------------------- staff (xodimlar)

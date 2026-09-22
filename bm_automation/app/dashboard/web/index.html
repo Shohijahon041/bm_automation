@@ -1445,6 +1445,22 @@ body.auth-locked .auth-overlay { display: flex; }
   </section>
 
   <section class="panel full-page-panel" style="margin-top:14px">
+    <div class="section-head"><div><div class="eyebrow">JARIMA JURNALI</div><h2>Haydovchi jarimalari <span id="fines-jl-count" style="color:var(--muted);font-weight:400"></span></h2></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="month" id="fines-jl-month" class="input" style="width:auto;padding:6px 10px;font-size:12px" title="Oy bo'yicha filtr">
+        <select id="fines-jl-route" class="input" style="width:auto;padding:6px 10px;font-size:12px"><option value="">Barcha yo'nalish</option></select>
+      </div>
+    </div>
+    <div style="padding:0 18px 18px">
+      <div class="table-wrap" style="max-height:340px;overflow:auto">
+        <table class="tbl"><thead><tr>
+          <th>Sana</th><th>Haydovchi</th><th style="text-align:right">Summa</th><th>Sabab</th><th>Holat</th><th></th>
+        </tr></thead><tbody id="fines-jl-body"></tbody></table>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel full-page-panel" style="margin-top:14px">
     <div class="section-head"><div><div class="eyebrow">FIRMA XODIMLARI</div><h2>Ma'muriy bo'lim ishchilari <span id="staff-total" style="color:var(--muted);font-weight:400"></span></h2></div>
       <button class="button ghost" id="admin-dl-staff-all" style="font-size:12px">XODIMLARNI EXCEL</button>
     </div>
@@ -4512,6 +4528,7 @@ async function initAdmin(){
     if (!d.ok) throw new Error(d.error || 'Xatolik');
     renderAdminSummary(d);
     await loadAvansJournal();
+    await loadFinesJournal();
     await loadStaff();
   } catch(e) {
     const err = document.getElementById('admin-err');
@@ -4674,6 +4691,54 @@ async function deleteAvans(id){
   }
 }
 
+// ---------- JARIMA JURNALI ----------
+async function loadFinesJournal(){
+  const month = document.getElementById('fines-jl-month') ? document.getElementById('fines-jl-month').value : '';
+  const route = document.getElementById('fines-jl-route');
+  const rv = route ? route.value : '';
+  try {
+    const p = new URLSearchParams();
+    if (month) p.set('month', month);
+    if (rv) p.set('route_id', rv);
+    const d = await api('/api/admin/fines', p);
+    if (!d.ok) throw new Error(d.error || 'Xatolik');
+    const cnt = document.getElementById('fines-jl-count');
+    if (cnt) cnt.textContent = '(' + (d.count || 0) + ' ta, jami ' + _fmtSoom(d.total) + ')';
+    const body = document.getElementById('fines-jl-body');
+    if (!body) return;
+    const rows = d.rows || [];
+    if (!rows.length) { body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted)">Jarimalar yo\'q</td></tr>'; return; }
+    let h = '';
+    for (const r of rows) {
+      h += '<tr>'
+        + '<td>' + esc(r.date || '') + '</td>'
+        + '<td>' + esc(r.name || r.driver_id || '') + '</td>'
+        + '<td style="text-align:right;color:#e74c3c">' + _fmtSoom(r.amount) + '</td>'
+        + '<td>' + esc(r.reason || '') + '</td>'
+        + '<td>' + esc(r.status || '') + '</td>'
+        + '<td style="text-align:right"><button class="button danger ghost" style="font-size:11px;padding:3px 8px" onclick="deleteFine(' + Number(r.id) + ')">X</button></td>'
+        + '</tr>';
+    }
+    body.innerHTML = h;
+  } catch(e) {
+    const body = document.getElementById('fines-jl-body');
+    if (body) body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#e74c3c">' + esc(e.message) + '</td></tr>';
+  }
+}
+
+async function deleteFine(id){
+  if (!confirm('Jarimani o\'chirishni tasdiqlaysizmi?')) return;
+  try {
+    const d = await postJSON('/api/admin/fines/delete', {id});
+    if (!d.ok) throw new Error(d.error || 'O\'chirilmadi');
+    await loadFinesJournal();
+    await initAdmin();
+  } catch(e) {
+    const body = document.getElementById('fines-jl-body');
+    if (body) body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#e74c3c">' + esc(e.message) + '</td></tr>';
+  }
+}
+
 async function downloadAllAdminSalary(){
   const month = _adminCurMonth();
   window.location.href = '/api/admin/download-all?year=' + month.slice(0,4) + '&month=' + month.slice(5,7);
@@ -4816,6 +4881,13 @@ function _bindAdminEvents(){
   if (jlRoute) {
     jlRoute.onchange = function(){ loadAvansJournal(); };
     _fillJournalRoutes(jlRoute);
+  }
+  const finesMonth = document.getElementById('fines-jl-month');
+  if (finesMonth) finesMonth.onchange = loadFinesJournal;
+  const finesRoute = document.getElementById('fines-jl-route');
+  if (finesRoute) {
+    finesRoute.onchange = function(){ loadFinesJournal(); };
+    _fillJournalRoutes(finesRoute);
   }
   const staffAdd = document.getElementById('staff-add-btn');
   if (staffAdd) staffAdd.onclick = addStaff;

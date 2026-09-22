@@ -35,6 +35,12 @@ class AnalyticsAgent(BaseAgent):
             # natijaga olib o'tamiz — master javobi ularni ko'rsata olsin.
             self._carry_rich_db(context, result)
 
+            # Self-check: hisob-kitob invariantlar tekshiruvidan o'tadi.
+            # Xato bo'lsa natijaga _self_check bloki yoziladi va (ruxsat
+            # bo'lsa) vault'ga tasdiqlangan xato yoziladi.
+            if isinstance(result, dict) and result.get("total_trips"):
+                result = await self.self_check(result, "analytics_calculate")
+
             self._finish(True)
             return AgentResult(success=True, data=result)
         except Exception as exc:  # noqa: BLE001

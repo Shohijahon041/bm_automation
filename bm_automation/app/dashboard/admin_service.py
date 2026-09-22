@@ -239,6 +239,13 @@ def avans_remove(storage, row_id: int) -> dict:
     return {"ok": False, "error": "Avans o'chirilmadi"}
 
 
+def fine_remove(storage, row_id: int) -> dict:
+    """Haydovchi jirimasi yozuvini o'chiradi (noto'g'ri kiritilgan bo'lsa)."""
+    if storage.delete_fine(row_id):
+        return {"ok": True, "id": row_id}
+    return {"ok": False, "error": "Jarima o'chirilmadi"}
+
+
 def avans_data(storage, month: str = "", driver_id: str = "",
                route_id: str = "") -> dict:
     rows = storage.avans_list(driver_id=driver_id, route_id=route_id,
@@ -256,6 +263,36 @@ def avans_data(storage, month: str = "", driver_id: str = "",
                 r["route_name"] = rn
     total = storage.avans_total(driver_id=driver_id, route_id=route_id,
                                 month=month)
+    return {"rows": rows, "count": len(rows), "total": round(total, 2)}
+
+
+def fines_data(storage, month: str = "", driver_id: str = "",
+               route_id: str = "") -> dict:
+    """Haydovchi jarimalari (driver_fines) ro'yxati — admin bo'limi uchun.
+
+    Avans jurnaliga o'xshab ishlaydi: driver_fines jadvalidagi yozuvlar
+    haydovchi ismlari bilan boyitib qaytariladi.
+    """
+    rows = storage.fines_list(driver_id=driver_id, month=month)
+    if route_id:
+        rid = str(route_id).strip()
+        filtered = []
+        for r in rows:
+            did = str(r.get("driver_id") or "").strip()
+            drv = storage.find("drivers", external_id=did) or {}
+            if str(drv.get("route_id") or "").strip() == rid:
+                filtered.append(r)
+        rows = filtered
+    for r in rows:
+        nm = str(r.get("name") or "").strip()
+        did = str(r.get("driver_id") or "").strip()
+        if not nm:
+            nm = _resolve_driver_name(storage, did)
+        r["name"] = nm or did
+        r["route_name"] = _resolve_route_name(
+            storage, str((storage.find("drivers", external_id=did) or {})
+                         .get("route_id") or "").strip())
+    total = sum(float(r.get("amount") or 0) for r in rows)
     return {"rows": rows, "count": len(rows), "total": round(total, 2)}
 
 

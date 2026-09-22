@@ -68,6 +68,7 @@ class BrowserAgent(BaseAgent):
                     dispatcher_chat_id=context.params.get(
                         "dispatcher_chat_id", ""))
                 if self._db_data_present(data):
+                    data = await self._self_check_db(data, "browser_db")
                     self.source_note = "PostgreSQL (ma'lumotlar bazasi)"
                     self._finish(True, f"DB: {action} tugadi")
                     return AgentResult(success=True, data=data)
@@ -99,13 +100,14 @@ class BrowserAgent(BaseAgent):
             except Exception as br_exc:
                 log.warning("Browser xatosi: %s — DB ga o'tiladi", br_exc)
 
-            # 4. Oxirgi imkoniyat — DB (primary bo'lmagan holatda ham)
+# 4. Oxirgi imkoniyat — DB (primary bo'lmagan holatda ham)
             data = await self._fetch_from_db(action, route_id, date or today,
-                                             month=month,
-                                             query=context.params.get("query", ""),
-                                             driver=context.params.get("driver", ""),
-                                             dispatcher_chat_id=context.params.get(
-                                                 "dispatcher_chat_id", ""))
+                                              month=month,
+                                              query=context.params.get("query", ""),
+                                              driver=context.params.get("driver", ""),
+                                              dispatcher_chat_id=context.params.get(
+                                                  "dispatcher_chat_id", ""))
+            data = await self._self_check_db(data, "browser_db_fallback")
             self.source_note = "PostgreSQL (ma'lumotlar bazasi)"
             self._finish(True, f"DB: {action} tugadi")
             return AgentResult(success=True, data=data)
@@ -113,6 +115,31 @@ class BrowserAgent(BaseAgent):
         except Exception as exc:
             self._finish(False, str(exc))
             return AgentResult(success=False, error=str(exc))
+
+    async def _self_check_db(self, data: dict, source: str) -> dict:
+        """DB natijasidagi statistika invariantlar bilan tekshiriladi.
+
+        BrowserAgent natijalari `{"method", "action", "data"}` konvertida —
+        statistika `data.summary` / `data.totals` da. Shu dict'lardagi
+        raqamlar (total_trips/accepted/not_accepted, attendance) shu yerda
+        verify_invariants bilan tekshiriladi.
+        """
+        if not isinstance(data, dict):
+            return data
+        try:
+            inner = data.get("data") or {}
+            if not isinstance(inner, dict):
+                return data
+            check = inner.get("summary")
+            if not isinstance(check, dict):
+                check = inner.get("totals")
+            if isinstance(check, dict) and (
+                    check.get("total_trips") is not None
+                    or check.get("total_drivers") is not None):
+                await self.self_check(check, source)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.debug("Browser self-check xatosi: %s", exc)
+        return data
 
     @staticmethod
     def _db_data_present(data: dict) -> bool:

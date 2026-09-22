@@ -1,6 +1,8 @@
 """Transport Agent prompts."""
 
-TRANSPORT_SYSTEM = """Siz transport ma'lumotlarini normalizatsiya qiluvchi agentsiz.
+from .shared import SHARED_PREAMBLE
+
+TRANSPORT_SYSTEM = SHARED_PREAMBLE + """Siz transport ma'lumotlarini normalizatsiya qiluvchi agentsiz.
 
 BM API dan olingan xom ma'lumotlarni tushunarli formatga o'girasiz.
 

@@ -156,6 +156,76 @@ class BaseAgent(ABC):
             self.logger.debug("Event emit xatosi (tool_result): %s", exc)
         return result
 
+    async def self_check(self, output_data: dict,
+                         source: str = "") -> dict:
+        """Tool natijasini invariantlar bilan tekshirish (deterministik).
+
+        ReviewerAgent local tekshiruvi bilan aynan bir xil qoidalar
+        (verify_invariants). Xato topilsa — natijaga `_self_check` bloki
+        qo'shiladi va (ruxsat bo'lsa) vault'ga tasdiqlangan xato yoziladi.
+        Tekshiruv natija qiymatini o'zgartirmaydi — faqat tekshiradi.
+        """
+        if not isinstance(output_data, dict):
+            return output_data or {}
+        try:
+            from .reviewer import verify_invariants
+            review = verify_invariants(output_data)
+            if review.approved:
+                return output_data
+        except Exception as exc:  # noqa: BLE001
+            self.logger.debug("Self-check xatosi: %s", exc)
+            return output_data
+
+        tag = source or self.name.value
+        self.logger.warning("Self-check rad etdi (%s): %s",
+                            tag, review.errors)
+        output_data = dict(output_data)
+        output_data["_self_check"] = {
+            "ok": False,
+            "source": tag,
+            "errors": review.errors,
+            "corrections": review.corrections,
+        }
+        await self._write_lesson(tag, review.errors, review.corrections)
+        return output_data
+
+    async def _write_lesson(self, source: str, errors: list[str],
+                            corrections: list[str]) -> None:
+        """Tasdiqlangan xatolarni vault'ga yozish (o'zini o'zi oshiradi).
+
+        Faqat vault tool'ga ruxsat bo'lsa. Taxmin emas — aniqlangan
+        invariant buzilishi (masalan accepted+not_accepted != total).
+        """
+        try:
+            self._check_tool_allowed("vault")
+        except PermissionError:
+            return
+        if self.tools is None:
+            return
+        try:
+            tool = self.tools.get("vault")
+            if tool is None:
+                return
+            title = f"{source} — aniqlangan xato (self-check)"
+            content = (
+                f"## Self-check: {source}\n\n"
+                "Deterministik tekshiruv (verify_invariants) tasdiqladi "
+                "(taxmin emas, kod natijasi):\n\n"
+                + "\n".join(f"- {e}" for e in errors[:5])
+                + "\n\nTuzatishlar:\n"
+                + "\n".join(f"- {c}" for c in corrections[:5] or ["—"])
+                + "\n\n> Avtomatik yozib qo'yildi — keyingi safar `vault` "
+                  "qidirib, qayta xato qilmang."
+            )
+            result = await tool.execute(action="write",
+                                        title=title, category="Xatolar",
+                                        content=content)
+            if result.get("ok"):
+                self.logger.info("Self-check vault'ga yozdi: %s",
+                                 result.get("path"))
+        except Exception as exc:  # noqa: BLE001
+            self.logger.debug("Vault'ga yozish amalga oshmadi: %s", exc)
+
     async def _llm_tool_hint(self, task: str, choices: list[dict]) -> dict | None:
         """LLM yordamida maqsadli tool tanlash (optional, LLM sozlanganida).
 

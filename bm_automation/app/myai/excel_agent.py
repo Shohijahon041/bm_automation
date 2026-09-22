@@ -60,6 +60,10 @@ class ExcelAgent(BaseAgent):
                 "Baho": r.get("rating", 0),
             })
         totals = drv.get("totals") or {}
+        # Self-check: oylik jami raqamlar (reyslar) invariant bilan
+        # tekshiriladi — Excel faylga yoziladigan xulosalar shaffof bo'lsin.
+        if isinstance(totals, dict) and totals.get("total_trips") is not None:
+            await self.self_check(totals, "excel_monthly")
         summary_rows = [
             {"Ko'rsatkich": "Haydovchilar (faol/jami)",
              "Qiymat": f"{totals.get('active_drivers', 0)}/{totals.get('drivers', 0)}"},

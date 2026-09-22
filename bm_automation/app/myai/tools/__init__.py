@@ -75,6 +75,7 @@ def _register_default_tools(registry: ToolRegistry) -> None:
     from .telegram import TelegramTool
     from .calendar import CalendarTool
     from .search import SearchTool
+    from .vault import VaultTool
 
     registry.register(BrowserTool())
     registry.register(DTransportTool())
@@ -84,3 +85,4 @@ def _register_default_tools(registry: ToolRegistry) -> None:
     registry.register(TelegramTool())
     registry.register(CalendarTool())
     registry.register(SearchTool())
+    registry.register(VaultTool())

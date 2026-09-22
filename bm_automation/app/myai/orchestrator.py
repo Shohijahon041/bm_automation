@@ -30,6 +30,7 @@ TOOL_SOURCE_LABELS = {
     "report": "Hisobot generatori",
     "search": "PostgreSQL (ma'lumotlar bazasi) — qidiruv",
     "calendar": "Vaqt/sana kalkulyatori",
+    "vault": "Knowledge vault (qoidalar/xatolar)",
 }
 
 # Least privilege: har bir agent faqat o'ziga kerakli tool'larga ruxsat.
@@ -37,7 +38,7 @@ TOOL_SOURCE_LABELS = {
 AGENT_TOOL_ALLOWLIST: dict[str, set[str]] = {
     "browser": {"db", "dtransport", "browser", "search", "calendar"},
     "transport": set(),
-    "analytics": {"db", "monthly", "calendar", "search"},
+    "analytics": {"db", "monthly", "calendar", "search", "vault"},
     "driver": {"db", "monthly", "search", "calendar"},
     "route": {"db", "search", "calendar"},
     "schedule": {"db", "dtransport", "search", "calendar"},
@@ -47,7 +48,7 @@ AGENT_TOOL_ALLOWLIST: dict[str, set[str]] = {
     "telegram": {"telegram"},
     "security": set(),
     "planner": set(),
-    "reviewer": set(),
+    "reviewer": {"vault"},
 }
 
 

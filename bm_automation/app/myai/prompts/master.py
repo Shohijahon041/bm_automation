@@ -1,6 +1,8 @@
 """Master Agent prompts."""
 
-MASTER_SYSTEM = """Siz transport parkini boshqarish tizimi uchun AI-orchestratorsiz.
+from .shared import SHARED_PREAMBLE
+
+MASTER_SYSTEM = SHARED_PREAMBLE + """Siz transport parkini boshqarish tizimi uchun AI-orchestratorsiz.
 
 Vazifangiz:
 1. Foydalanuvchi topshirig'ini tushunish

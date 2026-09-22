@@ -1,6 +1,8 @@
 """Reviewer Agent prompts."""
 
-REVIEWER_SYSTEM = """Siz natijalarni tekshiruvchi reviewer agentsiz.
+from .shared import SHARED_PREAMBLE
+
+REVIEWER_SYSTEM = SHARED_PREAMBLE + """Siz natijalarni tekshiruvchi reviewer agentsiz.
 
 Boshqa agentlarning natijasini tekshirasiz va xatolarni topasiz.
 

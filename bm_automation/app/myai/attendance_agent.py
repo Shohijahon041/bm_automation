@@ -34,6 +34,8 @@ class AttendanceAgent(BaseAgent):
                         "scheduled": data.get("scheduled", []),
                         "absent_list": data.get("absent_list", []),
                     }
+                    # Self-check: davomat invariantlari (present+absent, foiz)
+                    await self.self_check(result, "attendance_db")
                     self._finish(True, "DB: get_attendance tugadi")
                     return AgentResult(success=True, data=result)
                 log.warning("DB da attendance topilmadi — browser natijasiga o'tiladi")
@@ -56,6 +58,8 @@ class AttendanceAgent(BaseAgent):
                 "scheduled": [],
                 "absent_list": [],
             }
+            # Self-check: davomat invariantlari (present+absent, foiz)
+            await self.self_check(result, "attendance_browser")
             self._finish(True)
             return AgentResult(success=True, data=result)
         except Exception as exc:  # noqa: BLE001

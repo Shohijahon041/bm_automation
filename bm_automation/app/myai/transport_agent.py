@@ -32,6 +32,13 @@ class TransportAgent(BaseAgent):
             else:
                 result = raw_data
 
+            # Self-check: normalizatsiya natijasidagi summary invariantlar
+            # bilan tekshiriladi. Transport allowed_tools = {} bo'lgani uchun
+            # vault'ga yozilmaydi — faqat _self_check bloki qo'shiladi.
+            if isinstance(result, dict) and isinstance(
+                    result.get("summary"), dict):
+                await self.self_check(result["summary"], "transport_normalize")
+
             self._finish(True)
             return AgentResult(success=True, data=result)
         except Exception as exc:  # noqa: BLE001
