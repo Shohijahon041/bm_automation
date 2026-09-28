@@ -216,6 +216,40 @@ def test_token_bearer_restores_admin(env, monkeypatch):
     assert {"r1", "r2"} <= set(ids)
 
 
+def test_session_wins_over_master_token(env, monkeypatch):
+    """Sessiya bilan kirilgan foydalanuvchi master token ustidan o'zi bo'ladi.
+
+    Loopback'da sahifaga in'ektsiya qilingan DASHBOARD_TOKEN har so'rovda
+    Authorization header orqali keladi; bu token sessiyani bosib, DISPATCHER
+    foydalanuvchini ADMIN qilib ko'rsatmasligi kerak.
+    """
+    from bm_automation.app.dashboard import server as _srv
+    monkeypatch.setattr(_srv, "_DASHBOARD_TOKEN", "master-token")
+    st = env
+    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+                          role="DISPATCHER", company="XTEST")
+    _, _, cookies = _login(env, "disp", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}",
+           "Authorization": "Bearer master-token"}
+    # /api/me sessiya rolini qaytaradi, ADMIN emas.
+    status, data, _ = _request(env, "/api/me", headers=hdr)
+    assert status == 200 and data["ok"] is True
+    assert data["role"] == "DISPATCHER"
+    assert data["is_admin"] is False
+    # Route'lar ham faqat o'z korxonasi.
+    status, data, _ = _request(env, "/api/routes", headers=hdr)
+    assert [r.get("id") for r in data["routes"]] == ["r1"]
+    # ADMIN-only endpoint hali ham 403.
+    status, _, _ = _request(env, "/api/users", headers=hdr)
+    assert status == 403
+    # Master token sessiyasiz bo'lsa ADMIN bo'lib qoladi.
+    status, data, _ = _request(
+        env, "/api/me",
+        headers={"Authorization": "Bearer master-token"})
+    assert status == 200
+    assert data["is_admin"] is True
+
+
 def test_inactive_user_cannot_login(env):
     st = env
     uid = st.dashboard_user_add("ali", *server_mod._hash_password("to'g'ri"),
@@ -447,3 +481,177 @@ def test_admin_toggles_active_only_keeps_company(env):
     assert row["active"] == 0
     assert row["role"] == "DIRECTOR"
     assert row["company"] == "XTEST"
+
+
+# ------------------------------------------------- rol/xavfsizlik hardending
+
+def test_viewer_can_login_but_only_me(env):
+    """VIEWER /api/me ni ko'radi, boshqa endpointlardan 403 oladi."""
+    st = env
+    st.dashboard_user_add("viewer", *server_mod._hash_password("to'g'ri"),
+                          role="VIEWER", company="XTEST")
+    _, _, cookies = _login(env, "viewer", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
+    status, data, _ = _request(env, "/api/me", headers=hdr)
+    assert status == 200 and data["ok"] is True
+    assert data["role"] == "VIEWER"
+    status, _, _ = _request(env, "/api/summary", headers=hdr)
+    assert status == 403
+
+
+def test_dispatcher_blocked_from_sms_log(env):
+    st = env
+    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+                          role="DISPATCHER", company="XTEST")
+    _, _, cookies = _login(env, "disp", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
+    status, _, _ = _request(env, "/api/sms-log", headers=hdr)
+    assert status == 403
+
+
+def test_dispatcher_blocked_from_sms_routes(env):
+    st = env
+    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+                          role="DISPATCHER", company="XTEST")
+    _, _, cookies = _login(env, "disp", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
+    status, _, _ = _request(env, "/api/sms/routes", headers=hdr)
+    assert status == 403
+
+
+def test_dispatcher_cannot_change_electricity_price(env):
+    """Elektrik narxini ko'rish DISPATCHER'ga, o'zgartirish MANAGER'ga."""
+    st = env
+    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+                          role="DISPATCHER", company="XTEST")
+    _, _, cookies = _login(env, "disp", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}",
+           "Content-Type": "application/json"}
+    status, _, _ = _request(env, "/api/electricity/price", headers=hdr)
+    assert status == 200
+    body = json.dumps({"rate": 10}).encode()
+    status, _, _ = _request(env, "/api/electricity/price", method="POST",
+                            headers={**hdr, "Content-Length": str(len(body))},
+                            body=body)
+    assert status == 403
+
+
+def test_dispatcher_blocked_from_telegram_user_admin(env):
+    """/api/users/* POST (rol/delete/link) faqat ADMIN uchun."""
+    st = env
+    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+                          role="DISPATCHER", company="XTEST")
+    _, _, cookies = _login(env, "disp", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}",
+           "Content-Type": "application/json"}
+    body = json.dumps({"role": "ADMIN"}).encode()
+    status, _, _ = _request(env, "/api/users/5/role", method="POST",
+                            headers={**hdr, "Content-Length": str(len(body))},
+                            body=body)
+    assert status == 403
+
+
+def test_dispatcher_blocked_from_dispatcher_routing(env):
+    """Dispetcher route/telefon konfiguratsiyasi faqat ADMIN uchun."""
+    st = env
+    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+                          role="DISPATCHER", company="XTEST")
+    _, _, cookies = _login(env, "disp", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}",
+           "Content-Type": "application/json"}
+    body = json.dumps({"routes": []}).encode()
+    status, _, _ = _request(env, "/api/dispatchers/5/routes", method="POST",
+                            headers={**hdr, "Content-Length": str(len(body))},
+                            body=body)
+    assert status == 403
+
+
+def test_director_sms_log_scoped(env, monkeypatch):
+    """DIRECTOR faqat o'z korxonasi route'idagi SMS jurnalini ko'radi."""
+    from bm_automation.app.notifications import sms_notify as sn
+    rows = [
+        {"id": 1, "route_id": "r2", "route_name": "20-yo'nalish",
+         "phone": "1", "status": "DELIVERED", "name": "A", "message": "m"},
+        {"id": 2, "route_id": "r1", "route_name": "10-yo'nalish",
+         "phone": "2", "status": "DELIVERED", "name": "B", "message": "m"},
+    ]
+    monkeypatch.setattr(sn, "sms_log", lambda *a, **k: {
+        "rows": rows, "count": 2,
+        "counts": {"DELIVERED": 2, "total": 2}, "configured": True})
+    st = env
+    st.dashboard_user_add("dir", *server_mod._hash_password("to'g'ri"),
+                          role="DIRECTOR", company="XTEST")
+    _, _, cookies = _login(env, "dir", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
+    status, data, _ = _request(env, "/api/sms-log", headers=hdr)
+    assert status == 200 and data["ok"] is True
+    assert [r["id"] for r in data["rows"]] == [2]
+    assert data["count"] == 1
+    assert data["counts"]["total"] == 1
+    # Admin esa hammasini ko'radi.
+    st.dashboard_user_add("root", *server_mod._hash_password("to'g'ri"),
+                          role="ADMIN")
+    _, _, cookies = _login(env, "root", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
+    status, data, _ = _request(env, "/api/sms-log", headers=hdr)
+    assert status == 200
+    assert len(data["rows"]) == 2
+    assert data["count"] == 2
+
+
+def test_director_sms_routes_scoped(env):
+    """DIRECTOR SMS yo'nalishlar ro'yxatida faqat o'z korxonasini ko'radi."""
+    st = env
+    st.dashboard_user_add("dir", *server_mod._hash_password("to'g'ri"),
+                          role="DIRECTOR", company="XTEST")
+    _, _, cookies = _login(env, "dir", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
+    status, data, _ = _request(env, "/api/sms/routes", headers=hdr)
+    assert status == 200 and data["ok"] is True
+    ids = [r["route_id"] for r in data["routes"]]
+    assert ids == ["r1"]
+
+
+class _FakeDocMgr:
+    def __init__(self, docs):
+        self._docs = docs
+
+    def list_documents(self, category="", status="", search="", driver_id=""):
+        return [dict(d) for d in self._docs]
+
+    def get_document(self, doc_id):
+        return next((dict(d) for d in self._docs if d["id"] == doc_id), None)
+
+
+def test_director_documents_scoped_by_driver_route(env, monkeypatch):
+    """DIRECTOR faqat o'z route'idagi haydovchilar xujjatlarini ko'radi."""
+    from bm_automation.app.documents import manager as mgr_mod
+    docs = [
+        {"id": 1, "title": "Shartnoma-1", "driver_id": "d1"},
+        {"id": 2, "title": "Shartnoma-2", "driver_id": "d2"},
+    ]
+    monkeypatch.setattr(mgr_mod, "get_manager",
+                        lambda: _FakeDocMgr(docs))
+    st = env
+    st.save_driver("d1", full_name="Ali", route_id="r1")
+    st.save_driver("d2", full_name="Vali", route_id="r2")
+    st.dashboard_user_add("dir", *server_mod._hash_password("to'g'ri"),
+                          role="DIRECTOR", company="XTEST")
+    _, _, cookies = _login(env, "dir", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
+    status, data, _ = _request(env, "/api/documents", headers=hdr)
+    assert status == 200 and data["ok"] is True
+    assert [d["id"] for d in data["documents"]] == [1]
+    # Tafsilot: o'z route'idagi xujjat ochiladi, boshqasi 404 beradi.
+    status, _, _ = _request(env, "/api/documents/1", headers=hdr)
+    assert status == 200
+    status, _, _ = _request(env, "/api/documents/2", headers=hdr)
+    assert status == 404
+    # Admin ikkalasini ham ko'radi.
+    st.dashboard_user_add("root", *server_mod._hash_password("to'g'ri"),
+                          role="ADMIN")
+    _, _, cookies = _login(env, "root", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
+    status, data, _ = _request(env, "/api/documents", headers=hdr)
+    assert status == 200
+    assert [d["id"] for d in data["documents"]] == [1, 2]

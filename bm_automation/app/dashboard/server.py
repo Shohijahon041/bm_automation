@@ -175,6 +175,7 @@ _GET_ROLE_MIN: dict[str, int] = {
     "/api/check": 3,
     "/api/sms": 3,
     "/api/documents": 3,
+    "/api/me": 0,
 }
 
 # POST endpoint -> talab qilinadigan rol darajasi.
@@ -189,6 +190,9 @@ _POST_ROLE_MIN: dict[str, int] = {
     "/api/documents": 3,
     "/api/rejects/tariff": 2,
     "/api/sync": 2,
+    "/api/electricity/price": 2,
+    "/api/users": 4,
+    "/api/dispatchers": 4,
 }
 
 # Route-ga bog'liq endpointlar: non-admin foydalanuvchi uchun `route`
@@ -199,6 +203,7 @@ _ROUTE_SCOPED_PREFIXES = (
     "/api/route-skm", "/api/month", "/api/attendance", "/api/drivers",
     "/api/electricity", "/api/salary", "/api/export", "/api/check",
     "/api/appeals", "/api/kmrate", "/api/rejects/tariff",
+    "/api/sms", "/api/documents", "/api/vehicles",
 )
 
 
@@ -307,7 +312,13 @@ def _drop_session(handler: BaseHTTPRequestHandler) -> None:
 
 
 def _resolve_scope(handler: BaseHTTPRequestHandler) -> dict | None:
-    """So'rov egasini aniqlaydi: DASHBOARD_TOKEN -> ADMIN, aks holda sessiya."""
+    """So'rov egasini aniqlaydi: sessiya birinchi, DASHBOARD_TOKEN ikkinchi.
+
+    Loopback'da sahifaga in'ektsiya qilingan master token har bir API
+    chaqiruvida Authorization header orqali keladi; sessiya bilan kirilgan
+    foydalanuvchi (masalan DISPATCHER) token tufayli ADMIN bo'lib qolmasligi
+    uchun sessiya ustun turadi. Token faqat sessiya bo'lmaganda ADMIN beradi.
+    """
     if os.environ.get("BM_TEST_MODE") == "1":
         # Test rejimida to'liq ADV-ni beramiz — eski testlar to'g'ridan-to'g'ri
         # handler'ga murojaat qiladi va autentifikatsiyasiz ishlaydi. Haqiqiy
@@ -319,6 +330,10 @@ def _resolve_scope(handler: BaseHTTPRequestHandler) -> dict | None:
             "is_admin": True,
             "routes": None,
         }
+    token = _session_token(handler)
+    session = _session_user(token) if token else None
+    if session:
+        return session
     if _DASHBOARD_TOKEN and _check_dashboard_token(handler):
         return {
             "username": "ADMIN",
@@ -327,8 +342,7 @@ def _resolve_scope(handler: BaseHTTPRequestHandler) -> dict | None:
             "is_admin": True,
             "routes": None,
         }
-    token = _session_token(handler)
-    return _session_user(token) if token else None
+    return None
 
 
 def _hash_password(password: str, salt: str = "") -> tuple[str, str]:
@@ -462,6 +476,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
             qs["route"] = [rid] if rid else qs.get("route", [""])
         if payload is not None:
             payload["route"] = rid
+
+    def _scope_routes(self) -> set | None:
+        """Non-admin uchun qamrovdagi route'lar; admin/yo'q bo'lsa None."""
+        scope = getattr(self, "_scope", None)
+        if not scope or scope.get("is_admin"):
+            return None
+        return set(str(x) for x in (scope.get("routes") or []))
+
+    @staticmethod
+    def _doc_in_scope(storage, driver_id: str, scopes: set) -> bool:
+        """Xujjat tegishli haydovchi qamrov route'ida bo'lsa True."""
+        if not driver_id:
+            return False
+        row = storage.find("drivers", external_id=driver_id)
+        return bool(row and str(row.get("route_id") or "") in scopes)
 
     def _me(self) -> None:
         scope = getattr(self, "_scope", None)
@@ -1861,6 +1890,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     limit = 200
                 status = (qs.get("status") or [""])[0].strip().upper()
                 data = sms_log(limit=min(max(limit, 1), 1000), status=status)
+                scopes = self._scope_routes()
+                if scopes is not None:
+                    data["rows"] = [r for r in data["rows"]
+                                    if str(r.get("route_id") or "") in scopes]
+                    data["count"] = len(data["rows"])
+                    counts: dict[str, int] = {}
+                    for r in data["rows"]:
+                        st = (r.get("status") or "UNKNOWN").upper()
+                        counts[st] = counts.get(st, 0) + 1
+                    counts["total"] = data["count"]
+                    data["counts"] = counts
                 self._json({"ok": True, **data})
             elif path == "/api/sms/routes":
                 from ..core.profiles import all_profiles
@@ -1873,6 +1913,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         seen[rid] = (str(p.get("routeName")
                                          or p.get("name") or "")
                                      or rid)
+                scopes = self._scope_routes()
+                if scopes is not None:
+                    seen = {rid: name for rid, name in seen.items()
+                            if rid in scopes}
                 self._json({"ok": True, "routes": sms_route_list(
                     routes=list(seen), route_names=seen)})
             # --- Xujjatlar bo'limi (documents) ---
@@ -1885,6 +1929,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 driver_id = (qs.get("driver_id") or [""])[0]
                 docs = mgr.list_documents(category=category, status=status,
                                           search=search, driver_id=driver_id)
+                scopes = self._scope_routes()
+                if scopes is not None:
+                    from ..db.storage import get_storage
+                    storage = get_storage()
+                    docs = [d for d in docs if self._doc_in_scope(
+                        storage, str(d.get("driver_id") or ""), scopes)]
                 # JSON serializable qilish
                 for d in docs:
                     if "created_at" in d:
@@ -1908,6 +1958,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if len(parts) == 3 and parts[2].isdigit():
                     from ..documents.manager import get_manager
                     doc = get_manager().get_document(int(parts[2]))
+                    if doc:
+                        scopes = self._scope_routes()
+                        if scopes is not None:
+                            from ..db.storage import get_storage
+                            if not self._doc_in_scope(
+                                    get_storage(),
+                                    str(doc.get("driver_id") or ""), scopes):
+                                doc = None
                     if doc:
                         if "created_at" in doc:
                             doc["created_at"] = str(doc["created_at"])
@@ -2303,6 +2361,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 # /api/documents/{id}
                 if len(parts) == 3 and parts[2].isdigit():
                     from ..documents.manager import get_manager
+                    scopes = self._scope_routes()
+                    if scopes is not None:
+                        from ..db.storage import get_storage
+                        doc = get_manager().get_document(int(parts[2]))
+                        if not doc or not self._doc_in_scope(
+                                get_storage(),
+                                str(doc.get("driver_id") or ""), scopes):
+                            self._json({"error": "Xujjat topilmadi"}, 404)
+                            return
                     payload = self._payload()
                     result = get_manager().update_document(
                         doc_id=int(parts[2]),
@@ -2313,6 +2380,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 # /api/documents/{id}/delete
                 elif len(parts) == 4 and parts[3] == "delete":
                     from ..documents.manager import get_manager
+                    scopes = self._scope_routes()
+                    if scopes is not None:
+                        from ..db.storage import get_storage
+                        doc = get_manager().get_document(int(parts[2]))
+                        if not doc or not self._doc_in_scope(
+                                get_storage(),
+                                str(doc.get("driver_id") or ""), scopes):
+                            self._json({"error": "Xujjat topilmadi"}, 404)
+                            return
                     result = get_manager().delete_document(int(parts[2]))
                 # /api/documents/{id}/attach
                 elif len(parts) == 4 and parts[3] == "attach":
