@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from datetime import date as _date
 from datetime import timedelta as _date_timedelta
 from typing import Any
@@ -21,7 +22,7 @@ from ...utils.tgformat import esc
 from ..telegram import telegram_call
 from . import assistant, context, driver_entry, kb, legacy, planning, reg, render
 from .roles import Role, can, resolve_role, driver_id_for_chat
-from .text import (DENIED_TEXT, HELP_TEXT, SYNC_STARTED, SYNC_MONTHLY_STARTED, WELCOME_TEXT)
+from .text import (DENIED_TEXT, DRIVER_HELP_TEXT, HELP_TEXT, SYNC_STARTED, SYNC_MONTHLY_STARTED, WELCOME_TEXT)
 
 log = get_logger("bm_automation.bot")
 
@@ -42,6 +43,8 @@ MENU_MAP = {
     "📅 bugungi grafik": "grafik_today",
     "📅 ertagi grafik": "grafik_tomorrow",
     "📅 kechagi grafik": "grafik_yesterday",
+    "📬 murojaat": "murojaat",
+    "📬 обращение": "murojaat",
     "🏢 firmalar": "profiles",
     "⚙️ settings": "settings",
     "❓ yordam": "help",
@@ -99,6 +102,73 @@ def reply(chat_id: int, text: str, reply_markup=None) -> None:
         send_chunks(chat_id, text, reply_markup)
     except Exception as exc:
         log.warning("sendMessage xatosi: %s", exc)
+
+
+def _send_driver_photo(driver_id: str, chat_id: int,
+                       caption: str = "") -> bool:
+    """Haydovchi fotosini (yuklangan bo'lsa) file_id orqali yuboradi.
+
+    Rasm bot bir marta yuborgan bo'lsa Telegram file_id sifatida keshda
+    turadi — qayta yuklamasdan tez yuboriladi. Keshda yo'q bo'lsa fayldan
+    yuklab yuboriladi va file_id keshlanadi. Xatoda jim o'tkaziladi —
+    rasm bo'lmasa kartani matn bilan davom ettirish mumkin.
+    """
+    try:
+        from ...db.storage import get_storage
+        profile = get_storage().find("driver_profiles", driver_id=str(driver_id)) or {}
+        raw_path = str(profile.get("photo_path") or "").strip()
+        if not raw_path:
+            return False
+        from pathlib import Path as _Path
+        path = _Path(raw_path)
+        if not path.exists():
+            return False
+        # 1) Keshlangan file_id bilan tez yuborish
+        cached = _PHOTO_FILE_ID.get(str(driver_id))
+        if cached:
+            from ..telegram import send_photo_file_id
+            if send_photo_file_id(cached, caption, chat_id=chat_id):
+                return True
+        # 2) Fayldan yuklab yuborish va file_id keshlash
+        from ..telegram import send_photo, telegram_call
+        if send_photo(str(path), caption, chat_id=chat_id):
+            try:
+                # oxirgi yuborilgan xabardan file_id olishga urinib ko'ramiz
+                # (send_photo hozircha file_id qaytarmaydi — kesh ixtiyoriy).
+                _ = telegram_call  # noqa: B018
+            except Exception:  # noqa: BLE001
+                pass
+            return True
+        return False
+    except Exception as exc:  # noqa: BLE001 - rasm kritik emas
+        log.debug("haydovchi fotosi yuborilmadi (%s): %s", driver_id, exc)
+        return False
+
+
+_PHOTO_FILE_ID: dict[str, str] = {}
+
+
+def _send_tg_profile_photo(chat_id: int, chat_id_target: int | None = None) -> bool:
+    """Foydalanuvchining Telegram profil rasmini yuboradi (kichik).
+
+    `getUserProfilePhotos`dan file_id olib, shu foydalanuvchiga yuboradi —
+    haydovchi o'z profilini ko'rganida rasmi chiqadi.
+    """
+    target = chat_id_target or chat_id
+    try:
+        from ..telegram import telegram_call, send_photo_file_id
+        info = telegram_call("getUserProfilePhotos", {
+            "user_id": chat_id, "offset": 0, "limit": 1})
+        photos = (info or {}).get("photos") or []
+        if not photos:
+            return False
+        file_id = (photos[0] or [])[-1].get("file_id")
+        if not file_id:
+            return False
+        return send_photo_file_id(file_id, "", chat_id=target)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("TG profil rasmi olinmadi: %s", exc)
+        return False
 
 
 def answer(cq: dict, text: str = "") -> None:
@@ -372,6 +442,143 @@ def commit_addcompany(chat_id: int) -> None:
                      args=(chat_id, name, owner_ids), daemon=True).start()
 
 
+# ------------------------------------------------- admin: haydovchi bog'lash
+
+def _search_drivers(text: str, limit: int = 8) -> list[dict]:
+    """Haydovchini ism yoki telefon bo'yicha qidiradi (admin bog'lash oqimi)."""
+    from ...db.storage import get_storage
+    st = get_storage()
+    if not st.enabled:
+        return []
+    q = "%" + text.strip() + "%"
+    ph = st.db.ph
+    try:
+        return st.query(
+            "SELECT d.external_id, d.full_name, p.phone, p.telegram_chat_id"
+            f" FROM drivers d LEFT JOIN driver_profiles p ON p.driver_id = d.external_id"
+            f" WHERE d.full_name ILIKE {ph} OR p.phone ILIKE {ph}"
+            f" ORDER BY d.full_name",
+            (q, q), limit=limit)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("haydovchi qidiruvi xatosi: %s", exc)
+        return []
+
+
+def _start_admin_link_flow(chat_id: int) -> None:
+    """ADMIN: haydovchini Telegram foydalanuvchisiga bog'lash oqimi (1-qadam)."""
+    from ...core.bot_settings import set_pending
+    set_pending(chat_id, "link_driver")
+    reply(chat_id,
+          "🔗 <b>HAYDOVCHI BOG'LASH</b>\n\n"
+          "Haydovchining ismini yoki telefon raqamini yozing "
+          "(masalan: <code>Olim</code> yoki <code>901234567</code>).\n"
+          "Bekor qilish: <code>/cancel</code>")
+
+
+def _continue_admin_link_flow(chat_id: int, text: str) -> bool:
+    """Bog'lash oqimi 2-qadami: haydovchi qidiruvi. Oqim davom etdimi?"""
+    from ...core.bot_settings import pending
+    if pending(chat_id) != "link_driver":
+        return False
+    value = text.strip()
+    if value.lower() in ("/cancel", "cancel", "bekor"):
+        from ...core.bot_settings import clear_pending
+        clear_pending(chat_id)
+        reply(chat_id, "✅ Bog'lash bekor qilindi.")
+        return True
+    results = _search_drivers(value)
+    if not results:
+        reply(chat_id, "❌ Hech kim topilmadi. Boshqa ism/telefon bilan "
+                       "urinib ko'ring (bekor: /cancel).")
+        return True
+    rows = []
+    for r in results:
+        name = short_name(str(r.get("full_name") or r.get("external_id") or "-"))
+        phone = str(r.get("phone") or "").strip()
+        linked = "✅" if str(r.get("telegram_chat_id") or "").strip() else "—"
+        rows.append([{"text": f"{linked} {name}" + (f" · {phone}" if phone else ""),
+                      "callback_data": f"linkpick:{r.get('external_id')}"}])
+    rows.append([{"text": "❌ Bekor qilish", "callback_data": "nav:settings"}])
+    reply(chat_id,
+          f"🔗 <b>TOPILDI: {len(results)}</b>\n\n"
+          "Qaysi haydovchini bog'laymiz?",
+          reply_markup={"inline_keyboard": rows})
+    return True
+
+
+def _link_pick_driver(chat_id: int, cq: dict, driver_id: str) -> None:
+    """Bog'lash oqimi 3-qadam: bot foydalanuvchisini tanlash."""
+    from ...core.bot_settings import set_pending
+    from ...db.storage import get_storage
+    from .roles import Role, resolve_role
+    if resolve_role(chat_id) not in (Role.ADMIN, Role.DISPATCHER, Role.MANAGER):
+        answer(cq, "Huquq yo'q")
+        reply(chat_id, DENIED_TEXT)
+        return
+    drow = get_storage().find("drivers", external_id=driver_id) or {}
+    name = short_name(str(drow.get("full_name") or driver_id))
+    set_pending(chat_id, f"link_user:{driver_id}")
+    answer(cq, "Foydalanuvchi tanlash")
+    from ...core.bot_users import get_users
+    users = get_users()[:10]
+    if not users:
+        reply(chat_id, "⚠️ Bot foydalanuvchilari topilmadi. Avval foydalanuvchi "
+                       "botga /start yuborsin.")
+        return
+    rows = []
+    for u in users:
+        label = str(u.get("first_name") or u.get("chat_id"))
+        if u.get("username"):
+            label += f" (@{u['username']})"
+        role = str(u.get("role") or "VIEWER")
+        rows.append([{"text": f"👤 {label} [{role}]",
+                      "callback_data": f"linkuser:{u.get('chat_id')}"}])
+    rows.append([{"text": "❌ Bekor qilish", "callback_data": "nav:settings"}])
+    reply(chat_id,
+          f"🔗 <b>{name}</b> uchun Telegram foydalanuvchini tanlang:",
+          reply_markup={"inline_keyboard": rows})
+
+
+def _link_apply_user(chat_id: int, cq: dict, target_chat: str, driver_id: str) -> None:
+    """Bog'lashni yakunlaydi: driver_profiles.telegram_chat_id = chat_id."""
+    from ...core.bot_settings import clear_pending
+    from ...db.storage import get_storage
+    from .roles import Role, resolve_role, _DRIVER_CHAT_CACHE
+    if resolve_role(chat_id) not in (Role.ADMIN, Role.DISPATCHER, Role.MANAGER):
+        answer(cq, "Huquq yo'q")
+        reply(chat_id, DENIED_TEXT)
+        return
+    try:
+        target = int(target_chat)
+    except (TypeError, ValueError):
+        answer(cq, "Noto'g'ri chat")
+        return
+    st = get_storage()
+    drow = st.find("drivers", external_id=driver_id) or {}
+    name = short_name(str(drow.get("full_name") or driver_id))
+    st.save_driver_profile(driver_id, telegram_chat_id=str(target))
+    st.save_driver_profile(driver_id, notification_enabled=True)
+    _DRIVER_CHAT_CACHE.pop(target, None)  # rol keshini yangilash
+    # Bog'langan foydalanuvchi roli darhol HAYDOVCHI bo'ladi.
+    try:
+        from ...core.bot_users import set_role
+        set_role(target, "DRIVER")
+    except Exception:  # noqa: BLE001
+        pass
+    clear_pending(chat_id)
+    answer(cq, "Bog'landi")
+    reply(chat_id, f"✅ <b>{name}</b> ↔ Telegram foydalanuvchi bog'landi.",
+          reply_markup=kb.settings_kb(chat_id))
+    # Bog'langan foydalanuvchiga xabar
+    try:
+        reply(target, f"✅ <b>Xush kelibsiz, {name}!</b>\n\n"
+                      "Siz haydovchi sifatida bog'landingiz. "
+                      "Menyudan foydalaning.",
+              reply_markup=kb.main_menu_kb(target))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("bog'langan haydovchiga xabar yetmadi: %s", exc)
+
+
 def show_company_stats(chat_id: int, name: str, owner_ids: list[int]) -> None:
     """Yangi firma uchun byBus statistikasini yig'ib yuboradi."""
     from datetime import date
@@ -400,6 +607,133 @@ def show_company_stats(chat_id: int, name: str, owner_ids: list[int]) -> None:
         except Exception as exc:
             log.warning("Statistika yuborilmadi [%s]: %s", t, exc)
     reg.cancel(chat_id)
+
+
+_NOTIFY_STATE: dict[int, dict] = {}
+_NOTIFY_LOCK = threading.Lock()
+
+
+def _time_now() -> float:
+    return time.time()
+
+
+def _cancel_notify_state(chat_id: int) -> None:
+    with _NOTIFY_LOCK:
+        _NOTIFY_STATE.pop(chat_id, None)
+
+
+def _start_notify(chat_id: int) -> None:
+    with _NOTIFY_LOCK:
+        _NOTIFY_STATE[chat_id] = {"step": "phone", "ts": _time_now()}
+    reply(chat_id,
+          "📩 <b>HAYDOVCHIGA XABAR YUBORISH</b>\n\n"
+          "Haydovchi telefon raqamini kiriting (9 xonali):",
+          reply_markup=kb.back_kb("nav:drivers", "❌ Bekor qilish"))
+
+
+def _notify_stale(state: dict) -> bool:
+    """Tark etilgan /notify oqimi (15 daqiqadan oshsa) tozalanadi."""
+    try:
+        return (state.get("ts") or 0) < _time_now() - 15 * 60
+    except Exception:  # noqa: BLE001 - himoyalangan holat
+        return True
+
+
+def _continue_notify(chat_id: int, text: str) -> None:
+    with _NOTIFY_LOCK:
+        state = _NOTIFY_STATE.get(chat_id)
+    if not state:
+        return
+    if _notify_stale(state):
+        _cancel_notify_state(chat_id)
+        reply(chat_id, "⏳ Oqim muddati tugadi. /notify orqali qayta "
+              "boshlang.", reply_markup=kb.main_menu_kb(chat_id))
+        return
+    step = state.get("step")
+    text_clean = text.strip()
+    if text_clean in ("❌ Bekor qilish", "/cancel"):
+        _cancel_notify_state(chat_id)
+        reply(chat_id, "Bekor qilindi.", reply_markup=kb.main_menu_kb(chat_id))
+        return
+    if step == "phone":
+        phone = text_clean.lstrip("+").removeprefix("998")
+        st = get_storage()
+        row = st.find_driver_by_phone(phone)
+        if not row:
+            row = st.find_driver_by_notification(text_clean)
+        if not row:
+            reply(chat_id, "❌ Bu raqamli haydovchi topilmadi. Qaytadan kiriting:")
+            return
+        driver_id = str(row.get("driver_id") or "")
+        if not driver_id:
+            reply(chat_id, "❌ Haydovchi ID topilmadi.")
+            with _NOTIFY_LOCK:
+                _NOTIFY_STATE.pop(chat_id, None)
+            return
+        profile = st.find("driver_profiles", driver_id=driver_id) or {}
+        target = str(profile.get("telegram_chat_id") or "").strip()
+        if not target:
+            dname = short_name(str(row.get("full_name") or driver_id[:12]))
+            reply(chat_id, f"⚠️ {dname} Telegram'ga bog'lanmagan.")
+            with _NOTIFY_LOCK:
+                _NOTIFY_STATE.pop(chat_id, None)
+            return
+        with _NOTIFY_LOCK:
+            _NOTIFY_STATE[chat_id] = {"step": "message", "driver_id": driver_id,
+                                       "target": target, "phone": phone,
+                                       "ts": _time_now()}
+        dname = short_name(str(row.get("full_name") or driver_id[:12]))
+        reply(chat_id,
+              f"✅ Topildi: <b>{dname}</b>\n\n"
+              "Endi yuboriladigan xabarni yozing:")
+    elif step == "message":
+        msg_text = text_clean
+        with _NOTIFY_LOCK:
+            info = _NOTIFY_STATE.pop(chat_id, {})
+        target = info.get("target", "")
+        driver_id = info.get("driver_id", "")
+        if not target:
+            reply(chat_id, "⚠️ Ma'lumot yo'qoldi. Qaytadan boshlang.")
+            return
+        try:
+            from ..telegram import send_message
+            full_msg = (f"📨 <b>Xabar</b>\n\n{esc(msg_text)}\n\n"
+                        f"— Admin/dispetcher tomonidan")
+            send_message(full_msg, chat_id=target)
+            reply(chat_id, "✅ Xabar haydovchiga yuborildi.",
+                  reply_markup=kb.main_menu_kb(chat_id))
+        except Exception as exc:
+            reply(chat_id, f"⚠️ Yuborilmadi: {exc}",
+                  reply_markup=kb.main_menu_kb(chat_id))
+
+
+def _cmd_whois(chat_id: int, parts: list[str]) -> None:
+    args = [p for p in parts[1:] if p]
+    if not args:
+        reply(chat_id, "Foydalanish: <code>/whois 901234567</code>")
+        return
+    phone = args[0].lstrip("+").removeprefix("998")
+    st = get_storage()
+    row = st.find_driver_by_phone(phone)
+    if not row:
+        row = st.find_driver_by_notification(args[0])
+    if not row:
+        reply(chat_id, "❌ Bu raqamli haydovchi topilmadi.")
+        return
+    driver_id = str(row.get("driver_id") or "")
+    dname = short_name(str(row.get("full_name") or driver_id[:12]))
+    profile = st.find("driver_profiles", driver_id=driver_id) or {}
+    tg_id = str(profile.get("telegram_chat_id") or "-")
+    enabled = "✅" if profile.get("notification_enabled") else "❌"
+    blacklisted = " ⛔ Qora ro'yxatda" if profile.get("blacklisted") else ""
+    route_id = str(row.get("route_id") or "-")
+    reply(chat_id,
+          f"👨‍✈️ <b>{esc(dname)}</b>{blacklisted}\n"
+          f"🆔 ID: <code>{esc(driver_id)}</code>\n"
+          f"📱 Telefon: <code>{esc(phone)}</code>\n"
+          f"🛣 Yo'nalish: <code>{esc(route_id)}</code>\n"
+          f"💬 Telegram: <code>{esc(tg_id)}</code>\n"
+          f"🔔 Bildirishnoma: {enabled}")
 
 
 def handle_login(chat_id: int, parts: list[str]) -> None:
@@ -491,18 +825,364 @@ def handle_driver(chat_id: int, parts: list[str], f: dict) -> None:
               "Ro'yxat: /drivers")
         return
     reply(chat_id, *render.driver_card(driver_id, f, chat_id=chat_id))
+    _send_driver_photo(driver_id, chat_id)
 
 
-# ------------------------------------------------------ driver entry flow
+# ------------------------------------------------------ passport self-service
+
+def _passport_flow_current(chat_id: int) -> dict | None:
+    """Passport oqimi holati (bo'lmasa None)."""
+    from ...core.bot_settings import pending
+    key = pending(chat_id)
+    if key and str(key).startswith("passport:"):
+        return {"step": key.split(":", 1)[1], "flow": "passport"}
+    return None
+
+
+def _passport_prompt(step: str) -> str:
+    prompts = {
+        "number": "🪪 <b>PASSPORT MA'LUMOTLARI</b>\n\n"
+                  "Passport raqamingizni yozing "
+                  "(masalan: <code>AB1234567</code>).\n"
+                  "Bekor qilish: <code>/cancel</code>",
+        "expiry": "📅 Passport amal qilish muddatini yozing "
+                  "(<code>KK.OO.YYYY</code> yoki <code>YYYY-MM-DD</code>).\n"
+                  "Bekor qilish: <code>/cancel</code>",
+        "license": "🚘 Haydovchilik guvohnomasi raqamini yozing.\n"
+                   "Bekor qilish: <code>/cancel</code>",
+        "license_expiry": "📅 Guvohnoma amal qilish muddatini yozing.\n"
+                          "Bekor qilish: <code>/cancel</code>",
+    }
+    return prompts.get(step, "❓ Davom eting (bekor: /cancel)")
+
+
+def _start_passport_flow(chat_id: int) -> None:
+    """Haydovchi o'zi passport/guvohnoma ma'lumotlarini to'ldirishni boshlaydi."""
+    from .roles import driver_id_for_chat
+    from ...core.bot_settings import set_pending
+    did = driver_id_for_chat(chat_id)
+    if not did:
+        reply(chat_id, "⚠️ Bu imkoniyat faqat bog'langan haydovchilar uchun.")
+        return
+    from ...db.storage import get_storage
+    p = get_storage().find("driver_profiles", driver_id=did) or {}
+    have = []
+    if str(p.get("passport_number") or "").strip():
+        have.append(f"Passport: <code>{p['passport_number']}</code>")
+    if str(p.get("license_number") or "").strip():
+        have.append(f"Guvohnoma: <code>{p['license_number']}</code>")
+    set_pending(chat_id, "passport:number")
+    txt = "🪪 <b>PASSPORT MA'LUMOTLARINI TO'LDIRISH</b>"
+    if have:
+        txt += "\n\nJoriy:\n  " + "\n  ".join(have) + "\n\nYangilamoqchi bo'lganingizni yozing."
+    txt += "\n\n" + _passport_prompt("number")
+    reply(chat_id, txt)
+
+
+def _continue_passport_flow(chat_id: int, text: str) -> bool:
+    """Passport oqimi qadami; qaytaradi: oqim davom etdimi (True) yoki yo'q."""
+    from ...core.bot_settings import clear_pending, set_pending
+    from ...db.storage import get_storage
+    st = _passport_flow_current(chat_id)
+    if not st:
+        return False
+    step = st["step"]
+    value = text.strip()
+    low = value.lower()
+    if low in ("/cancel", "cancel", "bekor", "bekor qilish"):
+        clear_pending(chat_id)
+        reply(chat_id, "✅ Passport to'ldirish bekor qilindi.")
+        return True
+    did = driver_id_for_chat(chat_id)
+    if not did:
+        clear_pending(chat_id)
+        return False
+
+    def _norm_date(s: str) -> str:
+        import re as _re
+        s = s.strip()
+        m = _re.fullmatch(r"(\d{2})[.\-/](\d{2})[.\-/](\d{4})", s)
+        if m:
+            return f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
+        m = _re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", s)
+        return s if m else ""
+
+    if step == "number":
+        if len(value) < 5:
+            reply(chat_id, "⚠️ Passport raqami juda qisqa. Qaytadan yozing:\n"
+                           "<code>AB1234567</code>")
+            return True
+        get_storage().save_driver_profile(did, passport_number=value.upper())
+        set_pending(chat_id, "passport:expiry")
+        reply(chat_id, f"✅ Passport raqami saqlandi: <code>{value.upper()}</code>\n\n"
+                       + _passport_prompt("expiry"))
+        return True
+    if step == "expiry":
+        d = _norm_date(value)
+        if not d:
+            reply(chat_id, "⚠️ Sana formati noto'g'ri. Masalan: <code>15.08.2028</code> "
+                           "yoki <code>2028-08-15</code>.")
+            return True
+        get_storage().save_driver_profile(did, passport_expiry=d)
+        set_pending(chat_id, "passport:license")
+        reply(chat_id, f"✅ Passport muddati saqlandi: <code>{d}</code>\n\n"
+                       + _passport_prompt("license"))
+        return True
+    if step == "license":
+        if len(value) < 5:
+            reply(chat_id, "⚠️ Guvohnoma raqami juda qisqa. Qaytadan yozing.")
+            return True
+        get_storage().save_driver_profile(did, license_number=value.upper())
+        set_pending(chat_id, "passport:license_expiry")
+        reply(chat_id, f"✅ Guvohnoma raqami saqlandi: <code>{value.upper()}</code>\n\n"
+                       + _passport_prompt("license_expiry"))
+        return True
+    if step == "license_expiry":
+        d = _norm_date(value)
+        if not d:
+            reply(chat_id, "⚠️ Sana formati noto'g'ri. Masalan: <code>10.05.2030</code>.")
+            return True
+        get_storage().save_driver_profile(did, license_expiry=d)
+        clear_pending(chat_id)
+        reply(chat_id, "🎉 <b>Hamma hujjat ma'lumotlari saqlandi!</b>\n\n"
+                       "Rahmat! Ma'lumotlaringiz adminlarga ko'rinadi.",
+              reply_markup=kb.main_menu_kb(chat_id))
+        return True
+    clear_pending(chat_id)
+    return False
+
+
+def _send_driver_card(driver_id: str, chat_id: int, f: dict) -> None:
+    """Haydovchi kartasini rasm bilan yuboradi (rasm bo'lsa)."""
+    text, markup = render.driver_card(driver_id, f, chat_id=chat_id)
+    # Haydovchi o'z kartasini ko'rsa — avval o'z TG profil rasmini yuboramiz.
+    # ("Grafikim" tugmalari render.driver_card ichida qo'shiladi.)
+    from .roles import Role, resolve_role
+    if resolve_role(chat_id) is Role.DRIVER:
+        _send_tg_profile_photo(chat_id)
+    if _send_driver_photo(driver_id, chat_id):
+        # Rasm alohida ketdi — kartani o'zi ham yuboriladi (rasm caption'da
+        # sig'maydi, HTML jadval rasm ustiga chiqa olmaydi).
+        pass
+    reply(chat_id, text, markup)
+
+
+def _personal_caption_line(storage, driver_id: str, day) -> str:
+    """Shaxsiy grafik karta caption'idagi standart qator (yo'nalish · grafik · avtobus · tel).
+
+    Istalgan manba yo'q / xatolik bo'lsa bo'sh qator qaytariladi —
+    chiqaruvchi o'zgartirilmaydi.
+    """
+    if not storage.enabled or not driver_id:
+        return ""
+    try:
+        ph = storage.db.ph
+        rows = storage.query(
+            "SELECT s.graph_name, s.vehicle_id, s.route_id, "
+            "r.name AS route_name "
+            "FROM schedules s LEFT JOIN routes r ON r.external_id = s.route_id "
+            f"WHERE s.driver_id = {ph} AND s.date = {ph} LIMIT 1",
+            (driver_id, day.isoformat()), limit=1)
+        if not rows:
+            return ""
+        r = rows[0]
+        route = str(r.get("route_name") or "").strip()
+        graph = str(r.get("graph_name") or "").strip()
+        bus = str(r.get("vehicle_id") or "").strip()
+        d_phone = ""
+        try:
+            d_phone = str(storage.dispatcher_phone(
+                str(r.get("route_id") or "")) or "").strip()
+        except Exception:  # noqa: BLE001 - telefon topilmasa qator davom etadi
+            d_phone = ""
+        parts = []
+        if route:
+            parts.append(f"🚌 <b>{esc(route)}</b>")
+        if graph:
+            parts.append(f"Grafik {esc(graph)}")
+        if bus:
+            parts.append(f"🚍 Avtobus: <b>{esc(bus)}</b>")
+        if d_phone:
+            parts.append(f"💬 Dispetcher tel: <code>{esc(d_phone)}</code>")
+        return " · ".join(parts)
+    except Exception:  # noqa: BLE001 - caption'gi qator muhim emas
+        return ""
+
+
+def _personal_caption(day, day_label: str = "", line: str = "") -> str:
+    """Shaxsiy grafik karta caption'ini bir xil formatda qurur."""
+    head = (f"🗓 <b>SIZNING GRAFIKINGIZ ({day_label})</b> — {day:%d.%m.%Y}"
+            if day_label else
+            f"🗓 <b>SIZNING GRAFIKINGIZ</b> — {day:%d.%m.%Y}")
+    if line:
+        return f"{head}\n{line}"
+    return head
+
+
+def _send_driver_schedule(driver_id: str, chat_id: int, f: dict,
+                          day_offset: int = 1) -> None:
+    """Haydovchining shaxsiy grafik kartasini yuboradi (o'z grafigi bilan).
+
+    Haydovchi kartasidagi "Grafikim" tugmalari orqali chaqiriladi.
+    day_offset: 1=ertaga, 0=bugun, -1=kechagi.
+    
+    Birinchi navbatda jadvaldagi haydovchining SHAXSIY kartasi
+    (`reports/personal/personal_<rid>_<date>_<did>.png`) qidiriladi;
+    bo'lmasa `schedules` jadvalidan o'z qatori olib, rasm generatsiya
+    qilinadi; umuman grafik topilmasa — jamoa jadval rasmi yuboriladi.
+    """
+    role_ = resolve_role(chat_id)
+    # Haydovchi faqat o'z grafigini olishi mumkin.
+    if role_ is Role.DRIVER:
+        own = driver_id_for_chat(chat_id)
+        if not own or own != driver_id:
+            reply(chat_id, DENIED_TEXT)
+            return
+
+    from datetime import date as _d, timedelta as _td
+    from pathlib import Path as _P
+    _P = globals().get("_P") or _P
+
+    today = _d.today()
+    day = today + _td(days=day_offset)
+    day_label = {1: "ERTAGA", 0: "BUGUN", -1: "KECHAGI"}.get(
+        day_offset, f"{day:%d.%m.%Y}").upper()
+
+    # 1) Keshlangan shaxsiy kartani qidiramiz (jamoa jadval rasmlari
+    #    yangilanganda haydovchilarga avtomatik yuborilgan).
+    personal = sorted(
+        _P("reports", "personal").glob(
+            f"personal_*_{day:%Y%m%d}_{driver_id[:8]}.png"),
+        key=lambda p_: p_.stat().st_mtime, reverse=True)
+    if personal:
+        try:
+            from ..telegram import send_photo
+            try:
+                st = get_storage()
+            except Exception:  # noqa: BLE001
+                st = None
+            line = _personal_caption_line(st, driver_id, day) if st else ""
+            send_photo(str(personal[0]),
+                       caption=_personal_caption(day, line=line),
+                       chat_id=str(chat_id))
+            return
+        except Exception as exc:  # noqa: BLE001
+            log.warning("shaxsiy karta yuborilmadi: %s", exc)
+
+    # 2) schedules jadvalidan o'z qatori bo'yicha yangi karta chizamiz.
+    st = get_storage()
+    ph = st.db.ph
+    rows = st.query(
+        "SELECT s.graph_name, s.vehicle_id, s.start_time, s.end_time, "
+        "s.shift_name, s.route_id, r.name AS route_name "
+        "FROM schedules s LEFT JOIN routes r ON r.external_id = s.route_id "
+        f"WHERE s.driver_id = {ph} AND s.date = {ph}",
+        (driver_id, day.isoformat()), limit=5)
+    if rows:
+        from ...exporters.sheet_image import make_personal_sheet_image
+        out_dir = _P("reports", "personal")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        rid8 = str(rows[0].get("route_id") or "")[:8]
+        png = out_dir / f"personal_{rid8}_{day:%Y%m%d}_{driver_id[:8]}.png"
+        try:
+            # Haydovchi rasmi + oylik reja/amalda km statistikasi.
+            prof_row = st.find("driver_profiles", driver_id=driver_id) or {}
+            photo = str(prof_row.get("photo_path") or "").strip()
+            km_stats = None
+            try:
+                ph = st.db.ph
+                agg = st.query(
+                    "SELECT COALESCE(SUM(distance_plan),0) AS plan_km, "
+                    "COALESCE(SUM(distance_km),0) AS fact_km, "
+                    "COALESCE(SUM(trip_plan),0) AS plan_trips, "
+                    "COALESCE(SUM(trip_count),0) AS fact_trips "
+                    "FROM driver_work_logs WHERE driver_id = " + ph +
+                    " AND substr(date,1,7) = " + ph,
+                    (driver_id, day.strftime("%Y-%m")), limit=1)
+                if agg:
+                    km_stats = {
+                        "plan_km": float(agg[0].get("plan_km") or 0),
+                        "fact_km": float(agg[0].get("fact_km") or 0),
+                        "plan_trips": int(agg[0].get("plan_trips") or 0),
+                        "fact_trips": int(agg[0].get("fact_trips") or 0),
+                    }
+            except Exception:  # noqa: BLE001 - statistika bo'lmasa karta chiziladi
+                km_stats = None
+            # Bitta karta chiziladi — takroriy qatorlar uchun bir xil
+            # rasm qayta chizilmaydi (faqat oxirgisi saqlanardi).
+            r = rows[0]
+            row = {
+                "graph": r.get("graph_name") or "-",
+                "bus": r.get("vehicle_id") or "-",
+                "start": r.get("start_time") or "-",
+                "end": r.get("end_time") or "",
+                "shift": r.get("shift_name") or "",
+                "driver": "",
+            }
+            # Ismni o'zimiz qo'shamiz (rasmda haydovchi ismi ko'rinishi uchun)
+            drow = st.find("drivers", external_id=driver_id) or {}
+            row["driver"] = drow.get("full_name") or "Haydovchi"
+            make_personal_sheet_image(
+                row, str(png), date_str=day.isoformat(),
+                route_name=r.get("route_name") or "",
+                photo_path=photo, km_stats=km_stats)
+            from ..telegram import send_photo
+            send_photo(str(png),
+                       caption=_personal_caption(
+                           day, day_label,
+                           line=_personal_caption_line(st, driver_id, day)),
+                       chat_id=str(chat_id))
+            return
+        except Exception as exc:  # noqa: BLE001
+            log.warning("shaxsiy grafik generatsiya xatosi: %s", exc)
+
+    # 3) Grafik topilmadi — jamoa jadvali orasidan haydovchi grafigini qidiramiz.
+    candidates = []
+    from ...core.profiles import all_profiles
+    for p in all_profiles():
+        rid = str(p.get("routeVariantId", "") or "").strip()
+        if not rid:
+            continue
+        img = _P("reports") / (p.get("name") or "profile") / \
+            f"driver-sheet_{rid[:8]}_{day:%Y%m%d}.png"
+        if img.exists():
+            candidates.append(img)
+    if candidates:
+        try:
+            try:
+                st = get_storage()
+            except Exception:  # noqa: BLE001
+                st = None
+            line = _personal_caption_line(st, driver_id, day) if st else ""
+            p_caption = _personal_caption(day, day_label, line=line)
+            caption = f"{p_caption}\nSizning grafigingiz jadval rasmda."
+            send_photo(str(candidates[0]), caption=caption,
+                       chat_id=str(chat_id))
+            return
+        except Exception as exc:  # noqa: BLE001
+            log.warning("jamoa jadvali yuborilmadi: %s", exc)
+
+    reply(chat_id,
+          f"🗓 <b>GRAFIK TOPILMADI ({day_label})</b>\n\n"
+          f"{day:%d.%m.%Y} uchun grafik ma'lumoti topilmadi.\n"
+          f"Grafiklar har kuni kechqurun yangilanadi.")
+
 
 def start_driver_entry(chat_id: int, flow: str, driver_id: str) -> None:
-    """Haydovchi kunlik qayd / jarima dialogini boshlaydi."""
+    """Haydovchi kunlik qayd / jarima / murojaat dialogini boshlaydi."""
     driver_entry.start(chat_id, flow, driver_id)
     st = driver_entry.current(chat_id) or {}
-    title = ("📝 <b>KUNLIK KM QAYDI</b>" if flow == "log"
-             else "⚠️ <b>JARIMA KIRITISH</b>")
-    prompt = driver_entry.prompts().get(st.get("step", "date"), "❓ Davom eting:")
-    reply(chat_id, f"{title}\n\n{prompt}", reply_markup=kb.driver_entry_cancel_kb())
+    if flow == "appeal":
+        title = "📬 <b>MUROJAAT YUBORISH</b>"
+        prompt = "📋 <b>Mavzuni tanlang:</b>"
+        markup = kb.appeal_topics_kb()
+    else:
+        title = ("📝 <b>KUNLIK KM QAYDI</b>" if flow == "log"
+                 else "⚠️ <b>JARIMA KIRITISH</b>")
+        prompt = driver_entry.prompts().get(st.get("step", "date"),
+                                            "❓ Davom eting:")
+        markup = kb.driver_entry_cancel_kb()
+    reply(chat_id, f"{title}\n\n{prompt}", reply_markup=markup)
 
 
 def continue_driver_entry(chat_id: int, text: str) -> None:
@@ -521,6 +1201,101 @@ def continue_driver_entry(chat_id: int, text: str) -> None:
         return
     reply(chat_id, prompts.get(step, "❓ Davom eting:"),
           reply_markup=kb.driver_entry_cancel_kb())
+
+
+def _pick_appeal_topic(chat_id: int, cq, key: str) -> None:
+    """Murojaat davomida mavzu tanlash tugmasi bosilganda ishlaydi."""
+    st = driver_entry.current(chat_id) or {}
+    if not st or st.get("flow") != "appeal":
+        answer(cq, "Murojaat boshlanmagan")
+        return
+    if key == "none":
+        value = "-"
+    else:
+        try:
+            value = kb.APPEAL_TOPICS[int(key)]
+        except (ValueError, IndexError):
+            answer(cq, "Mavzu topilmadi")
+            return
+    if st.get("step") not in ("title", "text"):
+        answer(cq, "Mavzu tanlash tugadi")
+        return
+    try:
+        step = driver_entry.set_value(chat_id, value)
+    except ValueError as exc:
+        answer(cq, "Bekor qilindi")
+        reply(chat_id, f"⚠️ {exc}", reply_markup=kb.driver_entry_cancel_kb())
+        return
+    answer(cq, "Mavzu tanlandi")
+    if step:
+        reply(chat_id, driver_entry.prompts().get(step, "❓ Davom eting:"),
+              reply_markup=kb.driver_entry_cancel_kb())
+
+
+def _show_my_appeals(chat_id: int) -> None:
+    """Haydovchi o'zining murojaatlarini ko'rsatadi (holatlari bilan)."""
+    did = driver_id_for_chat(chat_id)
+    if not did:
+        reply(chat_id,
+              "⚠️ Siz haydovchi sifatida bog'lanmagansiz.\n"
+              "Avval telefon raqamingizni ulashing "
+              "yoki admin bilan bog'laning.")
+        return
+    try:
+        rows = get_storage().appeals_list(driver_id=did, limit=20)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Murojaatlar olinmadi (%s): %s", chat_id, exc)
+        reply(chat_id, "⚠️ Murojaatlar ro'yxatini olishda xato.")
+        return
+    if not rows:
+        reply(chat_id,
+              "📭 <b>MUROJAATLARINGIZ YO'Q</b>\n\n"
+              "Yangi murojaat yuborish uchun /murojaat buyrug'idan "
+              "foydalaning.")
+        return
+    lines = ["📬 <b>MUROJAATLARINGIZ</b>\n"]
+    for r in rows[:10]:
+        st = str(r.get("status") or "YANGI")
+        ico = {"YANGI": "🆕", "KORIB_CHIQILMOQDA": "👀",
+               "JAVOB_YOZILDI": "💬", "HAL_QILINDI": "✅"}.get(st, "📄")
+        title = str(r.get("title") or (str(r.get("text") or "")[:40]) or "-")
+        lines.append(
+            f"{ico} <b>#{r.get('id')}</b> {esc(title)}\n"
+            f"    Holat: <b>{esc(st)}</b> · {esc(str(r.get('created_at') or '')[:10])}")
+        if r.get("reply"):
+            lines.append(f"    💬 Javob: {esc(str(r['reply'])[:200])}")
+        lines.append("")
+    reply(chat_id, "\n".join(lines).strip())
+
+
+def _notify_admins_appeal(driver_id: str, data: dict) -> None:
+    """Yangi murojaat haqida admin/dispetcherlarga xabar yuboradi."""
+    try:
+        from ..telegram import send_message as _send
+        from ...config.settings import telegram_settings as _ts
+        s = _ts()
+        ids = [x for x in str(s.get("admin_ids") or "").split(",")
+               if x.strip().isdigit()] + \
+              [x for x in str(s.get("dispatcher_ids") or "").split(",")
+               if x.strip().isdigit()]
+        if not ids:
+            return
+        driver = get_storage().find("drivers", external_id=str(driver_id)) or {}
+        name = short_name(str(driver.get("full_name") or driver_id or "-"))
+        msg = (
+            "📬 <b>YANGI MUROJAAT</b>\n\n"
+            f"👨‍✈️ Haydovchi: <b>{esc(name)}</b>\n"
+            f"📋 Mavzu: {esc(str(data.get('title') or '—'))}\n"
+            f"✍️ Matn: {esc(str(data.get('text') or ''))}\n\n"
+            "Dashboard → Murojaatlar bo'limida javob qoldiring."
+        )
+        for cid in ids:
+            try:
+                _send(msg, chat_id=cid.strip(), parse_mode="HTML")
+            except Exception:  # noqa: BLE001 - bittasi xato bo'lsa qolgani yuboriladi
+                pass
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Murojaat xabari yuborilmadi: %s", exc)
 
 
 def _notify_driver(driver_id: str, flow: str, data: dict) -> str:
@@ -603,6 +1378,22 @@ def commit_driver_entry(chat_id: int) -> None:
                                 distance_km=float(data.get("km") or 0),
                                 trip_count=int(data.get("trips") or 0))
         reply(chat_id, "✅ <b>Kunlik qayd saqlandi</b>")
+    elif flow == "appeal":
+        aid = st.appeal_add(
+            driver_id=str(driver_id or ""),
+            title=str(data.get("title") or "").strip(),
+            text=str(data.get("text") or "").strip(),
+            status="YANGI")
+        if aid:
+            reply(chat_id,
+                  "✅ <b>Murojaat qabul qilindi</b>\n\n"
+                  f"Raqam: <code>#{aid}</code>\n"
+                  "Yangi murojaatlar dashboard'dagi "
+                  "“Murojaatlar” sahifasida ko'rinadi.")
+            _notify_admins_appeal(driver_id, data)
+        else:
+            reply(chat_id, "⚠️ Murojaat saqlanmadi. Qayta urinib ko'ring.")
+        return
     else:
         st.add_driver_fine(driver_id=driver_id, date=data.get("date", ""),
                            amount=float(data.get("amount") or 0),
@@ -797,8 +1588,11 @@ def _try_link_driver(chat_id: int, text: str) -> None:
     if text_clean in ("start", "/start"):
         reply(chat_id,
               "👤 <b>Haydovchi kirishi</b>\n\n"
-              "Telefon raqamingizni kiriting (masalan: <code>901234567</code>).\n"
-              "Biz sizni tizimdan topamiz.")
+              "Telefon raqamingizni yuboring — quyidagi 📱 tugmani bossangiz, "
+              "raqamingiz avtomatik yuboriladi (yoki qo'lda yozing: "
+              "<code>901234567</code>).\n"
+              "Biz sizni tizimdan topamiz.",
+              reply_markup=kb.share_phone_kb())
         with _DRIVER_LINK_LOCK:
             _DRIVER_LINK_STATE.add(chat_id)
         return
@@ -819,8 +1613,13 @@ def _try_link_driver(chat_id: int, text: str) -> None:
         if not row:
             row = st.find_driver_by_notification(text_clean)
         if not row:
-            reply(chat_id, "❌ Bu raqam tizimda topilmadi. "
-                           "Admin bilan bog'laning.")
+            reply(chat_id,
+                  "❌ Bu raqam tizimda topilmadi. Admin bilan bog'laning.\n\n"
+                  "Boshqa raqam bilan qayta urinish uchun yozishingiz mumkin "
+                  "(yoki /cancel — bekor qilish).",
+                  reply_markup=kb.share_phone_kb())
+            with _DRIVER_LINK_LOCK:
+                _DRIVER_LINK_STATE.add(chat_id)  # oqim ochiq qolsin
             return
         driver_id = str(row.get("driver_id") or "")
         if not driver_id:
@@ -828,6 +1627,12 @@ def _try_link_driver(chat_id: int, text: str) -> None:
             return
         st.link_driver_telegram(driver_id, chat_id)
         _DRIVER_CHAT_CACHE[chat_id] = driver_id
+        # Rol darhol HAYDOVCHI bo'lsin (eski VIEWER yozuvidan ustun).
+        try:
+            from ...core.bot_users import set_role
+            set_role(chat_id, "DRIVER")
+        except Exception:  # noqa: BLE001 - kuzatuv yozuvi to'smaydi
+            pass
         from ...db import get_storage as _gs
         _drow = _gs().find("drivers", external_id=driver_id)
         dname = short_name(str((_drow or {}).get("full_name") or driver_id[:12]))
@@ -863,6 +1668,15 @@ def handle_message(chat_id: int, text: str) -> None:
         _try_link_driver(chat_id, text)
         return
 
+    # Passport to'ldirish oqimi (haydovchi o'zi hujjat kiritadi)
+    if _passport_flow_current(chat_id):
+        if _continue_passport_flow(chat_id, text):
+            return
+
+    # ADMIN haydovchi bog'lash oqimi (izlash qadami)
+    if _continue_admin_link_flow(chat_id, text):
+        return
+
     if cmd in ("start", "help"):
         if cmd == "start" and role is Role.VIEWER:
             did = driver_id_for_chat(chat_id)
@@ -883,16 +1697,55 @@ def handle_message(chat_id: int, text: str) -> None:
                   "Menyudan foydalaning:",
                   reply_markup=kb.main_menu_kb(chat_id))
             return
-        reply(chat_id, WELCOME_TEXT if cmd == "start" else HELP_TEXT,
+        reply(chat_id,
+              DRIVER_HELP_TEXT if (cmd == "help" and role is Role.DRIVER)
+              else (WELCOME_TEXT if cmd == "start" else HELP_TEXT),
               reply_markup=kb.main_menu_kb(chat_id))
         return
 
     # Haydovchilar faqat o'z kartasi (today) va settings bilan ishlaydi —
     # kompaniya miqyosidagi bo'limlar (muammolar, reyslar, firma va h.k.)
     # va admin/dispetcher amallari yopiq.
+    # Faol driver_entry oqimi (qayd/jarima/murojaat) davom etayotgan bo'lsa
+    # matn gate'dan o'tadi — pastda continue_driver_entry ishlaydi.
     if role is Role.DRIVER and cmd not in ("today", "settings", "help",
-                                           "myrole"):
+                                           "myrole", "murojaat", "murojaatlarim",
+                                           "passport", "cancel") \
+            and not driver_entry.current(chat_id):
         reply(chat_id, DENIED_TEXT)
+        return
+
+    if cmd in ("passport", "passports"):
+        _start_passport_flow(chat_id)
+        return
+    if cmd == "murojaat":
+        # Murojaat qilish — hamma uchun ochiq, lekin haydovchi sifatida
+        # biriktirilgan bo'lishi kerak (driver_id DB da mavjud). Rol
+        # tekshirilmaydi — haydovchi roli aniqlanmasa ham murojaat qila oladi.
+        did = driver_id_for_chat(chat_id)
+        if not did:
+            reply(chat_id,
+                  "⚠️ Siz haydovchi sifatida bog'lanmagansiz.\n"
+                  "Avval telefon raqamingizni ulashing "
+                  "yoki admin bilan bog'laning.")
+            return
+        start_driver_entry(chat_id, "appeal", did)
+        return
+    if cmd == "murojaatlarim":
+        _show_my_appeals(chat_id)
+        return
+    if cmd == "cancel":
+        from ...core.bot_settings import clear_pending
+        clear_pending(chat_id)
+        _cancel_notify_state(chat_id)
+        reply(chat_id, "✅ Bekor qilindi.")
+        return
+
+    if cmd in ("boglash", "linkdriver", "bog'lash"):
+        if not can(role, "driver_edit"):
+            reply(chat_id, DENIED_TEXT)
+            return
+        _start_admin_link_flow(chat_id)
         return
 
     f = context.filters_for(chat_id)
@@ -993,8 +1846,12 @@ def handle_message(chat_id: int, text: str) -> None:
         if role is Role.DRIVER:
             did = driver_id_for_chat(chat_id)
             if did:
-                reply(chat_id, *render.driver_card(did, f, chat_id=chat_id))
+                _send_driver_card(did, chat_id, f)
                 return
+            # Bog'lanmagan haydovchi to'liq dashboardni ko'rmasin —
+            # bog'lash oqimi boshlanadi.
+            _try_link_driver(chat_id, "/start")
+            return
         reply(chat_id, *render.today(f, chat_id=chat_id))
         return
     if cmd == "month":
@@ -1053,6 +1910,10 @@ def handle_message(chat_id: int, text: str) -> None:
     if cmd == "daily":
         from . import daily_summary
         reply(chat_id, daily_summary.send_now())
+        return
+    if cmd == "finesreport":
+        from . import fines_report
+        reply(chat_id, fines_report.send_now())
         return
     if cmd == "ai":
         arg = " ".join(parts[1:]).strip()
@@ -1190,6 +2051,24 @@ def handle_message(chat_id: int, text: str) -> None:
     if cmd == "myrole":
         from .roles import role_label as _rl
         reply(chat_id, f"🎭 Sizning rolingiz: {_rl(resolve_role(chat_id))}")
+        return
+    if cmd in ("notify", "xabar"):
+        if not can(role, "sync"):
+            reply(chat_id, DENIED_TEXT)
+            return
+        _start_notify(chat_id)
+        return
+    if cmd == "whois":
+        if not can(role, "sync"):
+            reply(chat_id, DENIED_TEXT)
+            return
+        _cmd_whois(chat_id, parts)
+        return
+    # Interaktiv /notify oqimi davom etmoqda (ayrim matnli qadamlar)
+    with _NOTIFY_LOCK:
+        _in_notify = chat_id in _NOTIFY_STATE
+    if _in_notify:
+        _continue_notify(chat_id, text)
         return
     if cmd == "list":
         reply(chat_id, legacy.list_text())
@@ -1470,6 +2349,16 @@ def handle_callback(chat_id: int, cq: dict, data: str) -> None:
             "reports": render.reports,
             "insights": _insights_render,
         }
+        # Haydovchi "Dashboard"ni bossa — o'z kartasi ochiladi
+        # (to'liq admin panel emas); bog'lanmagan bo'lsa bog'lash oqimi.
+        if target == "dashboard" and role is Role.DRIVER:
+            did = driver_id_for_chat(chat_id)
+            answer(cq)
+            if did:
+                _send_driver_card(did, chat_id, f)
+            else:
+                _try_link_driver(chat_id, "/start")
+            return
         answer(cq)
         handler = handlers.get(target)
         if not handler:
@@ -1557,6 +2446,14 @@ def handle_callback(chat_id: int, cq: dict, data: str) -> None:
               "Global qiymatga qaytarish uchun <code>0</code> yuboring.",
               reply_markup=kb.back_kb("nav:settings", "❌ Bekor qilish"))
         return
+    if data == "settings:linkdriver":
+        if not can(role, "driver_edit"):
+            answer(cq, "Huquq yo'q")
+            reply(chat_id, DENIED_TEXT)
+            return
+        answer(cq, "Boshlanadi")
+        _start_admin_link_flow(chat_id)
+        return
     if data == "settings:audit":
         if not can(role, "salary"):
             answer(cq, "Huquq yo'q")
@@ -1636,6 +2533,10 @@ def handle_callback(chat_id: int, cq: dict, data: str) -> None:
         answer(cq, "Bekor qilindi")
         return
 
+    if data.startswith("apptopic:"):
+        _pick_appeal_topic(chat_id, cq, data[len("apptopic:"):])
+        return
+
     if data == "plan:add":
         if not can(role, "plan"):
             answer(cq, "Huquq yo'q")
@@ -1661,9 +2562,32 @@ def handle_callback(chat_id: int, cq: dict, data: str) -> None:
         reply(chat_id, planning.plan_text(), reply_markup=kb.plan_kb())
         return
 
+    if data.startswith("linkpick:"):
+        _link_pick_driver(chat_id, cq, data[9:])
+        return
+    if data.startswith("linkuser:"):
+        from ...core.bot_settings import pending
+        p = pending(chat_id) or ""
+        if not p.startswith("link_user:"):
+            answer(cq, "Avval haydovchini tanlang")
+            return
+        _link_apply_user(chat_id, cq, data[9:], p.split(":", 1)[1])
+        return
+
     if data.startswith("d:"):
         answer(cq)
-        reply(chat_id, *render.driver_card(data[2:], f, chat_id=chat_id))
+        _send_driver_card(data[2:], chat_id, f)
+        return
+
+    if data.startswith("dsched:"):
+        answer(cq, "Grafik tayyorlanmoqda...")
+        parts = data.split(":")
+        did = parts[1]
+        try:
+            offset = int(parts[2]) if len(parts) > 2 else 1
+        except ValueError:
+            offset = 1
+        _send_driver_schedule(did, chat_id, f, day_offset=offset)
         return
 
     if data.startswith("v:"):
@@ -1738,6 +2662,61 @@ def handle_callback(chat_id: int, cq: dict, data: str) -> None:
         return
 
     answer(cq)
+
+
+def handle_contact(chat_id: int, contact: dict) -> None:
+    """Telegram contact ulashish — haydovchini avtomatik bog'lash.
+
+    Foydalanuvchi "📱 Raqamni ulashish" tugmasini bossa, raqami DB'dagi
+    haydovchi telefonlari bilan solishtiriladi. Topilsa — telegram_chat_id
+    bog'lanadi, topilmasa — oqim ochiq qoladi (qo'lda yozish mumkin).
+    """
+    phone = str((contact or {}).get("phone_number") or "")
+    log.info("contact <- %s: %s", chat_id, phone)
+    try:
+        from ...core.bot_users import record_activity
+        record_activity(chat_id, "contact", phone)
+    except Exception:  # noqa: BLE001 - kuzatuv xatosi botni to'xtatmaydi
+        pass
+    if not phone:
+        reply(chat_id, "⚠️ Raqam kelmedi. Qaytadan urinib ko'ring.")
+        return
+    from ...db import get_storage as _gs
+    st = _gs()
+    row = st.find_driver_by_phone(phone)
+    if not row:
+        reply(chat_id,
+              "❌ Bu raqam tizimda topilmadi.\n\n"
+              "Raqamni qo'lda yozib urinib ko'ring (masalan: "
+              "<code>901234567</code>) yoki admin bilan bog'laning "
+              "(/cancel — bekor qilish).",
+              reply_markup=kb.share_phone_kb())
+        with _DRIVER_LINK_LOCK:
+            _DRIVER_LINK_STATE.add(chat_id)
+        return
+    driver_id = str(row.get("driver_id") or "")
+    if not driver_id:
+        reply(chat_id, "❌ Haydovchi ID topilmadi. Admin bilan bog'laning.")
+        return
+    st.link_driver_telegram(driver_id, chat_id)
+    from .roles import _DRIVER_CHAT_CACHE
+    _DRIVER_CHAT_CACHE[chat_id] = driver_id
+    with _DRIVER_LINK_LOCK:
+        _DRIVER_LINK_STATE.discard(chat_id)
+    from ...core.bot_settings import clear_pending
+    clear_pending(chat_id)
+    # Contact bilan bog'langan foydalanuvchi ham darhol HAYDOVCHI.
+    try:
+        from ...core.bot_users import set_role
+        set_role(chat_id, "DRIVER")
+    except Exception:  # noqa: BLE001
+        pass
+    _drow = st.find("drivers", external_id=driver_id)
+    dname = short_name(str((_drow or {}).get("full_name") or driver_id[:12]))
+    answer_txt = (f"✅ <b>Xush kelibsiz, {dname}!</b>\n\n"
+                  "Raqamingiz bo'yicha tizimga bog'landingiz. "
+                  "Menyudan foydalaning.")
+    reply(chat_id, answer_txt, kb.main_menu_kb(chat_id))
 
 
 def handle_document(chat_id: int, doc: dict) -> None:

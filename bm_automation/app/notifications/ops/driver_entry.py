@@ -13,6 +13,10 @@ Haydovchi kartasidagi tugmalar orqali boshlanadi:
     2. Summa (so'm)
     3. Sabab (ixtiyoriy)
 
+- ``appeal`` — haydovchi murojaat flow (`/murojaat`):
+    1. Mavzu (ixtiyoriy)
+    2. Matn (majburiy)
+
 Holat per-chat ``state/driver_entry.json`` faylida saqlanadi (bot restart'da
 ham yo'qolmaydi). Yakunlangach ``dispatch.commit_driver_entry`` storage'ga
 yozadi va yangilangan kartani ko'rsatadi.
@@ -32,6 +36,7 @@ STATE_FILE = Path("state") / "driver_entry.json"
 _STEPS = {
     "log": ("date", "vehicle", "km", "trips"),
     "fine": ("date", "amount", "reason"),
+    "appeal": ("title", "text"),
 }
 
 _PENDING: dict[int, dict] = {}
@@ -103,6 +108,12 @@ def _validate(step: str, value: str) -> str | None:
                 raise ValueError
         except (TypeError, ValueError):
             return "Butun son kiriting (0 dan katta yoki teng)."
+    elif step == "title":
+        if not value:
+            return "Mavzu yozing yoki o'tkazib yubormoqchi bo'lsangiz <code>-</code>."
+    elif step == "text":
+        if not value:
+            return "Murojaat matnini kiriting."
     return None
 
 
@@ -123,7 +134,7 @@ def set_value(chat_id: int, value: str) -> str | None:
         err = _validate(step, value)
         if err:
             raise ValueError(err)
-        if step in ("vehicle", "reason") and \
+        if step in ("vehicle", "reason", "title") and \
                 value.lower() in ("-", "0", "skip", "yoq", "no", "none"):
             value = ""
         st["data"][step] = value
@@ -155,4 +166,6 @@ def prompts() -> dict:
         "trips": "🔁 Qatnovlar soni:",
         "amount": "💸 Jarima summasi (so'm):",
         "reason": "📝 Sabab (bo'sh qoldirish mumkin: <code>-</code>):",
+        "title": "📋 Mavzu (qisqa, ixtiyoriy; o'tkazib yuborish: <code>-</code>):",
+        "text": "✍️ Murojaat yoki taklif matni:",
     }

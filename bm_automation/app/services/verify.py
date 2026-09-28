@@ -189,7 +189,7 @@ def verify_month(month: str | None = None, filters: dict | None = None) -> dict:
         pid = str(prof.get("profileId") or "").strip()
         try:
             if pid:
-                client.login_by_profile(pid)
+                client.login_for_profile(pid, fallback_to_main=True)
             else:
                 use_main()
         except Exception as exc:  # noqa: BLE001 - token xatosi bir firmada

@@ -24,6 +24,7 @@ HELP_TEXT = (
     "/schedule — yo'nalish jadvali (/schedule 2026-08-15)\n"
     "/attendance — davomat (/attendance 2026-08-15)\n"
     "/alerts — muammo alertlari holati\n"
+    "/finesreport — oylik jarima hisoboti (qo'lda)\n"
     "/insights — AI o'z-o'zini rivojlantirish tahlili (loglar + tavsiyalar)\n\n"
     "📈 <b>Amallar</b>\n"
     "/export — eksport (xlsx|csv|pdf) [scope]\n"
@@ -55,6 +56,23 @@ WELCOME_TEXT = (
     "🤖 <b>AI-yordamchi:</b> tabiiy tilda so'rang — masalan "
     "\"Xulosa ber\", \"Davomat qanday?\", \"Ertaga qanday bo'ladi?\".\n\n"
     "Bugungi statistika uchun /today bosing yoki quyidagi menyudan tanlang."
+)
+
+# Haydovchilar uchun yordam — faqat o'z kartasi va profili haqida.
+DRIVER_HELP_TEXT = (
+    "🚗 <b>Haydovchi uchun yordam</b>\n\n"
+    "📊 <b>O'z ma'lumotlaringiz</b>\n"
+    "/today — o'z kartangiz (Ish kunlari, Qatnov, Km, Qatnashish)\n"
+    "/settings — profil va til sozlamalari\n\n"
+    "📬 <b>Murojaat</b>\n"
+    "/murojaat — yangi murojaat yoki taklif yuborish\n"
+    "/murojaatlarim — murojaatlaringiz holati va javoblari\n\n"
+    "⚙️ <b>Boshqa</b>\n"
+    "/start — asosiy menyu\n"
+    "/myrole — mening rol\n"
+    "/help — yordam\n\n"
+    "Sizga kompaniya, reyslar va muammolar bo'limlari yopiq — "
+    "bular dispetcher/admin uchun."
 )
 
 DENIED_TEXT = "⛔ Sizda bu amal uchun huquq yo'q."

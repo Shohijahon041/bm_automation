@@ -17,7 +17,7 @@ from datetime import date as _date, timedelta
 from typing import Callable
 
 from ..api.client import BMClient
-from ..config.settings import km_rate_setting
+from ..config.settings import km_rate_for
 from ..repositories.driver_repo import DRIVERS, DriverRepository
 from ..repositories.duty_repo import DutyRepository
 from ..repositories.gross_repo import GrossRepository
@@ -174,7 +174,7 @@ def sync_driver_profiles(storage: Storage, client: BMClient, route_id: str,
         if not drivers:
             result.error = "drivers jadvali bo'sh — avval sync_drivers ishga tushiring"
             return result
-        rate = km_rate_setting()
+        rate = km_rate_for(route_id)
         failures: list[str] = []
         with storage.db.transaction():
             for d in drivers:
@@ -200,9 +200,9 @@ def sync_driver_profiles(storage: Storage, client: BMClient, route_id: str,
                     if not isinstance(detail, dict):
                         detail = None
                 src = detail if detail is not None else payload
-                # Faqat yangi profil uchun global km_rate; mavjud profilingiz
-                # shaxsiy km_rate saqlanib qoladi (sync uni HECH QACHON
-                # ustiga yozmaydi).
+                # Faqat yangi profil uchun yo'nalish narxi (km_rate_for);
+                # mavjud profilning shaxsiy km_rate saqlanib qoladi (sync uni
+                # HECH QACHON ustiga yozmaydi).
                 existing_rate = existing.get("km_rate")
                 if existing_rate and float(existing_rate) > 0:
                     use_rate = float(existing_rate)
@@ -840,7 +840,7 @@ def sync_all_profiles(storage: Storage, client: BMClient,
             continue
         try:
             if pid:
-                client.login_by_profile(pid)
+                client.login_for_profile(pid, fallback_to_main=True)
             else:
                 use_main()
         except Exception as exc:  # noqa: BLE001 - token xatosi bir profilni to'xtatadi

@@ -25,6 +25,22 @@ def _kv(f: dict) -> list:
             ("status", f.get("status", "") or "barchasi")]
 
 
+def _n(v) -> float:
+    """Raqamni 2 kasrga yaxlitlaydi (None/noto'g'ri uchun 0)."""
+    try:
+        return round(float(v or 0.0), 2)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _pc(v) -> float:
+    """Ulushni (0..1) foizga aylantiradi va yaxlitlaydi."""
+    try:
+        return round(float(v or 0.0) * 100.0, 2)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _expand_period(met: m.Metrics, f: dict) -> dict:
     """`month`/`year` filterini aniq davrga aylantiradi va f dagi
     `date`/`from`/`to` ni shu davrga to'g'rilaydi.
@@ -221,6 +237,45 @@ def _data_for(scope: str, met: m.Metrics, f: dict) -> tuple[str, list, list[list
                      t["qabul_qilinmagan"], t["fact_reys"], t["plan_km"],
                      t["fact_km"], t["diff"], t["sum_no_vat"], t["sum_vat"]])
         return "Qabul qilinmagan KM reys", cols, rows
+
+    if scope == "brutto":
+        br = m.brutto(f)
+        pcare = br.get("period_label") or ""
+        cols = ["№", "Haydovchi (F.I.Sh.)", "ID", "Grafik",
+                "Lr (reja km)", "Lf (amalda km)", "SKM (so'm/km)",
+                "Kamal (reys)", "Kstjb (muammoli)", "Kmaq",
+                "Alfa a (%)", "Beta b (%)", "Gamma g (%)", "Sifat indeksi (%)",
+                "Brutto 100 (so'm)", "To'lov (so'm)", "Jarima (so'm)",
+                "Haydovchi ish haqi", "Soliq (12%)", "Qo'lga (so'm)",
+                "Elektr kVt", "Elektr summasi (so'm)"]
+        rows = [[i + 1, r.get("fio") or "", r.get("driver_id") or "",
+                 r.get("grafik") or "",
+                 _n(r.get("lr")), _n(r.get("lf")),
+                 _n(r.get("skm") or br.get("skm")),
+                 r.get("kamal") or 0, r.get("kstjb") or 0, r.get("kmaq") or 0,
+                 _pc(r.get("alpha")), _pc(r.get("beta")),
+                 _pc(r.get("gamma")), _pc(r.get("sifat_index")),
+                 _n(r.get("brutto_100")), _n(r.get("tolov")),
+                 _n(r.get("jarima")), _n(r.get("haydovchi_ish_haqi")),
+                 _n(r.get("haydovchi_soliq")), _n(r.get("haydovchi_qolga")),
+                 _n(r.get("elektr_kwt")), _n(r.get("elektr_summ"))]
+                for i, r in enumerate(br.get("rows") or [])]
+        a = br.get("agg") or {}
+        if rows:
+            rows.append(["JAMI", f"{len(rows)} haydovchi", "", "",
+                         _n(a.get("lr")), _n(a.get("lf")),
+                         _n(br.get("skm")),
+                         a.get("kamal") or 0, a.get("kstjb") or 0,
+                         a.get("kmaq") or 0,
+                         _pc(a.get("alpha")), _pc(a.get("beta")),
+                         _pc(a.get("gamma")), "",
+                         _n(a.get("brutto_100")), _n(a.get("tolov")),
+                         _n(a.get("jarima")), _n(a.get("haydovchi_ish_haqi")),
+                         _n(a.get("haydovchi_soliq")),
+                         _n(a.get("haydovchi_qolga")),
+                         _n(a.get("elektr_kwt")), _n(a.get("elektr_summ"))])
+        label = f" ({pcare})" if pcare else ""
+        return f"Brutto-shartnoma to'lovi{label}", cols, rows
 
     # trips (default)
     cols = ["id", "date", "route_id", "vehicle_id", "driver_id",

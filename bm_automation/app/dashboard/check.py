@@ -60,7 +60,7 @@ def _check_one_day(client, gross_repo, storage, rid: str, name: str,
     pid = str(profiles.get(rid, {}).get("profileId") or "").strip()
     try:
         if pid:
-            client.login_by_profile(pid)
+            client.login_for_profile(pid, fallback_to_main=True)
         else:
             use_main()
     except Exception as exc:  # noqa: BLE001

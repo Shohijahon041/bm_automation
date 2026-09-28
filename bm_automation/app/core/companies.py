@@ -49,7 +49,7 @@ def _admin_client(profile: dict) -> "object":
     client.login()
     pid = str(profile.get("profileId") or "").strip()
     if pid:
-        client.login_by_profile(pid)
+        client.login_for_profile(pid, fallback_to_main=True)
     return client
 
 

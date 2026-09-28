@@ -5,9 +5,9 @@ Har bir kompaniya uchun:
     - profileId   — OneID profili ID (get-token-by-profile uchun; bo'sh = joriy token)
     - routeVariantId — kompaniyaning yo'nalishi
     - routeName   — jadval sarlavhasida ko'rsatiladigan yo'nalish nomi
-    - kmRate      — yo'nalish uchun 1 km narxi (so'm); ustunlik tartibida
-      eng pastda: bot orqali o'rnatilgan → `KM_RATE` env → haydovchining
-      shaxsiy `km_rate` → kompaniya `kmRate`
+    - kmRate      — yo'nalish uchun 1 km narxi (so'm); ustunlik tartibida:
+      haydovchining shaxsiy `km_rate` → dashboard'dan o'rnatilgan `route_km`
+      → kompaniya `kmRate` (global/env emas)
     - start1      — 1-chiqish konechkasi nomi (masalan "Prez Oldi")
     - start2      — 2-chiqish konechkasi nomi (masalan "Oybek Massiv")
 
@@ -120,19 +120,74 @@ def owner_chat_ids(profile: dict | None) -> list[int]:
     return out
 
 
-def set_owner_chat_ids(name: str, chat_ids: list[int]) -> dict:
-    """Kompaniyaga egalarni biriktiradi (upsert orqali)."""
-    p = get_profile(name) or {"name": name}
-    p["ownerChatIds"] = [int(c) for c in chat_ids if str(c).strip().lstrip("-").isdigit()]
+def add_profile(name: str, route_variant_id: str = "", route_name: str = "",
+                profile_id: str = "") -> dict:
+    """Yangi kompaniya qo'shadi (xuddi shu nom mavjud bo'lsa xato)."""
+    name = str(name or "").strip()
+    if not name:
+        raise ValueError("Kompaniya nomi bo'sh")
+    if get_profile(name):
+        raise ValueError(f"Kompaniya allaqachon mavjud: {name}")
+    p = {"name": name,
+         "profileId": str(profile_id or "").strip(),
+         "routeVariantId": str(route_variant_id or "").strip(),
+         "routeName": str(route_name or "").strip()}
     upsert_profile(p)
     return p
 
 
-def set_credentials(name: str, username: str, password: str) -> dict:
-    """Kompaniyaning o'z BM kredensiallarini saqlaydi."""
+def set_credentials(name: str, username: str = "", password: str = "") -> dict:
+    """Kompaniyaning o'z BM kredensiallarini saqlaydi.
+
+    `username` yoki `password` bo'sh o'tkazilsa — mavjud qiymat SAQLANADI
+    (faqat bittasini o'zgartirish mumkin). Ikkalasi ham bo'sh bo'lsa kredensial
+    to'liq o'chiriladi.
+    """
     p = get_profile(name) or {"name": name}
-    p["username"] = (username or "").strip()
-    p["password"] = (password or "").strip()
+    u = (username or "").strip()
+    pw = (password or "").strip()
+    if u:
+        p["username"] = u
+    if pw:
+        p["password"] = pw
+    if not u and not pw:
+        p.pop("username", None)
+        p.pop("password", None)
+    upsert_profile(p)
+    return p
+
+
+def delete_profile(name: str) -> bool:
+    """Kompaniyani profiles.json'dan o'chiradi (topilmasa False)."""
+    data = load_profiles()
+    target = str(name or "").strip().lower()
+    before = len(data.get("profiles") or [])
+    data["profiles"] = [
+        p for p in (data.get("profiles") or [])
+        if str(p.get("name", "")).strip().lower() != target
+    ]
+    if len(data["profiles"]) == before:
+        return False
+    if str(data.get("active", "")).strip().lower() == target:
+        active = next((str(p.get("name")) for p in data["profiles"]), "")
+        data["active"] = active
+    save_profiles(data)
+    return True
+
+
+def update_profile_fields(name: str, fields: dict) -> dict:
+    """Kompaniya maydonlarini qisman yangilaydi (noma'lum maydonlar tashlanadi).
+
+    Ruxsat etilgan maydonlar: profileId, routeVariantId, routeName, kmRate,
+    start1, start2, ownerChatIds.
+    """
+    allowed = {"profileId", "routeVariantId", "routeName", "kmRate",
+               "start1", "start2", "ownerChatIds"}
+    updates = {k: v for k, v in (fields or {}).items() if k in allowed}
+    p = get_profile(name)
+    if not p:
+        raise ValueError(f"Profil topilmadi: {name}")
+    p.update(updates)
     upsert_profile(p)
     return p
 

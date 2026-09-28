@@ -167,6 +167,43 @@ def today(filters: dict | None = None, chat_id: int | None = None) -> tuple[str,
                                       _profile_bar(f), kb.nav_kb("nav:sync"))
 
 
+def today_short(filters: dict | None = None, chat_id: int | None = None) -> str:
+    """Bugungi holatning qisqa ixcham varianti (guruh chat'lar uchun).
+
+    To'liq karta va tugmalarsiz — bir nechta satrda asosiy raqamlar.
+    Guruhga spam tashlamaslik uchun `in_group` rejimida ishlatiladi.
+    """
+    f = parse_filters(filters)
+    m = _met()
+    t = m.today(f)
+    p = m.problems(f)
+    c = p["counts"]
+
+    title = "📊 <b>BUGUNGI HOLAT</b>"
+    if f.get("profile"):
+        title += f" — 🏢 {context.short_name(f['profile'])}"
+    perf = (t["completed"] / t["planned"] * 100) if t["planned"] else None
+    lines = [
+        title,
+        f"📅 {_date_label(t['date'])}",
+        "",
+        f"🚌 Jami: {t['total_buses']} · Faol: {t['active_buses']}",
+        f"📋 Reja: {fmt(t['planned'], 0)} · Amalda: {fmt(t['completed'], 0)} · "
+        f"{badge(perf)}",
+    ]
+    if t["accepted"] or t["not_accepted"]:
+        parts = []
+        if t["accepted"]:
+            parts.append(f"✅ Qabul: {fmt(t['accepted'], 0)}")
+        if t["not_accepted"]:
+            parts.append(f"◇ Qab.yoq: {fmt(t['not_accepted'], 0)}")
+        lines.append("   ".join(parts))
+    lines.append(f"⚠️ Muammolar: {sum(c.values())} ta "
+                 f"(GPS {c['gps']} · Tex {c['technical']} · "
+                 f"Jad {c['schedule']} · Sim {c['unknown']})")
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------- /problems
 
 def _problem_table(items: list[dict], limit: int = 6) -> list[str]:
@@ -419,8 +456,9 @@ def driver_inbox(driver_id: str, filters: dict | None = None,
     """Haydovchi o'zi uchun: profil kartasi + kamchiliklar (inbox uslubi).
 
     `/start` da haydovchi o'z profilini ko'radi; Brutto/Netto satrlari
-    `chat_id` gating orqali yashiriladi. Kamchiliklar bo'lmasa, profil
-    kartasi toza chiqadi.
+    `chat_id` gating orqali yashiriladi (umumiy jarima summasi esa
+    haydovchiga ham ko'rinadi). Kamchiliklar bo'lmasa, profil kartasi
+    toza chiqadi.
     """
     did = str(driver_id or "").strip()
     text, markup = driver_card(did, filters or None, chat_id=chat_id)
@@ -446,6 +484,13 @@ def driver_card(driver_id: str, filters: dict | None = None,
     """
     driver_id = str(driver_id or "").strip()
     f = _default_month(parse_filters(filters or {}), filters or {})
+    # Haydovchi o'z kartasini ko'rganida `__deny__`/`__none__` sentinel
+    # qiymatlari (ruxsatsiz ma'lumot belgisi) barcha satrlarni yashirib
+    # qo'yadi — ularni tashlab, o'z statistikasi to'liq ko'rinadi.
+    if chat_id is not None and resolve_role(chat_id) is Role.DRIVER:
+        for _key in ("route", "profile"):
+            if f.get(_key) in ("__deny__", "__none__"):
+                f.pop(_key, None)
     data = _met().driver_detail(driver_id, f)
     if not data:
         return ("👨‍✈️ <b>HAYDOVCHI</b>\n\n"
@@ -453,21 +498,39 @@ def driver_card(driver_id: str, filters: dict | None = None,
     d = data["driver"]
     p = data["profile"]
     title = "👨‍✈️ <b>HAYDOVCHI KARTASI</b>"
-    if f.get("profile"):
+    is_driver_self = chat_id is not None and resolve_role(chat_id) is Role.DRIVER
+    if f.get("profile") and not is_driver_self:
         title += f" — 🏢 {context.short_name(f['profile'])}"
+    elif is_driver_self and str(d.get("company") or "").strip() and \
+            str(d.get("company") or "").strip() not in ("none", "None"):
+        title += f" — 🏢 {esc(d['company'])}"
     parts = [title, esc(short_name(str(d.get("name") or "-"))),
              f"🆔 ID: <code>{esc(d.get('driver_id'))}</code>"]
 
     marks = []
     if d.get("blacklisted"):
-        marks.append("⛔ Qora ro'yxatda")
+        marks.append("⛔ QORA RO'YXATDA")
     if d.get("notification_enabled"):
         marks.append("🔔 Telegram bildirishnoma yoqilgan")
     if marks:
         parts.append(" · ".join(marks))
+    # Qora ro'yxat sababi — alohida blokda prominently ko'rsatiladi.
+    if d.get("blacklisted") and str(p.get("blacklist_reason") or "").strip():
+        parts += [f"🚫 Sabab: {esc(str(p['blacklist_reason']).strip())}"]
+    # Reyting o'rni — yo'nalish bo'yicha nechanchi o'rinda (KM bo'yicha).
+    rank = None
+    try:
+        rank = _met().driver_rank(driver_id, f, "km")
+    except Exception:  # noqa: BLE001 - rank aniqlanmasa kartani buzmaydi
+        rank = None
     rating = d.get("rating")
-    parts.append(f"⭐ Reyting: {fmt(rating, 1) if rating is not None else '-'}  ·  "
-                 f"💵 1 km: {fmt(d.get('km_rate') or 0, 0)} so'm")
+    rating_txt = f"⭐ Reyting: {fmt(rating, 1) if rating is not None else '-'}"
+    if rank and rank.get("position"):
+        rating_txt += (f"  ·  🏆 {rank['position']}-o'rin"
+                       f" (yo'nalish, {rank['total']} dan)")
+    if _can_view_salary(chat_id):
+        rating_txt += f"  ·  💵 1 km: {fmt(d.get('km_rate') or 0, 0)} so'm"
+    parts.append(rating_txt)
 
     doc_lines = []
     if d.get("has_passport"):
@@ -498,6 +561,19 @@ def driver_card(driver_id: str, filters: dict | None = None,
         ["Qatnov", qatnov],
         ["Km", km],
     ]
+    # Jarima summasi — haydovchi o'z profilida ham ko'radi (faqat umumiy
+    # summa; tafsilotlar va ish haqi qatorlari role-gating orqali).
+    # Avval jadvalda, keyin alohida "💸 JAMI JARIMA" blokida ko'rsatiladi.
+    fines_sum = data.get("fines_total")
+    if fines_sum is None:
+        try:  # eski Metrics.da maydon bo'lmasa — DB dan hisoblaymiz
+            fines_sum = sum(
+                float(r.get("amount") or 0)
+                for r in get_storage().fines_list(driver_id, f.get("month") or "")
+                if str(r.get("status") or "ACTIVE").upper() == "ACTIVE")
+        except Exception:  # noqa: BLE001 - jarima bo'lmasa kartani buzmaydi
+            fines_sum = 0.0
+    rows.append(["💸 Jarima summasi", fmt(float(fines_sum or 0), 0) + " so'm"])
     if _can_view_salary(chat_id):
         rows += [
             ["Brutto", fmt(d.get("gross_pay") or 0, 0)],
@@ -518,6 +594,10 @@ def driver_card(driver_id: str, filters: dict | None = None,
             for r in logs[:8]
         ]))
 
+    # Umumiy jarima summasi — kartada ko'zga ko'ringan alohida blok.
+    if (fines_sum or 0) > 0:
+        parts += ["", f"💸 <b>JAMI JARIMA:</b> {fmt(float(fines_sum), 0)} so'm"]
+
     fines = data.get("fine_rows") or []
     if fines:
         parts += ["", "⚠️ <b>JARIMALAR</b>"]
@@ -526,6 +606,27 @@ def driver_card(driver_id: str, filters: dict | None = None,
              (r.get("reason") or "-")[:16], r.get("status") or "-"]
             for r in fines[:8]
         ]))
+
+    # Qabul qilinmagan reyslar + KM (reja/amalda) — davr uchun hisobot.
+    # Haydovchi o'zi ko'rsa ham muhim: qaysi kunlarda reja bajarilmagani.
+    try:
+        na = _met().not_accepted_km_report({**f, "driver": driver_id})
+        na_rows = [r for r in (na.get("rows") or [])
+                   if str(r.get("name") or "") not in
+                   ("— Atribut qilinmagan —", "")]
+        if na_rows:
+            nr = na_rows[0]
+            parts += ["", "🚫 <b>QABUL QILINMAGAN REYSLAR</b>"]
+            parts.append(table(["Ko'rsatkich", "Qiymat"], [
+                ["Qabul qilinmagan reys", fmt(nr.get("qabul_qilinmagan") or 0, 0)],
+                ["Rejadagi reys", fmt(nr.get("plan_reys") or 0, 0)],
+                ["Amalda reys", fmt(nr.get("fact_reys") or 0, 0)],
+                ["Rejadagi km", fmt(nr.get("plan_km") or 0, 1)],
+                ["Amalda km", fmt(nr.get("fact_km") or 0, 1)],
+                ["Yetib bormagan km", fmt(nr.get("diff") or 0, 1)],
+            ]))
+    except Exception:  # noqa: BLE001 - hisobot bo'lmasa kartani buzmaydi
+        pass
 
     trips = data.get("trips") or []
     if trips:
@@ -539,7 +640,11 @@ def driver_card(driver_id: str, filters: dict | None = None,
                 f"{esc(t.get('route') or '-')} | {esc(t.get('vehicle') or '-')}")
     is_driver = chat_id is not None and resolve_role(chat_id) is Role.DRIVER
     kbs: list[dict | None] = []
-    if not is_driver:
+    if is_driver:
+        # Haydovchi o'z kartasida "Grafikim" tugmalarini ko'radi —
+        # kechagi/bugungi/ertangi grafik rasmini shu yerdan oladi.
+        kbs.append(kb.driver_schedule_kb(driver_id))
+    else:
         kbs.append(kb.driver_card_kb(driver_id))
     kbs.append(_profile_bar(f))
     kbs.append(kb.nav_kb("nav:drivers", chat_id=chat_id))
@@ -1113,18 +1218,89 @@ def status(system: dict | None = None) -> tuple[str, dict]:
 
 # -------------------------------------------------------------- /settings
 
+def _driver_profile_settings(did: str, chat_id: int) -> str:
+    """Haydovchi Settings: o'z profil ma'lumotlari (Dashboard'dan farqli).
+
+    Bu yerda oylik statistika/ish qaydlari ko'rsatilmaydi — ular Dashboard
+    bo'limida. Settings faqat shaxsiy profil (firma, hujjatlar, bildirishnoma,
+    til) va kamchiliklar ro'yxatini beradi.
+    """
+    from .roles import driver_id_for_chat
+    filters = context.filters_for(chat_id)
+    f = _default_month(parse_filters(filters or {}), filters or {})
+    # Haydovchi uchun `__deny__`/`__none__` sentinel'lari filtr sifatida
+    # ishlatilmaydi — ma'lumot to'liq ko'rsatiladi.
+    for _key in ("route", "profile"):
+        if f.get(_key) in ("__deny__", "__none__"):
+            f.pop(_key, None)
+    data = _met().driver_detail(did, f)
+    if not data:
+        return "⚙️ <b>SETTINGS</b>\n\nHaydovchi profili topilmadi."
+    d = data["driver"]
+    p = data["profile"]
+    is_driver = resolve_role(chat_id) is Role.DRIVER
+    company = str(d.get("company") or "").strip()
+    if company in ("none", "None"):
+        company = ""
+    rating = d.get("rating")
+    parts = ["⚙️ <b>SETTINGS — MENING PROFILIM</b>",
+             esc(short_name(str(d.get("name") or "-"))),
+             f"🆔 ID: <code>{esc(d.get('driver_id'))}</code>"]
+    if company:
+        parts.append(f"🏢 Firma: {esc(company)}")
+    parts.append(f"⭐ Reyting: {fmt(rating, 1) if rating is not None else '-'}")
+    if p.get("phone"):
+        parts.append(f"📱 Telefon: <code>{esc(p['phone'])}</code>")
+    else:
+        parts.append("📱 Telefon: ❌ kiritilmagan")
+
+    doc_lines = []
+    if d.get("has_passport"):
+        line = f"  Passport: ✅ {esc(p.get('passport_number') or '-')}"
+        if p.get("passport_expiry"):
+            line += f" · muddat: {esc(p['passport_expiry'])}"
+        doc_lines.append(line)
+    else:
+        doc_lines.append("  Passport: ❌ kiritilmagan")
+    if d.get("has_license"):
+        line = f"  Guvohnoma: ✅ {esc(p.get('license_number') or '-')}"
+        if p.get("license_category"):
+            line += f" ({esc(p['license_category'])})"
+        if p.get("license_expiry"):
+            line += f" · muddat: {esc(p['license_expiry'])}"
+        doc_lines.append(line)
+    else:
+        doc_lines.append("  Guvohnoma: ❌ kiritilmagan")
+    parts += ["", "🪪 <b>HUJJATLAR</b>"] + doc_lines
+
+    notif = "🔔 Yoqilgan" if p.get("notification_enabled") else "🔕 O'chiq"
+    parts += ["", f"🔔 Bildirishnoma: {notif}"]
+
+    if is_driver:
+        gaps = driver_shortcomings(data)
+        gaps = [g for g in gaps if "Telegram bildirishnoma" not in g]
+        if gaps:
+            parts += ["", "⚠️ <b>KAMCHILIKLAR</b>"] + [f"  {g}" for g in gaps]
+
+    try:
+        from ...core.bot_settings import lang as _lang
+        lang_txt = "🇷🇺 Русский" if _lang(chat_id) == "ru" else "🇺🇿 O'zbek"
+        parts += ["", f"🌐 Til: {lang_txt}"]
+    except Exception:  # noqa: BLE001 - til sozlamasi bo'lmasa e'tiborsiz
+        pass
+    return "\n".join(parts)
+
+
 def settings_text(chat_id: int | None) -> str:
     role = resolve_role(chat_id)
-    # Haydovchi: faqat o'z profili ko'rsatiladi (kompaniya/admin
-    # ma'lumotlari emas) — `settings_kb` bilan birga yuboriladi.
+    # Haydovchi: faqat o'z profili ko'rsatiladi (Dashboard statistikasi
+    # emas) — `settings_kb` bilan birga yuboriladi.
     if role is Role.DRIVER and chat_id is not None:
         from .roles import driver_id_for_chat
         did = driver_id_for_chat(chat_id)
         if did:
             try:
-                text, _mk = driver_inbox(did, context.filters_for(chat_id),
-                                         chat_id=chat_id)
-                return text
+                return _driver_profile_settings(str(did), chat_id)
             except Exception:  # noqa: BLE001 - profil chiqmasa umumiy matn
                 log.warning("Haydovchi profili ko'rsatilmadi: did=%s", did)
     roles = configured_roles()
@@ -1138,16 +1314,13 @@ def settings_text(chat_id: int | None) -> str:
 
     try:
         from ...core.bot_settings import (ELEC_KWH_PER_KM, brutto_skm,
-                                           elec_price, km_rate, lang)
-        rate = km_rate()
+                                           elec_price, lang)
         el = elec_price()
         skm = brutto_skm()
         lang_txt = "🇷🇺 Русский" if lang(chat_id) == "ru" else "🇺🇿 O'zbek"
     except Exception:  # noqa: BLE001 - sozlama bo'lmasa standart qiymat
-        rate, el, skm, lang_txt = 0.0, 0.0, 16176.0, "🇺🇿 O'zbek"
+        el, skm, lang_txt = 0.0, 16176.0, "🇺🇿 O'zbek"
         ELEC_KWH_PER_KM = 0.955
-    rate_txt = (f"{rate:,.0f}".replace(",", " ") + " so'm"
-                if rate > 0 else "o'rnatilmagan (env / profil bo'yicha)")
     el_txt = (f"{el:,.0f}".replace(",", " ") + " so'm"
               if el > 0 else "o'rnatilmagan")
     skm_txt = (f"{skm:,.0f}".replace(",", " ") + " so'm/km"
@@ -1156,30 +1329,27 @@ def settings_text(chat_id: int | None) -> str:
     route_txt = ""
     if show_finance:
         try:
-            from ...core.bot_settings import (route_km as _route_km,
-                                              route_skm as _route_skm,
+            from ...core.bot_settings import (route_skm as _route_skm,
                                               route_tariff as _route_tariff)
+            from ...config.settings import km_rate_for as _route_rate
             f = context.filters_for(chat_id)
             rid = str(f.get("route") or "").strip()
             if rid:
                 rid_first = rid.split()[0]
                 t = _route_tariff(rid_first)
+                rate = _route_rate(rid_first, 0.0)
+                rate_txt = (f"{rate:,.0f}".replace(",", " ") + " so'm"
+                            if rate > 0 else "o'rnatilmagan")
                 lines = [
                     "",
                     "🏢 <b>FIRMA TARIFLARI</b>",
                     f"  Yo'nalish: {context.short_name(rid_first)}",
                 ]
+                lines.append(f"  Haydovchi 1 km: {rate_txt}")
                 try:
                     rskm = _route_skm(rid_first, skm)
                     lines.append(f"  SKM: {rskm:,.0f} so'm/km"
                                  .replace(",", " "))
-                except Exception:
-                    pass
-                try:
-                    rkm = _route_km(rid_first)
-                    if rkm > 0:
-                        lines.append(f"  Haydovchi 1 km: {rkm:,.0f} so'm"
-                                     .replace(",", " "))
                 except Exception:
                     pass
                 if t.get("no_vat") or t.get("vat"):
@@ -1205,9 +1375,6 @@ def settings_text(chat_id: int | None) -> str:
         "",
         "Sizga ochiq kompaniyalar:",
         f"  {owned_txt}",
-        "",
-        "💵 <b>1 KM NARXI</b>",
-        f"  {rate_txt}",
     ]
     if show_finance:
         parts += [

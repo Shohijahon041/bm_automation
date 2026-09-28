@@ -104,6 +104,18 @@ TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("reason", "TEXT NOT NULL DEFAULT ''"),
         ("status", "TEXT NOT NULL DEFAULT 'ACTIVE'"),
     ],
+    # Haydovchilar taklif va murojaatlari (dashboard orqali kuzatiladi).
+    # Tahrirlash mumkin, holati ko'rsatiladi; odatda haydovchi profilidan
+    # yoki "Murojaatlar" sahifasidan boshqariladi.
+    "driver_appeals": [
+        ("driver_id", "TEXT NOT NULL"),
+        ("title", "TEXT NOT NULL DEFAULT ''"),
+        ("text", "TEXT NOT NULL DEFAULT ''"),
+        # Holati: YANGI / KORIB_CHIQILMOQDA / JAVOB_YOZILDI / HAL_QILINDI
+        ("status", "TEXT NOT NULL DEFAULT 'YANGI'"),
+        ("reply", "TEXT NOT NULL DEFAULT ''"),
+        ("replied_at", "TEXT NOT NULL DEFAULT ''"),
+    ],
     "duties": [
         ("external_id", "TEXT NOT NULL"),
         ("date", "TEXT NOT NULL"),
@@ -279,6 +291,19 @@ TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("days", "INTEGER NOT NULL DEFAULT 0"),
         ("note", "TEXT NOT NULL DEFAULT ''"),
     ],
+    # Dashboard foydalanuvchi akkauntlari (ko'p korxonali tizim uchun).
+    # Har akkaunt bitta korxonaga (profiles.json `name`) tegishli; rol sahifa
+    # va funksiya kirishini cheklaydi. ADMIN company='' (barcha korxonalar).
+    "dashboard_users": [
+        ("username", "TEXT NOT NULL"),
+        ("salt", "TEXT NOT NULL DEFAULT ''"),
+        ("password_hash", "TEXT NOT NULL DEFAULT ''"),
+        # Rol: ADMIN / DIRECTOR / MANAGER / DISPATCHER
+        ("role", "TEXT NOT NULL DEFAULT 'VIEWER'"),
+        ("company", "TEXT NOT NULL DEFAULT ''"),
+        ("active", "INTEGER NOT NULL DEFAULT 1"),
+        ("data", "TEXT NOT NULL DEFAULT '{}'"),
+    ],
 }
 
 # Jadval -> UNIQUE indeks ustunlari (upsert `ON CONFLICT` kalitlari).
@@ -299,6 +324,7 @@ UNIQUE_KEYS: dict[str, list[str]] = {
     "automation_runs": ["run_id"],
     "dispatcher_routes": ["dispatcher_chat_id", "route_id"],
     "sms_route_flags": ["route_id"],
+    "dashboard_users": ["username"],
 }
 
 # Qo'shimcha (UNIQUE emas) indekslar: jadval -> ustunlar.
@@ -317,6 +343,7 @@ EXTRA_INDEXES: dict[str, list[list[str]]] = {
     "sms_log": [["send_at"], ["status"]],
     "avans": [["driver_id"], ["pay_date"]],
     "staff": [["company"], ["position"]],
+    "driver_appeals": [["driver_id"], ["status"]],
 }
 
 STATUS_DESCRIPTIONS = {

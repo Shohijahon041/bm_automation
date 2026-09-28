@@ -582,6 +582,9 @@ def test_sync_all_profiles(storage, monkeypatch):
             self.profile_log.append(pid)
             self.session.headers["Authorization"] = f"Bearer {pid}"
 
+        def login_for_profile(self, pid, fallback_to_main=True):
+            self.login_by_profile(pid)
+
         def _extract_items(self, data):
             return [], {}
 
@@ -839,6 +842,9 @@ def test_sync_work_logs_two_drivers_one_bus(storage):
 
 def test_sync_driver_profiles_fills_detail(storage, monkeypatch):
     from bm_automation.app.db.sync import sync_driver_profiles
+    from bm_automation.app.core import bot_settings as bs
+    monkeypatch.setattr(bs, "route_km",
+                        lambda rid, default=0.0: 1000.0 if rid == "r1" else default)
     storage.save_driver(
         external_id="drv1", full_name="ALIYEV", route_id="r1",
         data={"id": "drv1", "fullName": "ALIYEV",
@@ -855,7 +861,6 @@ def test_sync_driver_profiles_fills_detail(storage, monkeypatch):
                     "phoneNumber": "+998901234567",
                     "pinfl": "32512757040013"}
 
-    monkeypatch.setenv("KM_RATE", "1000")
     r = sync_driver_profiles(storage, _DetailClient(), "r1", "2026-08-10",
                              force=True)
     assert not r.error and r.inserted == 1

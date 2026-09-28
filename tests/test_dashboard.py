@@ -9,6 +9,7 @@ from bm_automation.app.db.base import Database
 from bm_automation.app.db.models import SyncSource, TripRecord, TripStatus
 from bm_automation.app.db.storage import storage_for
 from bm_automation.app.dashboard import export as dexport
+from bm_automation.app.dashboard import metrics as metrics_mod
 from bm_automation.app.dashboard.metrics import Metrics
 from bm_automation.app.dashboard.server import DashboardHandler
 from tests.sqlite_backend import SQLiteDatabase
@@ -44,6 +45,10 @@ def met(tmp_path):
     db = SQLiteDatabase(str(tmp_path / "dash.db"))
     storage = storage_for(db)
     _seed(storage)
+    # sinf darajasidagi keshlarni tozalaymiz — testlar bir-biridan
+    # mustaqil bo'lishi uchun (system() 30s keshlaydi).
+    Metrics._health_cache = {"at": 0.0, "data": None}
+    metrics_mod._summary_cache = {"at": 0.0, "key": "", "data": None}
     return Metrics(storage)
 
 
@@ -183,6 +188,16 @@ def test_drivers_metrics(met):
     assert by_id["d2"]["issues"] == 1
 
 
+def test_drivers_row_includes_phone(met):
+    """Haydovchi reestri qatorida telefon raqami bo'ladi (qidiruv uchun)."""
+    met.storage.save_driver_profile("d1", phone="+998 90 123 45 67")
+    f = {"date": "2026-08-10", "from": "2026-08-10", "to": "2026-08-10"}
+    rows = met.drivers(f)
+    by_id = {d["driver_id"]: d for d in rows}
+    assert by_id["d1"]["phone"] == "+998 90 123 45 67"
+    assert by_id.get("d2", {}).get("phone", "") == ""
+
+
 def test_driver_finance_metrics(met):
     storage = met.storage
     storage.save_driver_profile("d1", km_rate=1200, rating=4.8,
@@ -202,15 +217,11 @@ def test_driver_finance_metrics(met):
     assert detail["work_logs"][0]["distance_km"] == 125.5
 
 
-def test_km_rate_global_override(met, monkeypatch):
+def test_km_rate_uses_personal_profile(met, monkeypatch):
     storage = met.storage
     storage.save_driver_profile("d1", km_rate=1200)
     f = {"date": "2026-08-10", "from": "2026-08-10", "to": "2026-08-10"}
-    # KM_RATE bo'sh — profil qiymati ishlatiladi
-    monkeypatch.setenv("KM_RATE", "")
-    assert {x["driver_id"]: x["km_rate"] for x in met.drivers(f)}["d1"] == 1200
-    # Yangi tartib: driver profil > KM_RATE env (shaxsiy narx saqlanadi)
-    monkeypatch.setenv("KM_RATE", "2000")
+    # Shaxsiy profil narxi ishlatiladi (global KM_RATE endi mavjud emas)
     assert {x["driver_id"]: x["km_rate"] for x in met.drivers(f)}["d1"] == 1200
     detail = met.driver_detail("d1", f)
     assert detail["driver"]["km_rate"] == 1200
@@ -223,7 +234,6 @@ def test_km_rate_by_route(met, monkeypatch):
     storage.save_driver(external_id="dRX", full_name="Route haydovchi",
                         route_id="rB80")
     storage.save_driver_profile("dRX", km_rate=0)
-    monkeypatch.setenv("KM_RATE", "")
     monkeypatch.setattr(
         pmod, "all_profiles",
         lambda: [{"name": "ASL", "routeVariantId": "rB80", "kmRate": 2363.8}])
@@ -235,7 +245,7 @@ def test_km_rate_by_route(met, monkeypatch):
 
 
 def test_km_rate_precedence(met, monkeypatch):
-    """Ustunlik: haydovchi km_rate > yo'nalish kmRate > KM_RATE env."""
+    """Ustunlik: haydovchi km_rate > yo'nalish kmRate > global EMAV."""
     import bm_automation.app.core.profiles as pmod
     storage = met.storage
     storage.save_driver(external_id="dRX", full_name="Route haydovchi",
@@ -245,28 +255,8 @@ def test_km_rate_precedence(met, monkeypatch):
         pmod, "all_profiles",
         lambda: [{"name": "ASL", "routeVariantId": "rB80", "kmRate": 2363.8}])
     f = {"from": "2026-08-10", "to": "2026-08-10"}
-    # 1) shaxsiy km_rate yo'nalishdan ustun
-    monkeypatch.setenv("KM_RATE", "")
+    # shaxsiy km_rate yo'nalishdan ustun
     assert {x["driver_id"]: x["km_rate"] for x in met.drivers(f)}["dRX"] == 1500
-    # 2) shaxsiy km_rate KM_RATE env'dan ham ustun (yangi tartib)
-    monkeypatch.setenv("KM_RATE", "900")
-    assert {x["driver_id"]: x["km_rate"] for x in met.drivers(f)}["dRX"] == 1500
-
-
-def test_km_rate_bot_editable_overrides_env(met, monkeypatch):
-    """Yangi tartib: driver profil > bot_settings > KM_RATE env."""
-    import bm_automation.app.core.bot_settings as bs
-    storage = met.storage
-    storage.save_driver_profile("d1", km_rate=1200)
-    monkeypatch.setenv("KM_RATE", "2000")
-    monkeypatch.setattr(bs, "km_rate", lambda: 2500.0)
-    monkeypatch.setattr(bs, "set_km_rate", lambda v: float(v))
-    f = {"date": "2026-08-10", "from": "2026-08-10", "to": "2026-08-10"}
-    # Driver profil (1200) ham bot_settings (2500) dan ustun
-    assert {x["driver_id"]: x["km_rate"] for x in met.drivers(f)}["d1"] == 1200
-    # Driver profil 0 bo'lsa — bot_settings (2500) ishlatiladi
-    storage.save_driver_profile("d1", km_rate=0)
-    assert {x["driver_id"]: x["km_rate"] for x in met.drivers(f)}["d1"] == 2500
 
 
 def test_km_rate_route_level(met, monkeypatch):
@@ -274,7 +264,6 @@ def test_km_rate_route_level(met, monkeypatch):
     import bm_automation.app.core.bot_settings as bs
     import bm_automation.app.core.profiles as pmod
     from bm_automation.app.config.settings import km_rate_for
-    monkeypatch.setenv("KM_RATE", "")
     monkeypatch.setattr(
         pmod, "all_profiles",
         lambda: [{"name": "ASL", "routeVariantId": "r1", "kmRate": 2363.8}])
@@ -560,6 +549,32 @@ def test_export_drivers_month_scope(patch_storage):
     assert "202608" in name and name.endswith(".csv")
 
 
+def test_export_brutto_scope(patch_storage):
+    """Brutto-shartnoma eksporti (csv/xlsx) haydovchilar qatori va JAMI bilan."""
+    from bm_automation.app.dashboard import metrics as mmod
+
+    st = mmod.get_storage()
+    st.save_driver_work_log("2026-08-10", "d1", "v1", 100.0, 2,
+                            note="AVTO", distance_plan=100.0, trip_plan=2)
+    title, cols, rows = dexport._data_for("brutto", mmod.Metrics(),
+                                          {"from": "2026-08-01", "to": "2026-08-31"})
+    assert "Brutto" in title and "2026" in title
+    assert cols[0] == "№" and "To'lov (so'm)" in cols
+    assert rows and rows[0][1] == "Aliyev Aliy"
+    jami = [r for r in rows if r[0] == "JAMI"]
+    assert jami and jami[0][1] == "1 haydovchi"
+
+    csv = dexport.build_export({"from": "2026-08-01", "to": "2026-08-31"},
+                               "csv", "brutto")
+    assert csv[:3] == b"\xef\xbb\xbf"
+    assert b"Haydovchi" in csv and b"JAMI" in csv and b"Aliyev" in csv
+
+    xlsx = dexport.build_export({"from": "2026-08-01", "to": "2026-08-31"},
+                                "xlsx", "brutto")
+    assert xlsx[:2] == b"PK"
+    assert dexport.filename("xlsx", "brutto", "2026-08").endswith("_202608.xlsx")
+
+
 def test_route_options_only_profiles(monkeypatch):
     """Pill'lar faqat profiles.json firmalaridan; DB routes jadvali pill bermaydi."""
     import bm_automation.app.dashboard.metrics as mmod
@@ -668,6 +683,36 @@ def test_api_insights_default_days(monkeypatch):
     monkeypatch.setattr(_or, "configured", lambda: False)
     d = _get("/api/insights")
     assert d["ok"] is True and d["enabled"] is False
+
+
+def test_api_brutto_master_endpoint(monkeypatch):
+    """/api/brutto/master — 5 modulli master hisobot qaytaradi."""
+    import bm_automation.app.dashboard.metrics as met
+    monkeypatch.setattr(met, "brutto", lambda f=None: {
+        "ok": True, "skm": 16176.0, "base_skm": 16176.0,
+        "agg": {"lr": 100.0, "lf": 90.0, "kamal": 100,
+                "kstjb": 5, "kmaq": 0},
+    })
+    d = _get("/api/brutto/master?mode=multiplicative")
+    assert d["ok"] is True
+    assert "module1_contract" in d and "module5_fund" in d
+    assert d["module4_payment"]["mode"] == "multiplicative"
+    assert d["module4_payment"]["alpha"] == 0.025  # 90/100 = 90%
+    assert d["summary"]["total_payment"] > 0
+
+
+def test_api_brutto_master_additive(monkeypatch):
+    """mode=additive — S_neto additiv formula qo'llanadi."""
+    import bm_automation.app.dashboard.metrics as met
+    monkeypatch.setattr(met, "brutto", lambda f=None: {
+        "ok": True, "skm": 16176.0, "base_skm": 16176.0,
+        "agg": {"lr": 100.0, "lf": 90.0, "kamal": 100,
+                "kstjb": 5, "kmaq": 0},
+    })
+    d = _get("/api/brutto/master?mode=additive")
+    assert d["ok"] is True
+    assert d["module4_payment"]["mode"] == "additive"
+    assert d["module4_payment"]["payment"] == pytest.approx(d["summary"]["total_payment"])
 
 
 def test_not_accepted_km_report_includes_manual_km(met):
@@ -994,3 +1039,78 @@ def test_brutto_uses_per_route_skm(monkeypatch, met):
     assert d1["lf"] == 100.0
     # Lf=100=Lr, Kamal=2, Kstjb=0, Kmaq=0 → S = 20000 * 100
     assert abs(d1["tolov"] - 20000.0 * 100.0) < 0.01
+
+
+# ------------------------------------------------------- taklif va murojaatlar
+
+
+def test_appeals_crud(met):
+    """Murojaat qo'shish, yangilash, holat, javob va o'chirish."""
+    storage = met.storage
+    aid = storage.appeal_add("d1", title="Jadvali", text="Ertalabki reys qisqa",
+                             status="YANGI")
+    assert aid > 0
+    rows = storage.appeals_list(driver_id="d1")
+    assert len(rows) == 1
+    assert rows[0]["title"] == "Jadvali"
+    assert rows[0]["status"] == "YANGI"
+
+    ok = storage.appeal_update(aid, status="KORIB_CHIQILMOQDA")
+    assert ok
+    ok = storage.appeal_update(aid, reply="Ko'rib chiqildi", status="JAVOB_YOZILDI")
+    assert ok
+    rows = storage.appeals_list(driver_id="d1", status="JAVOB_YOZILDI")
+    assert len(rows) == 1
+    assert rows[0]["reply"] == "Ko'rib chiqildi"
+    assert rows[0]["replied_at"]
+
+    assert storage.appeal_delete(aid)
+    assert storage.appeals_list(driver_id="d1") == []
+    assert not storage.appeal_delete(aid)
+
+
+def test_appeals_status_filter_defaults(met):
+    """Yangi murojaat standart `YANGI` holatida; bo'sh driver qabul qilinmaydi."""
+    storage = met.storage
+    assert storage.appeal_add("", title="x") == 0
+    aid = storage.appeal_add("d2", text="Faqat matn")
+    assert aid > 0
+    row = storage.appeals_list(driver_id="d2")[0]
+    assert row["status"] == "YANGI"
+    assert row["title"] == ""
+    assert storage.appeals_list(status="HAL_QILINDI") == []
+
+
+def test_appeals_report_with_driver_name(met):
+    """appeals_report haydovchi nomini qo'shib, filtr va qidiruvni bajaradi."""
+    storage = met.storage
+    storage.appeal_add("d1", title="T1", text="Matn 1")
+    storage.appeal_add("d2", title="T2", text="Matn 2")
+    rep = met.appeals_report({"status": "YANGI"})
+    assert rep["total"] == 2
+    names = {a["driver_id"]: a["driver_name"] for a in rep["appeals"]}
+    assert names["d1"] == "Aliyev Aliy"
+    rep = met.appeals_report({"q": "Karimov"})
+    assert rep["total"] == 1
+    assert rep["appeals"][0]["driver_id"] == "d2"
+
+
+def test_driver_detail_includes_appeals(met):
+    """Haydovchi kartasi murojaatlar ro'yxatini ham qaytaradi."""
+    storage = met.storage
+    storage.appeal_add("d1", title="Murojaat", text="Matn")
+    d = met.driver_detail("d1")
+    assert d is not None
+    assert len(d["appeals"]) == 1
+    assert d["appeals"][0]["title"] == "Murojaat"
+
+
+def test_api_appeals_endpoint(met, monkeypatch):
+    """/api/appeals barcha murojaatlarni (haydovchi nomi bilan) qaytaradi."""
+    import bm_automation.app.dashboard.metrics as mmod
+    met.storage.appeal_add("d1", title="Taklif", text="Ko'paytirish")
+    monkeypatch.setattr(mmod, "get_storage", lambda: met.storage)
+    d = _get("/api/appeals")
+    assert d["ok"] is True
+    assert d["total"] >= 1
+    assert any(a["title"] == "Taklif" for a in d["appeals"])

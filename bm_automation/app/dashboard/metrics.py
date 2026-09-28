@@ -1520,12 +1520,56 @@ class Metrics:
                 "rating": float(profile.get("rating") or 5),
                 "blacklisted": bool(profile.get("blacklisted")),
                 "notification_enabled": bool(profile.get("notification_enabled")),
+                "phone": str(profile.get("phone") or ""),
                 "has_passport": bool(profile.get("passport_number")),
                 "has_license": bool(profile.get("license_number")),
                 "photo_url": self._photo_url(driver_id, profile),
             })
         return sorted(out, key=lambda x: (x["company"], x["blacklisted"],
                                            -x["trips"], x["name"].lower()))
+
+    # ----------------------------------------------------------- rank
+
+    def driver_rank(self, driver_id: str, f: dict | None = None,
+                    metric: str = "km") -> dict:
+        """Haydovchining yo'nalishi bo'yicha reyting o'rni.
+
+        `metric`: km (bajarilgan km), trips (reyslar), net (netto) yoki
+        attendance (davomat %). O'rinda (1-index) qatorlar faqat faol
+        haydovchilar (ishlagan yoki reytingdagi) — qora ro'yxatdagi va
+        umuman ishlamaganlar hisobga olinmaydi.
+        """
+        f = self._driver_period(f)
+        rows = [r for r in self.drivers(f) if not r.get("blacklisted")]
+        keymap = {"km": "km", "trips": "trips", "net": "net_pay",
+                  "attendance": "attendance"}
+        key = keymap.get(metric, "km")
+        # Faqat o'sha yo'nalishdagi faol haydovchilar
+        rid = ""
+        for r in rows:
+            if str(r.get("driver_id") or "") == str(driver_id):
+                rid = str(r.get("route_id") or "")
+                break
+        if rid:
+            pool = [r for r in rows
+                    if str(r.get("route_id") or "") == rid]
+        else:
+            pool = list(rows)
+        pool = [r for r in pool
+                if (r.get("working_days") or 0) > 0 or (r.get(key) or 0) > 0]
+        pool.sort(key=lambda r: (-(r.get(key) or 0),
+                                 str(r.get("name") or "").lower()))
+        pos = 0
+        for i, r in enumerate(pool, 1):
+            if str(r.get("driver_id") or "") == str(driver_id):
+                pos = i
+                break
+        return {"position": pos, "total": len(pool),
+                "route_id": rid, "metric": key,
+                "top": [{"driver_id": r.get("driver_id"),
+                         "name": r.get("name"),
+                         "value": round(float(r.get(key) or 0), 1)}
+                        for r in pool[:3]]}
 
     def electricity_report(self, filters: dict | None = None) -> dict:
         """Oylik elektr energiya xisoboti.
@@ -1741,7 +1785,12 @@ class Metrics:
         if not driver and not base and not profile:
             return None
         if not driver:
+            _base_rid = str((base or {}).get("route_id") or "").strip()
+            _comp0 = self._companies().get(_base_rid, {})
             driver = {"driver_id": driver_id, "name": (base or {}).get("full_name") or driver_id,
+                      "company": _comp0.get("company", ""),
+                      "route_id": _base_rid,
+                      "route_name": _comp0.get("route_name", ""),
                       "trips": 0, "manual_trips": 0, "working_days": 0, "issues": 0,
                       "attendance": 0.0, "total_days": 0, "km": 0.0, "automatic_km": 0.0,
                       "km_rate": km_rate_for(str((base or {}).get("route_id") or ""),
@@ -1812,6 +1861,13 @@ class Metrics:
 
         return {"driver": driver, "profile": profile, "trips": trips,
                 "work_logs": logs, "fine_rows": fines, "filters": f,
+                # Haydovchining taklif va murojaatlari (eng yangisi birinchi)
+                "appeals": self.storage.appeals_list(driver_id=driver_id, limit=200),
+                # Faqat faol (ACTIVE) jarimalar yig'indisi — ish haqidagi
+                # "Jarimalar" qatori bilan bir xil semantika.
+                "fines_total": round(sum(
+                    float(r.get("amount") or 0) for r in fines
+                    if str(r.get("status") or "ACTIVE").upper() == "ACTIVE"), 2),
                 "telegram_user": telegram_user}
 
     def driver_directory(self, f: dict | None = None) -> dict:
@@ -1831,6 +1887,40 @@ class Metrics:
                 "fines": round(sum(r["fines"] for r in rows), 2),
             },
         }
+
+    def appeals_report(self, f: dict | None = None) -> dict:
+        """Taklif va murojaatlar ro'yxati (haydovchi nomi bilan).
+
+        Filtrlar: `driver_id`, `status`, `limit`. Status qiymatlari:
+        YANGI / KORIB_CHIQILMOQDA / JAVOB_YOZILDI / HAL_QILINDI.
+        """
+        f = dict(f or {})
+        names = self._names()
+        rows = self.storage.appeals_list(
+            driver_id=str(f.get("driver_id") or "").strip(),
+            status=str(f.get("status") or "").strip(),
+            limit=int(f.get("limit") or 500),
+        )
+        q = str(f.get("q") or "").strip().lower()
+        out = []
+        for r in rows:
+            did = str(r.get("driver_id") or "")
+            dname = names["drivers"].get(did, did or "-")
+            if q and q not in dname.lower() and q not in did.lower():
+                continue
+            out.append({
+                "id": int(r.get("id") or 0),
+                "driver_id": did,
+                "driver_name": names["drivers"].get(did, did or "-"),
+                "title": str(r.get("title") or ""),
+                "text": str(r.get("text") or ""),
+                "status": str(r.get("status") or "YANGI").upper(),
+                "reply": str(r.get("reply") or ""),
+                "replied_at": str(r.get("replied_at") or ""),
+                "created_at": str(r.get("created_at") or ""),
+                "updated_at": str(r.get("updated_at") or ""),
+            })
+        return {"filters": f, "appeals": out, "total": len(out)}
 
     # ----------------------------------------------------------------- trips
 

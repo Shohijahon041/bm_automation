@@ -20,12 +20,15 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
+import hmac
 import html
 import json
 import math
 import mimetypes
 import os
 import re
+import secrets
 import socket
 import threading
 import time
@@ -136,6 +139,243 @@ def _check_dashboard_token(handler: BaseHTTPRequestHandler) -> bool:
     return cookie == _DASHBOARD_TOKEN
 
 
+# ------------------------------------------------------------- login/sessiya
+# Ko'p korxonali tizim: dashboard akkauntlari `dashboard_users` jadvalida,
+# sessiyalar `state/dashboard_sessions.json` faylida (12 soat). DASHBOARD_TOKEN
+# ADMIN master-bypass bo'lib qoladi (localhost avto-auth uchun).
+
+_SESSION_MAX_AGE_S = 12 * 3600
+_PBKDF2_ITERATIONS = 120_000
+_SESSION_LOCK = threading.Lock()
+_sessions: dict[str, dict] = {}
+
+# Rol -> daraja (chipga ko'tarilish tartibida). VIEWER faqat kirish uchun.
+_ROLE_RANK = {"VIEWER": 0, "DISPATCHER": 1, "MANAGER": 2, "DIRECTOR": 3,
+              "ADMIN": 4}
+
+# GET endpoint -> talab qilinadigan rol darajasi (kiritilmagani = DISPATCHER).
+_GET_ROLE_MIN: dict[str, int] = {
+    "/api/users": 4,
+    "/api/users/": 4,
+    "/api/group-stats": 4,
+    "/api/dispatchers": 4,
+    "/api/disk": 4,
+    "/api/backup": 4,
+    "/api/logs": 4,
+    "/api/settings/env": 4,
+    "/api/settings/companies": 4,
+    "/api/settings": 4,
+    "/api/dashboard-users": 4,
+    "/api/myai": 4,
+    "/api/insights": 4,
+    "/api/admin": 4,
+    "/api/brutto": 2,
+    "/api/rejects/tariff": 2,
+    "/api/salary": 2,
+    "/api/check": 3,
+    "/api/sms": 3,
+    "/api/documents": 3,
+}
+
+# POST endpoint -> talab qilinadigan rol darajasi.
+_POST_ROLE_MIN: dict[str, int] = {
+    "/api/settings": 4,
+    "/api/settings/env": 4,
+    "/api/settings/companies": 4,
+    "/api/dashboard-users": 4,
+    "/api/admin": 4,
+    "/api/myai": 4,
+    "/api/sms": 3,
+    "/api/documents": 3,
+    "/api/rejects/tariff": 2,
+    "/api/sync": 2,
+}
+
+# Route-ga bog'liq endpointlar: non-admin foydalanuvchi uchun `route`
+# parametri doim o'z korxonasiga kesiladi (boshqa korxona ma'lumotini
+# ko'rishning oldini olish uchun).
+_ROUTE_SCOPED_PREFIXES = (
+    "/api/summary", "/api/rejects", "/api/brutto", "/api/routes",
+    "/api/route-skm", "/api/month", "/api/attendance", "/api/drivers",
+    "/api/electricity", "/api/salary", "/api/export", "/api/check",
+    "/api/appeals", "/api/kmrate", "/api/rejects/tariff",
+)
+
+
+def _sessions_file() -> Path:
+    return Path("state") / "dashboard_sessions.json"
+
+
+def _load_sessions() -> None:
+    global _sessions
+    p = _sessions_file()
+    if not p.exists():
+        _sessions = {}
+        return
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        _sessions = data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        _sessions = {}
+
+
+def _save_sessions() -> None:
+    try:
+        from ..utils.io import atomic_write
+        p = _sessions_file()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(p, json.dumps(_sessions, ensure_ascii=False))
+    except Exception:  # noqa: BLE001 - sessiya yozilmasa ham server davom etadi
+        pass
+
+
+def _session_token(handler: BaseHTTPRequestHandler) -> str:
+    """So'rovdan sessiya tokenini oladi (Bearer yoki bm_session cookie)."""
+    auth = (handler.headers.get("Authorization") or "").strip()
+    if auth.startswith("Bearer "):
+        tok = auth[7:].strip()
+        if tok and tok != _DASHBOARD_TOKEN:
+            return tok
+    for part in (handler.headers.get("Cookie") or "").split(";"):
+        kv = part.strip().split("=", 1)
+        if len(kv) == 2 and kv[0].strip() == "bm_session":
+            return kv[1].strip()
+    return ""
+
+
+def _prune_sessions() -> None:
+    now = time.time()
+    dead = [t for t, s in _sessions.items()
+            if float(s.get("expires_at") or 0) <= now]
+    for t in dead:
+        _sessions.pop(t, None)
+
+
+def _create_session(user: dict) -> str:
+    token = secrets.token_urlsafe(32)
+    with _SESSION_LOCK:
+        _load_sessions()
+        _prune_sessions()
+        _sessions[token] = {
+            "username": (user.get("username") or ""),
+            "role": (user.get("role") or "VIEWER"),
+            "company": (user.get("company") or ""),
+            "expires_at": time.time() + _SESSION_MAX_AGE_S,
+        }
+        _save_sessions()
+    return token
+
+
+def _company_routes(company: str) -> list[str]:
+    """Kompaniya (profiles.json `name`) yo'nalish ID'lari ro'yxati."""
+    from ..core.profiles import get_profile
+    profiling = get_profile(company or "")
+    rid = str((profiling or {}).get("routeVariantId") or "").strip()
+    return [rid] if rid else []
+
+
+def _session_user(token: str) -> dict | None:
+    """Sessiya tokeni bo'yicha foydalanuvchi qamrovini qaytaradi."""
+    with _SESSION_LOCK:
+        _load_sessions()
+        s = _sessions.get(token)
+        if not s:
+            return None
+        if float(s.get("expires_at") or 0) <= time.time():
+            _sessions.pop(token, None)
+            _save_sessions()
+            return None
+        company = s.get("company") or ""
+        role = s.get("role") or "VIEWER"
+        return {
+            "username": s.get("username") or "",
+            "role": role,
+            "company": company,
+            "is_admin": role == "ADMIN",
+            "routes": None if role == "ADMIN" else _company_routes(company),
+        }
+
+
+def _drop_session(handler: BaseHTTPRequestHandler) -> None:
+    token = _session_token(handler)
+    if not token:
+        return
+    with _SESSION_LOCK:
+        _load_sessions()
+        _sessions.pop(token, None)
+        _save_sessions()
+
+
+def _resolve_scope(handler: BaseHTTPRequestHandler) -> dict | None:
+    """So'rov egasini aniqlaydi: DASHBOARD_TOKEN -> ADMIN, aks holda sessiya."""
+    if os.environ.get("BM_TEST_MODE") == "1":
+        # Test rejimida to'liq ADV-ni beramiz — eski testlar to'g'ridan-to'g'ri
+        # handler'ga murojaat qiladi va autentifikatsiyasiz ishlaydi. Haqiqiy
+        # kirish testlari BM_TEST_MODE'ni o'chirib oladi.
+        return {
+            "username": "test",
+            "role": "ADMIN",
+            "company": "",
+            "is_admin": True,
+            "routes": None,
+        }
+    if _DASHBOARD_TOKEN and _check_dashboard_token(handler):
+        return {
+            "username": "ADMIN",
+            "role": "ADMIN",
+            "company": "",
+            "is_admin": True,
+            "routes": None,
+        }
+    token = _session_token(handler)
+    return _session_user(token) if token else None
+
+
+def _hash_password(password: str, salt: str = "") -> tuple[str, str]:
+    """Parolni salt bilan xeshlaydi -> (hash, salt)."""
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", (password or "").encode("utf-8"),
+        salt.encode("utf-8"), _PBKDF2_ITERATIONS)
+    return digest.hex(), salt
+
+
+def _verify_password(password: str, salt: str, expected: str) -> bool:
+    if not expected or not salt:
+        return False
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", (password or "").encode("utf-8"),
+        salt.encode("utf-8"), _PBKDF2_ITERATIONS)
+    return hmac.compare_digest(digest.hex(), (expected or "").lower())
+
+
+def _ensure_bootstrap_admin() -> None:
+    """Birinchi ishga tushirishda ADMIN akkauntini yaratadi.
+
+    Agar `dashboard_users` jadvalida akkauntlar bo'lmasa va env'da
+    DASHBOARD_ADMIN_USER/PASS berilgan bo'lsa — ADMIN yaratiladi
+    (idempotent; faqat bitta). Keyingi adminlar Settings orqali qo'shiladi.
+    """
+    username = (os.environ.get("DASHBOARD_ADMIN_USER") or "").strip()
+    password = (os.environ.get("DASHBOARD_ADMIN_PASS") or "").strip()
+    if not username or len(password) < 4:
+        return
+    try:
+        from ..db.storage import get_storage
+        st = get_storage()
+        if not st.enabled:
+            return
+        if st.dashboard_users_count() > 0:
+            return
+        digest, salt = _hash_password(password)
+        st.dashboard_user_add(username=username.lower(), salt=salt,
+                              password_hash=digest, role="ADMIN",
+                              company="", active=1)
+        log.info("Bootstrap ADMIN akkaunt yaratildi: %s", username.lower())
+    except Exception:  # noqa: BLE001 - DB bo'lmasa server davom etadi
+        log.warning("Bootstrap ADMIN yaratilmadi (DB mavjud emas?)")
+
+
 def _rate_limit_post(endpoint: str) -> bool:
     """POST endpoint uchun rate limiting. True = ruxsat, False = bloklangan."""
     now = time.monotonic()
@@ -162,10 +402,270 @@ def _parse(qs: dict) -> dict:
     return {k: v[0] for k, v in qs.items()}
 
 
+def _report_month(qs: dict) -> date | None:
+    """Brutto-master hisobot oyi (sana lug'atdan yoki yo'q)."""
+    from datetime import datetime
+    if not qs:
+        return None
+    month = (qs.get("month") or [""])
+    month = month[0] if isinstance(month, list) else month
+    month = month or ""
+    if month:
+        try:
+            return datetime.strptime(month[:7], "%Y-%m").date()
+        except ValueError:
+            return None
+    day = ""
+    for key in ("from", "to"):
+        val = qs.get(key) or [""]
+        val = val[0] if isinstance(val, list) else val
+        if val.strip():
+            day = val.strip()
+            break
+    if day:
+        try:
+            return date.fromisoformat(day[:10])
+        except ValueError:
+            return None
+    return None
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = "BM-Dashboard/1.0"
 
     # ---------------------------------------------------------------- helpers
+
+    def _enforce_role(self, path: str) -> bool:
+        """So'rov yo'li uchun rol chegarasini tekshiradi (403 uchun)."""
+        scope = getattr(self, "_scope", None)
+        if not scope or scope.get("is_admin"):
+            return True
+        rank = _ROLE_RANK.get(scope.get("role") or "VIEWER", 0)
+        table = _GET_ROLE_MIN if self.command == "GET" else _POST_ROLE_MIN
+        needed = 1
+        for prefix, mn in table.items():
+            if path.startswith(prefix):
+                needed = mn
+                break
+        return rank >= needed
+
+    def _force_route(self, path: str, qs: dict, payload: dict | None = None) -> None:
+        """Non-admin foydalanuvchi uchun `route` paramni o'z korxonasiga kesadi."""
+        scope = getattr(self, "_scope", None)
+        if not scope or scope.get("is_admin"):
+            return
+        if not any(path.startswith(p) for p in _ROUTE_SCOPED_PREFIXES):
+            return
+        routes = scope.get("routes") or []
+        rid = routes[0] if routes else ""
+        if qs is not None:
+            qs["route"] = [rid] if rid else qs.get("route", [""])
+        if payload is not None:
+            payload["route"] = rid
+
+    def _me(self) -> None:
+        scope = getattr(self, "_scope", None)
+        if not scope:
+            self._json({"ok": False, "error": "Kirish talab qilinadi"}, 401)
+            return
+        from ..core.profiles import get_profile, all_profiles
+        company_name = scope.get("company") or ""
+        profile = get_profile(company_name) if company_name else None
+        self._json({
+            "ok": True,
+            "username": scope.get("username") or "",
+            "role": scope.get("role") or "VIEWER",
+            "is_admin": bool(scope.get("is_admin")),
+            "login_type": "session",
+            "company": {
+                "name": company_name,
+                "routeName": str((profile or {}).get("routeName") or ""),
+                "routeVariantId": str((profile or {}).get("routeVariantId") or ""),
+            },
+            "companies": [str(p.get("name") or "") for p in all_profiles()],
+        })
+
+    def _login(self) -> None:
+        """POST /api/login — username+parolni tekshirib sessiya ochadi."""
+        try:
+            payload = self._payload()
+        except ValueError as exc:
+            self._json({"ok": False, "error": str(exc)}, 400)
+            return
+        from ..db.storage import get_storage
+        username = str(payload.get("username") or "").strip().lower()
+        password = str(payload.get("password") or "")
+        if not username or not password:
+            self._json({"ok": False, "error": "Login va parol kiriting"}, 400)
+            return
+        user = get_storage().dashboard_user_get(username=username)
+        if not user or int(user.get("active") or 0) == 0:
+            self._json({"ok": False, "error": "Login yoki parol noto'g'ri"}, 401)
+            return
+        if not _verify_password(password, str(user.get("salt") or ""),
+                                str(user.get("password_hash") or "")):
+            self._json({"ok": False, "error": "Login yoki parol noto'g'ri"}, 401)
+            return
+        role = str(user.get("role") or "VIEWER").strip().upper()
+        company = str(user.get("company") or "").strip()
+        token = _create_session({"username": username, "role": role,
+                                 "company": company})
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header(
+            "Set-Cookie",
+            f"bm_session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={_SESSION_MAX_AGE_S}",
+        )
+        body = json.dumps({
+            "ok": True, "username": username, "role": role,
+            "company": company,
+        }, ensure_ascii=False).encode("utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            pass
+
+    def _logout(self) -> None:
+        """POST /api/logout — sessiyani o'chiradi, cookie'ni tozalaydi."""
+        _drop_session(self)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Set-Cookie",
+                         "bm_session=; Path=/; HttpOnly; Max-Age=0")
+        body = b'{"ok": true}'
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            pass
+
+    def _dashboard_users_api(self, payload: dict) -> dict:
+        """Dashboard foydalanuvchilarini boshqarish (faqat ADMIN)."""
+        from ..db.storage import get_storage
+        from ..core.profiles import all_profiles
+        st = get_storage()
+        action = str(payload.get("action") or "").strip()
+        profiles = all_profiles()
+        by_name = {str(p.get("name") or "").lower(): p for p in profiles}
+        by_rvid = {
+            str(p.get("routeVariantId") or ""): p
+            for p in profiles if (p.get("routeVariantId") or "")}
+
+        def _resolve_company(val: str) -> str:
+            """Profil nomi yoki routeVariantId -> saglanadigan profil nomi."""
+            val = (val or "").strip()
+            if not val:
+                return ""
+            p = by_name.get(val.lower())
+            if not p:
+                p = by_rvid.get(val)
+            return str((p or {}).get("name") or "")
+
+        if action == "list":
+            rows = []
+            for u in st.dashboard_users_list():
+                c = str(u.get("company") or "")
+                profile = by_name.get(c.lower()) if c else None
+                rows.append({
+                    "id": u.get("id"),
+                    "username": u.get("username"),
+                    "role": u.get("role"),
+                    "company": c,
+                    "company_route": str((profile or {}).get("routeName") or ""),
+                    "active": int(u.get("active") or 0) == 1,
+                })
+            return {"ok": True, "users": rows,
+                    "companies": [
+                        {"name": str(p.get("name") or ""),
+                         "routeVariantId": str(p.get("routeVariantId") or ""),
+                         "routeName": str(p.get("routeName") or "")}
+                        for p in profiles]}
+        if action in ("create", "update"):
+            username = str(payload.get("username") or "").strip().lower()
+            password = str(payload.get("password") or "")
+            row_id = payload.get("id")
+            try:
+                row_id = int(row_id) if row_id not in (None, "", "0") else 0
+            except (TypeError, ValueError):
+                row_id = 0
+            if action == "create":
+                role = str(payload.get("role") or "VIEWER").strip().upper()
+                if role not in _ROLE_RANK:
+                    role = "VIEWER"
+                company = _resolve_company(str(payload.get("company") or ""))
+                if role != "ADMIN" and not company:
+                    return {"ok": False, "error": "Noto'g'ri kompaniya tanlandi"}
+                if role == "ADMIN":
+                    company = ""
+                if not username:
+                    return {"ok": False, "error": "Login kiritish shart"}
+                if st.dashboard_user_get(username=username):
+                    return {"ok": False, "error": "Bu login allaqachon mavjud"}
+                if len(password) < 4:
+                    return {"ok": False, "error": "Parol kamida 4 belgi"}
+                digest, salt = _hash_password(password)
+                uid = st.dashboard_user_add(
+                    username=username, salt=salt, password_hash=digest,
+                    role=role, company=company,
+                    active=1 if payload.get("active") else 1)
+                return {"ok": bool(uid), "id": uid}
+            cur = st.dashboard_user_get(row_id=row_id) if row_id else None
+            if not cur and username:
+                cur = st.dashboard_user_get(username=username)
+            if not cur:
+                return {"ok": False, "error": "Foydalanuvchi topilmadi"}
+            row_id = int(cur.get("id") or row_id or 0)
+            if username and str(cur.get("username")) != username:
+                existing = st.dashboard_user_get(username=username)
+                if existing and int(existing.get("id")) != row_id:
+                    return {"ok": False, "error": "Bu login allaqachon mavjud"}
+            # Yangilashda berilmagan maydonlar joriy qiymatida qoladi —
+            # parol/faollik almashtirish kompaniyani o'chirib qo'ymaydi.
+            role = str(payload.get("role") or str(cur.get("role") or "VIEWER")).strip().upper()
+            if role not in _ROLE_RANK:
+                role = "VIEWER"
+            if payload.get("company") not in (None, ""):
+                company = _resolve_company(str(payload.get("company") or ""))
+            else:
+                company = str(cur.get("company") or "")
+            if role != "ADMIN" and not company:
+                return {"ok": False, "error": "Noto'g'ri kompaniya tanlandi"}
+            if role == "ADMIN":
+                company = ""
+            if payload.get("active") not in (None, ""):
+                active = int(payload.get("active") or 0)
+            else:
+                active = int(cur.get("active") or 0)
+            ok = st.dashboard_user_update(
+                row_id=row_id, username=username or None, role=role,
+                company=company, active=active)
+            if password:
+                digest, salt = _hash_password(password)
+                st.dashboard_user_update(row_id=row_id, salt=salt,
+                                         password_hash=digest)
+            return {"ok": ok}
+        if action == "delete":
+            try:
+                row_id = int(payload.get("id") or 0)
+            except (TypeError, ValueError):
+                row_id = 0
+            if not row_id:
+                uname = str(payload.get("username") or "").strip().lower()
+                if not uname:
+                    return {"ok": False, "error": "id yoki username kerak"}
+                cur = st.dashboard_user_get(username=uname)
+                if not cur:
+                    return {"ok": True}  # allaqachon o'chirilgan
+                row_id = int(cur.get("id") or 0)
+            row = st.dashboard_user_get(row_id=row_id)
+            if row and str(row.get("username")) == str(
+                    getattr(self, "_scope", {}).get("username") or ""):
+                return {"ok": False, "error": "O'zingizni o'chira olmaysiz"}
+            return {"ok": st.delete_dashboard_user(row_id)}
+        return {"ok": False, "error": "Noma'lum action"}
 
     def _json(self, payload: dict, code: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
@@ -344,6 +844,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             raise ValueError("JSON formati noto'g'ri") from exc
         if not isinstance(payload, dict):
             raise ValueError("JSON obyekt bo'lishi kerak")
+        scope = getattr(self, "_scope", None)
+        if scope and not scope.get("is_admin"):
+            self._force_route(self.path, None, payload)
         return payload
 
     @staticmethod
@@ -720,7 +1223,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if scope not in {"trips", "today", "routes", "vehicles", "drivers",
                          "all", "distance", "schedule", "attendance", "rating",
-                         "electricity", "rejects", "tabel", "settings", "tariffs"}:
+                         "electricity", "rejects", "tabel", "settings",
+                         "tariffs", "brutto"}:
             self._json({"error": "scope noto'g'ri"}, 400)
             return
         try:
@@ -749,11 +1253,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         qs = parse_qs(parsed.query)
-        # Static fayllar va health check autentifikatsiyasiz
-        if path not in ("/", "/index.html", "/favicon.ico"):
-            if path.startswith("/api/") and not _check_dashboard_token(self):
-                self._json({"error": "Token noto'g'ri. Authorization: Bearer <token> kerak"}, 401)
+        self._scope = _resolve_scope(self)
+        # Static fayllar autentifikatsiyasiz; /api/* eskimizda kirish talab qilinadi.
+        if path.startswith("/api/") and path not in ("/", "/index.html", "/favicon.ico"):
+            if not self._scope:
+                self._json({"error": "Kirish talab qilinadi"}, 401)
                 return
+            if not self._enforce_role(path):
+                self._json({"error": "Sizda bu bo'limga ruxsat yo'q"}, 403)
+                return
+            if not self._scope.get("is_admin"):
+                self._force_route(path, qs)
         try:
             if path in ("/", "/index.html"):
                 self._serve_index()
@@ -784,6 +1294,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif path == "/api/brutto":
                 from . import metrics as m
                 self._json(m.brutto(_parse(qs)))
+            elif path == "/api/brutto/master":
+                from . import metrics as m
+                from ..brutto.master import master_report
+                br = m.brutto(_parse(qs))
+                agg = br.get("agg") or {}
+                mode = (qs.get("mode") or ["multiplicative"])[0]
+                mode = mode if mode in ("additive", "multiplicative") else "multiplicative"
+                rep = master_report(
+                    skm=float(br.get("skm") or br.get("base_skm") or 0),
+                    lr=float(agg.get("lr") or 0),
+                    lf=float(agg.get("lf") or 0),
+                    kamal=int(agg.get("kamal") or 0),
+                    kstjb=int(agg.get("kstjb") or 0),
+                    kmaq=int(agg.get("kmaq") or 0),
+                    report_month=_report_month(qs),
+                    mode=mode,
+                )
+                rep["ok"] = True
+                self._json(rep)
             elif path == "/api/rejects/tariff":
                 from ..core.bot_settings import route_tariff
                 rid = (qs.get("route") or [""])[0].strip()
@@ -791,7 +1320,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             **route_tariff(rid)})
             elif path == "/api/routes":
                 from . import metrics as m
-                self._json({"ok": True, "routes": m.route_options()})
+                routes = m.route_options()
+                if not self._scope.get("is_admin"):
+                    allowed = set(self._scope.get("routes") or [])
+                    routes = [r for r in routes if str(r.get("id") or "") in allowed]
+                self._json({"ok": True, "routes": routes})
+            elif path == "/api/me":
+                self._me()
+                return
+            elif path == "/api/dashboard-users":
+                self._json(self._dashboard_users_api({"action": "list"}), 200)
+                return
             elif path == "/api/route-skm":
                 from ..core.bot_settings import route_skm
                 rid = (qs.get("route") or [""])[0].strip()
@@ -799,8 +1338,48 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "route_id": rid, "skm": skm})
             elif path == "/api/users":
                 from ..core.bot_users import get_users, user_count
+                users = get_users()
+                # Har bir foydalanuvchining kimligi — Telegram chat_id va
+                # telefon raqami bo'yicha haydovchi profilidan aniqlanadi.
+                try:
+                    from ..db.storage import get_storage as _gs
+                    from ..notifications.ops.roles import resolve_role as _rr, role_label as _rl
+                    _st = _gs()
+                    if _st.enabled:
+                        for u in users:
+                            try:
+                                cid = int(u.get("chat_id"))
+                            except (TypeError, ValueError):
+                                continue
+                            try:
+                                prof = _st.find_driver_by_telegram(cid) or {}
+                            except Exception:  # noqa: BLE001
+                                prof = {}
+                            if not prof and str(u.get("phone") or "").strip():
+                                try:
+                                    prof = _st.find_driver_by_phone(
+                                        str(u["phone"]).lstrip("+").removeprefix("998")) or {}
+                                except Exception:  # noqa: BLE001
+                                    prof = {}
+                            if prof:
+                                base = _st.find("drivers",
+                                                external_id=str(prof.get("driver_id") or "")) or {}
+                                u["driver_name"] = base.get("full_name") or \
+                                    str(prof.get("driver_id") or "")
+                                u["driver_phone"] = str(prof.get("phone") or "")
+                                u["driver_id"] = str(prof.get("driver_id") or "")
+                                u["linked"] = True
+                            try:
+                                u["resolved_role"] = _rl(_rr(cid))
+                            except Exception:  # noqa: BLE001
+                                pass
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("bot user kimligi aniqlanmadi: %s", exc)
                 self._json({"ok": True, "count": user_count(),
-                            "users": get_users()})
+                            "users": users})
+            elif path == "/api/group-stats":
+                from ..core.group_stats import group_stats
+                self._json({"ok": True, **group_stats()})
             elif path == "/api/dispatchers":
                 from ..core.bot_users import get_users
                 from ..db.storage import get_storage
@@ -895,6 +1474,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._json({"ok": True, "driver": driver_info})
                 else:
                     self._json({"error": "yo'nalish topilmadi"}, 404)
+            elif path == "/api/appeals":
+                from . import metrics as m
+                self._json({"ok": True, **m.Metrics().appeals_report(_parse(qs))})
             elif path == "/api/drivers":
                 from . import metrics as m
                 self._json({"ok": True, **m.Metrics().driver_directory(self._driver_filters(qs))})
@@ -980,6 +1562,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json(self._get_settings())
             elif path == "/api/settings/companies":
                 self._json(self._get_companies())
+            elif path == "/api/settings/env":
+                self._json(self._get_env_settings())
             elif path == "/api/electricity":
                 from . import metrics as m
                 self._json({"ok": True, **m.Metrics().electricity_report(_parse(qs))})
@@ -1358,14 +1942,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
-        if not _check_dashboard_token(self):
-            self._json({"error": "Token noto'g'ri. Authorization: Bearer <token> kerak"}, 401)
+        if path in ("/api/login", "/api/logout"):
+            if path == "/api/login":
+                self._login()
+            else:
+                self._logout()
+            return
+        self._scope = _resolve_scope(self)
+        if not self._scope:
+            self._json({"error": "Kirish talab qilinadi"}, 401)
+            return
+        if not self._enforce_role(path):
+            self._json({"error": "Sizda bu bo'limga ruxsat yo'q"}, 403)
             return
         if not _rate_limit_post(path):
             self._json({"error": "Juda ko'p so'rov — bir oz kuting"}, 429)
             return
         try:
-            if path == "/api/kmrate":
+            if path == "/api/dashboard-users":
+                result = self._dashboard_users_api(self._payload())
+                self._json(result, 200 if result.get("ok") else 400)
+                return
+            elif path == "/api/kmrate":
                 result = self._update_km_rate(self._payload())
             elif path == "/api/sync":
                 result = self._run_sync(self._payload())
@@ -1394,6 +1992,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 result = self._run_sync_monthly(self._payload())
             elif path == "/api/settings":
                 result = self._update_settings(self._payload())
+            elif path == "/api/settings/env":
+                result = self._update_env_settings(self._payload())
+            elif path == "/api/settings/companies":
+                result = self._company_action(self._payload())
             elif path == "/api/sms/retry":
                 from ..notifications.sms_notify import retry_failed_sms
                 payload = self._payload()
@@ -1529,6 +2131,49 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 result = self._update_rejects_tariff(self._payload())
             elif path == "/api/route-skm":
                 result = self._update_route_skm(self._payload())
+            elif path == "/api/appeals":
+                payload = self._payload()
+                from ..db.storage import get_storage
+                storage = get_storage()
+                if not storage.enabled:
+                    self._json({"ok": False, "error": "DB rejimi o'chirilgan"}, 400)
+                    return
+                action = str(payload.get("action") or "add").strip()
+                try:
+                    aid = int(payload.get("id") or 0)
+                except (TypeError, ValueError):
+                    aid = 0
+                if action in ("update", "reply"):
+                    if not aid:
+                        self._json({"ok": False, "error": "Murojaat ID xato"}, 400)
+                        return
+                    if action == "reply":
+                        result = storage.appeal_update(
+                            aid, reply=str(payload.get("reply") or "").strip(),
+                            status=str(payload.get("status") or "JAVOB_YOZILDI").upper())
+                    else:
+                        result = storage.appeal_update(
+                            aid, title=payload.get("title"),
+                            text=payload.get("text"),
+                            status=payload.get("status"),
+                            reply=payload.get("reply"))
+                    self._json({"ok": bool(result), "id": aid})
+                elif action == "delete":
+                    if not aid:
+                        self._json({"ok": False, "error": "Murojaat ID xato"}, 400)
+                        return
+                    self._json({"ok": storage.appeal_delete(aid), "id": aid})
+                else:
+                    did = str(payload.get("driver_id") or "").strip()
+                    if not did:
+                        self._json({"ok": False, "error": "Haydovchi ko'rsatilmagan"}, 400)
+                        return
+                    aid = storage.appeal_add(
+                        did, title=str(payload.get("title") or "").strip(),
+                        text=str(payload.get("text") or "").strip(),
+                        status=str(payload.get("status") or "YANGI").upper())
+                    self._json({"ok": bool(aid), "id": aid})
+                return
             elif path == "/api/drivers":
                 result = self._save_driver(self._payload())
             elif path.startswith("/api/drivers/"):
@@ -2097,7 +2742,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "interval_hours": backup_interval_hours(),
             },
             "global": {
-                "km_rate": bot_settings.km_rate(),
                 "elec_price": bot_settings.elec_price(),
                 "elec_kwh_per_km": bot_settings.ELEC_KWH_PER_KM,
                 "brutto_skm": bot_settings.brutto_skm(),
@@ -2110,17 +2754,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
         from ..core import bot_settings
 
         changed = []
-        km = payload.get("km_rate")
-        if km is not None:
-            try:
-                val = float(km)
-                if val < 0:
-                    val = 0
-                bot_settings.set_km_rate(val)
-                changed.append("km_rate")
-            except (ValueError, TypeError):
-                return {"ok": False, "error": "km_rate noto'g'ri qiymat"}
-
         ep = payload.get("elec_price")
         if ep is not None:
             try:
@@ -2192,10 +2825,149 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return {"ok": False, "error": "Kompaniya nomi kiritilmagan"}
         username = (payload.get("username") or "").strip()
         password = (payload.get("password") or "").strip()
-        if not username or not password:
-            return {"ok": False, "error": "Username va password kiritilishi shart"}
+        if not username and not password:
+            return {"ok": False, "error": "Username yoki password kiritilishi shart"}
         set_credentials(name, username, password)
         return {"ok": True, "name": name, "message": f"{name} credentiallari saqlandi"}
+
+    # ------------------------------------------------- settings CRUD (env)
+
+    _ENV_KEYS = {
+        # key: (label, secret)
+        "BM_BASE_URL": ("BM API manzil", False),
+        "BM_USERNAME": ("BM API login", False),
+        "BM_PASSWORD": ("BM API parol", True),
+        "TG_BOT_TOKEN": ("Telegram bot token", True),
+        "TG_CHAT_ID": ("Telegram chat ID", False),
+        "TG_ADMIN_IDS": ("Admin chat ID'lar", False),
+        "TG_DISPATCHER_IDS": ("Dispetcher chat ID'lar", False),
+        "TG_MANAGER_IDS": ("Manager chat ID'lar", False),
+        "TG_DRIVER_IDS": ("Haydovchi chat ID'lar", False),
+        "OPENROUTER_API_KEY": ("AI (OpenRouter) kalit", True),
+        "OPENROUTER_MODEL": ("AI model", False),
+    }
+
+    _ENV_PATH = Path(".env")
+
+    @classmethod
+    def _read_env(cls) -> dict[str, str]:
+        """`.env`ni key->value xarita sifatida o'qiydi."""
+        out: dict[str, str] = {}
+        if not cls._ENV_PATH.exists():
+            return out
+        try:
+            for line in cls._ENV_PATH.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                out[k.strip()] = v.strip()
+        except OSError:
+            pass
+        return out
+
+    @classmethod
+    def _write_env(cls, updates: dict[str, str]) -> None:
+        """`.env`da faqat berilgan kalitlarni yangilaydi (qolganlari saqlanadi)."""
+        lines: list[str] = []
+        if cls._ENV_PATH.exists():
+            lines = cls._ENV_PATH.read_text(encoding="utf-8").splitlines()
+        seen: set[str] = set()
+        out: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                key = stripped.split("=", 1)[0].strip()
+                if key in updates:
+                    out.append(f"{key}={updates[key]}")
+                    seen.add(key)
+                    continue
+            out.append(line)
+        for key, value in updates.items():
+            if key not in seen:
+                out.append(f"{key}={value}")
+        from ..utils.io import atomic_write
+        atomic_write(cls._ENV_PATH, "\n".join(out) + "\n")
+
+    def _get_env_settings(self) -> dict:
+        """`.env` asosidagi tahrirlanadigan sozlamalar (maxfiylar maskalanadi)."""
+        env = self._read_env()
+        fields = []
+        for key, (label, secret) in self._ENV_KEYS.items():
+            raw = env.get(key, "")
+            fields.append({
+                "key": key, "label": label, "secret": secret,
+                "set": bool(raw),
+                "value": "" if secret else raw,
+            })
+        return {"ok": True, "fields": fields}
+
+    def _update_env_settings(self, payload: dict) -> dict:
+        """`.env`ga sozlamalarni yozadi. Bo'sh qiymat = o'zgartirilmagan
+        (maxfiy maydonlar uchun) yoki tozalangan (oddiy maydonlar)."""
+        updates: dict[str, str] = {}
+        values = payload.get("values") or {}
+        if not isinstance(values, dict):
+            return {"ok": False, "error": "values noto'g'ri"}
+        for key, raw in values.items():
+            if key not in self._ENV_KEYS:
+                continue
+            val = str(raw or "").strip()
+            _, secret = self._ENV_KEYS[key]
+            if not val:
+                # Bo'sh qiymat: maxfiy maydon saqlanadi, oddiy maydon tozalanadi
+                if secret:
+                    continue
+                updates[key] = ""
+            else:
+                updates[key] = val
+        if not updates:
+            return {"ok": True, "changed": [], "message": "O'zgartirish yo'q"}
+        self._write_env(updates)
+        return {"ok": True, "changed": list(updates),
+                "message": "Saqlandi. O'zgarishlar jarayon qayta ishga tushganda kuchga kiradi."}
+
+    def _company_action(self, payload: dict) -> dict:
+        """Kompaniya amallari: add / update / delete / creds."""
+        action = (payload.get("action") or "creds").strip()
+        name = (payload.get("name") or "").strip()
+        if action == "add":
+            from ..core.profiles import add_profile
+            try:
+                p = add_profile(
+                    name,
+                    route_variant_id=str(payload.get("routeVariantId") or "").strip(),
+                    route_name=str(payload.get("routeName") or "").strip(),
+                    profile_id=str(payload.get("profileId") or "").strip())
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+            if (payload.get("username") or "").strip() or (payload.get("password") or "").strip():
+                from ..core.profiles import set_credentials
+                set_credentials(name,
+                                str(payload.get("username") or "").strip(),
+                                str(payload.get("password") or "").strip())
+            return {"ok": True, "message": f"{p['name']} qo'shildi"}
+        if action == "delete":
+            from ..core.profiles import delete_profile
+            if not name:
+                return {"ok": False, "error": "Kompaniya nomi kiritilmagan"}
+            if delete_profile(name):
+                return {"ok": True, "message": f"{name} o'chirildi"}
+            return {"ok": False, "error": f"{name} topilmadi"}
+        if action == "update":
+            from ..core.profiles import update_profile_fields
+            try:
+                update_profile_fields(name, {
+                    "profileId": payload.get("profileId"),
+                    "routeVariantId": payload.get("routeVariantId"),
+                    "routeName": payload.get("routeName"),
+                    "kmRate": payload.get("kmRate"),
+                })
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+            return {"ok": True, "message": f"{name} yangilandi"}
+        # default: creds
+        return self._update_company_creds(payload)
 
     # ---------------------------------------------------------------- disk
 
@@ -2324,6 +3096,10 @@ def run(host: str = "127.0.0.1", port: int = 8080, open_browser: bool = True) ->
     """Server'ni ishga tushiradi (bloklanadi)."""
     global _DASHBOARD_TOKEN
     _DASHBOARD_TOKEN = (os.environ.get("DASHBOARD_TOKEN") or "").strip()
+    # Eski sessiyalarni tiklash va birinchi ADMIN akkauntini yaratish.
+    with _SESSION_LOCK:
+        _load_sessions()
+    _ensure_bootstrap_admin()
     httpd = ThreadingHTTPServer((host, port), DashboardHandler)
     httpd.daemon_threads = True
     actual_port = httpd.server_address[1]
@@ -2360,6 +3136,14 @@ def run(host: str = "127.0.0.1", port: int = 8080, open_browser: bool = True) ->
                 start_auto_backup()
         except Exception:
             pass
+    # GPS kuzatuv servisini ham fonda ishga tushirish (fail-safe: hech qanday
+    # xato dashboard'ga xalaqit bermaydi; GPS_AUTOSTART=0 bilan o'chiriladi).
+    try:
+        from ..gps import autostart as _gps_autostart
+
+        _gps_autostart.start_background()
+    except Exception:
+        log.exception("GPS autostart hook xatosi (dashboard davom etadi)")
     threading.Thread(target=_prewarm, daemon=True).start()
     try:
         httpd.serve_forever()

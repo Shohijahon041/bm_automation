@@ -26,6 +26,7 @@ from ..config.settings import sms_gateway_configured, sms_gateway_settings
 from ..db.storage import Storage, get_storage
 from ..utils.logger import get_logger
 from ..utils.names import short_name
+from ..utils.tgformat import esc
 
 log = get_logger(__name__)
 
@@ -643,6 +644,49 @@ def _removal_message(name: str, schedule_date: str, d_phone: str = "") -> str:
     )[:500]
 
 
+def _notify_removed_tg(storage: Storage, schedule_date: str, route_id: str,
+                       name: str, driver_id: str) -> bool:
+    """Chiqarilgan haydovchiga Telegram orqali ham ogohlantirish yuboradi.
+
+    Matn SMS'dagi ``_removal_message`` bilan bir xil (HTML-eskap qilingan).
+    ``driver_profiles`` da ``telegram_chat_id`` va ``notification_enabled``
+    bo'lgan haydovchiga yuboriladi; ``notifications`` jadvalida shu
+    chat+matn allaqachon SENT bo'lsa takrorlanmaydi.
+    """
+    if not storage.enabled:
+        return False
+    try:
+        prof = storage.find("driver_profiles", driver_id=driver_id) or {}
+    except Exception:  # noqa: BLE001 - profil topilmasa Telegram o'tkazib yuboriladi
+        return False
+    chat = str(prof.get("telegram_chat_id") or "").strip()
+    if not chat or not prof.get("notification_enabled"):
+        return False
+    ph = storage.db.ph
+    message = _removal_message(name, schedule_date,
+                               _dispatcher_phone(storage, route_id))
+    text = f"⚠️ <b>Grafikdan chiqarildi</b>\n{esc(message)}"
+    rows = storage.query(
+        "SELECT id FROM notifications "
+        f"WHERE channel = {ph} AND target = {ph} AND message = {ph} "
+        "AND status = 'SENT' LIMIT 1",
+        ("telegram", chat, text))
+    if rows:
+        return False
+    try:
+        from .telegram import send_message  # import paytida xato bo'lmasligi uchun
+        send_message(text, chat_id=chat)
+        storage.record_notification(channel="telegram", target=chat,
+                                    message=text, status="SENT",
+                                    sent_at=datetime.now(
+                                        timezone.utc).isoformat())
+        return True
+    except Exception as exc:  # noqa: BLE001 - SMS asosiy kanal, Telegram ixtiyoriy
+        log.warning("chiqarilgan haydovchi Telegram xabari yuborilmadi"
+                    " (%s): %s", name, exc)
+        return False
+
+
 def _notify_removed(storage: Storage, schedule_date: str, route_id: str,
                     route_name: str, current_keys: set, result: dict) -> None:
     """Grafikdan tushib qolgan haydovchilarni aniqlab, ularga SMS yuboradi.
@@ -685,6 +729,10 @@ def _notify_removed(storage: Storage, schedule_date: str, route_id: str,
     for d_id, old in prev.items():
         if d_id in current_dids:
             continue
+        name = old["name"]
+        # Telegram: SMS chiqarilgan xabari bilan bir xil matn, lekin
+        # kunlik SMS limiti bloklagan taqdirda ham haydovchi xabardor bo'ladi.
+        _notify_removed_tg(storage, schedule_date, route_id, name, d_id)
         phone = old["phone"]
         if not phone:
             continue
@@ -695,7 +743,6 @@ def _notify_removed(storage: Storage, schedule_date: str, route_id: str,
         if _day_send_count(storage, schedule_date, d_id, phone) \
                 >= _MAX_DAY_SMS:
             continue
-        name = old["name"]
         entry = {"driver_id": d_id, "name": name, "phone": phone,
                  "route_id": route_id, "route_name": route_name,
                  "status": "ANNULLED", "message": "",

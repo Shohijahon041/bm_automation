@@ -268,6 +268,38 @@ class BMClient:
         else:
             raise BMAuthError(200, message="get-token-by-profile javobi noto'g'ri")
 
+    def login_for_profile(self, profile_id: str, fallback_to_main: bool = True) -> None:
+        """Kompaniya tokenini oladi; 401/403 bo'lsa asosiy tokenga qaytadi.
+
+        Ba'zi profillar uchun `get-token-by-profile` 401/403 qaytaradi
+        (profil eskirgan yoki ruxsat yo'q), lekin asosiy token shu
+        kompaniyaning ma'lumotlarini o'qiy oladi — shu holatda 401/403
+        yutib yuboriladi va asosiy token saqlanadi. Boshqa xatolar
+        (429 rate-limit, 500 va h.k.) ko'tarilib qoladi.
+        """
+        pid = str(profile_id or "").strip()
+        if not pid:
+            return
+        try:
+            self.login_by_profile(pid)
+        except BMAuthError as exc:
+            if not fallback_to_main:
+                raise
+            self.logger.warning(
+                "profil tokeni olinmadi (%s) — asosiy token bilan davom "
+                "etiladi", exc)
+            self.load_tokens_from_file()
+        except BMApiError as exc:
+            # get-token-by-profile endpointi profil mavjud emas/ruxsat yo'q
+            # holatlarda HTTP 401 + kod 400 qaytaradi (BMApiError).
+            status = getattr(exc, "status", 0) or 0
+            if not fallback_to_main or status not in (401, 403):
+                raise
+            self.logger.warning(
+                "profil tokeni olinmadi (%s) — asosiy token bilan davom "
+                "etiladi", exc)
+            self.load_tokens_from_file()
+
     def account_authorities(self) -> Any:
         """Token amal qilishini tekshiradi; 401 bo'lsa refresh/relogin qiladi."""
         return self.request("GET", f"{USER_MGMT}/user-profile/account-authorities", timeout=60)

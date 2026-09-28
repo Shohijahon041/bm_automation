@@ -28,6 +28,13 @@ DEFAULT_INSUR_PER_KM = 98.0      # sug'urta 1-km (so'm)
 DEFAULT_INFRA_PER_KM = 389.0     # infratuzilma xarajati 1-km (so'm)
 DEFAULT_ANNUAL_KM = 85400.0      # yo'nalish bo'yicha yillik masofa (km)
 
+# ---- Master prompt 2-modul qo'shimcha konstantalar (116-son ilovalar) ----
+MASTER_STAFF_HOURS = 8.0         # kunlik ish vaqti me'yori (soat, 4a-ilova)
+MASTER_WAGE_COEFF = 1.2          # statistika oylik ish haqiga koeffitsiyent
+MASTER_SOCIAL_TAX = 0.12         # ijtimoiy soliq (ish haqidan 12%)
+MASTER_NET_PROFIT = 0.10         # sof foyda (10%)
+MASTER_VAT_RATE = 0.12           # QQS (12%)
+
 
 def _num(value, default: float = 0.0) -> float:
     try:
@@ -39,11 +46,11 @@ def _num(value, default: float = 0.0) -> float:
 def km_rate_for(route_id, base: float = 0.0) -> float:
     """Haydovchi 1-km mehnat stavkasi (116-son 4-ILOVA).
 
-    `metrics.km_rate_for` qonuniy stavkani (route tarif → % mehnat) qaytaradi.
-    Shu yerda faqat asosiy fallback: bot_settings tarifi.
+    Route darajasidagi narx (`config.settings.km_rate_for`): shaxsiy mos
+    kelmasa yo'nalish/kompaniya qiymati ishlatiladi. Global emas.
     """
     try:
-        from ..core.bot_settings import km_rate_for as _real
+        from ..config.settings import km_rate_for as _real
         return _real(route_id, base)
     except Exception:  # noqa: BLE001 - modul alohida test uchun
         return base
@@ -197,3 +204,31 @@ def hisob_text(filters: dict | None = None, driver_id: str = "") -> tuple[str, d
         "Qonun asosi: VM 116-son 18.03.2023, NIZOM 2-ilova.",
     ]
     return "\n".join(lines), {}
+
+
+# ---- Master prompt 2-modul: 1 km narx kalkulyatsiyasi (qo'shimcha) ----
+
+def staff_norm(hours_per_day: float) -> float:
+    """Haydovchi shtat me'yori (4a-ilova): ish vaqti/8 soat, yaxlitlash.
+
+    Fraktsiya: <0.25 -> 0.0; 0.25..0.74 -> 0.5; >0.74 -> 1.0.
+    """
+    from ..brutto.tariff import driver_staff_norm
+    return driver_staff_norm(hours_per_day)
+
+
+def driver_wage_1km(stats_monthly_wage: float) -> float:
+    """Haydovchi 1-km mehnat stavkasi: statistika oylik * 1.2."""
+    from ..brutto.tariff import driver_wage
+    return driver_wage(stats_monthly_wage)
+
+
+def skm_calculated(blocks: dict | None = None,
+                   driver_count: float = 1.0,
+                   annual_km: float = DEFAULT_ANNUAL_KM) -> float:
+    """Master prompt bo'yicha 1-km to'liq narxi (S_KM).
+
+    Tannarx bloklari + davr xarajatlari, 10% sof foyda va 12% QQS bilan.
+    """
+    from ..brutto.tariff import skm_total
+    return skm_total(blocks, driver_count, annual_km)

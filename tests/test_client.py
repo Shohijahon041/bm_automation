@@ -432,3 +432,89 @@ def test_download_error_raises(client, tmp_path):
     with pytest.raises(BMApiError) as ei:
         client.download("/report", str(tmp_path / "f.xlsx"))
     assert ei.value.status == 500
+
+
+# ---------- login_for_profile ----------
+
+def test_profile_ok_sets_token(client):
+    client.session = FakeSession([
+        _ok({"data": {"access_token": "PROF-A", "refresh_token": "PROF-R"}}),
+    ])
+    client.login_for_profile("101")
+    assert client.access_token == "PROF-A"
+    assert client.session.headers["Authorization"] == "Bearer PROF-A"
+
+
+def test_profile_401_falls_back_to_main(client, monkeypatch):
+    loaded = []
+    client.session = FakeSession([_err(401)])
+    monkeypatch.setattr(client, "load_tokens_from_file",
+                        lambda: loaded.append(True))
+    client.access_token = "MAIN-A"
+    client.login_for_profile("101")
+    assert loaded, "401 (profil mavjud emas) — asosiy tokenga qaytishi kerak"
+    assert client.access_token == "MAIN-A"
+
+
+def test_profile_403_falls_back_to_main(client, monkeypatch):
+    loaded = []
+    client.session = FakeSession([_err(403)])
+    monkeypatch.setattr(client, "load_tokens_from_file",
+                        lambda: loaded.append(True))
+    client.login_for_profile("101")
+    assert loaded, "403 (ruxsat yo'q) — asosiy tokenga qaytishi kerak"
+
+
+def test_profile_500_raises_no_fallback(client, monkeypatch):
+    loaded = []
+    client.session = FakeSession([_err(500)])
+    monkeypatch.setattr(client, "load_tokens_from_file",
+                        lambda: loaded.append(True))
+    with pytest.raises(BMApiError) as ei:
+        client.login_for_profile("101")
+    assert ei.value.status == 500
+    assert not loaded, "500 — asosiy tokenga tushish MUMKIN EMAS"
+
+
+def test_profile_auth_error_falls_back_to_main(client, monkeypatch):
+    """BMAuthError (login noto'g'ri javob) — asosiy tokenga qaytadi."""
+    loaded = []
+    monkeypatch.setattr(client, "login_by_profile",
+                        lambda pid: (_ for _ in ()).throw(BMAuthError(200)))
+    monkeypatch.setattr(client, "load_tokens_from_file",
+                        lambda: loaded.append(True))
+    client.login_for_profile("101")
+    assert loaded
+
+
+def test_profile_auth_error_no_fallback_raises(client, monkeypatch):
+    loaded = []
+    monkeypatch.setattr(client, "login_by_profile",
+                        lambda pid: (_ for _ in ()).throw(BMAuthError(200)))
+    monkeypatch.setattr(client, "load_tokens_from_file",
+                        lambda: loaded.append(True))
+    with pytest.raises(BMAuthError):
+        client.login_for_profile("101", fallback_to_main=False)
+    assert not loaded
+
+
+def test_profile_fallback_disabled_raises(client, monkeypatch):
+    loaded = []
+    client.session = FakeSession([_err(403)])
+    monkeypatch.setattr(client, "load_tokens_from_file",
+                        lambda: loaded.append(True))
+    with pytest.raises(BMApiError):
+        client.login_for_profile("101", fallback_to_main=False)
+    assert not loaded
+
+
+def test_profile_no_token_payload_raises_auth(client):
+    client.session = FakeSession([_ok({"data": {"message": "no token"}})])
+    with pytest.raises(BMAuthError):
+        client.login_by_profile("101")
+
+
+def test_profile_empty_id_noop(client, monkeypatch):
+    client.session = FakeSession([])
+    client.login_for_profile("  ")
+    assert not client.session.calls

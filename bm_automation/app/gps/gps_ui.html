@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BM — GPS &amp; Video Kuzatuv</title>
+<link rel="preconnect" href="https://unpkg.com" crossorigin>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
+<style>
+  :root{
+    --bg:#0b0f19; --panel:#0f1524; --panel2:#131a2c; --line:rgba(148,163,184,.14);
+    --ink:#e6ecf5; --muted:#94a3b8; --teal:#3fb6a8; --amber:#f0a93e; --red:#e5484d; --green:#34d399;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 "Segoe UI",system-ui,-apple-system,sans-serif}
+  .wrap{max-width:1500px;margin:0 auto;padding:16px 18px 30px}
+  h1{font-size:19px;margin:0 0 2px}
+  .sub{color:var(--muted);font-size:12px;margin-bottom:12px}
+  .tabs{display:flex;gap:8px;margin:10px 0 14px}
+  .tab{padding:8px 18px;border:1px solid var(--line);border-radius:11px;background:var(--panel);color:var(--muted);cursor:pointer;font-weight:600;font-size:13px}
+  .tab.on{background:linear-gradient(135deg,rgba(63,182,168,.16),rgba(52,211,153,.06));color:var(--ink);border-color:rgba(63,182,168,.4)}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}
+  @media(max-width:920px){.stats{grid-template-columns:repeat(2,1fr)}}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:11px 14px}
+  .stat b{display:block;font-size:22px;font-weight:800}
+  .stat span{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.8px}
+  .stat .ok{color:var(--green)} .stat .bad{color:var(--red)}
+  .layout{display:grid;grid-template-columns:minmax(0,1.9fr) minmax(280px,.85fr);gap:14px;align-items:start}
+  @media(max-width:920px){.layout{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:15px;overflow:hidden}
+  .card h3{margin:0;padding:11px 14px;font-size:13px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
+  .card h3 .hint{margin-left:auto;color:var(--muted);font-weight:400;font-size:11px}
+  #map{height:calc(100vh - 300px);min-height:400px}
+  .dev-list{max-height:calc(100vh - 320px);min-height:280px;overflow:auto}
+  .dev{display:flex;align-items:center;gap:10px;padding:10px 13px;border-bottom:1px solid var(--line);cursor:pointer}
+  .dev:hover{background:rgba(129,140,248,.05)}
+  .dot{width:9px;height:9px;border-radius:50%;background:#3a4558;flex:none}
+  .dot.on{background:var(--green);box-shadow:0 0 10px rgba(52,211,153,.7)}
+  .dev-pin{display:block;width:14px;height:14px;border-radius:50%;border:2px solid rgba(255,255,255,.85);box-shadow:0 1px 6px rgba(0,0,0,.45)}
+  .dev-pin.on{background:var(--green);box-shadow:0 0 10px rgba(52,211,153,.8)}
+  .dev-pin.off{background:var(--red)}
+  .dev-name{font-weight:600}
+  .dev-sub{color:var(--muted);font-size:11px}
+  .dev-sub b{color:var(--teal)}
+  .dev .go{margin-left:auto;color:var(--muted);font-size:11px;white-space:nowrap}
+  .empty{padding:22px;text-align:center;color:var(--muted);font-size:12px}
+  .btn{padding:7px 14px;border:1px solid var(--line);border-radius:10px;background:var(--panel2);color:var(--ink);cursor:pointer;font-size:12.5px;font-weight:600}
+  .btn.primary{background:linear-gradient(135deg,var(--teal),#2f9d91);border-color:transparent;color:#04211e}
+  .btn.danger{color:var(--red)}
+  input,select{background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:7px 10px;font-size:13px}
+  input:focus,select:focus{outline:none;border-color:var(--teal)}
+  label.f{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+  #traj{display:none}
+  .traj-head{display:flex;align-items:end;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+  .traj-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}
+  @media(max-width:920px){.traj-stats{grid-template-columns:repeat(2,1fr)}}
+  #video{display:none}
+  .cam-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px}
+  .cam{background:var(--panel);border:1px solid var(--line);border-radius:15px;overflow:hidden}
+  .cam .head{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line);font-weight:600;font-size:13px}
+  .cam .body{aspect-ratio:16/9;background:#000;position:relative}
+  .cam .body video{width:100%;height:100%;display:block}
+  .cam iframe{width:100%;height:100%;border:0;display:block}
+  .cam .foot{display:flex;gap:6px;padding:8px 10px;border-top:1px solid var(--line);font-size:11px;color:var(--muted);align-items:center}
+  .cam .foot .grow{margin-left:auto;display:flex;gap:6px}
+  .player-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:12px;border:1px dashed var(--line);border-radius:13px;margin-bottom:14px;background:rgba(15,22,35,.5)}
+  @media(max-width:920px){.player-form{grid-template-columns:1fr}}
+  .note{margin-top:14px;padding:11px 14px;border:1px solid rgba(240,169,62,.25);background:rgba(240,169,62,.06);border-radius:12px;color:var(--muted);font-size:12px;line-height:1.6}
+  .note code{background:rgba(148,163,184,.12);padding:1px 6px;border-radius:5px;font-size:11px;color:var(--amber)}
+  .muted{color:var(--muted)}
+  .badge{font-size:10px;padding:2px 8px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
+  .badge.hls{color:var(--teal);border-color:rgba(63,182,168,.4)}
+  .badge.embed{color:var(--amber);border-color:rgba(240,169,62,.4)}
+  .badge.rtsp{color:var(--red);border-color:rgba(229,72,77,.4)}
+  .badge.live{color:var(--green);border-color:rgba(52,211,153,.4)}
+  table.mini{width:100%;border-collapse:collapse;font-size:12px}
+  table.mini th{color:var(--muted);text-transform:uppercase;font-size:10px;letter-spacing:.6px;text-align:left;padding:6px 10px;border-bottom:1px solid var(--line)}
+  table.mini td{padding:7px 10px;border-bottom:1px solid var(--line)}
+  table.mini tr:last-child td{border-bottom:0}
+  .al{display:flex;gap:10px;padding:8px 13px;border-bottom:1px solid var(--line);font-size:12.5px;align-items:baseline}
+  .al:last-child{border-bottom:0}
+  .al .t{color:var(--muted);font-size:11px;white-space:nowrap}
+  .al .m{color:var(--red);font-weight:700}
+  .al .m.warn{color:var(--amber)}
+  .search-wrap{position:relative}
+  .search-wrap input{width:210px;padding-left:30px}
+  .search-wrap .ic{position:absolute;left:9px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:13px;pointer-events:none}
+  .search-drop{position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--panel);border:1px solid var(--line);border-radius:10px;max-height:220px;overflow:auto;z-index:1200;display:none;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+  .search-drop .sr{padding:8px 12px;cursor:pointer;font-size:12.5px;display:flex;gap:8px;align-items:center}
+  .search-drop .sr:hover{background:rgba(129,140,248,.08)}
+  .search-drop .sr .dot{margin:0}
+  dialog{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:16px;padding:18px;max-width:420px;width:92%}
+  dialog::backdrop{background:rgba(4,7,13,.6)}
+  dialog h4{margin:0 0 12px}
+  dialog .f{margin-bottom:10px}
+  dialog input{width:100%}
+  dialog .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+  .err{color:var(--red);font-size:12px;margin-top:6px;display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>GPS &amp; Video Kuzatuv</h1>
+  <div class="sub">Teltonika FMB920 · TCP 5027 · HTTP API 8081 · <span id="gps-health">holat tekshirilmoqda…</span></div>
+
+  <div class="tabs">
+    <button class="tab on" id="tab-gps" onclick="showTab('gps')">GPS Kuzatuv</button>
+    <button class="tab" id="tab-video" onclick="showTab('video')">Video Kuzatuv</button>
+  </div>
+
+  <!-- ================= GPS ================= -->
+  <div id="gps">
+    <div class="stats" id="stats"></div>
+    <div class="layout">
+      <div class="card">
+        <h3>Jonli xarita <span class="hint">avtomatik yangilanadi (10s)</span>
+          <span class="search-wrap" style="margin-left:auto">
+            <span class="ic">🔍</span>
+            <input id="dev-search" placeholder="Avtobus / IMEI qidirish…" autocomplete="off">
+            <div class="search-drop" id="dev-search-drop"></div>
+          </span>
+        </h3>
+        <div id="map"></div>
+      </div>
+      <div class="card">
+        <h3>Qurilmalar <span class="hint" id="dev-count"></span></h3>
+        <div class="dev-list" id="dev-list"></div>
+        <div style="padding:10px 12px;border-top:1px solid var(--line);display:flex;justify-content:flex-end">
+          <button class="btn" onclick="openBind()">+ IMEI qo'shish / bog'lash</button>
+        </div>
+      </div>
+      <div class="card" style="grid-column:1/-1">
+        <h3>Traektoriya <span class="hint">qurilmani bosib tanlang, davrni ko'rsating</span></h3>
+        <div style="padding:13px">
+          <div class="traj-head">
+            <label class="f">Boshlanish <input type="date" id="traj-from"></label>
+            <label class="f">Tugash <input type="date" id="traj-to"></label>
+            <button class="btn primary" onclick="loadTraj()">Ko'rsat</button>
+            <button class="btn" onclick="clearTraj()">Tozalash</button>
+          </div>
+          <div class="traj-stats" id="traj-stats" style="display:none"></div>
+          <div id="traj-map" style="height:420px;border-radius:12px"></div>
+          <div class="err" id="traj-err"></div>
+        </div>
+      </div>
+      <div class="card" style="grid-column:1/-1">
+        <h3>Geofence zonalar <span class="hint">avtobus zonadan chiqsa — Telegram ogohlantirish</span></h3>
+        <div style="padding:12px">
+          <div class="traj-head">
+            <label class="f">Zona nomi <input id="gf-name" placeholder="Depo / 1-marshrut" style="width:170px"></label>
+            <label class="f">Lat <input id="gf-lat" type="number" step="0.00001" style="width:110px"></label>
+            <label class="f">Lng <input id="gf-lng" type="number" step="0.00001" style="width:110px"></label>
+            <label class="f">Radius (m) <input id="gf-radius" type="number" value="500" style="width:90px"></label>
+            <label class="f">Avtobus (bo'sh = hammasi) <input id="gf-vehicle" placeholder="01.240-AAB" style="width:130px"></label>
+            <button class="btn" onclick="pickCenter()">Xarita markazi</button>
+            <button class="btn primary" onclick="addGf()">+ Zona qo'shish</button>
+          </div>
+          <div class="err" id="gf-err"></div>
+          <div id="gf-list"></div>
+        </div>
+      </div>
+      <div class="card" style="grid-column:1/-1">
+        <h3>Ogohlantirishlar <span class="hint" id="al-count"></span></h3>
+        <div id="al-list" style="max-height:260px;overflow:auto"></div>
+      </div>
+      <div class="card" style="grid-column:1/-1">
+        <h3>Kunlik yig'ama (rollup) <span class="hint">masofa · tezlik · nuqtalar</span></h3>
+        <div style="padding:12px">
+          <div class="traj-head">
+            <label class="f">Dan <input type="date" id="daily-from"></label>
+            <label class="f">Gacha <input type="date" id="daily-to"></label>
+            <button class="btn primary" onclick="loadDaily()">Hisoblash</button>
+          </div>
+          <div id="daily-body"></div>
+        </div>
+      </div>
+      <div class="note" style="grid-column:1/-1">
+        <b>FMB920 ni ulash:</b> qurilmaga SMS yuboring
+        <code>setgprps 10,&lt;SERVER_IP&gt;,5027,0,TCP,1,,,codec8e</code> — qurilma avtomatik ro'yxatga olinadi,
+        keyin "+ IMEI qo'shish" orqali avtobusga bog'lanadi.
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= VIDEO ================= -->
+  <div id="video">
+    <div class="player-form">
+      <label class="f">Kamera nomi <input id="cam-name" placeholder="Avtobus 01 — old ko'rinish"></label>
+      <label class="f">Manba (HLS .m3u8 yoki embed) <input id="cam-url" placeholder="http://server/live/stream.m3u8"></label>
+      <div style="display:flex;align-items:end;gap:8px;flex-wrap:wrap">
+        <label class="f">Tur
+          <select id="cam-type"><option value="hls">HLS (.m3u8)</option><option value="rtsp">RTSP (avto-relay)</option><option value="embed">Embed (iframe)</option></select>
+        </label>
+        <button class="btn primary" onclick="addCam()">+ Kamera qo'shish</button>
+      </div>
+      <div class="err" id="cam-err"></div>
+    </div>
+    <div class="cam-grid" id="cam-grid"></div>
+    <div class="empty" id="cam-empty" style="display:none">Kameralar yo'q. Yuqorida manba qo'shib kuzatuvni boshlang.</div>
+    <div class="note">
+      <b>RTSP kameralar:</b> manba turini <b>RTSP (avto-relay)</b> qiling — servis o'zi ffmpeg ishga tushirib
+      <code>rtsp://…</code> ni HLS'ga aylantiradi (<code>/hls/cam&lt;id&gt;.m3u8</code>), relay qulasa avtomatik qayta ko'tariladi.
+      Qo'lda: <code>ffmpeg -rtsp_transport tcp -i rtsp://kamera/stream -c copy -f hls out.m3u8</code>
+    </div>
+  </div>
+</div>
+
+<dialog id="dlg">
+  <h4>IMEI qo'shish / avtobusga bog'lash</h4>
+  <div class="f"><label class="f">IMEI <input id="dlg-imei" placeholder="15 xonali IMEI"></label></div>
+  <div class="f"><label class="f">Avtobus (external_id) <input id="dlg-vehicle" placeholder="masalan: 01.240-AAB"></label></div>
+  <div class="f"><label class="f">Ism (ixtiyoriy) <input id="dlg-name" placeholder="FMB920 #1"></label></div>
+  <div class="acts"><button class="btn" onclick="dlg.close()">Bekor</button><button class="btn primary" onclick="saveBind()">Saqlash</button></div>
+  <div class="err" id="dlg-err"></div>
+</dialog>
+
+<script>
+/* ============ token + API ============ */
+var TOK = '';
+try { TOK = new URLSearchParams(location.search).get('token') || localStorage.getItem('bm-token') || ''; } catch (e) {}
+function authHeaders(withBody) {
+  var h = { 'Authorization': 'Bearer ' + TOK };
+  if (withBody) h['Content-Type'] = 'application/json';
+  return h;
+}
+function request(method, p, body) {
+  return fetch(p, { method: method, headers: authHeaders(!!body), body: body ? JSON.stringify(body) : undefined })
+    .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || r.status)); }); });
+}
+var API = {
+  get: function (p) { return request('GET', p); },
+  post: function (p, b) { return request('POST', p, b); },
+  patch: function (p, b) { return request('PATCH', p, b); },
+  del: function (p) { return request('DELETE', p); }
+};
+
+/* ============ xarita ============ */
+var map, trajMap, markers = {}, cluster = null, trajLine = null, trajStart = null, trajEnd = null;
+var didFit = false; /* fitBounds faqat birinchi yuklashda — refresh foydalanuvchi view'ini buzmasin */
+function initMaps() {
+  if (map) return;
+  map = L.map('map').setView([41.2995, 69.2401], 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' }).addTo(map);
+}
+function initCluster() {
+  /* Ko'p qurilma bo'lganda markerlar klasterlanadi (CDN bloklangan bo'lsa — oddiy markerlar) */
+  if (cluster || !window.L || !L.MarkerClusterGroup) return;
+  cluster = L.markerClusterGroup({
+    showCoverageOnHover: false,
+    maxClusterRadius: 45,
+    disableClusteringAtZoom: 16,
+    spiderfyOnMaxZoom: false
+  });
+  map.addLayer(cluster);
+}
+function initTrajMap() {
+  if (trajMap) return;
+  trajMap = L.map('traj-map').setView([41.2995, 69.2401], 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' }).addTo(trajMap);
+}
+
+/* ============ tablar ============ */
+function showTab(t) {
+  document.getElementById('gps').style.display = (t === 'gps') ? 'block' : 'none';
+  document.getElementById('video').style.display = (t === 'video') ? 'block' : 'none';
+  document.getElementById('tab-gps').classList.toggle('on', t === 'gps');
+  document.getElementById('tab-video').classList.toggle('on', t === 'video');
+  if (location.hash !== '#' + t) {
+    try { history.replaceState(null, '', '#' + t); } catch (e) {}
+  }
+  if (t === 'gps') initMaps(), setTimeout(function () { map.invalidateSize(); }, 60);
+}
+function tabFromHash() {
+  var h = (location.hash || '').replace('#', '').split('?')[0];
+  return (h === 'video') ? 'video' : 'gps';
+}
+window.addEventListener('hashchange', function () { showTab(tabFromHash()); });
+window.addEventListener('message', function (e) {
+  if (e.data === 'tab:gps') showTab('gps');
+  else if (e.data === 'tab:video') showTab('video');
+});
+
+/* ============ qurilmalar ============ */
+var devices = [];
+function refresh() {
+  API.get('/api/gps/devices').then(function (d) {
+    devices = d.devices || [];
+    renderStats(); renderDevices(); renderMap();
+  }).catch(function (e) { setStatus('Xato: ' + e.message, true); });
+}
+function renderStats() {
+  var on = devices.filter(function (d) { return d.online; }).length;
+  var moving = devices.filter(function (d) { return d.online && (d.last_speed || 0) > 3; }).length;
+  document.getElementById('stats').innerHTML =
+    statCard(devices.length, 'Jami qurilma', '') + statCard(on, 'Online', 'ok') +
+    statCard(moving, 'Harakatda', 'ok') + statCard(devices.length - on, 'Offline', 'bad');
+}
+function statCard(v, l, c) { return '<div class="stat"><b class="' + c + '">' + v + '</b><span>' + l + '</span></div>'; }
+function renderDevices() {
+  var el = document.getElementById('dev-list');
+  el.innerHTML = devices.length ? devices.map(function (d) {
+    var nm = d.name || d.plate_number || d.imei;
+    return '<div class="dev" onclick="openTraj(\'' + d.imei + '\')">' +
+      '<span class="dot ' + (d.online ? 'on' : '') + '"></span>' +
+      '<div><div class="dev-name">' + esc(nm) + '</div>' +
+      '<div class="dev-sub">' + (d.plate_number ? '<b>' + esc(d.plate_number) + '</b> · ' : '') + esc(d.imei) + '</div></div>' +
+      '<span class="go">' + (d.online ? (d.last_speed || 0).toFixed(0) + ' km/h' : 'offline') + '</span></div>';
+  }).join('') : '<div class="empty">Qurilmalar yo\'q. FMB920 TCP 5027 ga ulanganda avtomatik paydo bo\'ladi.</div>';
+  document.getElementById('dev-count').textContent = devices.length ? devices.length + ' ta' : '';
+}
+function renderMap() {
+  initMaps(); initCluster();
+  if (cluster) cluster.clearLayers();
+  else Object.keys(markers).forEach(function (k) { map.removeLayer(markers[k]); });
+  markers = {};
+  var pts = [];
+  devices.forEach(function (d) {
+    if (d.last_lat == null || d.last_lng == null) return;
+    var nm = d.name || d.plate_number || d.imei;
+    var m = L.marker([d.last_lat, d.last_lng], {
+      icon: L.divIcon({ className: '', html: '<span class="dev-pin ' + (d.online ? 'on' : 'off') + '"></span>', iconSize: [14, 14], iconAnchor: [7, 7] })
+    });
+    m.bindPopup('<b>' + esc(nm) + '</b><br>' +
+      (d.plate_number ? 'Avtobus: ' + esc(d.plate_number) + '<br>' : '') +
+      'Tezlik: ' + (d.last_speed || 0).toFixed(0) + ' km/h<br>' +
+      '<a href="#" onclick="openTraj(\'' + d.imei + '\');return false">Traektoriya &#9656;</a>');
+    if (cluster) cluster.addLayer(m); else m.addTo(map);
+    markers[d.imei] = m; pts.push([d.last_lat, d.last_lng]);
+  });
+  if (pts.length && !didFit) { map.fitBounds(L.latLngBounds(pts).pad(0.25)); didFit = true; }
+}
+
+/* ============ traektoriya ============ */
+var curImei = '';
+function openTraj(imei) {
+  curImei = imei;
+  document.getElementById('traj-from').value = todayStr();
+  document.getElementById('traj-to').value = todayStr();
+  var card = document.getElementById('traj-card');
+  if (card) card.scrollIntoView({ behavior: 'smooth' });
+  loadTraj();
+}
+function todayStr() { var d = new Date(); return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()); }
+function p2(n) { return (n < 10 ? '0' : '') + n; }
+function loadTraj() {
+  if (!curImei) { trajErr('Avval qurilmani tanlang'); return; }
+  var f = document.getElementById('traj-from').value || todayStr();
+  var t = document.getElementById('traj-to').value || f;
+  API.get('/api/gps/positions?imei=' + encodeURIComponent(curImei) + '&from=' + f + '&to=' + t + '&limit=20000')
+    .then(function (r) { drawTraj(r.positions || []); })
+    .catch(function (e) { trajErr(e.message); });
+}
+function clearTraj() {
+  if (trajLine) { trajMap.removeLayer(trajLine); trajLine = null; }
+  if (trajStart) { trajMap.removeLayer(trajStart); trajStart = null; }
+  if (trajEnd) { trajMap.removeLayer(trajEnd); trajEnd = null; }
+  document.getElementById('traj-stats').style.display = 'none';
+  trajErr('');
+}
+function drawTraj(pts) {
+  initTrajMap();
+  clearTraj();
+  if (!pts.length) { trajErr("Bu davrda pozitsiya yo'q"); return; }
+  var lls = pts.map(function (p) { return [p.lat, p.lng]; });
+  trajLine = L.polyline(lls, { color: '#3fb6a8', weight: 3, opacity: .9 }).addTo(trajMap);
+  trajStart = L.circleMarker(lls[0], { radius: 7, color: '#34d399', fillOpacity: 1 }).bindTooltip('Boshlanish').addTo(trajMap);
+  trajEnd = L.circleMarker(lls[lls.length - 1], { radius: 7, color: '#e5484d', fillOpacity: 1 }).bindTooltip('Tugash').addTo(trajMap);
+  trajMap.fitBounds(trajLine.getBounds().pad(.2));
+  var dist = 0;
+  for (var i = 1; i < pts.length; i++) dist += haversine(pts[i - 1], pts[i]);
+  var sp = pts.map(function (p) { return p.speed || 0; });
+  var mx = Math.max.apply(null, sp);
+  var avg = sp.reduce(function (a, b) { return a + b; }, 0) / sp.length;
+  document.getElementById('traj-stats').innerHTML =
+    statCard((dist / 1000).toFixed(1) + ' km', 'Masofa', '') +
+    statCard(mx.toFixed(0) + ' km/h', 'Maks tezlik', '') +
+    statCard(avg.toFixed(0) + ' km/h', 'Ort. tezlik', '') +
+    statCard(pts.length, 'Nuqtalar', '');
+  document.getElementById('traj-stats').style.display = 'grid';
+}
+function haversine(a, b) {
+  var R = 6371000, dLat = (b[0] - a[0]) * Math.PI / 180, dLng = (b[1] - a[1]) * Math.PI / 180;
+  var la1 = a[0] * Math.PI / 180, la2 = b[0] * Math.PI / 180;
+  var h = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(la1) * Math.cos(la2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function trajErr(m) { var e = document.getElementById('traj-err'); e.textContent = m || ''; e.style.display = m ? 'block' : 'none'; }
+
+/* ============ video kameralar ============ */
+var cams = [];
+function refreshCams() {
+  API.get('/api/video/cameras').then(function (d) { cams = d.cameras || []; renderCams(); })
+    .catch(function (e) { console.warn('kamera xato', e); });
+}
+function renderCams() {
+  document.getElementById('cam-grid').innerHTML = cams.map(camCard).join('');
+  document.getElementById('cam-empty').style.display = cams.length ? 'none' : 'block';
+  cams.forEach(function (c) { if (c.source_type === 'hls') mountHls(c); });
+}
+function camCard(c) {
+  var badge = c.source_type === 'embed' ? '<span class="badge embed">EMBED</span>'
+    : c.source_type === 'rtsp' ? '<span class="badge rtsp">RTSP→HLS</span>' : '<span class="badge hls">HLS</span>';
+  var body = c.source_type === 'embed'
+    ? '<iframe src="' + esc(c.url) + '" allowfullscreen></iframe>'
+    : '<video id="v-' + c.id + '" controls muted playsinline></video>';
+  var playUrl = c.source_type === 'rtsp' ? ('/hls/cam' + c.id + '.m3u8') : c.url;
+  return '<div class="cam"><div class="head"><span class="dot"></span>' + esc(c.name) + ' ' + badge + '</div>' +
+    '<div class="body">' + body + '</div>' +
+    '<div class="foot"><span class="muted">' + esc(c.url) + '</span><span class="grow">' +
+    '<button class="btn danger" onclick="delCam(' + c.id + ')">O\'chirish</button></span></div></div>';
+}
+function mountHls(c) {
+  var v = document.getElementById('v-' + c.id);
+  if (!v) return;
+  var src = c.source_type === 'rtsp' ? ('/hls/cam' + c.id + '.m3u8') : c.url;
+  if (v.canPlayType('application/vnd.apple.mpegurl')) { v.src = src; v.play().catch(function () {}); return; }
+  if (!window.Hls || !Hls.isSupported()) return;
+  var hls = new Hls({ liveDurationInfinity: true });
+  hls.loadSource(src);
+  hls.attachMedia(v);
+  hls.on(Hls.Events.ERROR, function (_, data) { if (data.fatal) showCamNote(c, data.details); });
+}
+function showCamNote(c, details) {
+  var v = document.getElementById('v-' + c.id);
+  var card = v ? v.closest('.cam') : null;
+  if (!card || card.dataset.note) return;
+  card.dataset.note = '1';
+  var n = document.createElement('div');
+  n.className = 'muted';
+  n.style.cssText = 'padding:8px 12px;font-size:11px';
+  n.textContent = 'Oqim ochilmadi (' + details + ') — URL yoki relay tekshiring';
+  card.querySelector('.body').appendChild(n);
+}
+function addCam() {
+  var name = document.getElementById('cam-name').value.trim();
+  var url = document.getElementById('cam-url').value.trim();
+  var t = document.getElementById('cam-type').value;
+  var err = document.getElementById('cam-err');
+  if (!name || !url) { err.textContent = 'Nomi va manba kerak'; err.style.display = 'block'; return; }
+  err.style.display = 'none';
+  API.post('/api/video/cameras', { name: name, url: url, source_type: t }).then(function () {
+    document.getElementById('cam-name').value = '';
+    document.getElementById('cam-url').value = '';
+    refreshCams();
+  }).catch(function (e) { err.textContent = e.message; err.style.display = 'block'; });
+}
+function delCam(id) { if (!confirm("Kamerani o'chirish?")) return; API.del('/api/video/cameras/' + id).then(refreshCams); }
+
+/* ============ bind dialog ============ */
+function openBind() {
+  document.getElementById('dlg-err').style.display = 'none';
+  document.getElementById('dlg').showModal();
+}
+function saveBind() {
+  var imei = document.getElementById('dlg-imei').value.trim();
+  var vid = document.getElementById('dlg-vehicle').value.trim();
+  var nm = document.getElementById('dlg-name').value.trim();
+  var err = document.getElementById('dlg-err');
+  if (!/^\d{10,17}$/.test(imei)) { err.textContent = "IMEI 10-17 raqam bo'lishi kerak"; err.style.display = 'block'; return; }
+  err.style.display = 'none';
+  API.post('/api/gps/devices', { imei: imei, vehicle_id: vid, name: nm }).then(function () {
+    document.getElementById('dlg').close();
+    refresh();
+  }).catch(function (e) { err.textContent = e.message; err.style.display = 'block'; });
+}
+
+/* ============ qidiruv ============ */
+function initSearch() {
+  var inp = document.getElementById('dev-search');
+  var drop = document.getElementById('dev-search-drop');
+  if (!inp || !drop) return;
+  function fly(imei) {
+    var d = devices.filter(function (x) { return x.imei === imei; })[0];
+    if (!d || d.last_lat == null) return;
+    initMaps(); initCluster();
+    showTab('gps');
+    setTimeout(function () {
+      didFit = true; /* refresh view'ni qayta tiklamasin */
+      map.flyTo([d.last_lat, d.last_lng], 16, { duration: 0.8 });
+      var m = markers[imei];
+      if (m) { if (cluster) m = cluster.getVisibleParent(m) || m; setTimeout(function () { m.openPopup(); }, 850); }
+    }, 60);
+    drop.style.display = 'none';
+    inp.value = '';
+  }
+  window._srFly = fly;
+  inp.addEventListener('input', function () {
+    var q = inp.value.trim().toLowerCase();
+    if (!q) { drop.style.display = 'none'; return; }
+    var hits = devices.filter(function (d) {
+      var nm = (d.name || '') + ' ' + (d.plate_number || '') + ' ' + d.imei;
+      return nm.toLowerCase().indexOf(q) >= 0;
+    }).slice(0, 8);
+    if (!hits.length) { drop.style.display = 'none'; return; }
+    drop.innerHTML = hits.map(function (d) {
+      var nm = d.name || d.plate_number || d.imei;
+      return '<div class="sr" onclick="_srFly(\'' + d.imei + '\')">' +
+        '<span class="dot ' + (d.online ? 'on' : '') + '"></span><b>' + esc(nm) + '</b>' +
+        '<span class="muted">' + (d.plate_number ? esc(d.plate_number) + ' · ' : '') + esc(d.imei) + '</span></div>';
+    }).join('');
+    drop.style.display = 'block';
+  });
+  document.addEventListener('click', function (e) {
+    if (!e.target.closest || !e.target.closest('.search-wrap')) drop.style.display = 'none';
+  });
+}
+
+/* ============ geofence + alerts + daily ============ */
+var fences = [], alerts = [];
+function pickCenter() {
+  var c = map.getCenter();
+  document.getElementById('gf-lat').value = c.lat.toFixed(5);
+  document.getElementById('gf-lng').value = c.lng.toFixed(5);
+}
+function addGf() {
+  var err = document.getElementById('gf-err');
+  var name = document.getElementById('gf-name').value.trim();
+  var lat = parseFloat(document.getElementById('gf-lat').value);
+  var lng = parseFloat(document.getElementById('gf-lng').value);
+  var radius = parseInt(document.getElementById('gf-radius').value, 10) || 500;
+  var vehicle = document.getElementById('gf-vehicle').value.trim();
+  if (!name || isNaN(lat) || isNaN(lng)) { err.textContent = 'Nomi va lat/lng kerak'; err.style.display = 'block'; return; }
+  err.style.display = 'none';
+  API.post('/api/gps/geofences', { name: name, lat: lat, lng: lng, radius_m: radius, vehicle_id: vehicle }).then(function () {
+    document.getElementById('gf-name').value = '';
+    loadFences();
+  }).catch(function (e) { err.textContent = e.message; err.style.display = 'block'; });
+}
+function loadFences() {
+  API.get('/api/gps/geofences').then(function (d) { fences = d.geofences || []; renderFences(); })
+    .catch(function () {});
+}
+function renderFences() {
+  var el = document.getElementById('gf-list');
+  if (!fences.length) { el.innerHTML = '<div class="empty">Zonalar yo\'q. Xarita markazini tanlab zona qo\'shing.</div>'; return; }
+  el.innerHTML = '<table class="mini"><tr><th>Zona</th><th>Markaz</th><th>Radius</th><th>Avtobus</th><th>Holat</th><th></th></tr>' +
+    fences.map(function (f) {
+      return '<tr><td><b>' + esc(f.name) + '</b></td><td>' + f.lat.toFixed(5) + ', ' + f.lng.toFixed(5) + '</td>' +
+        '<td>' + f.radius_m + ' m</td><td>' + (f.vehicle_id ? esc(f.vehicle_id) : 'hammasi') + '</td>' +
+        '<td>' + (f.enabled ? '<span class="badge hls">YOQILGAN</span>' : '<span class="badge">O\'CHIRILGAN</span>') + '</td>' +
+        '<td style="text-align:right"><button class="btn" onclick="toggleGf(' + f.id + ',' + (f.enabled ? 0 : 1) + ')">' + (f.enabled ? 'O\'chir' : 'Yoq') + '</button> ' +
+        '<button class="btn danger" onclick="delGf(' + f.id + ')">✕</button></td></tr>';
+    }).join('') + '</table>';
+}
+function toggleGf(id, en) { API.patch('/api/gps/geofences/' + id, { enabled: !!en }).then(loadFences); }
+function delGf(id) { if (!confirm("Zonani o'chirish?")) return; API.del('/api/gps/geofences/' + id).then(loadFences); }
+function loadAlerts() {
+  API.get('/api/gps/alerts?limit=50').then(function (d) {
+    alerts = d.alerts || [];
+    document.getElementById('al-count').textContent = alerts.length ? alerts.length + ' ta' : '';
+    document.getElementById('al-list').innerHTML = alerts.length ? alerts.map(function (a) {
+      var kind = a.kind === 'overspeed'
+        ? '<span class="m warn">⚡️ tezlik oshdi</span>'
+        : '<span class="m">🚨 zonadan chiqdi</span>';
+      return '<div class="al"><span class="t">' + esc(String(a.ts || '').replace('T', ' ').slice(0, 16)) + '</span>' +
+        kind + '<span><b>' + esc(a.vehicle_id || a.imei) + '</b> · ' + esc(a.message) + '</span></div>';
+    }).join('') : '<div class="empty">Ogohlantirishlar yo\'q — hammasi tartibda.</div>';
+  }).catch(function () {});
+}
+function loadDaily() {
+  var f = document.getElementById('daily-from').value || todayStr();
+  var t = document.getElementById('daily-to').value || f;
+  API.get('/api/gps/daily?from=' + f + '&to=' + t).then(function (d) {
+    var rows = d.daily || [];
+    var el = document.getElementById('daily-body');
+    if (!rows.length) { el.innerHTML = '<div class="empty">Bu davrda ma\'lumot yo\'q</div>'; return; }
+    el.innerHTML = '<table class="mini"><tr><th>Sana</th><th>Qurilma</th><th>Nuqtalar</th><th>Masofa</th><th>Maks</th><th>Ort.</th><th>Harakat</th></tr>' +
+      rows.map(function (r) {
+        return '<tr><td>' + esc(r.day) + '</td><td><b>' + esc(r.imei) + '</b></td><td>' + r.points + '</td>' +
+          '<td>' + (r.distance_m / 1000).toFixed(1) + ' km</td><td>' + r.max_speed + ' km/h</td>' +
+          '<td>' + (r.avg_speed || 0).toFixed(0) + ' km/h</td><td>' + r.moving_points + ' nuqta</td></tr>';
+      }).join('') + '</table>';
+  }).catch(function (e) { document.getElementById('daily-body').innerHTML = '<div class="empty">Xato: ' + esc(e.message) + '</div>'; });
+}
+
+/* ============ yordamchi ============ */
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+function setStatus(m, isErr) {
+  var el = document.getElementById('gps-health');
+  el.textContent = m;
+  el.style.color = isErr ? 'var(--red)' : '';
+}
+function checkHealth() {
+  fetch('/api/gps/health').then(function (r) { return r.json(); }).then(function (h) {
+    if (h && h.ok) setStatus('online · TCP ' + h.tcp_port);
+    else setStatus("holat noma'lum", true);
+  }).catch(function () { setStatus('API javob bermadi', true); });
+}
+
+/* ============ init ============ */
+showTab(tabFromHash());
+checkHealth();
+initMaps();
+document.getElementById('traj-from').value = todayStr();
+document.getElementById('traj-to').value = todayStr();
+document.getElementById('daily-from').value = todayStr();
+document.getElementById('daily-to').value = todayStr();
+refresh();
+refreshCams();
+loadFences();
+loadAlerts();
+initSearch();
+setInterval(refresh, 10000);
+setInterval(refreshCams, 30000);
+setInterval(loadAlerts, 20000);
+</script>
+</body>
+</html>

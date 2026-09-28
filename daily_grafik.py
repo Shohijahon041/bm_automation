@@ -25,7 +25,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bm_automation.client import BMClient  # noqa: E402
 from bm_automation.app.repositories.duty_repo import DutyRepository  # noqa: E402
-from bm_automation.app.notifications.telegram import send_document, send_photo, send_message  # noqa: E402
+from bm_automation.app.notifications.telegram import (  # noqa: E402
+    send_document, send_photo, send_message)
+from bm_automation.app.utils.tgformat import esc  # noqa: E402
 
 EMOJI = "\U0001F37D\ufe0f"
 PROJECT = Path(__file__).resolve().parent
@@ -55,6 +57,7 @@ def _duty_with_retry(client, rid: str, d: datetime.date, label: str) -> dict:
     ko'tariladi.
     """
     last = None
+    warned = False
     while True:
         try:
             return DutyRepository(client).by_date(rid, d.isoformat())
@@ -64,6 +67,11 @@ def _duty_with_retry(client, rid: str, d: datetime.date, label: str) -> dict:
             last = exc
             print(f"[{label}] {d} duty hali e'lon qilinmagan (404) — "
                   f"{DUTY_RETRY_MINUTES} daqiqadan keyin qayta uriniladi...")
+            # Grafik kechiksa — kechqurun (DUTY_LATE_WARN_HOUR dan keyin)
+            # bog'langan haydovchilarga BIR MARTA eslatma yuboriladi.
+            if not warned:
+                _warn_if_late(rid, d, label)
+                warned = True
             time.sleep(DUTY_RETRY_MINUTES * 60)
 
 
@@ -73,11 +81,90 @@ def _duty_with_retry(client, rid: str, d: datetime.date, label: str) -> dict:
 # qayta urinamiz (hech qanday soat cheklovi yo'q — bot har doim ishlaydi).
 DUTY_RETRY_MINUTES = 15
 
+# Grafik kechiksa haydovchilarga eslatma soati (shu soatdan keyin 404 bo'lsa
+# bir marta ogohlantiriladi). BM_GRAFIK_LATE_HOUR bilan sozlanadi.
+DUTY_LATE_WARN_HOUR = int(os.getenv("BM_GRAFIK_LATE_HOUR", "20"))
+
+
+def _warn_if_late(rid: str, d: datetime.date, label: str) -> None:
+    """Ertangi grafik e'lon qilinmagan bo'lsa kechqurun haydovchilarga xabar.
+
+    Faqat shu soatdan (DUTY_LATE_WARN_HOUR) keyin va kuniga bir marta
+    (holat fayli bilan) yuboriladi — spam bo'lmaydi. Grafik e'lon
+    qilingandan keyin qayta eslatilmaydi.
+    """
+    try:
+        import json
+        from pathlib import Path as _P
+        state_file = _P("state") / "grafik_late_warn.json"
+        key = f"{rid}|{d.isoformat()}"
+        try:
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+        except Exception:
+            state = {}
+        if state.get(key):
+            return  # bu kun uchun allaqachon ogohlantirilgan
+        now = datetime.datetime.now()
+        if now.hour < DUTY_LATE_WARN_HOUR:
+            return  # hali kechqurun bo'lmadi
+        from bm_automation.app.db.storage import get_storage
+        st = get_storage()
+        if not st.enabled:
+            return
+        ph = st.db.ph
+        rows = st.query(
+            "SELECT p.telegram_chat_id, p.notification_enabled, "
+            "p.blacklisted, d.full_name "
+            "FROM schedules s "
+            "JOIN driver_profiles p ON p.driver_id = s.driver_id "
+            "LEFT JOIN drivers d ON d.external_id = s.driver_id "
+            f"WHERE s.route_id = {ph} AND s.date = {ph} "
+            f"AND s.driver_id != ''",
+            (rid, d.isoformat()), limit=100)
+        sent = 0
+        seen = set()
+        for r in rows or []:
+            tcid = str(r.get("telegram_chat_id") or "").strip()
+            if not tcid or tcid in seen:
+                continue
+            if not r.get("notification_enabled") or r.get("blacklisted"):
+                continue
+            seen.add(tcid)
+            try:
+                name = r.get("full_name") or "Haydovchi"
+                send_message(
+                    f"⏳ <b>Eslatma</b>\n\n"
+                    f"{esc(label)} yo'nalishi bo'yicha "
+                    f"{d:%d.%m.%Y} (ertaga) kun grafigi hali "
+                    f"e'lon qilinmagan.\nGrafik e'lon qilinganda "
+                    f"avtomatik yuboriladi.",
+                    chat_id=tcid)
+                sent += 1
+            except Exception:
+                pass
+        state[key] = now.strftime("%Y-%m-%d %H:%M")
+        try:
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+            state_file.write_text(
+                json.dumps(state, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+        except Exception:
+            pass
+        print(f"  [{label}] kechikish eslatmasi: sent={sent}")
+    except Exception as exc:
+        print(f"  [{label}] kechikish eslatmasi xatolik: {exc}")
+
 # Rasmni har safar yangidan yaratish (saytdagi o'zgarishlar aks etishi uchun).
 # 0 = eski fayl bor bo'lsa qayta yaratilmaydi (tezroq, lekin eskirgan rasm
 # yuborilishi mumkin). BM_GRAFIK_REFRESH_IMAGE=0 bilan o'chiriladi.
 REFRESH_IMAGE = (os.getenv("BM_GRAFIK_REFRESH_IMAGE", "1").strip() not in
                  ("0", "false", "no"))
+
+# Grafik tayyor bo'lganda bog'langan haydovchilarga o'z shaxsiy grafik
+# kartasi (o'z grafigi ajratilgan) avtomatik yuborilsinmi.
+# BM_GRAFIK_AUTO_NOTIFY=0 bilan o'chiriladi.
+AUTO_NOTIFY = (os.getenv("BM_GRAFIK_AUTO_NOTIFY", "1").strip() not in
+               ("0", "false", "no"))
 
 TEMPLATES = {
     "ISH": (
@@ -201,6 +288,113 @@ def fill_grafik(src, out, prefix, title_word, newdate, by_graph,
     return title, len(blocks), filled, replaced
 
 
+def _send_personal_cards(res: dict, rid: str, d: datetime.date, label: str,
+                         admin_chat_id: str | None) -> None:
+    """Bog'langan haydovchilarga o'z shaxsiy grafik kartasini yuboradi.
+
+    Har haydovchi faqat O'Z grafigi, vaqti va avtobusi ko'rinadigan
+    karta oladi (o'z qatori ajratib ko'rsatilgan). Kartalar
+    `reports/<img_dir>/personal/` keshida saqlanadi — haydovchi keyin
+    "Grafikim" tugmasi orqali ham qayta ko'rishi mumkin.
+    """
+    if not isinstance(res, dict):
+        return
+    rows_by_dir = res.get("rows") or {}
+    route_name = res.get("route_name") or label
+    date_str = res.get("date") or d.isoformat()
+    drivers_meta = {r.get("id"): r for r in (res.get("drivers") or [])}
+
+    try:
+        from bm_automation.app.db.storage import get_storage
+        from bm_automation.app.exporters.sheet_image import (
+            make_personal_sheet_image)
+        from bm_automation.app.notifications.telegram import send_photo as _sp
+        st = get_storage()
+        if not st.enabled:
+            return
+        out_dir = REPORTS / "personal"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        sent = skipped = failed = 0
+        seen: set[str] = set()
+        for direction, rows in rows_by_dir.items():
+            for row in (rows or []):
+                for did in (row.get("driver_id"), row.get("second_driver_id")):
+                    did = str(did or "").strip()
+                    if not did or did in seen:
+                        continue
+                    seen.add(did)
+                    prof = st.find("driver_profiles", driver_id=did) or {}
+                    tcid = str(prof.get("telegram_chat_id") or "").strip()
+                    if not tcid or not prof.get("notification_enabled") \
+                            or prof.get("blacklisted"):
+                        continue
+                    # Ikkinchi haydovchi bo'lsa ismini birlashtiramiz.
+                    meta = drivers_meta.get(did) or {}
+                    display = dict(row)
+                    if row.get("second_driver_id") == did and \
+                            row.get("driver_id") and \
+                            row.get("driver_id") != did:
+                        display["driver"] = meta.get("name") or row.get("driver")
+                    png = out_dir / f"personal_{rid[:8]}_{d:%Y%m%d}_{did[:8]}.png"
+                    try:
+                        if REFRESH_IMAGE or not png.exists():
+                            # Haydovchi rasmi + oylik km statistikasi.
+                            photo = str(prof.get("photo_path") or "").strip()
+                            km_stats = None
+                            try:
+                                ph = st.db.ph
+                                agg = st.query(
+                                    "SELECT COALESCE(SUM(distance_plan),0) AS plan_km, "
+                                    "COALESCE(SUM(distance_km),0) AS fact_km, "
+                                    "COALESCE(SUM(trip_plan),0) AS plan_trips, "
+                                    "COALESCE(SUM(trip_count),0) AS fact_trips "
+                                    "FROM driver_work_logs WHERE driver_id = " + ph +
+                                    " AND substr(date,1,7) = " + ph,
+                                    (did, date_str[:7]), limit=1)
+                                if agg:
+                                    km_stats = {
+                                        "plan_km": float(agg[0].get("plan_km") or 0),
+                                        "fact_km": float(agg[0].get("fact_km") or 0),
+                                        "plan_trips": int(agg[0].get("plan_trips") or 0),
+                                        "fact_trips": int(agg[0].get("fact_trips") or 0),
+                                    }
+                            except Exception:
+                                km_stats = None
+                            make_personal_sheet_image(
+                                display, str(png), date_str=date_str,
+                                route_name=route_name,
+                                photo_path=photo, km_stats=km_stats)
+                        bus_no = str(row.get("bus") or "-").strip()
+                        dphone = (st.dispatcher_phone(str(rid))
+                                  if rid else "")
+                        cap_bits = [f"🚌 <b>{label}</b>",
+                                    f"Grafik {row.get('graph') or '-'}",
+                                    f"🚍 Avtobus: <b>{bus_no}</b>"]
+                        if dphone:
+                            cap_bits.append(f"💬 Dispetcher tel: "
+                                            f"<code>{dphone}</code>")
+                        caption = (f"🗓 <b>SIZNING GRAFIKINGIZ</b> — "
+                                   f"{d:%d.%m.%Y}\n" + " · ".join(cap_bits))
+                        _sp(str(png), caption=caption, chat_id=tcid)
+                        sent += 1
+                        print(f"  [{label}] shaxsiy karta yuborildi: "
+                              f"{meta.get('name') or did[:8]}")
+                    except Exception as exc:
+                        failed += 1
+                        print(f"  [{label}] shaxsiy karta yuborilmadi "
+                              f"({did[:8]}): {exc}")
+        if sent or failed:
+            print(f"  [{label}] shaxsiy kartalar: sent={sent} failed={failed}")
+            try:
+                send_message(f"👤 {label}: shaxsiy grafik kartalar — "
+                             f"yuborildi: {sent}, xato: {failed}",
+                             chat_id=admin_chat_id)
+            except Exception:
+                pass
+    except Exception as exc:
+        print(f"  [{label}] shaxsiy kartalar xatolik: {exc}")
+
+
 def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word,
                    retry_until_published: bool = True):
     """Bitta yo'nalish uchun Excel + rasmni parallel bajaradi."""
@@ -282,6 +476,7 @@ def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word,
         results.append(("excel", label, False))
 
     img = REPORTS / img_dir / f"driver-sheet_{rid[:8]}_{d.strftime('%Y%m%d')}.png"
+    res = None
     try:
         # HAR DOIM qayta generatsiya: saytda ma'lumot o'zgargan bo'lsa
         # (haydovchi/avtobus almashtirilgan bo'lsa) eski rasm noto'g'ri
@@ -303,9 +498,16 @@ def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word,
         if img.exists():
             desc = (f"🚌 {label} | {d:%d.%m.%Y} | Kunlik chiqish jadvali "
                     f"(grafik × haydovchi × avtobus)")
+            # Faqat jadval rasmi yuboriladi — haydovchi rasmlari albomga
+            # qo'shilmaydi. Bog'langan haydovchi o'z grafigini haydovchi
+            # kartasidagi "🗓 Grafikim" tugmasi orqali oladi.
             send_photo(str(img), caption=desc, chat_id=chat_id)
             print(f"  [{label}] rasm yuborildi: {img.name}")
             results.append(("image", label, True))
+            # Grafik tayyor — bog'langan haydovchilarga o'z shaxsiy grafik
+            # kartasi avtomatik yuboriladi (xohlaganda o'chiriladi).
+            if AUTO_NOTIFY and res:
+                _send_personal_cards(res, rid, d, label, chat_id)
         else:
             print(f"  [{label}] rasm topilmadi: {img.name}")
             results.append(("image", label, False))

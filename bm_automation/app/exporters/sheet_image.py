@@ -17,7 +17,7 @@ from matplotlib.patches import FancyBboxPatch  # noqa: E402
 
 from ..utils.text import title_case
 
-__all__ = ["make_sheet_image"]
+__all__ = ["make_sheet_image", "make_personal_sheet_image"]
 
 # Chizma ranglari
 BG = "#F4F6FB"
@@ -168,6 +168,154 @@ def make_sheet_image(data: dict, out_file: str, width_in: float = 15.0) -> str:
             va="center", fontsize=11, color=TEXT_MUTED)
     ax.text(width_in - 0.25, 0.35, f"2-chiqish - {title_case(data['konechka']['DOWN'])}",
             ha="right", va="center", fontsize=11, color=TEXT_MUTED)
+
+    fig.savefig(out_file, bbox_inches="tight", facecolor=BG)
+    fig.clear()
+    return str(Path(out_file))
+
+
+def _draw_rounded_photo(ax, x, y, size, img_path: str) -> bool:
+    """Yumaloq burchakli doira ichida haydovchi rasmini chizadi.
+
+    Rasm bo'lmasa False — chaqiruvchi bosh harf belgisi chizadi.
+    """
+    try:
+        from matplotlib.image import imread
+        img = imread(img_path)
+    except Exception:  # noqa: BLE001 - rasm yo'q/ buzuk
+        return False
+    try:
+        # Doira maska shakli (clip path)
+        from matplotlib.patches import Circle
+        cx, cy = x + size / 2, y + size / 2
+        circ = Circle((cx, cy), size / 2, transform=ax.transData)
+        ax.imshow(img, extent=(x, x + size, y, y + size), zorder=3,
+                  clip_path=circ, clip_on=True, aspect="auto")
+        # Chiroyli oq ramka
+        ax.add_patch(Circle((cx, cy), size / 2, fill=False,
+                            edgecolor="#FFFFFF", linewidth=2.5, zorder=4))
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def make_personal_sheet_image(row: dict, out_file: str, date_str: str = "",
+                              route_name: str = "", photo_path: str = "",
+                              km_stats: dict | None = None) -> str:
+    """Bitta haydovchining SHAXSIY grafik kartasi (rasmi).
+
+    Faqat o'z grafigi, ismi, avtobusi va chiqish vaqti ko'rinadi —
+    jamoa jadvali emas. Haydovchi botdagi "Grafikim" tugmasi orqali
+    shu rasmni oladi.
+
+    photo_path — haydovchi rasmi (doira ichida chiziladi, bo'lmasa
+    ism bosh harfi). km_stats — {"plan_km", "fact_km", "plan_trips",
+    "fact_trips"} — oy bo'yicha reja/amalda statistikasi.
+    """
+    d = date.fromisoformat(date_str) if date_str else date.today()
+    weekday_uz = _WEEKDAY_UZ[d.weekday()]
+
+    H = 6.4 if (photo_path or km_stats) else 4.6
+    W = 7.2
+    fig = Figure(figsize=(W, H), dpi=140)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(0, W)
+    ax.set_ylim(0, H)
+    ax.axis("off")
+    ax.set_facecolor(BG)
+    fig.patch.set_facecolor(BG)
+
+    # Sarlavha
+    _draw_rounded(ax, 0.3, H - 1.05, W - 0.6, 0.8, TITLE_BG, r=0.2)
+    ax.text(0.55, H - 0.52, "SIZNING GRAFIKINGIZ", ha="left", va="center",
+            fontsize=15, color=TEXT_WHITE, fontweight="bold")
+    ax.text(W - 0.55, H - 0.52, f"{d:%d.%m.%Y} · {weekday_uz}", ha="right",
+            va="center", fontsize=12, color="#AFC3DC")
+
+    # Haydovchi rasmi yoki bosh harf (chap tomonda, yumaloq doira)
+    photo_size = 1.25
+    photo_x, photo_y = 0.6, H - 2.05 - photo_size / 2
+    photo_drawn = _draw_rounded_photo(ax, photo_x, photo_y, photo_size,
+                                      photo_path) if photo_path else False
+    if not photo_drawn:
+        # Bosh harf bilan avatar
+        initial = title_case(str(row.get("driver") or "H"))[:1].upper() or "H"
+        _draw_rounded(ax, photo_x, photo_y, photo_size, photo_size,
+                      "#2E6FBF", r=photo_size / 2)
+        ax.text(photo_x + photo_size / 2, photo_y + photo_size / 2, initial,
+                ha="center", va="center", fontsize=30, color=TEXT_WHITE,
+                fontweight="bold")
+
+    # Ism + yo'nalish (rasmdan keyin)
+    name_x = photo_x + photo_size + 0.35
+    ax.text(name_x, photo_y + photo_size - 0.25,
+            title_case(str(row.get("driver") or "Haydovchi")),
+            ha="left", va="center", fontsize=17, color=TEXT_MAIN,
+            fontweight="bold")
+    if route_name:
+        ax.text(name_x, photo_y + photo_size - 0.7, route_name,
+                ha="left", va="center", fontsize=12, color=TEXT_MUTED)
+
+    # Ma'lumot kartalari: Grafik | Avtobus | Chiqish | Tugash
+    cards = [
+        ("GRAFIK", str(row.get("graph") or "-"), "#2E6FBF"),
+        ("AVTOBUS", str(row.get("bus") or "-"), "#2F8F6B"),
+        ("CHIQISH", str(row.get("start") or "-")[:5], "#C96A1E"),
+        ("TUGASH", str(row.get("end") or "-")[:5], "#8E44AD"),
+    ]
+    cw = (W - 0.6 - 0.45) / 4
+    ch_h = 1.25
+    cy = H - 4.35
+    for i, (label, value, color) in enumerate(cards):
+        cx = 0.3 + i * (cw + 0.15)
+        _draw_rounded(ax, cx, cy, cw, ch_h, "#FFFFFF", ec=GRID, lw=0.8, r=0.16)
+        _draw_rounded(ax, cx, cy + ch_h - 0.34, cw, 0.34, color, r=0.1)
+        ax.text(cx + cw / 2, cy + ch_h - 0.17, label, ha="center", va="center",
+                fontsize=10.5, color=TEXT_WHITE, fontweight="bold")
+        ax.text(cx + cw / 2, cy + (ch_h - 0.34) / 2, value, ha="center",
+                va="center", fontsize=20, color=TEXT_MAIN, fontweight="bold")
+
+    # Tugash vaqti — kichik izoh
+    shift = str(row.get("shift") or "").strip()
+    if shift:
+        ax.text(0.6, cy - 0.42, f"Smena: {shift}", ha="left",
+                va="center", fontsize=12, color=TEXT_MUTED)
+
+    # Reja/amalda km statistikasi (oy bo'yicha) — pastki panel
+    if km_stats:
+        plan_km = float(km_stats.get("plan_km") or 0)
+        fact_km = float(km_stats.get("fact_km") or 0)
+        plan_tr = int(km_stats.get("plan_trips") or 0)
+        fact_tr = int(km_stats.get("fact_trips") or 0)
+        pct = (fact_km / plan_km * 100) if plan_km > 0 else 0.0
+        pct = max(0.0, min(pct, 150.0))
+        bar_y = 0.95
+        _draw_rounded(ax, 0.3, bar_y - 0.42, W - 0.6, 1.25, "#FFFFFF",
+                      ec=GRID, lw=0.8, r=0.16)
+        ax.text(0.55, bar_y + 0.52, "OY BO'YICHA NATIJA", ha="left",
+                va="center", fontsize=10, color=TEXT_MUTED,
+                fontweight="bold")
+        # Qatnov soni — katta raqam (markazda, o'ng tomonda)
+        ax.text(W - 0.7, bar_y + 0.5, f"Qatnov: {fact_tr}",
+                ha="right", va="center", fontsize=16, color=TEXT_MAIN,
+                fontweight="bold")
+        # Progress bar (fon + to'ldirilgan qism)
+        bar_w = W - 3.3
+        _draw_rounded(ax, 0.55, bar_y - 0.02, bar_w, 0.3, "#E4EAF2", r=0.15)
+        fill_w = bar_w * pct / 100
+        if fill_w > 0.05:
+            bar_color = "#2F8F6B" if pct >= 80 else ("#C9A21E" if pct >= 50 else "#C94A3A")
+            _draw_rounded(ax, 0.55, bar_y - 0.02, fill_w, 0.3, bar_color, r=0.15)
+        ax.text(0.55 + bar_w + 0.15, bar_y + 0.13, f"{pct:.0f}%",
+                ha="left", va="center", fontsize=13, color=TEXT_MAIN,
+                fontweight="bold")
+        # Raqamlar satrı
+        ax.text(0.55, bar_y - 0.28,
+                f"Reja km: {plan_km:,.0f}   ·   Amalda: {fact_km:,.0f} km",
+                ha="left", va="center", fontsize=11, color=TEXT_MUTED)
+        ax.text(W - 0.7, bar_y - 0.28,
+                f"Reja reys: {plan_tr}",
+                ha="right", va="center", fontsize=11, color=TEXT_MUTED)
 
     fig.savefig(out_file, bbox_inches="tight", facecolor=BG)
     fig.clear()

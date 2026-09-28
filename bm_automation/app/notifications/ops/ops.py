@@ -17,9 +17,10 @@ import time
 
 from ...config.settings import telegram_settings
 from ...core.bot_users import record_user, record_activity, get_user
+from ...core.group_stats import record_group_message
 from ...core.state import acquire_lock, release_lock
 from ..telegram import telegram_call, send_message
-from . import dispatch
+from . import context, dispatch
 from .roles import is_allowed, resolve_role, configured_roles, Role
 from .text import PRIVATE_TEXT
 
@@ -40,6 +41,69 @@ def _update_chat_id(upd: dict) -> int | None:
     return None
 
 
+def _is_group(upd: dict) -> bool:
+    """Update guruh/superguruh chat'dan kelganmi?"""
+    for key in ("message", "edited_message", "channel_post"):
+        obj = upd.get(key)
+        if isinstance(obj, dict):
+            ctype = str((obj.get("chat") or {}).get("type") or "")
+            if ctype in ("group", "supergroup"):
+                return True
+    if "callback_query" in upd:
+        ctype = str((((upd["callback_query"].get("message") or {})
+                      .get("chat")) or {}).get("type") or "")
+        if ctype in ("group", "supergroup"):
+            return True
+    return False
+
+
+def _bot_mentioned(upd: dict) -> bool:
+    """Xabarda bot eslatilganmi (@username) yoki botga javobmi?"""
+    me = _bot_username_cached()
+    msg = (upd.get("message") or upd.get("edited_message") or {})
+    text = str(msg.get("text") or "")
+    if me and f"@{me}" in text:
+        return True
+    # Botga javob (reply)
+    reply_msg = msg.get("reply_to_message") or {}
+    if reply_msg:
+        reply_from = reply_msg.get("from") or {}
+        if reply_from.get("is_bot"):
+            return True
+    return False
+
+
+# /getMe natijasi keshi (guruh rejimida @username tekshiruvi uchun).
+_BOT_USERNAME: dict[str, str] = {}
+
+
+def _bot_username_cached() -> str:
+    """Bot @username (bir marta so'raladi, keyin keshda turadi)."""
+    if _BOT_USERNAME.get("username"):
+        return _BOT_USERNAME["username"]
+    try:
+        info = telegram_call("getMe") or {}
+        me = str(info.get("username") or "")
+        _BOT_USERNAME["username"] = me
+        return me
+    except Exception:  # noqa: BLE001 - username olinmasa jim o'tkazamiz
+        return ""
+
+
+def _auto_agents_enabled() -> bool:
+    """Avtomatik agentlar (planli hisobot/tahlil xabarlar) yoqilganmi?
+
+    `AI_AUTO_AGENTS=on` bo'lsagina poll-tsikl agentlarni o'z jadvalida
+    chaqiradi. Aks holda ular jim turadi va faqat foydalanuvchi buyruq
+    yozganda javob beradi.
+    """
+    try:
+        s = telegram_settings()
+        return str(s.get("auto_agents", "off")).lower() not in ("off", "0", "false")
+    except Exception:
+        return False
+
+
 def _update_user_info(upd: dict) -> dict:
     """Update ichidan foydalanuvchi ma'lumoti (message/callback/kanal/bot)."""
     for key in ("message", "edited_message", "channel_post",
@@ -51,6 +115,28 @@ def _update_user_info(upd: dict) -> dict:
         if isinstance(frm, dict) and frm.get("id"):
             return {
                 "first_name": str(frm.get("first_name") or ""),
+                "username": str(frm.get("username") or ""),
+            }
+    return {}
+
+
+def _update_sender(upd: dict) -> dict:
+    """Update yuboruvchisi (id + ism + username), guruh uchun jaddektor.
+
+    Guruh xabarida `from` — aniq foydalanuvchi (guruh chat emas). Rol
+    shu `from.id` bo'yicha aniqlanadi — guruh chat_id si roli emas.
+    """
+    for key in ("message", "edited_message", "callback_query"):
+        obj = upd.get(key)
+        if not isinstance(obj, dict):
+            continue
+        frm = obj.get("from") or {}
+        if isinstance(frm, dict) and frm.get("id"):
+            first = str(frm.get("first_name") or "")
+            last = str(frm.get("last_name") or "")
+            return {
+                "id": int(frm["id"]),
+                "name": (first + (" " + last if last else "")).strip(),
                 "username": str(frm.get("username") or ""),
             }
     return {}
@@ -126,10 +212,91 @@ def _notify_new_user(chat_id: int) -> None:
         pass
 
 
+def _handle_group_update(upd: dict, chat_id: int) -> None:
+    """Guruh chat'idan kelgan update'ni qisqa javob bilan ishlaydi.
+
+    Qoidalar:
+      • Har qanday guruh xabari statistika fayliga yoziladi
+        (`group_stats.json` — admin panel `/api/group-stats` orqali ko'radi).
+      • Bot faqat ADMIN / DISPATCHER / MANAGER so'rovlariga javob beradi —
+        oddiy a'zolar buyrug'i butunlay e'tiborsiz qoldiriladi.
+      • `/today` va `/grafik` buyruqlariga to'liq karta o'rniga qisqa
+        matn qaytariladi (guruh spamini oldini olish uchun).
+      • Qolgan buyruqlar guruhda ishlamaydi (jim).
+    """
+    msg = upd.get("message") or upd.get("edited_message") or \
+        (upd.get("callback_query") or {}).get("message") or {}
+    text = str(msg.get("text") or "").strip()
+    is_command = text.startswith("/")
+
+    # Statistika (HAMMA guruh xabarlari uchun — rol/mention cheklovidan
+    # oldin, aks holda panel faqat botga murojaatlarni sanaydi).
+    sender = _update_sender(upd)
+    get_group_title = ((msg.get("chat") or {}).get("title") or "")
+    try:
+        record_group_message(chat_id, get_group_title, sender,
+                             is_command, detail=text[:200])
+    except Exception as exc:  # noqa: BLE001
+        print(f"Guruh statistika xatosi: {exc}")
+
+    if not (is_command or _bot_mentioned(upd)):
+        return  # guruhda jim turamiz
+
+    # Faqat ADMIN / DISPATCHER / MANAGER javob oladi.
+    sender_id = (sender or {}).get("id")
+    if sender_id is None:
+        return
+    srole = resolve_role(sender_id)
+    if srole not in (Role.ADMIN, Role.DISPATCHER, Role.MANAGER):
+        return  # oddiy a'zolar javobsiz qoldiriladi
+
+    # Guruhda faqat qisqa javoblar (to'liq karta/Excel/PNG spam emas).
+    cmd = text.split()[0].lower().replace("/", "", 1) if is_command else ""
+
+    if cmd == "today":
+        try:
+            from . import render as _render
+            f = context.filters_for(sender_id)
+            send_message(_render.today_short(f, chat_id=sender_id),
+                         chat_id=chat_id, parse_mode="HTML")
+        except Exception as exc:  # noqa: BLE001
+            print(f"Guruh /today xatosi: {exc}")
+        return
+
+    if cmd in ("grafik", "grafik_today", "grafik_tomorrow", "grafik_yesterday"):
+        send_message("🖼 <b>GRAFIK</b>\n\n"
+                     "Guruhda grafik karta/Excel yuborilmaydi. "
+                     "Shaxsiy chatda /grafik yoki dashboard'dan "
+                     "yoqishingiz mumkin.",
+                     chat_id=chat_id, parse_mode="HTML")
+        return
+
+    if _bot_mentioned(upd) and not is_command:
+        send_message("ℹ️ Guruhda faqat admin/dispetcher so'rovlariga "
+                     "javob beraman. To'liq hisobot shaxsiy chatda "
+                     "mavjud.",
+                     chat_id=chat_id, parse_mode="HTML")
+        return
+
+    # Qolgan buyruqlar guruhda — jim.
+
+
 def _handle_update(upd: dict) -> None:
     chat_id = _update_chat_id(upd)
     if chat_id is None:
         return
+
+    # ---- Guruh rejimi ----
+    # Guruh chat'larida bot faqat "chaqirilganda" javob beradi:
+    #   • /buyruq (slash bilan boshlanadi)
+    #   • @bot_username eslatmasi
+    #   • bot xabariga javob (reply)
+    # Javoblar faqat ADMIN/DISPATCHER/MANAGER uchun, yana qisqa matn.
+    # Qolgan hollarda — butunlay jim (update e'tiborga olinmaydi).
+    if _is_group(upd):
+        _handle_group_update(upd, chat_id)
+        return
+
     # Har qanday foydalanuvchini qayd qilamiz (ruxsatsiz ham)
     uinfo = _update_user_info(upd)
     role = resolve_role(chat_id)
@@ -150,8 +317,12 @@ def _handle_update(upd: dict) -> None:
         except Exception:
             pass
 
-    # Yangi foydalanuvchi — adminlarga ogohlantirish
-    if is_new:
+    # Yangi foydalanuvchi — adminlarga ogohlantirish (faqat shaxsiy chat —
+    # guruh update'lar yuqorida erta qaytarilgan, shuning uchun guard kerak emas).
+    # Kanal postlari, bot holati (my_chat_member) va closedchat kabi texnik
+    # update'lar "nomsiz" (first_name/username bo'sh) — ular haqida xabar
+    # yuborilmaydi, aks holda doimiy spam bo'lib ko'rinadi.
+    if is_new and (uinfo.get("first_name") or uinfo.get("username")):
         _notify_new_user(chat_id)
 
     # Qat'iy allowlist: faqat dasturga kiritilgan chat'lar uchun ishlaydi.
@@ -163,7 +334,9 @@ def _handle_update(upd: dict) -> None:
         msg = upd.get("message") or upd.get("edited_message") or {}
         text = (msg.get("text") or "").strip()
         try:
-            if msg.get("document"):
+            if msg.get("contact") and not text:
+                dispatch.handle_contact(chat_id, msg["contact"])
+            elif msg.get("document"):
                 dispatch.handle_document(chat_id, msg["document"])
             elif text:
                 dispatch.handle_message(chat_id, text)
@@ -205,43 +378,52 @@ def poll_forever() -> None:
                 _handle_update(upd)
             except Exception as exc:
                 print(f"Update ishlovida xato: {exc}")
-        try:
-            from . import problem_alerts
-            problem_alerts.check_and_notify()
-        except Exception as exc:
-            print(f"Muammo alert xatosi: {exc}")
-        try:
-            from . import doc_expiry
-            doc_expiry.check_and_send()
-        except Exception as exc:
-            print(f"Hujjat muddati xatosi: {exc}")
-        try:
-            from . import monthly_results
-            monthly_results.check_and_send()
-        except Exception as exc:
-            print(f"Oylik natijalar xatosi: {exc}")
-        try:
-            from . import daily_summary
-            daily_summary.check_and_send()
-        except Exception as exc:
-            print(f"Ertalabki xulosa xatosi: {exc}")
-        try:
-            from . import self_review
-            self_review.check_and_send()
-        except Exception as exc:
-            print(f"AI o'z-o'zini rivojlantirish xatosi: {exc}")
-        try:
-            from . import grafik_sms
-            grafik_sms.check_and_send()
-        except Exception as exc:
-            print(f"Grafik kuzatuvi xatosi: {exc}")
-        try:
-            from ..sms_notify import retry_stale_pending
-            res = retry_stale_pending()
-            if res.get("polled"):
-                print(f"Stale PENDING SMS: {res}")
-        except Exception as exc:
-            print(f"Stale PENDING tekshiruvi xatosi: {exc}")
+        # Avtomatik agentlar — AI_AUTO_AGENTS=on bo'lsagina ishlaydi.
+        # Standart "off": bot jim, faqat foydalanuvchi buyruq yozganda javob
+        # beradi (masalan: /daily, /insights, /today, /grafik).
+        if _auto_agents_enabled():
+            try:
+                from . import problem_alerts
+                problem_alerts.check_and_notify()
+            except Exception as exc:
+                print(f"Muammo alert xatosi: {exc}")
+            try:
+                from . import doc_expiry
+                doc_expiry.check_and_send()
+            except Exception as exc:
+                print(f"Hujjat muddati xatosi: {exc}")
+            try:
+                from . import monthly_results
+                monthly_results.check_and_send()
+            except Exception as exc:
+                print(f"Oylik natijalar xatosi: {exc}")
+            try:
+                from . import fines_report
+                fines_report.check_and_send()
+            except Exception as exc:
+                print(f"Jarima hisoboti xatosi: {exc}")
+            try:
+                from . import daily_summary
+                daily_summary.check_and_send()
+            except Exception as exc:
+                print(f"Ertalabki xulosa xatosi: {exc}")
+            try:
+                from . import self_review
+                self_review.check_and_send()
+            except Exception as exc:
+                print(f"AI o'z-o'zini rivojlantirish xatosi: {exc}")
+            try:
+                from . import grafik_sms
+                grafik_sms.check_and_send()
+            except Exception as exc:
+                print(f"Grafik kuzatuvi xatosi: {exc}")
+            try:
+                from ..sms_notify import retry_stale_pending
+                res = retry_stale_pending()
+                if res.get("polled"):
+                    print(f"Stale PENDING SMS: {res}")
+            except Exception as exc:
+                print(f"Stale PENDING tekshiruvi xatosi: {exc}")
         try:
             from ...utils import cleanup
             msg = cleanup.run_once()

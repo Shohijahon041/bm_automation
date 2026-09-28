@@ -74,6 +74,12 @@ def telegram_settings() -> dict:
         "selfreview": os.getenv("AI_SELFREVIEW", "on").strip().lower(),
         "selfreview_hour": os.getenv("AI_SELFREVIEW_HOUR", "9").strip(),
         "selfreview_days": os.getenv("AI_SELFREVIEW_DAYS", "14").strip(),
+        # Avtomatik agentlar (masalan: har kuni bo'ladigan tahlil/hisobot xabarlari).
+        # "on" bo'lsa poll-tsikl agentlarni o'z jadvallarida chaqiradi;
+        # "off" bo'lsa — jim, faqat foydalanuvchi buyruq yozganda javob beradi.
+        "auto_agents": os.getenv("AI_AUTO_AGENTS", "off").strip().lower(),
+        # Oy oxiri jarima hisoboti (fines_report agentining yagona kill-switchi).
+        "fines_report": os.getenv("FINES_REPORT", "on").strip().lower(),
     }
 
 
@@ -96,43 +102,17 @@ def is_test_env() -> bool:
     return os.getenv("BM_ENV", "test").strip().lower() == "test"
 
 
-def _bot_km_rate() -> float:
-    """Bot orqali o'rnatilgan global 1 km narxi (0 bo'lsa o'rnatilmagan)."""
-    try:
-        from ..core.bot_settings import km_rate
-        return km_rate()
-    except Exception:  # noqa: BLE001 - sozlama topilmasa env/standart ishlaydi
-        return 0.0
-
-
-def km_rate_setting(default: float = 0.0) -> float:
-    """1 km narxi (so'm) — hamma haydovchilar uchun bir xil.
-
-    Ustunlik: bot orqali o'rnatilgan qiymat → `KM_RATE` env → `default`.
-    Bot orqali o'zgartirilgan qiymat env'dan ham ustun turadi.
-    """
-    editable = _bot_km_rate()
-    if editable > 0:
-        return editable
-    raw = os.getenv("KM_RATE", "").strip()
-    if not raw:
-        return default
-    try:
-        return max(float(raw), 0.0)
-    except (TypeError, ValueError):
-        return default
-
-
 def km_rate_for(route_id: str = "", default: float = 0.0) -> float:
-    """1 km narxi (so'm) — ustunlik tartibi:
+    """1 km narxi (so'm) — yo'nalish/birinlik bo'yicha, global EMSAS.
+
+    Global `KM_RATE` env/sozlama istalmagan: har bir yo'nalish o'z narxiga
+    ega bo'ladi. Ustunlik tartibi:
 
     1. `default` (haydovchi profilidagi shaxsiy `km_rate`, 0 dan katta);
     2. yo'nalish uchun dashboard'dan o'rnatilgan `route_km`
        (haydovchidan qat'i nazar ishlaydi);
     3. kompaniya profilidagi `kmRate` (profiles.json, `routeVariantId` bo'yicha);
-    4. bot orqali o'rnatilgan global qiymat (Settings'dan o'zgartiriladi);
-    5. `KM_RATE` env (global, hamma uchun);
-    6. aks holda 0.
+    4. aks holda 0.
     """
     if default > 0:
         return default
@@ -154,15 +134,6 @@ def km_rate_for(route_id: str = "", default: float = 0.0) -> float:
         except (TypeError, ValueError):
             pass
         except Exception:
-            pass
-    editable = _bot_km_rate()
-    if editable > 0:
-        return editable
-    raw = os.getenv("KM_RATE", "").strip()
-    if raw:
-        try:
-            return max(float(raw), 0.0)
-        except (TypeError, ValueError):
             pass
     return default
 

@@ -282,6 +282,121 @@ def test_removed_driver_with_pending_row_notified(storage, fake_gateway):
     assert fake_gateway[0]["phone"] == "+998901234568"
 
 
+# -------------------------------------------------- chiqarilgan -> Telegram
+
+
+def _tg_calls(calls):
+    return [c for c in calls if c[0] == "telegram"]
+
+
+def test_removed_driver_telegram_notified(storage, fake_gateway, monkeypatch):
+    """Grafikdan chiqarilgan haydovchiga SMS kabi Telegram ham boradi."""
+    storage.save_driver_profile("D2", notification_enabled=True,
+                                telegram_chat_id="777")
+    old_rows = [_row(graph="P1", start="06:00")]
+    old_msg = sms_notify._message("D2", DATE, old_rows,
+                                  route_name="10-yo'nalish", d_phone="")
+    storage.record_sms(driver_id="D2", name="D2", phone="+998901234568",
+                       route_id=ROUTE, route_name="10-yo'nalish",
+                       schedule_date=DATE, message=old_msg, status="PENDING")
+
+    tg_calls = []
+
+    def _fake_send(text, chat_id=None, **kw):
+        tg_calls.append({"text": text, "chat_id": chat_id})
+
+    monkeypatch.setattr(
+        "bm_automation.app.notifications.telegram.send_message",
+        _fake_send)
+
+    result = {"sent": 0, "skipped": 0, "failed": 0, "pending": 0,
+              "invalid": 0, "updated": 0, "removed": 0,
+              "errors": [], "drivers": []}
+    sms_notify._notify_removed(
+        storage, DATE, ROUTE, "10-yo'nalish",
+        {("D1", "+998901234567", "ALIYEV")}, result)
+
+    # SMS ham, Telegram ham borishi kerak
+    assert result["removed"] == 1
+    assert len(fake_gateway) == 1
+    assert tg_calls and tg_calls[0]["chat_id"] == "777"
+    assert "chiqarildi" in tg_calls[0]["text"]
+    targets = [r["target"] for r in storage.query(
+        "SELECT target FROM notifications WHERE channel = 'telegram'")]
+    assert targets == ["777"]
+
+
+def test_removed_driver_telegram_skipped_without_profile(storage,
+                                                         fake_gateway,
+                                                         monkeypatch):
+    """profil/telegram bog'lanmagan haydovchiga Telegram chiqarildi xabari bormaydi."""
+    old_rows = [_row(graph="P1", start="06:00")]
+    old_msg = sms_notify._message("D2", DATE, old_rows,
+                                  route_name="10-yo'nalish", d_phone="")
+    storage.record_sms(driver_id="D2", name="D2", phone="+998901234568",
+                       route_id=ROUTE, route_name="10-yo'nalish",
+                       schedule_date=DATE, message=old_msg, status="PENDING")
+
+    tg_calls = []
+
+    def _fake_send(text, chat_id=None, **kw):
+        tg_calls.append((text, chat_id))
+
+    monkeypatch.setattr(
+        "bm_automation.app.notifications.telegram.send_message",
+        _fake_send)
+
+    result = {"sent": 0, "skipped": 0, "failed": 0, "pending": 0,
+              "invalid": 0, "updated": 0, "removed": 0,
+              "errors": [], "drivers": []}
+    sms_notify._notify_removed(
+        storage, DATE, ROUTE, "10-yo'nalish",
+        {("D1", "+998901234567", "ALIYEV")}, result)
+
+    assert tg_calls == []
+    rows = storage.query(
+        "SELECT id FROM notifications WHERE channel = 'telegram'")
+    assert rows == []
+
+
+def test_removed_driver_telegram_no_duplicate(storage, fake_gateway,
+                                              monkeypatch):
+    """Bir xil chiqarildi xabari Telegram'ga qayta yuborilmaydi (notifications)."""
+    storage.save_driver_profile("D2", notification_enabled=True,
+                                telegram_chat_id="777")
+    old_rows = [_row(graph="P1", start="06:00")]
+    old_msg = sms_notify._message("D2", DATE, old_rows,
+                                  route_name="10-yo'nalish", d_phone="")
+    for i in range(2):
+        storage.record_sms(driver_id="D2", name="D2",
+                           phone="+998901234568", route_id=ROUTE,
+                           route_name="10-yo'nalish", schedule_date=DATE,
+                           message=old_msg, status="PENDING")
+
+    tg_calls = []
+
+    def _fake_send(text, chat_id=None, **kw):
+        tg_calls.append((text, chat_id))
+
+    monkeypatch.setattr(
+        "bm_automation.app.notifications.telegram.send_message",
+        _fake_send)
+
+    result1 = {"sent": 0, "skipped": 0, "failed": 0, "pending": 0,
+               "invalid": 0, "updated": 0, "removed": 0,
+               "errors": [], "drivers": []}
+    sms_notify._notify_removed(
+        storage, DATE, ROUTE, "10-yo'nalish",
+        {("D1", "+998901234567", "ALIYEV")}, result1)
+    # ikkinchi marta chaqiramiz — SENT notifications dublikatni bloklashi kerak
+    sms_notify._notify_removed(
+        storage, DATE, ROUTE, "10-yo'nalish",
+        {("D1", "+998901234567", "ALIYEV")}, result1)
+
+    assert len(tg_calls) == 1
+    assert tg_calls[0][1] == "777"
+
+
 def test_removed_driver_with_annulled_not_renotified(storage, fake_gateway):
     """'Chiqarildi' SMS allaqachon yuborilgan (ANNULLED) — qayta yuborilmaydi."""
     storage.record_sms(driver_id="D2", name="D2", phone="+998901234568",

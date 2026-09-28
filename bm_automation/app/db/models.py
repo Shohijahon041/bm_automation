@@ -163,4 +163,6 @@ TABLES = [
     "sms_route_flags",
     "avans",
     "staff",
+    "driver_appeals",
+    "dashboard_users",
 ]

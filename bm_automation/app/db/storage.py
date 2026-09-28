@@ -278,7 +278,7 @@ class Storage:
             "passport_front_path", "passport_back_path", "license_front_path",
             "license_back_path", "photo_path", "rating", "blacklisted",
             "blacklist_reason", "km_rate", "notification_enabled",
-            "notification_target", "notes", "data",
+            "notification_target", "telegram_chat_id", "notes", "data",
         }
         values = {"driver_id": str(driver_id or "")}
         for key in allowed:
@@ -379,24 +379,56 @@ class Storage:
         return None
 
     def find_driver_by_phone(self, phone: str) -> dict | None:
-        """Telefon raqami bo'yicha qidiradi (notification_target yoki phone)."""
+        """Telefon raqami bo'yicha qidiradi (notification_target yoki phone).
+
+        Format moslash: +998 93 733 45 60, 998937334560, 93-733-45-60,
+        +998937334560 — hammasi raqamlarga ajratib solishtiriladi
+        (998 prefiksi olib tashlanadi, 9 xonali lokal raqam bo'yicha).
+
+        Qidiruv ikki bosqichda: avval aniq (indekslanadigan) moslik
+        tekshiriladi, topilmasa raqamlar bo'yicha normallashtirilgan
+        skaner ishlaydi. `data` JSON ustuni to'liq skanerda ko'chirilmaydi.
+        """
         if not self.enabled or not phone:
             return None
-        clean = str(phone).strip().lstrip("+")
-        for variant in (clean, f"998{clean}" if len(clean) == 9 else "",
-                        clean[-9:] if len(clean) > 9 else ""):
-            if not variant:
-                continue
+        want = "".join(ch for ch in str(phone) if ch.isdigit())
+        if want.startswith("998") and len(want) > 9:
+            want = want[3:]
+        if len(want) < 7:
+            return None
+        ph = self.db.ph
+        variants = (want, "998" + want)
+        # 1) Aniq (indekslanadigan) izlash — raqam bir xil ko'rinishda
+        #    saqlangan bo'lsa tez topiladi.
+        for v in variants:
             try:
                 rows = self.query(
-                    "SELECT * FROM driver_profiles "
-                    "WHERE notification_target = " + self.db.ph +
-                    " OR phone = " + self.db.ph,
-                    (variant, variant), limit=1)
-                if rows:
-                    return rows[0]
+                    "SELECT * FROM driver_profiles WHERE phone = " + ph +
+                    " OR notification_target = " + ph,
+                    (v, v), limit=1)
             except Exception:  # noqa: BLE001
-                pass
+                rows = []
+            if rows:
+                return rows[0]
+        # 2) Formata-tezlikda moslash: normallashtirilgan skaner (raqamlar
+        #    tengligi). `data` ustuni ko'chirilmaydi — katta JSON qo'shish
+        #    shart emas.
+        try:
+            rows = self.query(
+                "SELECT driver_id, phone, notification_target, telegram_chat_id, "
+                "notification_enabled, blacklisted FROM driver_profiles "
+                "WHERE phone <> '' OR notification_target <> ''",
+                limit=100000)
+        except Exception:  # noqa: BLE001
+            return None
+        for r in rows:
+            for field in ("phone", "notification_target"):
+                digits = "".join(ch for ch in str(r.get(field) or "")
+                                 if ch.isdigit())
+                if digits.startswith("998") and len(digits) > 9:
+                    digits = digits[3:]
+                if digits and digits == want:
+                    return r
         return None
 
     def resolve_driver_by_identifier(self, identifier: str) -> str:
@@ -1146,6 +1178,198 @@ class Storage:
         return self._exec(
             f"DELETE FROM staff WHERE id = {self.db.ph}", (int(row_id),)
         ) == 1
+
+    # ----------------------------------------- dashboard foydalanuvchilar
+    # Ko'p korxonali tizim akkauntlari (dashboard/login). Har akkaunt bitta
+    # korxonaga tegishli (ADMIN company='' = barchasini ko'radi).
+
+    def dashboard_user_add(self, username: str, password_hash: str = "",
+                           salt: str = "", role: str = "VIEWER",
+                           company: str = "", active: int = 1) -> int:
+        """Dashboard foydalanuvchisini qo'shadi; yangi id (0 = xato).
+
+        ``_hash_password`` natijasini to'g'ridan-to'g'ri qabul qiladi:
+        ``dashboard_user_add("ali", *hash_password("parol"))``.
+        """
+        if not self.enabled:
+            return 0
+        u = str(username or "").strip().lower()
+        if not u:
+            return 0
+        if self.dashboard_user_get(username=u):
+            return 0
+        row = {
+            "username": u,
+            "salt": str(salt or ""),
+            "password_hash": str(password_hash or ""),
+            "role": str(role or "VIEWER").strip().upper() or "VIEWER",
+            "company": str(company or "").strip(),
+            "active": 1 if active else 0,
+            "data": "{}",
+        }
+        if self.insert("dashboard_users", row):
+            rows = self.query(
+                "SELECT id FROM dashboard_users ORDER BY id DESC LIMIT 1")
+            if rows:
+                return int(rows[0]["id"])
+        return 0
+
+    def dashboard_user_get(self, username: str = "", row_id: int = 0) -> dict | None:
+        """Username yoki id bo'yicha foydalanuvchini topadi."""
+        if not self.enabled:
+            return None
+        if username:
+            return self.find("dashboard_users", username=str(username or "").strip().lower())
+        if row_id:
+            rows = self.query(
+                f"SELECT * FROM dashboard_users WHERE id = {self.db.ph}",
+                (int(row_id),), limit=1)
+            return rows[0] if rows else None
+        return None
+
+    def dashboard_users_list(self) -> list:
+        """Barcha foydalanuvchilar (username bo'yicha tartiblangan)."""
+        if not self.enabled:
+            return []
+        return self.query("SELECT * FROM dashboard_users ORDER BY username")
+
+    def dashboard_user_update(self, row_id: int, username: str = None,
+                              salt: str = None, password_hash: str = None,
+                              role: str = None, company: str = None,
+                              active: int = None) -> bool:
+        """Foydalanuvchi ma'lumotlarini yangilaydi (None = o'zgartirilmaydi)."""
+        if not self.enabled:
+            return False
+        sets = []
+        params: list = []
+        if username is not None:
+            u = str(username or "").strip().lower()
+            if u:
+                sets.append(f"username = {self.db.ph}")
+                params.append(u)
+        if salt is not None:
+            sets.append(f"salt = {self.db.ph}")
+            params.append(str(salt or ""))
+        if password_hash is not None:
+            sets.append(f"password_hash = {self.db.ph}")
+            params.append(str(password_hash or ""))
+        if role is not None:
+            sets.append(f"role = {self.db.ph}")
+            params.append(str(role or "VIEWER").strip().upper() or "VIEWER")
+        if company is not None:
+            sets.append(f"company = {self.db.ph}")
+            params.append(str(company or "").strip())
+        if active is not None:
+            sets.append(f"active = {self.db.ph}")
+            params.append(1 if active else 0)
+        if not sets:
+            return False
+        sets.append(f"updated_at = {self.db.ph}")
+        params.append(now_utc())
+        params.append(int(row_id))
+        return self._exec(
+            f"UPDATE dashboard_users SET {', '.join(sets)} WHERE id = {self.db.ph}",
+            tuple(params),
+        ) == 1
+
+    def dashboard_users_count(self) -> int:
+        """Faol foydalanuvchilar soni."""
+        if not self.enabled:
+            return 0
+        rows = self.query(
+            "SELECT COUNT(*) AS c FROM dashboard_users WHERE active = 1")
+        return int((rows[0] or {}).get("c") or 0)
+
+    def delete_dashboard_user(self, row_id: int) -> bool:
+        """Foydalanuvchini butunlay o'chiradi."""
+        if not self.enabled:
+            return False
+        return self._exec(
+            f"DELETE FROM dashboard_users WHERE id = {self.db.ph}",
+            (int(row_id),),
+        ) == 1
+
+    # ------------------------------------------- taklif va murojaatlar
+
+    def appeal_add(self, driver_id: str, title: str = "", text: str = "",
+                   status: str = "YANGI") -> int:
+        """Haydovchi uchun yangi murojaat yozadi; yangi id qaytaradi (0 = xato)."""
+        if not self.enabled:
+            return 0
+        row = {
+            "driver_id": str(driver_id or "").strip() or None,
+            "title": str(title or "").strip(),
+            "text": str(text or "").strip(),
+            "status": str(status or "YANGI").strip().upper() or "YANGI",
+            "reply": "",
+            "replied_at": "",
+        }
+        if row.get("driver_id") is None:
+            return 0
+        if self.insert("driver_appeals", row):
+            rows = self.query("SELECT id FROM driver_appeals ORDER BY id DESC LIMIT 1")
+            if rows:
+                return int(rows[0]["id"])
+        return 0
+
+    def appeal_update(self, row_id: int, title: str = None, text: str = None,
+                      status: str = None, reply: str = None,
+                      replied_at: str = "") -> bool:
+        """Mavjud murojaatni yangilaydi (title/text/status/javob)."""
+        if not self.enabled:
+            return False
+        sets = []
+        params: list = []
+        if title is not None:
+            sets.append(f"title = {self.db.ph}")
+            params.append(str(title or "").strip())
+        if text is not None:
+            sets.append(f"text = {self.db.ph}")
+            params.append(str(text or "").strip())
+        if status is not None:
+            sets.append(f"status = {self.db.ph}")
+            params.append(str(status or "").strip().upper() or "YANGI")
+        if reply is not None:
+            sets.append(f"reply = {self.db.ph}")
+            params.append(str(reply or "").strip())
+            sets.append(f"replied_at = {self.db.ph}")
+            params.append(str(replied_at or "") or now_utc())
+        if not sets:
+            return False
+        sets.append(f"updated_at = {self.db.ph}")
+        params.append(now_utc())
+        params.append(int(row_id))
+        return self._exec(
+            f"UPDATE driver_appeals SET {', '.join(sets)} WHERE id = {self.db.ph}",
+            tuple(params),
+        ) == 1
+
+    def appeal_delete(self, row_id: int) -> bool:
+        """Murojaat yozuvini o'chiradi."""
+        if not self.enabled:
+            return False
+        return self._exec(
+            f"DELETE FROM driver_appeals WHERE id = {self.db.ph}", (int(row_id),)
+        ) == 1
+
+    def appeals_list(self, driver_id: str = "", status: str = "",
+                     limit: int = 500) -> list:
+        """Taklif va murojaatlar ro'yxati (eng yangisi birinchi)."""
+        if not self.enabled:
+            return []
+        where = []
+        params: list = []
+        if driver_id:
+            where.append(f"driver_id = {self.db.ph}")
+            params.append(driver_id)
+        if status:
+            where.append(f"status = {self.db.ph}")
+            params.append(status)
+        sql = ("SELECT * FROM driver_appeals"
+               + (" WHERE " + " AND ".join(where) if where else "")
+               + " ORDER BY id DESC LIMIT "
+               + str(max(int(limit or 500), 1)))
+        return self.query(sql, tuple(params))
 
     def update_sms_status(self, row_id: int, status: str = "",
                           message_id: str = "", error: str = "") -> bool:

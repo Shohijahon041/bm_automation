@@ -9,6 +9,10 @@ from __future__ import annotations
 
 from datetime import date
 
+from ...utils.logger import get_logger
+
+log = get_logger("bm_automation.bot")
+
 NAV_ITEMS = [
     ("📊 Dashboard", "nav:dashboard"),
     ("📅 Oy", "nav:month"),
@@ -56,6 +60,17 @@ def _row(buttons: list[tuple[str, str]], per_row: int = 3) -> list[list[dict]]:
         [{"text": label, "callback_data": data} for label, data in buttons[i:i + per_row]]
         for i in range(0, len(buttons), per_row)
     ]
+
+
+# Telegram callback_data uzunligi 64 bayt bilan cheklangan. `[:64]` kabi
+# tinimsiz kesish id'ni jim bildirib buzardi (masalan dsched:xxx:1).
+# `_cb` kesish o'rniga xato ko'taradi — noto'g'ri id bilan tugma yuborilmaydi.
+
+def _cb(prefix: str, *parts: str) -> str:
+    data = prefix + "".join(parts)
+    if len(data.encode("utf-8", "ignore")) <= 64:
+        return data
+    raise ValueError(f"callback_data uzun (>64 bayt): {data[:48]}...")
 
 
 # Haydovchilar faqat o'z kartasi (Dashboard) va Settings'ga kirishadi —
@@ -113,7 +128,12 @@ def driver_buttons(rows: list[dict], limit: int = 8) -> dict | None:
         if not did:
             continue
         mark = "⛔ " if r.get("blacklisted") else ""
-        buttons.append((f"{mark}{r.get('name') or did}", f"d:{did}"[:64]))
+        try:
+            data = _cb("d:", did)
+        except ValueError as exc:
+            log.warning("haydovchi tugmasi o'tkazib yuborildi: %s", exc)
+            continue
+        buttons.append((f"{mark}{r.get('name') or did}", data))
     return {"inline_keyboard": _row(buttons, per_row=2)} if buttons else None
 
 
@@ -121,9 +141,25 @@ def driver_card_kb(driver_id: str) -> dict:
     """Haydovchi karta tugmalari: kunlik qayd va jarima kiritish."""
     return {
         "inline_keyboard": [[
-            {"text": "📝 Kunlik qayd", "callback_data": f"dlog:{driver_id}"[:64]},
-            {"text": "⚠️ Jarima", "callback_data": f"dfine:{driver_id}"[:64]},
+            {"text": "📝 Kunlik qayd",
+             "callback_data": _cb("dlog:", driver_id)},
+            {"text": "⚠️ Jarima",
+             "callback_data": _cb("dfine:", driver_id)},
         ]]
+    }
+
+
+def driver_schedule_kb(driver_id: str) -> dict:
+    """Haydovchi kartasidagi grafik tugmalari — kechagi/bugungi/ertangi."""
+    return {
+        "inline_keyboard": [
+            [{"text": "🗓 Grafikim (ertaga)",
+              "callback_data": _cb("dsched:", driver_id, ":1")}],
+            [
+                {"text": "⬅️ Kechagi", "callback_data": _cb("dsched:", driver_id, ":-1")},
+                {"text": "Bugun", "callback_data": _cb("dsched:", driver_id, ":0")},
+            ],
+        ]
     }
 
 
@@ -140,7 +176,12 @@ def vehicle_buttons(rows: list[dict], limit: int = 8) -> dict | None:
             continue
         label = r.get("plate_number") or vid
         mark = "🔄 " if r.get("status") == "faol" else "❌ "
-        buttons.append((f"{mark}{label}", f"v:{vid}"[:64]))
+        try:
+            data = _cb("v:", vid)
+        except ValueError as exc:
+            log.warning("avtobus tugmasi o'tkazib yuborildi: %s", exc)
+            continue
+        buttons.append((f"{mark}{label}", data))
     return {"inline_keyboard": _row(buttons, per_row=2)} if buttons else None
 
 
@@ -169,8 +210,33 @@ def salary_dl_kb() -> dict:
     ]}
 
 
+APPEAL_TOPICS: tuple[str, ...] = (
+    "🚧 Yo'l muammosi",
+    "💰 Maosh / ish haqi",
+    "🚌 Texnika / avtobus",
+    "🗓 Grafik / reyslar",
+    "🛡 Xavfsizlik",
+    "💬 Taklif",
+    "🔧 Boshqa",
+)
+
+
+def appeal_topics_kb() -> dict:
+    """Murojaat mavzusi tanlash tugmalari (to'liq oqim uchun)."""
+    rows = []
+    for i in range(0, len(APPEAL_TOPICS), 2):
+        chunk = APPEAL_TOPICS[i:i + 2]
+        rows.append([
+            {"text": t, "callback_data": f"apptopic:{i + j}"}
+            for j, t in enumerate(chunk)
+        ])
+    rows.append([{"text": "➡️ Mavzusiz", "callback_data": "apptopic:none"},
+                 {"text": "❌ Bekor qilish", "callback_data": "dentry:cancel"}])
+    return {"inline_keyboard": rows}
+
+
 def driver_entry_cancel_kb() -> dict:
-    """Kunlik qayd / jarima dialogini bekor qilish tugmasi."""
+    """Kunlik qayd / jarima / murojaat dialogini bekor qilish tugmasi."""
     return {"inline_keyboard": [
         [{"text": "❌ Bekor qilish", "callback_data": "dentry:cancel"}],
     ]}
@@ -208,13 +274,13 @@ def profiles_kb(profiles: list[dict], active: str = "", allow_all: bool = False)
         label = p.get("label") or p.get("name") or "-"
         route_name = p.get("route_name") or ""
         route_id = (p.get("routes") or [""])[0]
-        data = f"pr:{route_id}" if route_id else f"prof:{p['name']}"
+        data = _cb("pr:", route_id) if route_id else _cb("prof:", p["name"])
         text = label
         if route_name:
             text += f" · {route_name}"
         if p.get("name") == active:
             text = f"✅ {text}"
-        rows.append([{"text": text, "callback_data": data[:64]}])
+        rows.append([{"text": text, "callback_data": data}])
     unique_names = list(dict.fromkeys(p.get("name", "") for p in profiles))
     if len(profiles) > 1 and len(unique_names) <= 1:
         rows.append([{"text": "🌐 Hammasi (barcha yo'nalishlar)",
@@ -240,17 +306,22 @@ def main_menu_kb(chat_id: int | None = None) -> dict:
     chat_id berilgan bo'lsa foydalanuvchi tili ruscha (ru) bo'lsa ruscha
     menyu ko'rsatiladi. Haydovchilar uchun cheklangan menyu.
     """
-    from .roles import Role, resolve_role
+    from .roles import Role, resolve_role, driver_id_for_chat
     is_driver = False
+    unlinked = False
     if chat_id is not None:
         try:
             role = resolve_role(chat_id)
             is_driver = role is Role.DRIVER
+            # Bog'lanmagan oddiy foydalanuvchi (VIEWER) — haydovchi bo'lishi
+            # mumkin: menyuga "Raqamni ulashish" tugmasi qo'shiladi.
+            unlinked = (role is Role.VIEWER
+                        and not driver_id_for_chat(chat_id))
         except Exception:
             pass
     if is_driver:
-        rows = [["📊 Dashboard", "⚙️ Settings"], ["❓ Yordam"]]
-        ru_rows = [["📊 Дашборд", "⚙️ Настройки"], ["❓ Помощь"]]
+        rows = [["📊 Dashboard", "📬 Murojaat"], ["⚙️ Settings", "❓ Yordam"]]
+        ru_rows = [["📊 Дашборд", "📬 Обращение"], ["⚙️ Настройки", "❓ Помощь"]]
         if chat_id is not None:
             try:
                 from ...core.bot_settings import lang
@@ -267,18 +338,34 @@ def main_menu_kb(chat_id: int | None = None) -> dict:
         try:
             from ...core.bot_settings import lang
             if lang(chat_id) == "ru":
-                return {
+                kb_ = {
                     "keyboard": MAIN_MENU_RU_ROWS,
                     "resize_keyboard": True,
                     "one_time_keyboard": False,
                 }
+                if unlinked:
+                    kb_["keyboard"] = kb_["keyboard"] + [
+                        [{"text": "📱 Поделиться номером",
+                          "request_contact": True}]]
+                return kb_
         except Exception:  # noqa: BLE001 - til aniqlanmasa o'zbekcha qoladi
             pass
-    return {
+    kb_ = {
         "keyboard": MAIN_MENU_ROWS,
         "resize_keyboard": True,
         "one_time_keyboard": False,
     }
+    if unlinked:
+        kb_["keyboard"] = kb_["keyboard"] + [
+            [{"text": "📱 Raqamni ulashish", "request_contact": True}]]
+    return kb_
+
+
+def share_phone_kb() -> dict:
+    """Haydovchi telefon raqamini ulashish tugmasi (request_contact)."""
+    return {"keyboard": [[{"text": "📱 Raqamni ulashish",
+                           "request_contact": True}]],
+            "resize_keyboard": True, "one_time_keyboard": True}
 
 
 def settings_kb(chat_id: int | None = None) -> dict:
@@ -300,6 +387,9 @@ def settings_kb(chat_id: int | None = None) -> dict:
         rows.append([{"text": "📋 SKM (116-son) o'zgartirish",
                       "callback_data": "settings:skm"}])
         rows.append([{"text": "🕐 Sozlama tarixi", "callback_data": "settings:audit"}])
+    if can(role, "driver_edit"):
+        rows.append([{"text": "🔗 Haydovchi bog'lash (izlash)",
+                      "callback_data": "settings:linkdriver"}])
     rows.append([{"text": "🌐 Til tanlash", "callback_data": "settings:lang"}])
     return {"inline_keyboard": rows}
 

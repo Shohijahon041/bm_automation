@@ -224,10 +224,15 @@ def resolve_role(chat_id: int | None) -> Role:
         return roles[chat_id]
     # Admin tayinlagan rol (only if chat_id not in env) — runtime override
     assigned = stored_role(chat_id)
+    # DB dan haydovchi tekshirish. Muhim: haydovchi keyinchalik bog'langan
+    # bo'lsa, bot_usersda qolgan eski VIEWER rolidan USTUN turadi — aks
+    # holda bog'langan haydovchi VIEWER rejimida qolib, barcha bo'limlarni
+    # ko'rib qoladi. Baland rollar (ADMIN/DISPATCHER/MANAGER) o'z qoladi.
+    driver_role = _resolve_driver_role(chat_id)
+    if driver_role is Role.DRIVER and assigned is Role.VIEWER:
+        return driver_role
     if assigned:
         return assigned
-    # DB dan haydovchi tekshirish
-    driver_role = _resolve_driver_role(chat_id)
     if driver_role:
         return driver_role
     # Dashboard'dan yo'nalish biriktirilganlar — aniq rol berilmagan bo'lsa

@@ -54,6 +54,19 @@ class _FakeClient:
         self.refresh_token = f"ref-{pid}"
         self.session.headers["Authorization"] = f"Bearer tok-{pid}"
 
+    def login_for_profile(self, pid, fallback_to_main=True):
+        from bm_automation.app.api.client import BMAuthError
+        try:
+            self.login_by_profile(pid)
+        except BMAuthError:
+            if not fallback_to_main:
+                raise
+            self.logins.append("fallback-main")
+            self.access_token = "main-access"
+            self.refresh_token = "main-refresh"
+            self.session.headers["Authorization"] = "Bearer main-access"
+        # RuntimeError (va boshqa xatolar) fallback qilinmaydi — ko'tariladi
+
 
 class _FakeGross:
     def __init__(self, client):

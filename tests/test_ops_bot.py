@@ -265,7 +265,9 @@ def test_render_settings_finance_block_gated_by_salary(monkeypatch):
     assert "116-SON QAROR" in admin
     assert "ELEKTR ENERGIYA" not in viewer
     assert "116-SON QAROR" not in viewer
-    assert "1 KM NARXI" in viewer
+    # 1 KM NARXI — tijorat ma'lumoti: faqat salary huquqi bor rollar ko'radi
+    # (haydovchi/viewer kabi oddiy foydalanuvchilarga yashirin).
+    assert "1 KM NARXI" not in viewer
 
 
 def test_settings_kb_shows_finance_for_salary(monkeypatch):
@@ -326,9 +328,9 @@ def test_settings_audit_tracks_changes(monkeypatch, tmp_path):
     bot_settings._reset()
     bot_settings.set_elec_price(850)
     bot_settings.set_elec_price(850)
-    bot_settings.set_km_rate(2000)
+    bot_settings.set_route_km("r1", 2000)
     rows = bot_settings.audit_log(5)
-    assert rows[0]["key"] == "km_rate"
+    assert rows[0]["key"] == "route_km:r1"
     assert rows[0]["old"] == 0.0 and rows[0]["new"] == 2000.0
     assert rows[1]["key"] == "elec_price"
     assert len(rows) == 2, "bir xil ketma-ket qiymat dublikat qilinmasligi kerak"
@@ -458,10 +460,11 @@ def test_bot_settings_clean_amount(tmp_path):
     bot_settings._reset()
     assert bot_settings.set_elec_price(float("nan")) == 0.0
     assert bot_settings.set_elec_price(float("inf")) == 0.0
-    assert bot_settings.set_km_rate(float("-inf")) == 0.0
+    assert bot_settings.set_elec_price(float("-inf")) == 0.0
     assert bot_settings.set_brutto_skm(-500) == bot_settings.DEFAULT_SKM
     huge = bot_settings.MAX_AMOUNT * 2
-    assert bot_settings.set_km_rate(huge) == bot_settings.MAX_AMOUNT
+    assert bot_settings.set_route_km("r1", huge) == bot_settings.MAX_AMOUNT
+    assert bot_settings.route_km("r1") == bot_settings.MAX_AMOUNT
     assert bot_settings.set_route_skm("r1", float("nan")) == 0.0
     assert bot_settings.route_skm("r1") == 0.0
     assert bot_settings.set_route_tariff("r2", float("nan"), float("inf")) == \
@@ -544,6 +547,58 @@ def viewer(chat, monkeypatch):
 def test_dispatch_viewer_sync_denied(viewer):
     dispatch.handle_message(999, "/sync")
     assert viewer[-1]["text"] == DENIED_TEXT
+
+
+def test_driver_link_by_contact_share(monkeypatch, tmp_path):
+    """Haydovchi 'Raqamni ulashish' tugmasi (contact) bilan bog'lanadi."""
+    from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE
+    _DRIVER_CHAT_CACHE.clear()
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "contact.db"))))
+    st.save_driver_profile("d1", phone="+998901234567",
+                           notification_enabled=False)
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: st)
+    monkeypatch.setattr(dispatch, "get_storage", lambda: st)
+    monkeypatch.setattr("bm_automation.app.core.bot_users.record_activity",
+                        lambda *a, **k: None)
+    sent = []
+    monkeypatch.setattr(dispatch, "reply",
+                        lambda cid, text, markup=None, **kw: sent.append(text))
+
+    dispatch.handle_contact(777, {"phone_number": "+998 90 123 45 67"})
+    assert any("Xush kelibsiz" in t for t in sent)
+    profile = st.find("driver_profiles", driver_id="d1")
+    assert profile["telegram_chat_id"] == "777"
+    assert roles.resolve_role(777) is roles.Role.DRIVER
+
+
+def test_driver_link_by_contact_unknown_phone(monkeypatch, tmp_path):
+    """Noma'lum raqam ulashilsa oqim ochiq qoladi (qo'lda yozish mumkin)."""
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "contact2.db"))))
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: st)
+    monkeypatch.setattr(dispatch, "get_storage", lambda: st)
+    monkeypatch.setattr("bm_automation.app.core.bot_users.record_activity",
+                        lambda *a, **k: None)
+    sent = []
+    monkeypatch.setattr(dispatch, "reply",
+                        lambda cid, text, markup=None, **kw: sent.append(text))
+
+    dispatch.handle_contact(778, {"phone_number": "+998900000000"})
+    assert any("topilmadi" in t for t in sent)
+    # oqim ochiq qoladi — keyin to'g'ri raqam yozsa bog'lanadi
+    assert 778 in dispatch._DRIVER_LINK_STATE
+
+
+def test_find_driver_by_phone_formats(tmp_path):
+    """Telefon qidiruvi formatdan qat'i nazar ishlaydi."""
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "phone.db"))))
+    st.save_driver_profile("d1", phone="+998 93 733 45 60")
+    st.save_driver_profile("d2", phone="998941983003")
+    for raw in ("937334560", "+998937334560", "998 93 733 45 60",
+                "93-733-45-60"):
+        row = st.find_driver_by_phone(raw)
+        assert row and row["driver_id"] == "d1", raw
+    assert st.find_driver_by_phone("941983003")["driver_id"] == "d2"
+    assert st.find_driver_by_phone("900000000") is None
 
 
 def test_driver_self_link_flow(viewer, monkeypatch, tmp_path):
@@ -731,6 +786,9 @@ def test_render_driver_card(patch_met, storage):
     assert "Brutto" in text and "Jarimalar" in text and "Netto" in text
     assert "20 000" in text and "480 000" in text
     assert "Kechikish" in text
+    # Jarima summasi alohida qatorda + alohida blokda ko'rinadi.
+    assert "Jarima summasi" in text
+    assert "JAMI JARIMA" in text
     datas = [b["callback_data"] for row in kb_["inline_keyboard"] for b in row]
     assert "dlog:d1" in datas and "dfine:d1" in datas
     assert any(d.startswith("nav:") for d in datas)
@@ -751,6 +809,10 @@ def test_render_driver_card_hides_salary_for_driver(patch_met, storage,
     assert "Brutto" not in text
     assert "Netto" not in text
     assert "Jarimalar" not in text
+    # Jarima summasi esa haydovchi o'z profilida ko'radi (faqat umumiy summa).
+    assert "Jarima summasi" in text
+    assert "20 000" in text
+    assert "JAMI JARIMA" in text
 
 
 def test_render_driver_card_shows_salary_for_admin(patch_met, storage,
@@ -1060,6 +1122,94 @@ def test_getupdates_allows_all_update_types(monkeypatch):
     with pytest.raises(SystemExit):
         ops_mod.poll_forever()
     assert seen["payload"]["allowed_updates"] == []
+
+
+def test_auto_agents_disabled_by_default(monkeypatch):
+    """AI_AUTO_AGENTS=off (standart) — agentlar poll-tsiklcha chaqirilmaydi."""
+    from bm_automation.app.notifications.ops import ops as ops_mod
+    called = []
+
+    def fake_tc(method, payload=None, files=None):
+        if method == "getUpdates":
+            if payload.get("offset"):
+                raise SystemExit  # ikkinchi tsiklni to'xtatamiz
+            return [{"update_id": 1}]
+        called.append(method)
+        return {}
+
+    monkeypatch.setattr(ops_mod, "telegram_call", fake_tc)
+    monkeypatch.setattr(ops_mod.time, "sleep", lambda s: None)
+    monkeypatch.setattr(
+        ops_mod, "telegram_settings",
+        lambda: {"auto_agents": "off", "token": "T"})
+    # Har qanday xabar yuborishga urinishni ushlaymiz (agentlar ochib yuborilmasin)
+    from bm_automation.app.notifications.ops import (daily_summary, doc_expiry,
+                                                     fines_report, grafik_sms,
+                                                     monthly_results, problem_alerts,
+                                                     self_review)
+
+    def short_name(mod):
+        return mod.__name__.split(".")[-1]
+
+    for mod in (problem_alerts, doc_expiry, monthly_results, fines_report,
+                daily_summary, self_review, grafik_sms):
+        monkeypatch.setattr(
+            mod, "check_and_send",
+            lambda m=mod: called.append(short_name(m)), raising=False)
+        monkeypatch.setattr(
+            mod, "check_and_notify",
+            lambda m=mod: called.append(short_name(m)), raising=False)
+    from bm_automation.app.notifications import sms_notify
+    monkeypatch.setattr(
+        sms_notify, "retry_stale_pending",
+        lambda *a, **k: (called.append("sms_retry"), {})[1], raising=False)
+    with pytest.raises(SystemExit):
+        ops_mod.poll_forever()
+    assert called == [], "agentlar avtomatik chaqirilmasligi kerak"
+
+
+def test_auto_agents_enabled_runs_agents(monkeypatch):
+    """AI_AUTO_AGENTS=on — agentlar odatdagidek chaqiriladi."""
+    from bm_automation.app.notifications.ops import ops as ops_mod
+    called = []
+
+    def fake_tc(method, payload=None, files=None):
+        if method == "getUpdates":
+            if payload.get("offset"):
+                raise SystemExit  # ikkinchi tsiklni to'xtatamiz
+            return [{"update_id": 1}]
+        called.append(method)
+        return {}
+
+    monkeypatch.setattr(ops_mod, "telegram_call", fake_tc)
+    monkeypatch.setattr(ops_mod.time, "sleep", lambda s: None)
+    monkeypatch.setattr(
+        ops_mod, "telegram_settings",
+        lambda: {"auto_agents": "on", "token": "T"})
+    from bm_automation.app.notifications.ops import (daily_summary, doc_expiry,
+                                                     fines_report, grafik_sms,
+                                                     monthly_results, problem_alerts,
+                                                     self_review)
+    def short_name(mod):
+        return mod.__name__.split(".")[-1]
+
+    for mod in (problem_alerts, doc_expiry, monthly_results, fines_report,
+                daily_summary, self_review, grafik_sms):
+        monkeypatch.setattr(
+            mod, "check_and_send",
+            lambda m=mod: called.append(short_name(m)), raising=False)
+        monkeypatch.setattr(
+            mod, "check_and_notify",
+            lambda m=mod: called.append(short_name(m)), raising=False)
+    from bm_automation.app.notifications import sms_notify
+    monkeypatch.setattr(
+        sms_notify, "retry_stale_pending",
+        lambda *a, **k: (called.append("sms_retry"), {})[1], raising=False)
+    with pytest.raises(SystemExit):
+        ops_mod.poll_forever()
+    names = {"problem_alerts", "doc_expiry", "monthly_results", "fines_report",
+             "daily_summary", "self_review", "grafik_sms", "sms_retry"}
+    assert names.issubset(set(called)), called
 
 
 # --------------------------------------------------------------- AI assistant
@@ -1687,21 +1837,27 @@ def test_manager_sees_only_own_company(monkeypatch):
 
 def test_render_settings_km_rate_and_lang(monkeypatch):
     import bm_automation.app.core.bot_settings as bs
+    from bm_automation.app.notifications.ops import context as ctx
     monkeypatch.setattr(roles, "telegram_settings",
                         lambda: _tg(admin_ids="111"))
-    monkeypatch.setattr(bs, "km_rate", lambda: 2000.0)
+    monkeypatch.setattr(ctx, "filters_for", lambda cid: {"route": "ASL"})
+    monkeypatch.setattr(bs, "route_km",
+                        lambda rid, default=0.0: 2000.0 if rid == "ASL" else default)
     monkeypatch.setattr(bs, "lang", lambda cid: "uz")
     text = render.settings_text(111)
-    assert "1 KM NARXI" in text
+    assert "Haydovchi 1 km" in text
     assert "2 000 so'm" in text
     assert "O'zbek" in text
 
 
 def test_render_settings_km_rate_unset(monkeypatch):
     import bm_automation.app.core.bot_settings as bs
+    from bm_automation.app.notifications.ops import context as ctx
     monkeypatch.setattr(roles, "telegram_settings",
                         lambda: _tg(admin_ids="111"))
-    monkeypatch.setattr(bs, "km_rate", lambda: 0.0)
+    monkeypatch.setattr(ctx, "filters_for", lambda cid: {"route": "ASL"})
+    monkeypatch.setattr(bs, "route_km",
+                        lambda rid, default=0.0: 0.0 if rid == "ASL" else default)
     assert "o'rnatilmagan" in render.settings_text(111)
 
 
@@ -1764,10 +1920,9 @@ def test_dispatch_start_uses_lang_menu(admin, monkeypatch):
     assert any("🚌 Автобусы" == t for t in flat)
 
 
-def test_dispatch_set_km_rate_flow(admin, monkeypatch):
+def test_dispatch_set_route_km_flow(admin, monkeypatch):
     import bm_automation.app.core.bot_settings as bs
     bs._reset()
-    monkeypatch.setattr(bs, "set_km_rate", lambda v: float(v))
     dispatch.handle_callback(111, {"id": "q"}, "settings:kmrate")
     assert admin[-1]["text"].startswith("💵")
     assert bs.pending(111) == "km_rate"
@@ -1779,7 +1934,6 @@ def test_dispatch_set_km_rate_flow(admin, monkeypatch):
 def test_dispatch_km_rate_invalid_keeps_pending(admin, monkeypatch):
     import bm_automation.app.core.bot_settings as bs
     bs._reset()
-    monkeypatch.setattr(bs, "set_km_rate", lambda v: float(v))
     dispatch.handle_callback(111, {"id": "q"}, "settings:kmrate")
     dispatch.handle_message(111, "abc")
     assert bs.pending(111) == "km_rate"
@@ -1798,7 +1952,6 @@ def test_dispatch_set_lang(admin, monkeypatch):
     bs._reset()
     monkeypatch.setattr(bs, "set_lang", lambda cid, v: v)
     monkeypatch.setattr(bs, "lang", lambda cid: "ru")
-    monkeypatch.setattr(bs, "km_rate", lambda: 0.0)
     dispatch.handle_callback(111, {"id": "q"}, "setlang:ru")
     assert admin[-1]["text"].startswith("⚙️")
     assert "Русский" in admin[-1]["text"]
@@ -1990,7 +2143,131 @@ def test_driver_main_menu_limited(monkeypatch, tmp_path):
 
     menu = kb.main_menu_kb(999)
     buttons = [b for row in menu["keyboard"] for b in row]
-    assert buttons == ["📊 Dashboard", "⚙️ Settings", "❓ Yordam"]
+    assert buttons == ["📊 Dashboard", "📬 Murojaat", "⚙️ Settings", "❓ Yordam"]
+
+
+def test_driver_appeal_flow_saves(admin, dentry, monkeypatch, tmp_path):
+    """Haydovchi /murojaat bilan tugma orqali mavzu tanlab murojaat yuboradi."""
+    from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE
+    from bm_automation.app.notifications import telegram as _tg_mod
+    _DRIVER_CHAT_CACHE.clear()
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "appeal.db"))))
+    st.save_driver_profile("d1", notification_target="901234567",
+                           notification_enabled=True)
+    st.link_driver_telegram("d1", 999)
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: st)
+    monkeypatch.setattr(dispatch, "get_storage", lambda: st)
+    monkeypatch.setattr(render, "get_storage", lambda: st)
+    monkeypatch.setattr(_tg_mod, "send_message",
+                        lambda message, chat_id=None, **kw: True)
+
+    dispatch.handle_message(999, "/murojaat")
+    assert "MUROJAAT YUBORISH" in admin[-1]["text"]
+    assert "Mavzuni tanlang" in admin[-1]["text"]
+    # mavzu tugma orqali tanlanadi
+    cdata = [b["callback_data"]
+             for row in admin[-1]["reply_markup"]["inline_keyboard"]
+             for b in row]
+    assert cdata[0].startswith("apptopic:")
+    dispatch.handle_callback(999, {"id": "q"}, "apptopic:0")
+    assert "Murojaat yoki taklif matni" in admin[-1]["text"]
+    dispatch.handle_message(999, "Kechqurun qaytishda yo'l yoritilmagan")
+    assert "Murojaat qabul qilindi" in admin[-1]["text"]
+    assert "#1" in admin[-1]["text"]
+    rows = st.appeals_list(driver_id="d1")
+    assert len(rows) == 1
+    assert rows[0]["title"] == "🚧 Yo'l muammosi"
+    assert rows[0]["text"] == "Kechqurun qaytishda yo'l yoritilmagan"
+    assert rows[0]["status"] == "YANGI"
+
+
+def test_driver_appeal_flow_skips_title(admin, dentry, monkeypatch, tmp_path):
+    """Mavzusiz tugma bilan mavzu o'tkaziladi; matn saqlanadi."""
+    from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE
+    _DRIVER_CHAT_CACHE.clear()
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "appeal2.db"))))
+    st.save_driver_profile("d1", notification_target="901234567",
+                           notification_enabled=True)
+    st.link_driver_telegram("d1", 999)
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: st)
+    monkeypatch.setattr(dispatch, "get_storage", lambda: st)
+    monkeypatch.setattr(dispatch, "_notify_admins_appeal", lambda *a, **k: None)
+
+    dispatch.handle_message(999, "/murojaat")
+    dispatch.handle_callback(999, {"id": "q"}, "apptopic:none")
+    assert "Murojaat yoki taklif matni" in admin[-1]["text"]
+    dispatch.handle_message(999, "Umuniy taklif")
+    rows = st.appeals_list(driver_id="d1")
+    assert len(rows) == 1
+    assert rows[0]["title"] == ""
+    assert rows[0]["text"] == "Umuniy taklif"
+
+
+def test_driver_appeal_requires_text(admin, dentry, monkeypatch, tmp_path):
+    """Bo'sh matn qabul qilinmaydi — murojaat saqlanmaydi, oqim ochiq qoladi."""
+    from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE
+    _DRIVER_CHAT_CACHE.clear()
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "appeal3.db"))))
+    st.save_driver_profile("d1", notification_target="901234567",
+                           notification_enabled=True)
+    st.link_driver_telegram("d1", 999)
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: st)
+    monkeypatch.setattr(dispatch, "get_storage", lambda: st)
+
+    dispatch.handle_message(999, "/murojaat")
+    dispatch.handle_callback(999, {"id": "q"}, "apptopic:3")
+    assert "Murojaat yoki taklif matni" in admin[-1]["text"]
+    dispatch.handle_message(999, "   ")
+    assert st.appeals_list(driver_id="d1") == []
+    assert driver_entry.current(999) is not None
+
+
+def test_driver_appeal_unlinked_denied(viewer, monkeypatch, tmp_path):
+    """Bog'lanmagan foydalanuvchi /murojaat deyishga huquqi yo'q —
+    rol DENIED emas, balki bog'lanishga yo'naltiriladi."""
+    from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE
+    _DRIVER_CHAT_CACHE.clear()
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "appeal4.db"))))
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: st)
+    monkeypatch.setattr(dispatch, "get_storage", lambda: st)
+    dispatch.handle_message(999, "/murojaat")
+    assert "haydovchi sifatida bog'lanmagansiz" in viewer[-1]["text"]
+    assert viewer[-1]["text"] != DENIED_TEXT
+
+
+def test_driver_my_appeals_empty(admin, monkeypatch, tmp_path):
+    """Murojaatlar bo'lmasa — bo'sh javob chiqadi."""
+    from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE
+    _DRIVER_CHAT_CACHE.clear()
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "appeals_my.db"))))
+    st.save_driver_profile("d1", notification_target="901234567",
+                           notification_enabled=True)
+    st.link_driver_telegram("d1", 999)
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: st)
+    monkeypatch.setattr(dispatch, "get_storage", lambda: st)
+
+    dispatch.handle_message(999, "/murojaatlarim")
+    assert "MUROJAATLARINGIZ YO'Q" in admin[-1]["text"]
+
+
+def test_driver_my_appeals_lists_saved(admin, monkeypatch, tmp_path):
+    """Saqllangan murojaatlar holat bilan ko'rinadi."""
+    from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE
+    _DRIVER_CHAT_CACHE.clear()
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "appeals_l.db"))))
+    st.save_driver_profile("d1", notification_target="901234567",
+                           notification_enabled=True)
+    st.link_driver_telegram("d1", 999)
+    st.appeal_add("d1", title="Yo'l yomon", text="Asfalt buzilgan",
+                  status="YANGI")
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: st)
+    monkeypatch.setattr(dispatch, "get_storage", lambda: st)
+
+    dispatch.handle_message(999, "/murojaatlarim")
+    out = admin[-1]["text"]
+    assert "#1" in out
+    assert "Yo'l yomon" in out
+    assert "YANGI" in out
 
 
 def test_driver_company_sections_denied(viewer, monkeypatch, tmp_path):
@@ -2046,3 +2323,305 @@ def test_driver_self_link_9_digit_phone(viewer, monkeypatch, tmp_path):
     profile = st.find("driver_profiles", driver_id="d1")
     assert profile["telegram_chat_id"] == "999"
     assert roles.resolve_role(999) is roles.Role.DRIVER
+
+
+def test_driver_card_shows_own_metrics(viewer, monkeypatch, tmp_path):
+    """Haydovchi o'z kartasida Ish kunlari/Qatnov/Km/Qatnashish ko'radi.
+
+    `__deny__`/`__none__` sentinel filterlari tashlab yuborilishi kerak —
+    aks holda Ish kunlari va Km bo'sh chiqadi.
+    """
+    from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE
+    _DRIVER_CHAT_CACHE.clear()
+    st = render.get_storage()
+    st.save_driver_profile("d1", notification_target="901234567",
+                           notification_enabled=True)
+    st.link_driver_telegram("d1", 999)
+    st.save_trip(TripRecord(date=date.today().isoformat(), route_id="r1",
+                            vehicle_id="v1", driver_id="d1",
+                            planned_time="06:00", actual_time="06:15",
+                            status="ACCEPTED", source=SyncSource.DUTY.value))
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: st)
+
+    text, _mk = render.driver_card("d1",
+                                   {"profile": "__none__", "route": "__deny__"},
+                                   chat_id=999)
+    assert "Ish kunlari" in text
+    assert "Qatnov" in text
+    assert "Km" in text
+    assert "Qatnashish" in text
+
+
+def test_driver_help_text(viewer, monkeypatch, tmp_path):
+    """Haydovchi /help da oddiy (kompaniya) yordam emas, o'zinikini oladi."""
+    from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE
+    _DRIVER_CHAT_CACHE.clear()
+    st = render.get_storage()
+    st.save_driver_profile("d1", notification_target="901234567",
+                           notification_enabled=True)
+    st.link_driver_telegram("d1", 999)
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: st)
+    monkeypatch.setattr(dispatch, "get_storage", lambda: st)
+
+    dispatch.handle_message(999, "/help")
+    assert "Haydovchi uchun yordam" in viewer[-1]["text"]
+    assert "/today" in viewer[-1]["text"]
+    assert "/settings" in viewer[-1]["text"]
+    assert "disfatcher/admin" not in viewer[-1]["text"]
+
+
+# ------------------------------------------- grafik post + start klaviatura
+
+def test_main_menu_unlinked_shows_share_phone(monkeypatch, tmp_path):
+    """Bog'lanmagan foydalanuvchi menyusida 'Raqamni ulashish' tugmasi."""
+    from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE
+    _DRIVER_CHAT_CACHE.clear()
+    monkeypatch.setattr(roles, "telegram_settings",
+                        lambda: _tg(admin_ids="111", default_role="viewer"))
+    kb_unlinked = kb.main_menu_kb(4242)
+    items = str(kb_unlinked)
+    # Contact tugmasi QO'SHIMCHA qator — asosiy menyu o'zgarmaydi
+    assert "request_contact" in items, "bog'lanmagan userga contact tugmasi"
+    assert "Dashboard" in items
+
+    # Bog'langan haydovchi oddiy menyuni oladi (contact tugmasisiz)
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "mm.db"))))
+    st.save_driver_profile("d1", notification_target="901234567")
+    st.link_driver_telegram("d1", 4243)
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: st)
+    from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE \
+        as _c2
+    _c2[4243] = "d1"
+    kb_driver = kb.main_menu_kb(4243)
+    assert "request_contact" not in str(kb_driver)
+    assert "Dashboard" in str(kb_driver)
+
+
+def test_stored_viewer_role_yields_to_linked_driver(monkeypatch, tmp_path):
+    """Bog'langan haydovchining eski VIEWER yozuvi DRIVER bo'lishi kerak.
+
+    Admin keyinchalik haydovchini bog'lasa, bot_usersda qolgan VIEWER rol
+    uni admin panellarga ochib qo'yardi — endi DB bog'lanishi ustun.
+    """
+    from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE
+    _DRIVER_CHAT_CACHE.clear()
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "rl.db"))))
+    st.save_driver_profile("d1", notification_target="901234567")
+    st.link_driver_telegram("d1", 3131)
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: st)
+    # bot_users'da eski VIEWER yozuvi qolgan (admin bog'lashidan oldin)
+    from bm_automation.app.core import bot_users
+    bot_users.record_user(3131, role="VIEWER")
+    try:
+        assert roles.resolve_role(3131) is roles.Role.DRIVER
+    finally:
+        bot_users._LOCK.acquire()
+        try:
+            bot_users._CACHE.pop("3131", None)
+            bot_users._save()
+        finally:
+            bot_users._LOCK.release()
+
+
+def test_stored_admin_role_kept_when_linked(monkeypatch, tmp_path):
+    """Baland rollar (ADMIN/DISPATCHER/MANAGER) bog'lanishdan o'zgarmaydi."""
+    from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE
+    _DRIVER_CHAT_CACHE.clear()
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "rl2.db"))))
+    st.save_driver_profile("d1", notification_target="901234567")
+    st.link_driver_telegram("d1", 3232)
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: st)
+    monkeypatch.setattr(roles, "telegram_settings",
+                        lambda: _tg(admin_ids="111", default_role="viewer"))
+    from bm_automation.app.core import bot_users
+    bot_users.record_user(3232, role="DISPATCHER")
+    try:
+        assert roles.resolve_role(3232) is roles.Role.DISPATCHER
+    finally:
+        bot_users._LOCK.acquire()
+        try:
+            bot_users._CACHE.pop("3232", None)
+            bot_users._save()
+        finally:
+            bot_users._LOCK.release()
+
+
+def test_build_rows_collects_driver_ids(monkeypatch, tmp_path):
+    """Grafik qatorlarida haydovchi ID'lari yig'iladi (postda ko'rsatish uchun)."""
+    from bm_automation.app.services import driver_sheet_service as dss
+
+    class _FakeClient:
+        def get(self, *_a, **_k):
+            return {}
+
+    duty = {
+        "graphs": [{
+            "graphName": "P1", "driverName": "ALIYEV ALI",
+            "driverId": "drv-1", "hasSecond": True,
+            "secondDriverName": "KARIMOV VALI", "secondDriverId": "drv-2",
+            "plateNum": "01A001", "startTime": "06:00",
+            "endTime": "18:00", "shiftName": "KUN", "shiftGraphId": "sg1",
+        }],
+    }
+    monkeypatch.setattr(dss, "graph_start_direction",
+                        lambda *a, **k: "UP")
+    monkeypatch.setattr(dss, "konechka_names",
+                        lambda *a, **k: {"UP": "A", "DOWN": "B"})
+    data = dss.build_rows(_FakeClient(), "route-1", "2026-09-23",
+                          duty_data=duty)
+    ids = {d["id"] for d in data["drivers"]}
+    assert ids == {"drv-1", "drv-2"}
+
+
+def test_send_photo_album_single_file_id(monkeypatch):
+    """bitta file_id rasm — sendPhotoFileId ga yo'naltiriladi."""
+    calls = []
+    monkeypatch.setattr(tg, "telegram_settings", lambda: {
+        "token": "T", "chat_id": "1", "driver_chat_id": ""})
+    monkeypatch.setattr(tg, "send_photo_file_id",
+                        lambda fid, cap, chat_id=None, **kw:
+                        calls.append((fid, cap, chat_id)) or True)
+    ok = tg.send_photo_album([{"file_id": "F1"}], caption="cap",
+                             chat_id="9")
+    assert ok is True
+    assert calls == [("F1", "cap", "9")]
+
+
+def test_send_photo_album_group_builds_media(monkeypatch):
+    """bir necha rasm — sendMediaGroup'ga attach:// media quriladi."""
+    calls = []
+    monkeypatch.setattr(tg, "telegram_settings", lambda: {
+        "token": "T", "chat_id": "1", "driver_chat_id": ""})
+
+    def _fake_call(method, payload=None, files=None):
+        calls.append((method, payload, files or {}))
+        return {"result": []}
+
+    monkeypatch.setattr(tg, "telegram_call", _fake_call)
+    p1 = tmp_png = "reports/_t_album_a.png"
+    p2 = "reports/_t_album_b.png"
+    from pathlib import Path as _P
+    for f in (p1, p2):
+        _P(f).parent.mkdir(exist_ok=True)
+        _P(f).write_bytes(b"\x89PNG fake")
+    try:
+        ok = tg.send_photo_album(
+            [{"path": p1}, {"file_id": "FID2"}], caption="Jadval",
+            chat_id="9")
+        assert ok is True
+        method, payload, files = calls[0]
+        assert method == "sendMediaGroup"
+        media = __import__("json").loads(payload["media"])
+        assert media[0]["media"].startswith("attach://")
+        assert media[0]["caption"] == "Jadval"
+        assert media[1]["media"] == "FID2"
+        assert "photo0" in files
+    finally:
+        for f in (p1, p2):
+            _P(f).unlink(missing_ok=True)
+
+
+# ------------------------------------------------------------- /notify oqimi
+
+def _notify_flow(monkeypatch):
+    sent = []
+    monkeypatch.setattr(dispatch, "reply",
+                        lambda cid, text, markup=None, **kw:
+                        sent.append(text))
+    monkeypatch.setattr(dispatch.kb, "main_menu_kb", lambda cid=None: "MM")
+    monkeypatch.setattr(dispatch.kb, "back_kb", lambda *a, **k: "BK")
+    with dispatch._NOTIFY_LOCK:
+        dispatch._NOTIFY_STATE.clear()
+    return sent
+
+
+def test_notify_cancel_clears_state(monkeypatch):
+    """Bug 6: /cancel buyrug'i oqim holatini tozalashi kerak."""
+    sent = _notify_flow(monkeypatch)
+    dispatch._start_notify(777)
+    with dispatch._NOTIFY_LOCK:
+        assert 777 in dispatch._NOTIFY_STATE
+    dispatch.handle_message(777, "/cancel")
+    with dispatch._NOTIFY_LOCK:
+        assert 777 not in dispatch._NOTIFY_STATE
+    assert any("Bekor qilindi" in t for t in sent)
+
+
+def test_notify_continue_cancels_via_keyword(monkeypatch):
+    """Bug 6: oqim qadamida '❌ Bekor qilish' — holat tozalanadi."""
+    sent = _notify_flow(monkeypatch)
+    dispatch._start_notify(778)
+    dispatch._continue_notify(778, "❌ Bekor qilish")
+    with dispatch._NOTIFY_LOCK:
+        assert 778 not in dispatch._NOTIFY_STATE
+    assert any("Bekor qilindi" in t for t in sent)
+
+
+def test_notify_stale_state_expires(monkeypatch):
+    """Bug 6: 15 daqiqadan eski oqim tozalanadi va qayta /notify talab."""
+    sent = _notify_flow(monkeypatch)
+    dispatch._start_notify(779)
+    # vaqtni sun'iy eskirayamiz
+    old = dispatch._time_now() - 16 * 60
+    with dispatch._NOTIFY_LOCK:
+        dispatch._NOTIFY_STATE[779]["ts"] = old
+    dispatch._continue_notify(779, "901234567")
+    with dispatch._NOTIFY_LOCK:
+        assert 779 not in dispatch._NOTIFY_STATE
+    assert any("muddati tugadi" in t for t in sent)
+
+
+def test_notify_stale_state_sends_restart_prompt(monkeypatch):
+    """Eski holat — /notify rasmga qayta yuborish so'raladi."""
+    sent = _notify_flow(monkeypatch)
+    with dispatch._NOTIFY_LOCK:
+        dispatch._NOTIFY_STATE[780] = {"step": "message",
+                                       "ts": dispatch._time_now() - 60 * 60}
+    dispatch._continue_notify(780, "salom")
+    assert any("muddati tugadi" in t for t in sent)
+    with dispatch._NOTIFY_LOCK:
+        assert 780 not in dispatch._NOTIFY_STATE
+
+
+def test_notify_phone_step_unknown_phone(monkeypatch, tmp_path):
+    """Bog'lanmagan raqam — so'raladi, holat ochiq qoladi."""
+    sent = _notify_flow(monkeypatch)
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "n1.db"))))
+    monkeypatch.setattr(dispatch, "get_storage", lambda: st)
+    dispatch._start_notify(781)
+    dispatch._continue_notify(781, "999777111")
+    with dispatch._NOTIFY_LOCK:
+        assert 781 in dispatch._NOTIFY_STATE
+    assert any("topilmadi" in t for t in sent)
+
+
+def test_notify_phone_step_found_then_message(monkeypatch, tmp_path):
+    """Raqam topilsa — 'message' qadamiga o'tadi va xabar yuboriladi."""
+    sent = _notify_flow(monkeypatch)
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "n2.db"))))
+    st.save_driver_profile("d1", notification_target="901234567")
+    st.link_driver_telegram("d1", 4444)
+    monkeypatch.setattr(dispatch, "get_storage", lambda: st)
+    sent_upd = []
+    monkeypatch.setattr(tg, "send_message",
+                        lambda text, chat_id=None, **kw:
+                        sent_upd.append((chat_id, text)))
+    dispatch._start_notify(782)
+    dispatch._continue_notify(782, "901234567")
+    with dispatch._NOTIFY_LOCK:
+        assert dispatch._NOTIFY_STATE[782]["step"] == "message"
+    dispatch._continue_notify(782, "ertaga 06:00")
+    assert any("yuborildi" in t for t in sent)
+    assert sent_upd and sent_upd[0][0] == "4444"
+
+
+def test_find_driver_by_phone_many_rows(tmp_path):
+    """Bug 2: 1000+ yozuvda ham fallback skaner to'g'ri ishlaydi."""
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "big.db"))))
+    for i in range(1100):
+        st.save_driver_profile(f"bx{i}",
+                               phone=f"998{i:06d}")
+    st.save_driver_profile("needle", phone="9981100000")
+    row = st.find_driver_by_phone("1100000")
+    assert row and row["driver_id"] == "needle"
+    assert st.find_driver_by_phone("999999") is None

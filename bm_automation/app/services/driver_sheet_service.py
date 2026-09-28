@@ -139,6 +139,9 @@ def build_rows(client: BMClient, route_id: str, date_str: str,
         row = {
             "graph": g.get("graphName") or "?",
             "driver": driver,
+            "driver_id": g.get("driverId") or "",
+            "second_driver_id": (g.get("secondDriverId") or "")
+                                 if g.get("hasSecond") else "",
             "bus": g.get("plateNum") or "",
             "start": g.get("startTime") or "",
             "end": g.get("endTime") or "",
@@ -153,11 +156,23 @@ def build_rows(client: BMClient, route_id: str, date_str: str,
             groups[direction][idx] = row
     for d in groups:
         groups[d].sort(key=lambda r: _norm_time(r["start"]))
+    # Grafikdagi barcha haydovchilar (ID + ism) — Telegram bog'langan
+    # profillarni jadval postida ko'rsatish uchun.
+    _seen: set[str] = set()
+    _drivers: list[dict] = []
+    for _dkey in ("UP", "DOWN"):
+        for _r in groups[_dkey]:
+            for _did in (_r.get("driver_id"), _r.get("second_driver_id")):
+                _did = str(_did or "").strip()
+                if _did and _did not in _seen:
+                    _seen.add(_did)
+                    _drivers.append({"id": _did, "name": _r["driver"]})
     return {
         "date": date_str,
         "routeName": route_name,
         "konechka": names,
         "groups": groups,
+        "drivers": _drivers,
     }
 
 
@@ -182,7 +197,9 @@ def run(
     result = {"date": date_str, "image": str(img), "groups": {
         "UP": [r["graph"] for r in data["groups"]["UP"]],
         "DOWN": [r["graph"] for r in data["groups"]["DOWN"]],
-    }, "konechka": data["konechka"]}
+    }, "konechka": data["konechka"], "drivers": data["drivers"],
+        # Shaxsiy grafik kartasi uchun to'liq qatorlar (Grafikim tugmasi).
+        "rows": data["groups"], "route_name": data["routeName"]}
 
     if send:
         from ..config.settings import telegram_settings

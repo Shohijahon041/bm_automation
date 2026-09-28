@@ -319,6 +319,88 @@ def send_photo(
     return True
 
 
+def send_photo_album(
+    photos: list[dict],
+    caption: str = "",
+    chat_id: str | None = None,
+) -> bool:
+    """Bir necha rasmni BIRTA albom-postda yuboradi (sendMediaGroup).
+
+    photos: [{"path": "...png"} yoki {"file_id": "..."}, ...] (2-10 ta).
+    Caption faqat birinchi elementga qo'yiladi (Telegram qoidasi),
+    parse_mode HTML (botning boshqa xabarlariga mos).
+    Rasm yuklanmasa (tarmoq/API) False qaytaradi — chaqiruvchi o'z
+    fallback'ini ishlatadi.
+    """
+    s = telegram_settings()
+    if not s["token"] or not (chat_id or s["chat_id"]):
+        raise ValueError("TG_BOT_TOKEN/TG_CHAT_ID .env'da ko'rsatilmagan")
+    if not photos:
+        return False
+    if len(photos) == 1:
+        p = photos[0]
+        if p.get("file_id"):
+            return send_photo_file_id(p["file_id"], caption, chat_id=chat_id)
+        return send_photo(p["path"], caption, chat_id=chat_id)
+    media = []
+    files = {}
+    for i, p in enumerate(photos[:10]):
+        if p.get("file_id"):
+            item = {"type": "photo", "media": p["file_id"]}
+        else:
+            path = str(p.get("path") or "")
+            name = os.path.basename(path)
+            attach = f"photo{i}"
+            files[attach] = (name, open(path, "rb"))
+            item = {"type": "photo", "media": f"attach://{attach}"}
+        if i == 0 and caption:
+            item["caption"] = caption[:1024]
+            item["parse_mode"] = "HTML"
+        media.append(item)
+    try:
+        telegram_call(
+            "sendMediaGroup",
+            {"chat_id": chat_id or s["chat_id"],
+             "media": json.dumps(media, ensure_ascii=False)},
+            files=files,
+        )
+        return True
+    finally:
+        for fh in files.values():
+            try:
+                fh[1].close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def send_photo_file_id(
+    file_id: str,
+    caption: str = "",
+    chat_id: str | None = None,
+    reply_markup=None,
+) -> bool:
+    """Telegram'ga allaqachon yuklangan rasmni file_id bilan yuboradi.
+
+    Faylni qayta yuklamaydi (tez) — bot avval o'zgan rasm yoki profil
+    rasmini shu yo'l bilan ko'rsatadi. Yuborib bo'lmasa False qaytaradi.
+    """
+    s = telegram_settings()
+    if not s["token"] or not (chat_id or s["chat_id"]):
+        return False
+    if not str(file_id or "").strip():
+        return False
+    payload = {"chat_id": chat_id or s["chat_id"], "photo": file_id}
+    if caption:
+        payload["caption"] = caption[:1024]
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    try:
+        telegram_call("sendPhoto", payload)
+        return True
+    except Exception:
+        return False
+
+
 def send_report_summary(result: dict) -> None:
     """Hisobot natijasini matn ko'rinishida yuboradi."""
     if not _configured():

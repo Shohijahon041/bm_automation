@@ -69,6 +69,7 @@ _BACKUP_TABLES = {
     "documents": {"key_cols": ["id"], "desc": "Hujjatlar"},
     "avans": {"key_cols": ["id"], "desc": "Avans to'lovlari"},
     "staff": {"key_cols": ["id"], "desc": "Ma'muriy bo'lim ishchilari"},
+    "driver_appeals": {"key_cols": ["id"], "desc": "Taklif va murojaatlar"},
 }
 
 

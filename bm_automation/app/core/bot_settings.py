@@ -1,8 +1,7 @@
 """Bot orqali o'zgartiriladigan sozlamalar (`state/bot_settings.json`).
 
-- `km_rate` — global 1 km narxi (so'm). Bot orqali o'zgartiriladi va
-  `KM_RATE` env'dan ham ustun turadi (haydovchi oyligi hisobiga ta'sir qiladi).
-  `0`/yo'q bo'lsa standart ustunlik tartibi ishlaydi (env > profil > firma).
+- 1-km narxi yo'nalish darajasida saqlanadi (`route_km`/`set_route_km`),
+  global emas — har bir yo'nalish o'z narxiga ega.
 - `langs` — chat_id → til (`uz` / `ru`).
 
 Fayl atomik yoziladi, bot qayta ishga tushsa ham saqlanib qoladi.
@@ -131,27 +130,11 @@ def audit_log(limit: int = 20) -> list[dict]:
     return out
 
 
-# ---------------------------------------------------------------- km narxi
+# ------------------------------------------------------------- km narxi
 
-def km_rate() -> float:
-    """Bot orqali o'rnatilgan global 1 km narxi (0 bo'lsa o'rnatilmagan)."""
-    try:
-        return float(_load().get("km_rate") or 0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def set_km_rate(value: float | None) -> float:
-    """Global 1 km narxini o'rnatadi (0/None — o'chirish, asl holatga qaytish)."""
-    with _LOCK:
-        _load()
-        old = km_rate()
-        value = _clean_amount(value)
-        _CACHE["km_rate"] = value
-        _audit("km_rate", old, value)
-        _save()
-    return value
-
+# 1-km narxi endi global emas — har yo'nalish uchun route_kм darajasida
+# saqlanadi (qarang: ``route_km``/``set_route_km``; yangi haydovchiga
+# sinxronizatsiyada yo'nalish narxi yoziladi).
 
 # ----------------------------------------------------- elektr energiya narxi
 
