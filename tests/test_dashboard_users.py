@@ -352,6 +352,30 @@ def test_admin_list_users_scrubs_secrets(env):
         assert "salt" not in u
 
 
+def test_admin_edits_user_role_and_company(env):
+    """TAHRIRLASH: rol va kompaniya almashadi (parol berilmasa o'zgarmaydi)."""
+    st = env
+    st.dashboard_user_add("root", *server_mod._hash_password("to'g'ri"),
+                          role="ADMIN")
+    uid = st.dashboard_user_add("ali", *server_mod._hash_password("eski"),
+                                role="DISPATCHER", company="XTEST")
+    _, _, cookies = _login(env, "root", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}",
+           "Content-Type": "application/json"}
+    body = json.dumps({"action": "update", "username": "ali",
+                       "role": "MANAGER", "company": "YTEST"}).encode()
+    status, data, _ = _request(env, "/api/dashboard-users", method="POST",
+                               headers={**hdr, "Content-Length": str(len(body))},
+                               body=body)
+    assert status == 200 and data.get("ok") is True
+    row = st.dashboard_user_get(row_id=uid)
+    assert row["role"] == "MANAGER"
+    assert row["company"] == "YTEST"
+    # Parol kiritilmagani uchun eski parol o'z kuchini saqlaydi.
+    _, od, _ = _login(env, "ali", "eski")
+    assert od.get("ok") is True
+
+
 def test_admin_deletes_user_by_username(env):
     """O'CHIRISH tugmasi faqat username yuboradi — server username bilan topadi."""
     st = env

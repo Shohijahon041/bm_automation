@@ -1827,7 +1827,7 @@ body.auth-locked .auth-overlay { display: flex; }
             </div>
             <div style="display:flex;gap:10px;align-items:center;justify-content:flex-end">
               <span class="hint" id="du-status"></span>
-              <button class="button" style="font-size:11px;padding:6px 14px" onclick="addUserForm()">QO'SHISH</button>
+              <button class="button" id="du-submit" style="font-size:11px;padding:6px 14px" onclick="addUserForm()">QO'SHISH</button>
             </div>
           </div>
           <div id="dusers-body" style="padding:0 18px 18px"></div>
@@ -4062,13 +4062,52 @@ function populateUserCompany() {
   if (!sel.value && dashCompanies.length) sel.value = dashCompanies[0].name;
   syncUserCompanyState();
 }
-function toggleUserForm() {
-  populateUserCompany();
+function resetUserForm() {
   const f = document.getElementById("user-add-form");
-  if (f) {
-    f.style.display = f.style.display === "none" ? "block" : "none";
-    if (f.style.display === "block") document.getElementById("du-name").focus();
-  }
+  if (f) f.dataset.edit = "";
+  const name = document.getElementById("du-name");
+  const pass = document.getElementById("du-pass");
+  const role = document.getElementById("du-role");
+  const submit = document.getElementById("du-submit");
+  if (name) { name.value = ""; name.readOnly = false; name.placeholder = "Login *"; }
+  if (pass) { pass.value = ""; pass.placeholder = "Parol *"; }
+  if (role) role.value = "DISPATCHER";
+  if (submit) submit.textContent = "QO'SHISH";
+  const status = document.getElementById("du-status");
+  if (status) status.textContent = "";
+  populateUserCompany();
+}
+function toggleUserForm() {
+  const f = document.getElementById("user-add-form");
+  const opening = !f || f.style.display !== "block";
+  resetUserForm();
+  if (f) f.style.display = opening ? "block" : "none";
+  if (opening) document.getElementById("du-name").focus();
+}
+function editUser(key) {
+  let username;
+  try { username = decodeURIComponent(key); } catch (e) { username = key; }
+  const u = (window.__dashUsers || []).find(x => x.username === username);
+  if (!u) return;
+  resetUserForm();
+  const f = document.getElementById("user-add-form");
+  const name = document.getElementById("du-name");
+  const role = document.getElementById("du-role");
+  const pass = document.getElementById("du-pass");
+  const submit = document.getElementById("du-submit");
+  if (f) f.dataset.edit = username;
+  if (name) { name.value = username; name.readOnly = true; }
+  if (role) role.value = u.role || "DISPATCHER";
+  if (pass) pass.placeholder = "Parol (bo'sh = o'zgartirmaydi)";
+  if (submit) submit.textContent = "SAQLASH";
+  if (f) f.style.display = "block";
+  populateUserCompany();
+  const sel = document.getElementById("du-company");
+  if (sel) { sel.value = u.company || ""; }
+  syncUserCompanyState();
+  const status = document.getElementById("du-status");
+  if (status) status.textContent = role ? (ROLE_LABEL[role.value] || role.value) + " — rol/kompaniyani o'zgartiring" : "";
+  if (f) f.scrollIntoView({behavior: "smooth", block: "center"});
 }
 async function loadDashboardUsers() {
   const body = document.getElementById("dusers-body");
@@ -4084,6 +4123,7 @@ async function loadDashboardUsers() {
   }
   const users = d.users || [];
   dashCompanies = d.companies || [];
+  window.__dashUsers = users;
   populateUserCompany();
   if (!users.length) {
     body.innerHTML = '<div class="empty" style="padding:20px;text-align:center;color:var(--muted)">Hech qanday dashboard foydalanuvchisi yo\'q. Yuqoridagi "+ FOYDALANUVCHI" tugmasi orqali qo\'shing.</div>';
@@ -4100,6 +4140,7 @@ async function loadDashboardUsers() {
       + '<div style="font:11px \'IBM Plex Mono\',monospace;color:var(--muted)">' + esc(role) + ' &middot; ' + esc(company) + '</div>'
       + '</div>'
       + '<label style="font:10px \'IBM Plex Mono\',monospace;color:var(--muted);display:flex;align-items:center;gap:6px"><input type="checkbox" id="du-a-' + key + '" ' + (u.active ? 'checked' : '') + ' onchange="toggleUser(\'' + key + '\', this.checked)"> Faol</label>'
+      + '<button class="button ghost" style="font-size:11px;padding:5px 10px" onclick="editUser(\'' + key + '\')">TAHRIRLASH</button>'
       + '<button class="button ghost" style="font-size:11px;padding:5px 10px" onclick="resetUserPass(\'' + key + '\')">PAROL</button>'
       + '<button class="button ghost" style="font-size:11px;padding:5px 10px;border-color:rgba(239,68,68,.4);color:#ef4444" onclick="deleteUser(\'' + key + '\')">O\'CHIRISH</button>'
       + '</div>';
@@ -4112,16 +4153,18 @@ async function addUserForm() {
   const username = (document.getElementById("du-name")?.value || "").trim();
   const password = document.getElementById("du-pass")?.value || "";
   if (!username) { if (status) status.textContent = "Login kiritilishi shart"; return; }
-  if (password.length < 4) { if (status) status.textContent = "Parol kamida 4 belgi"; return; }
   const role = document.getElementById("du-role")?.value || "VIEWER";
   const company = document.getElementById("du-company")?.value || "";
   if (role !== "ADMIN" && !company) { if (status) status.textContent = "Korxona tanlash shart (ADMIN emas)"; return; }
-  const d = await postJSON("/api/dashboard-users", {
-    action: "create", username, password, role, company,
-  });
+  const f = document.getElementById("user-add-form");
+  const edit = (f && f.dataset.edit) || "";
+  if (!edit && password.length < 4) { if (status) status.textContent = "Parol kamida 4 belgi"; return; }
+  if (edit && password && password.length < 4) { if (status) status.textContent = "Parol kamida 4 belgi"; return; }
+  const payload = { action: edit ? "update" : "create", username, role, company };
+  if (password) payload.password = password;
+  const d = await postJSON("/api/dashboard-users", payload);
   if (!d.ok) { if (status) status.textContent = d.error || "Xatolik"; return; }
   if (status) status.textContent = "";
-  ["du-name", "du-pass"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
   toggleUserForm();
   loadDashboardUsers();
 }
