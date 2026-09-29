@@ -59,6 +59,14 @@ def telegram_settings() -> dict:
         "token": os.getenv("TG_BOT_TOKEN", "").strip(),
         "chat_id": os.getenv("TG_CHAT_ID", "").strip(),
         "driver_chat_id": os.getenv("TG_DRIVER_CHAT_ID", "").strip(),
+        # Guruhga chiqish vaqti eslatmasi (haydovchilar bildirishnomasi):
+        # on bo'lsa poll-tsikl `schedules` grafigi bo'yicha, soatga qarab
+        # guruh(lar)ga ism/avtobus/chiqish vaqtini yuboradi. Har bir yo'nalish
+        # o'z guruhiga bo'linadi: TG_DRIVER_ROUTE_CHATS=route_id:chat_id[;...]
+        # (route_id moslari yo'q bo'lsa barchasi TG_DRIVER_CHAT_ID ga boradi).
+        "group_departure_notify": os.getenv("GROUP_DEPARTURE_NOTIFY", "off").strip().lower(),
+        # Yo'nalish -> guruh(ga) xaritasi: "route_id:chat1,chat2;route_id:chat3"
+        "driver_route_chats": os.getenv("TG_DRIVER_ROUTE_CHATS", "").strip(),
         # Role-based access (Transport Operations Bot)
         "allowed_ids": os.getenv("TG_ALLOWED_IDS", "").strip(),
         "strict_access": os.getenv("TG_STRICT_ACCESS", "").strip(),

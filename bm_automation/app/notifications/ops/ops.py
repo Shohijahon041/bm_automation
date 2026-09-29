@@ -418,6 +418,11 @@ def poll_forever() -> None:
             except Exception as exc:
                 print(f"Grafik kuzatuvi xatosi: {exc}")
             try:
+                from . import group_departures
+                group_departures.check_and_send()
+            except Exception as exc:
+                print(f"Chiqish vaqti eslatmasi xatosi: {exc}")
+            try:
                 from ..sms_notify import retry_stale_pending
                 res = retry_stale_pending()
                 if res.get("polled"):
