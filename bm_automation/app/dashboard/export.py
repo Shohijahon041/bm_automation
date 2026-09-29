@@ -703,17 +703,21 @@ def salary_filename(from_date: str, to_date: str) -> str:
     return f"oylik_{f}_{t}.xlsx"
 
 
-def salary_export(from_date: str, to_date: str) -> bytes:
-    """Barcha yo'nalishlar bo'yicha haydovchilar oylik hisoboti (XLSX).
+def salary_export(from_date: str, to_date: str, route: str = "") -> bytes:
+    """Haydovchilar oylik hisoboti (XLSX).
 
     Har bir yo'nalish alohida sahifada — kompaniya nomi + yo'nalish nomi
-    sarlavha sifatida, so'ng haydovchilar jadvali.
+    sarlavha sifatida, so'ng haydovchilar jadvali. `route` berilsa (bo'sh
+    joy yoki vergul bilan ajratilgan id'lar) hisobot faqat shu yo'nalishlar
+    bo'yicha tuziladi.
     """
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
 
     met = m.Metrics()
     f = {"from": from_date, "to": to_date, "date": from_date}
+    if route:
+        f["route"] = route
     drivers = met.drivers(f)
 
     # Yo'nalishlar bo'yicha guruhlash

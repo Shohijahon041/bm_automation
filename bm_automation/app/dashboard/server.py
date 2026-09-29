@@ -492,6 +492,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
         row = storage.find("drivers", external_id=driver_id)
         return bool(row and str(row.get("route_id") or "") in scopes)
 
+    def _driver_in_scope(self, storage, driver_id: str, scopes: set) -> bool:
+        """Haydovchi qamrov route'ida bo'lsa True (shaxsiy ma'lumot himoyasi)."""
+        if not driver_id:
+            return False
+        row = storage.find("drivers", external_id=driver_id)
+        return bool(row and str(row.get("route_id") or "") in scopes)
+
+    @staticmethod
+    def _appeal_driver(storage, aid: int) -> str:
+        """Murojaat egasining haydovchi ID'sini qaytaradi (topilmasa '')."""
+        try:
+            rows = storage.query(
+                "SELECT driver_id FROM driver_appeals WHERE id = "
+                + storage.db.ph, (str(aid),), limit=1)
+            if rows:
+                return str(rows[0].get("driver_id") or "")
+        except Exception:  # noqa: BLE001 - jadval yo'q bo'lsa ham xavfsiz
+            pass
+        return ""
+
     def _me(self) -> None:
         scope = getattr(self, "_scope", None)
         if not scope:
@@ -1505,7 +1525,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._json({"error": "yo'nalish topilmadi"}, 404)
             elif path == "/api/appeals":
                 from . import metrics as m
-                self._json({"ok": True, **m.Metrics().appeals_report(_parse(qs))})
+                report = m.Metrics().appeals_report(_parse(qs))
+                scopes = self._scope_routes()
+                if scopes is not None:
+                    from ..db.storage import get_storage
+                    storage = get_storage()
+                    report["appeals"] = [a for a in report["appeals"]
+                                         if self._driver_in_scope(
+                                             storage,
+                                             str(a.get("driver_id") or ""),
+                                             scopes)]
+                self._json({"ok": True, **report})
             elif path == "/api/drivers":
                 from . import metrics as m
                 self._json({"ok": True, **m.Metrics().driver_directory(self._driver_filters(qs))})
@@ -1521,6 +1551,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                                "name": r.get("full_name", ""),
                                "route_id": r.get("route_id", ""),
                                "telegram_chat_id": r.get("telegram_chat_id", "")} for r in rows]
+                    scopes = self._scope_routes()
+                    if scopes is not None:
+                        drivers = [d for d in drivers
+                                   if str(d.get("route_id") or "") in scopes]
                     self._json({"ok": True, "drivers": drivers})
                 else:
                     self._json({"ok": False, "error": "DB rejimi o'chirilgan"}, 400)
@@ -1529,6 +1563,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if len(parts) == 3:
                     from . import metrics as m
                     vid = m.Metrics().resolve_vehicle(parts[2], _parse(qs)) or parts[2]
+                    scopes = self._scope_routes()
+                    if scopes is not None:
+                        from ..db.storage import get_storage
+                        row = get_storage().find("vehicles", external_id=vid)
+                        if not row or str(row.get("route_id") or "") not in scopes:
+                            self._json({"ok": False,
+                                        "error": "Avtobus topilmadi"}, 404)
+                            return
                     detail = m.Metrics().vehicle_detail(vid, _parse(qs))
                     if detail:
                         self._json({"ok": True, **detail})
@@ -1538,6 +1580,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._json({"error": "yo'nalish topilmadi"}, 404)
             elif path.startswith("/api/drivers/"):
                 parts = [unquote(x) for x in path.split("/") if x]
+                scopes = self._scope_routes()
+                if scopes is not None:
+                    from ..db.storage import get_storage
+                    if not self._driver_in_scope(get_storage(),
+                                                 parts[2], scopes):
+                        self._json({"error": "haydovchi topilmadi"}, 404)
+                        return
                 # /api/drivers/{id}/photo
                 if len(parts) == 4 and parts[3] == "photo":
                     self._photo(parts[2])
@@ -1803,7 +1852,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._json({"error": "from va to parametrlari kerak"}, 400)
                     return
                 from .export import salary_export, salary_filename, content_type
-                data = salary_export(from_date, to_date)
+                scopes = self._scope_routes()
+                data = salary_export(
+                    from_date, to_date,
+                    route=" ".join(sorted(scopes)) if scopes is not None else "")
                 name = salary_filename(from_date, to_date)
                 self.send_response(200)
                 self.send_header("Content-Type", content_type("xlsx"))
@@ -2201,6 +2253,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     aid = int(payload.get("id") or 0)
                 except (TypeError, ValueError):
                     aid = 0
+                scopes = self._scope_routes()
+                if scopes is not None and action in ("update", "reply", "delete"):
+                    if not aid:
+                        self._json({"ok": False,
+                                    "error": "Murojaat ID xato"}, 400)
+                        return
+                    if not self._driver_in_scope(
+                            storage, self._appeal_driver(storage, aid),
+                            scopes):
+                        self._json({"ok": False,
+                                    "error": "Murojaat topilmadi"}, 404)
+                        return
                 if action in ("update", "reply"):
                     if not aid:
                         self._json({"ok": False, "error": "Murojaat ID xato"}, 400)
@@ -2224,7 +2288,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 else:
                     did = str(payload.get("driver_id") or "").strip()
                     if not did:
-                        self._json({"ok": False, "error": "Haydovchi ko'rsatilmagan"}, 400)
+                        self._json({"ok": False,
+                                    "error": "Haydovchi ko'rsatilmagan"}, 400)
+                        return
+                    if scopes is not None and not self._driver_in_scope(
+                            storage, did, scopes):
+                        self._json({"ok": False,
+                                    "error": "Haydovchi topilmadi"}, 404)
                         return
                     aid = storage.appeal_add(
                         did, title=str(payload.get("title") or "").strip(),
@@ -2240,6 +2310,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._json({"error": "yo'nalish topilmadi"}, 404)
                     return
                 driver_id, action = parts[2], parts[3]
+                scopes = self._scope_routes()
+                if scopes is not None:
+                    from ..db.storage import get_storage
+                    if not self._driver_in_scope(get_storage(),
+                                                 driver_id, scopes):
+                        self._json({"error": "haydovchi topilmadi"}, 404)
+                        return
                 payload = self._payload()
                 if action == "profile":
                     result = self._save_driver(payload, driver_id)

@@ -655,3 +655,217 @@ def test_director_documents_scoped_by_driver_route(env, monkeypatch):
     status, data, _ = _request(env, "/api/documents", headers=hdr)
     assert status == 200
     assert [d["id"] for d in data["documents"]] == [1, 2]
+
+
+# ------------------------------------------- haydovchi/avtobus PII qamrovi
+
+def test_driver_detail_scoped_to_route(env, monkeypatch):
+    """/api/drivers/{id} boshqa route haydovchisi uchun 404 beradi."""
+    from bm_automation.app.dashboard.server import DashboardHandler
+    called = []
+
+    def fake_detail(self, driver_id, qs):
+        called.append(driver_id)
+        return {"ok": True, "driver_id": driver_id}
+
+    monkeypatch.setattr(DashboardHandler, "_driver_detail", fake_detail)
+    st = env
+    st.save_driver("d1", full_name="Ali", route_id="r1")
+    st.save_driver("d2", full_name="Vali", route_id="r2")
+    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+                          role="DISPATCHER", company="XTEST")
+    _, _, cookies = _login(env, "disp", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
+    status, _, _ = _request(env, "/api/drivers/d1", headers=hdr)
+    assert status == 200
+    assert called == ["d1"]
+    status, _, _ = _request(env, "/api/drivers/d2", headers=hdr)
+    assert status == 404
+    assert called == ["d1"]
+    # Admin ikkalasini ham ocha oladi.
+    st.dashboard_user_add("root", *server_mod._hash_password("to'g'ri"),
+                          role="ADMIN")
+    _, _, cookies = _login(env, "root", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
+    status, _, _ = _request(env, "/api/drivers/d2", headers=hdr)
+    assert status == 200
+    assert called == ["d1", "d2"]
+
+
+def test_drivers_list_scoped(env):
+    """/api/drivers/list faqat o'z route'i haydovchilarini qaytaradi."""
+    st = env
+    st.save_driver("d1", full_name="AAA", route_id="r1")
+    st.save_driver("d2", full_name="BBB", route_id="r2")
+    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+                          role="DISPATCHER", company="XTEST")
+    _, _, cookies = _login(env, "disp", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
+    status, data, _ = _request(env, "/api/drivers/list", headers=hdr)
+    assert status == 200 and data["ok"] is True
+    assert [d["driver_id"] for d in data["drivers"]] == ["d1"]
+    st.dashboard_user_add("root", *server_mod._hash_password("to'g'ri"),
+                          role="ADMIN")
+    _, _, cookies = _login(env, "root", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
+    status, data, _ = _request(env, "/api/drivers/list", headers=hdr)
+    assert {d["driver_id"] for d in data["drivers"]} == {"d1", "d2"}
+
+
+def test_driver_write_scoped_to_route(env):
+    """/api/drivers/{id} POST (profil/rasm) boshqa route uchun 404."""
+    st = env
+    st.save_driver("d1", full_name="Ali", route_id="r1")
+    st.save_driver("d2", full_name="Vali", route_id="r2")
+    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+                          role="DISPATCHER", company="XTEST")
+    _, _, cookies = _login(env, "disp", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}",
+           "Content-Type": "application/json"}
+    body = json.dumps({"phone": "+998"}).encode()
+    status, _, _ = _request(env, "/api/drivers/d2/profile", method="POST",
+                            headers={**hdr, "Content-Length": str(len(body))},
+                            body=body)
+    assert status == 404
+
+
+def test_vehicle_detail_scoped(env, monkeypatch):
+    """/api/vehicles/{id} boshqa route avtobusi uchun 404 beradi."""
+    from bm_automation.app.dashboard import metrics as metrics_mod
+    monkeypatch.setattr(metrics_mod.Metrics, "vehicle_detail",
+                        lambda self, vid, f: {"ok": True, "id": vid})
+    st = env
+    st.save_vehicle("v1", plate_number="01A", route_id="r1")
+    st.save_vehicle("v2", plate_number="02B", route_id="r2")
+    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+                          role="DISPATCHER", company="XTEST")
+    _, _, cookies = _login(env, "disp", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
+    status, data, _ = _request(env, "/api/vehicles/v1", headers=hdr)
+    assert status == 200 and data["ok"] is True
+    status, _, _ = _request(env, "/api/vehicles/v2", headers=hdr)
+    assert status == 404
+
+
+def test_appeals_scoped(env, monkeypatch):
+    """/api/appeals ro'yxat va o'chirish o'z route'i bilan cheklanadi."""
+    from bm_automation.app.dashboard import metrics as metrics_mod
+    monkeypatch.setattr(metrics_mod.Metrics, "appeals_report", lambda self, f: {
+        "filters": dict(f or {}),
+        "appeals": [
+            {"id": 1, "driver_id": "d1", "driver_name": "Ali",
+             "title": "T1", "text": "", "status": "YANGI", "reply": "",
+             "replied_at": "", "created_at": "", "updated_at": ""},
+            {"id": 2, "driver_id": "d2", "driver_name": "Vali",
+             "title": "T2", "text": "", "status": "YANGI", "reply": "",
+             "replied_at": "", "created_at": "", "updated_at": ""},
+        ],
+        "total": 2,
+    })
+    st = env
+    st.save_driver("d1", full_name="Ali", route_id="r1")
+    st.save_driver("d2", full_name="Vali", route_id="r2")
+    aid1 = st.appeal_add("d1", title="T1")
+    aid2 = st.appeal_add("d2", title="T2")
+    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+                          role="DISPATCHER", company="XTEST")
+    _, _, cookies = _login(env, "disp", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
+    status, data, _ = _request(env, "/api/appeals", headers=hdr)
+    assert status == 200
+    assert [a["id"] for a in data["appeals"]] == [1]
+    # Boshqa route murojaatini o'chirish mumkin emas.
+    body = json.dumps({"action": "delete", "id": aid2}).encode()
+    status, data, _ = _request(env, "/api/appeals", method="POST",
+                               headers={**hdr,
+                                        "Content-Length": str(len(body)),
+                                        "Content-Type": "application/json"},
+                               body=body)
+    assert status == 404 and data.get("ok") is False
+    # O'z route'idagini o'chirish mumkin.
+    body = json.dumps({"action": "delete", "id": aid1}).encode()
+    status, data, _ = _request(env, "/api/appeals", method="POST",
+                               headers={**hdr,
+                                        "Content-Length": str(len(body)),
+                                        "Content-Type": "application/json"},
+                               body=body)
+    assert status == 200 and data.get("ok") is True
+    ids = [r["id"] for r in st.appeals_list()]
+    assert ids == [aid2]
+
+
+# ----------------------------------------------------- hisobotlar qamrovi
+
+def test_salary_report_scoped_to_company(env, monkeypatch):
+    """Ish haqi hisoboti faqat o'z korxonasi route'larini qamraydi."""
+    from bm_automation.app.dashboard import export as export_mod
+    calls = []
+
+    def fake_export(from_date, to_date, route=""):
+        calls.append((from_date, to_date, route))
+        return b"{}"
+
+    monkeypatch.setattr(export_mod, "salary_export", fake_export)
+    st = env
+    st.dashboard_user_add("mgr", *server_mod._hash_password("to'g'ri"),
+                          role="MANAGER", company="XTEST")
+    _, _, cookies = _login(env, "mgr", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
+    q = "/api/salary?from=2026-01-01&to=2026-01-31"
+    status, _, _ = _request(env, q, headers=hdr)
+    assert status == 200
+    assert calls and calls[0][2] == "r1"
+    # DISPATCHER salary'ga kira olmaydi (rang 2).
+    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+                          role="DISPATCHER", company="XTEST")
+    _, _, cookies = _login(env, "disp", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
+    status, _, _ = _request(env, q, headers=hdr)
+    assert status == 403
+    # ADMIN to'liq eksport qiladi (route bo'sh).
+    st.dashboard_user_add("root", *server_mod._hash_password("to'g'ri"),
+                          role="ADMIN")
+    _, _, cookies = _login(env, "root", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
+    status, _, _ = _request(env, q, headers=hdr)
+    assert status == 200
+    assert calls[-1][2] == ""
+
+
+def test_salary_export_filters_by_route(monkeypatch):
+    """salary_export route parametri bilan faqat o'sha yo'nalishlarni oladi."""
+    from io import BytesIO
+
+    from bm_automation.app.dashboard import export as export_mod
+    from openpyxl import load_workbook
+
+    ALL = [
+        {"driver_id": "d1", "name": "Ali", "route_id": "r1", "trips": 5,
+         "working_days": 3, "km": 100, "km_rate": 10, "gross_pay": 1000,
+         "tax": 120, "fines": 0, "net_pay": 880, "rating": 5,
+         "attendance": 100},
+        {"driver_id": "d2", "name": "Vali", "route_id": "r2", "trips": 4,
+         "working_days": 2, "km": 90, "km_rate": 10, "gross_pay": 900,
+         "tax": 108, "fines": 50, "net_pay": 742, "rating": 4,
+         "attendance": 90},
+    ]
+
+    class FakeMet:
+        def drivers(self, f):
+            sel = f.get("route") or ""
+            ids = {t for t in str(sel).replace(",", " ").split() if t}
+            return [d for d in ALL if not ids or d["route_id"] in ids]
+
+        def _companies(self):
+            return {}
+
+        def _route_names(self):
+            return {}
+
+    monkeypatch.setattr(export_mod.m, "Metrics", FakeMet)
+    buf = BytesIO(export_mod.salary_export("2026-01-01", "2026-01-31",
+                                           route="r1"))
+    assert set(load_workbook(buf).sheetnames) == {"Xulosa", "Noma'lum — r1"}
+    buf = BytesIO(export_mod.salary_export("2026-01-01", "2026-01-31"))
+    assert set(load_workbook(buf).sheetnames) == {
+        "Xulosa", "Noma'lum — r1", "Noma'lum — r2"}
