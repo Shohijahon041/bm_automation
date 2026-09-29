@@ -43,7 +43,7 @@ Transport pipeline for bus companies (Fergana). Pulls daily trips from the BM AP
     - `dispatch.py` — `handle_message` / `handle_callback` (role-gated); big file, keep ordering by callback data prefix.
     - `roles.py` — `Role` (ADMIN/DISPATCHER/MANAGER/VIEWER), `resolve_role`, `is_allowed`, `configured_roles`.
     - `render.py` — all text/keyboard rendering; `kb.py` keyboards; `context.py` filters (profile bus).
-    - Auto-agents (scheduled senders): `problem_alerts.py`, `doc_expiry.py`, `monthly_results.py`, `fines_report.py`, `daily_summary.py`, `self_review.py` (AI `/insights`), `grafik_sms.py`.
+    - Auto-agents (scheduled senders): `problem_alerts.py`, `doc_expiry.py`, `monthly_results.py`, `fines_report.py`, `daily_summary.py`, `self_review.py` (AI `/insights`), `grafik_sms.py` — `AI_AUTO_AGENTS=on` da ishlaydi. `group_departures.py` (chiqish/reys/obed eslatmasi) **mustasno**: u guruhdagi `/chiqish_on|off` bilan per-chat boshqariladi va `AI_AUTO_AGENTS`'dan mustaqil ishlaydi.
   - `dashboard/` — `metrics.py`, `server.py`, `web/index.html` (single-file SPA, inline JS + CSS).
     - Ko'p korxonali auth (2026): `dashboard_users` jadvali (pbkdf2-sha256), httpOnly `bm_session` cookie (12 soat, `state/dashboard_sessions.json`), ro`l matritsasi DISPATCHER<MANAGER<DIRECTOR<ADMIN; non-admin faqat o'z korxonasini ko'radi (`company` = profil nomi; `routeVariantId` scope, `_force_route`).
     - Bootstrap ADMIN: `DASHBOARD_ADMIN_USER/PASS` (`.env`) → jadval bo'sh bo'lsa birinchi ishga tushishda avtomatik yaratiladi; keyingi adminlar Settings > "Dashboard foydalanuvchilari" orqali.
@@ -52,15 +52,15 @@ Transport pipeline for bus companies (Fergana). Pulls daily trips from the BM AP
   - `db/` — storage layer; `schema.py` defines tables; `storage.py` implementations.
   - `core/` — `bot_users.py`, `group_stats.py`, `bot_settings.py`, `companies.py`, `profiles.py`, `tokens.py`, `state.py`.
   - `myai/` — optional LLM multi-agent system (own schema/state).
-- State JSON lives in `state/` (`bot_users.json`, `group_stats.json`, `daily_summary.json`, `problem_alerts.json`, `self_review.json`, `driver_entry.json`, `registration.json`, …). All gitignored.
+- State JSON lives in `state/` (`bot_users.json`, `group_stats.json`, `daily_summary.json`, `problem_alerts.json`, `self_review.json`, `driver_entry.json`, `group_departures.json`, `registration.json`, …). All gitignored.
 
 ## Bot behavior — know before editing
 
 - Roles are allow-list based (`TG_ADMIN_IDS`, `TG_DISPATCHER_IDS`, `TG_MANAGER_IDS`, `TG_DRIVER_IDS`, `TG_ALLOWED_IDS`) resolved by **chat_id for private chats**, but by **sender `from.id` inside groups** (`_update_sender`).
-- Group mode (`ops._handle_group_update`): bot only answers slash-commands / `@bot` mentions / replies-to-bot; replies only to ADMIN/DISPATCHER/MANAGER; group answers are short text only (`/today` → `render.today_short`, `/grafik` → short note, NO full card/Excel/PNG). Group messages are recorded in `group_stats.json` (`record_group_message`), **not** in `bot_users.json`.
+- Group mode (`ops._handle_group_update`): bot only answers slash-commands / `@bot` mentions / replies-to-bot; replies only to ADMIN/DISPATCHER/MANAGER; group answers are short text only (`/today` → `render.today_short`, `/grafik` → short note, `/chiqish_on|/chiqish_off|/chiqish` → per-chat chiqish eslatmasi boshqaruvi, NO full card/Excel/PNG). Group messages are recorded in `group_stats.json` (`record_group_message`), **not** in `bot_users.json`.
 - New-user notification (`_notify_new_user`) fires only for real named private chats (`uinfo.first_name`/`username` non-empty); channel posts / `my_chat_member` / unnamed updates are skipped to avoid spam.
 - **`send_message` signature gotcha**: it is `send_message(text, chat_id=None, ...)` — the FIRST positional arg is the text, chat_id is keyword/named. `reply` helpers in dispatch follow `reply(chat_id, text)`.
-- Auto-agents in `poll_forever()` only run when `AI_AUTO_AGENTS=on` (`auto_agents` in settings; default `off` = bot silent except on commands). Individual agents additionally gated by `AI_DAILY_SUMMARY`, `AI_SELFREVIEW`, `FINES_REPORT`.
+- Auto-agents in `poll_forever()` only run when `AI_AUTO_AGENTS=on` (`auto_agents` in settings; default `off` = bot silent except on commands). Individual agents additionally gated by `AI_DAILY_SUMMARY`, `AI_SELFREVIEW`, `FINES_REPORT`. Exception: `group_departures.check_and_send()` runs on every poll loop regardless — gated by its own `GROUP_DEPARTURE_NOTIFY` / per-chat `/chiqish_on|off` state (`state/group_departures.json`).
 
 ## Testing quirks
 

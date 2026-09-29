@@ -47,7 +47,12 @@ HELP_TEXT = (
     "Excel (.xlsx) yuborsangiz — sayt export formatida jadval to'ldiriladi.\n"
     "Huquqlar: ADMIN (hammasi) / DISPATCHER (eksport) / VIEWER (ko'rish).\n"
     "🏢 <b>Ko'p-firmali rejim:</b> har firma egasi faqat o'z firmasini ko'radi; "
-    "ADMIN barchasini."
+    "ADMIN barchasini.\n\n"
+    "🔔 <b>Guruhda (haydovchilar guruhida):</b>\n"
+    "/today — qisqa statistika\n"
+    "/chiqish_on — chiqish (reys/obed) eslatmasini yoqish\n"
+    "/chiqish_off — o'chirish\n"
+    "/chiqish — holatni ko'rish"
 )
 
 WELCOME_TEXT = (

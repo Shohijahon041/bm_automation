@@ -70,12 +70,18 @@ def _chat_state() -> tuple[set, set]:
     return (set(st.get("on") or []), set(st.get("off") or []))
 
 
-def _save_chat_state(on: set, off: set) -> None:
-    """on/off guruhlarini state faylida saqlaydi (qolgan maydonlar saqlanadi)."""
-    st = _load_state()
-    st["on"] = sorted(on)
-    st["off"] = sorted(off)
-    atomic_write(STATE_FILE, json.dumps(st, ensure_ascii=False, indent=2))
+def _mutate_state(fn) -> None:
+    """State faylini `_LOCK` ostida o'qi-ish-faqat-yozadi (raqobat xavfsiz).
+
+    `set_chat_reminders` (guruh buyrug'i) va `_send_once` fon thread'i
+    bir vaqtda yozishi mumkin — ikkalasi ham shu helper orqali eng yangi
+    faylni ochib, o'z ishini ustiga qo'yadi (hech biri boshqasinikini
+    o'chirmaydi).
+    """
+    with _LOCK:
+        st = _load_state()
+        fn(st)
+        atomic_write(STATE_FILE, json.dumps(st, ensure_ascii=False, indent=2))
 
 
 def set_chat_reminders(chat_id, enabled: bool) -> None:
@@ -86,14 +92,20 @@ def set_chat_reminders(chat_id, enabled: bool) -> None:
     (False).
     """
     chat_id = str(chat_id or "").strip()
-    on, off = _chat_state()
-    if enabled:
-        on.add(chat_id)
-        off.discard(chat_id)
-    else:
-        off.add(chat_id)
-        on.discard(chat_id)
-    _save_chat_state(on, off)
+
+    def _apply(st: dict) -> None:
+        on = set(st.get("on") or [])
+        off = set(st.get("off") or [])
+        if enabled:
+            on.add(chat_id)
+            off.discard(chat_id)
+        else:
+            off.add(chat_id)
+            on.discard(chat_id)
+        st["on"] = sorted(on)
+        st["off"] = sorted(off)
+
+    _mutate_state(_apply)
 
 
 def chat_enabled(chat_id) -> bool:
@@ -399,11 +411,18 @@ def _plan_for(storage) -> dict:
     result = _build_plan(storage, today)
     if not result.get("ok"):
         return state  # reja saqlanmaydi — keyingi siklda qayta uriniladi
-    state = {"date": today, "build_at": _current_hhmm(),
-             "items": result.get("items", []), "sent": [],
-             "on": state.get("on", []), "off": state.get("off", [])}
-    atomic_write(STATE_FILE, json.dumps(state, ensure_ascii=False, indent=2))
-    return state
+    prev_plan = {"items": result.get("items", []), "sent": []}
+
+    def _apply(st: dict) -> None:
+        on = st.get("on", [])
+        off = st.get("off", [])
+        st.clear()
+        st.update({"date": today, "build_at": _current_hhmm(),
+                   "items": prev_plan["items"], "sent": prev_plan["sent"],
+                   "on": on, "off": off})
+
+    _mutate_state(_apply)  # on/off faylda yangi reja bilan birga saqlanadi
+    return _load_state()
 
 
 def _due_items(plan: dict, now_sec: int) -> dict[str, list[dict]]:
@@ -502,8 +521,12 @@ def _send_once() -> None:
         except Exception as exc:  # noqa: BLE001 - qolgan guruhlar yuboriladi
             print(f"Chiqish vaqti eslatmasi yuborilmadi [{cid}]: {exc}")
 
-    state["sent"] = sorted(already | set(sent_keys))
-    atomic_write(STATE_FILE, json.dumps(state, ensure_ascii=False, indent=2))
+    # Eng yangi faylni ochib yuborilganlarni qo'shamiz — fon thread'dagi
+    # /chiqish_on|off yozuvlari (on/off) o'chmaydi.
+    def _mark_sent(st: dict) -> None:
+        st["sent"] = sorted(set(st.get("sent", [])) | set(sent_keys))
+
+    _mutate_state(_mark_sent)
 
 
 def check_and_send() -> None:
