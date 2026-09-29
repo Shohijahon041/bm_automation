@@ -222,6 +222,8 @@ def _handle_group_update(upd: dict, chat_id: int) -> None:
         oddiy a'zolar buyrug'i butunlay e'tiborsiz qoldiriladi.
       • `/today` va `/grafik` buyruqlariga to'liq karta o'rniga qisqa
         matn qaytariladi (guruh spamini oldini olish uchun).
+      • `/chiqish[_on|_off]` — shu guruh uchun chiqish (reys/obed)
+        eslatmasini yoqadi/o'chiradi/holatini ko'rsatadi.
       • Qolgan buyruqlar guruhda ishlamaydi (jim).
     """
     msg = upd.get("message") or upd.get("edited_message") or \
@@ -251,7 +253,8 @@ def _handle_group_update(upd: dict, chat_id: int) -> None:
         return  # oddiy a'zolar javobsiz qoldiriladi
 
     # Guruhda faqat qisqa javoblar (to'liq karta/Excel/PNG spam emas).
-    cmd = text.split()[0].lower().replace("/", "", 1) if is_command else ""
+    cmd = (text.split()[0].lower().replace("/", "", 1).split("@")[0]
+           if is_command else "")
 
     if cmd == "today":
         try:
@@ -269,6 +272,33 @@ def _handle_group_update(upd: dict, chat_id: int) -> None:
                      "Shaxsiy chatda /grafik yoki dashboard'dan "
                      "yoqishingiz mumkin.",
                      chat_id=chat_id, parse_mode="HTML")
+        return
+
+    if cmd in ("chiqish_on", "chiqish_off", "chiqish"):
+        from . import group_departures
+        try:
+            if cmd == "chiqish_on":
+                group_departures.set_chat_reminders(chat_id, True)
+                send_message("🔔 <b>Chiqish (reys/obed) eslatmalari"
+                             " yoqildi.</b>\nBu guruhga chiqish va "
+                             "obed vaqtlari keladi.",
+                             chat_id=chat_id, parse_mode="HTML")
+            elif cmd == "chiqish_off":
+                group_departures.set_chat_reminders(chat_id, False)
+                send_message("🔕 <b>Chiqish (reys/obed) eslatmalari"
+                             " o'chirildi.</b>",
+                             chat_id=chat_id, parse_mode="HTML")
+            else:
+                holat = ("YOQILGAN" if
+                         group_departures.chat_enabled(chat_id)
+                         else "O'CHIRILGAN")
+                send_message(f"🔔 <b>Chiqish (reys/obed) eslatmalari:"
+                             f" {holat}</b>\n\n"
+                             "/chiqish_on — yoqish,\n"
+                             "/chiqish_off — o'chirish.",
+                             chat_id=chat_id, parse_mode="HTML")
+        except Exception as exc:  # noqa: BLE001
+            print(f"Guruh /chiqish xatosi: {exc}")
         return
 
     if _bot_mentioned(upd) and not is_command:

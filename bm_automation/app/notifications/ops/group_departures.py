@@ -18,9 +18,13 @@ eslatma holat faylida belgilanadi — restart'da takroriy spam bo'lmaydi.
 Holat `state/group_departures.json`:
   {"date": "YYYY-MM-DD", "build_at": "HH:MM",
    "items": [{"hhmm", "kind", "key", "name", "plate", "route"}, ...],
-   "sent": ["key|hhmm|kind", ...]}
+   "sent": ["key|hhmm|kind", ...],
+   "on":  [chat_id, ...],   # guruhda `/chiqish_on` qilinganlar
+   "off": [chat_id, ...]}
 
-O'chirish: `GROUP_DEPARTURE_NOTIFY=off` (standart `off` — bot jim).
+Global o'chirish: `GROUP_DEPARTURE_NOTIFY=off` (standart `off` — bot jim).
+Guruh ichida `/chiqish_on` → yoqish, `/chiqish_off` → o'chirish (per-chat
+kalit env'dagi global kalitdan ustun turadi; `/chiqish` — holat).
 """
 
 from __future__ import annotations
@@ -58,6 +62,63 @@ def enabled() -> bool:
     s = telegram_settings()
     return str(s.get("group_departure_notify", "off")).lower() not in (
         "off", "0", "false")
+
+
+def _chat_state() -> tuple[set, set]:
+    """Guruhlar bo'yicha on/off ro'yxatlari (state faylidan)."""
+    st = _load_state()
+    return (set(st.get("on") or []), set(st.get("off") or []))
+
+
+def _save_chat_state(on: set, off: set) -> None:
+    """on/off guruhlarini state faylida saqlaydi (qolgan maydonlar saqlanadi)."""
+    st = _load_state()
+    st["on"] = sorted(on)
+    st["off"] = sorted(off)
+    atomic_write(STATE_FILE, json.dumps(st, ensure_ascii=False, indent=2))
+
+
+def set_chat_reminders(chat_id, enabled: bool) -> None:
+    """Bitta guruh uchun eslatmani yoqadi/o'chiradi (buyruq orqali).
+
+    Doimiy kalit: env'degi `GROUP_DEPARTURE_NOTIFY` o'zgarmasa ham
+    guruh holati saqlanadi — `/chiqish_on` (True) yoki `/chiqish_off`
+    (False).
+    """
+    chat_id = str(chat_id or "").strip()
+    on, off = _chat_state()
+    if enabled:
+        on.add(chat_id)
+        off.discard(chat_id)
+    else:
+        off.add(chat_id)
+        on.discard(chat_id)
+    _save_chat_state(on, off)
+
+
+def chat_enabled(chat_id) -> bool:
+    """Guruh uchun eslatma yoqilganmi?
+
+    Guruh uchun aniq on/off global kalitdan ustun turadi:
+      - `/chiqish_on` qilingan -> True (global `off` bo'lsa ham);
+      - `/chiqish_off` qilingan -> False (global `on` bo'lsa ham);
+      - boshqa guruhlar -> global `GROUP_DEPARTURE_NOTIFY`.
+    """
+    chat_id = str(chat_id or "").strip()
+    on, off = _chat_state()
+    if chat_id in off:
+        return False
+    if chat_id in on:
+        return True
+    return enabled()
+
+
+def _any_target_enabled() -> bool:
+    """Hech bo'lmaganda bitta guruh eslatmalarni qabul qiladimi?"""
+    on, _ = _chat_state()
+    if on:
+        return True
+    return enabled()
 
 
 def _targets() -> list[str]:
@@ -339,7 +400,8 @@ def _plan_for(storage) -> dict:
     if not result.get("ok"):
         return state  # reja saqlanmaydi — keyingi siklda qayta uriniladi
     state = {"date": today, "build_at": _current_hhmm(),
-             "items": result.get("items", []), "sent": []}
+             "items": result.get("items", []), "sent": [],
+             "on": state.get("on", []), "off": state.get("off", [])}
     atomic_write(STATE_FILE, json.dumps(state, ensure_ascii=False, indent=2))
     return state
 
@@ -380,7 +442,7 @@ def _build_message(kind: str, hhmm: str, items: list[dict]) -> str:
 
 def _send_once() -> None:
     tg_all = _targets()
-    if not tg_all:
+    if not tg_all or not _any_target_enabled():
         return
     storage = get_storage()
     if not storage or not getattr(storage, "enabled", False):
@@ -417,6 +479,9 @@ def _send_once() -> None:
                 chat_ids = _targets_for(None if rid == "__all__" else rid)
                 if not chat_ids:
                     chat_ids = tg_all
+                chat_ids = [c for c in chat_ids if chat_enabled(c)]
+                if not chat_ids:
+                    continue
                 fresh = [it for it in ritems
                          if f"{state['date']}|{it['key']}|{it['hhmm']}|{it['kind']}"
                          not in already]
@@ -447,7 +512,7 @@ def check_and_send() -> None:
     Asosiy poll thread bloklanmaydi; bir vaqtda bitta tekshiruv ishlaydi.
     """
     global _LAST_CHECK_AT, _THREAD
-    if not enabled():
+    if not _any_target_enabled():
         return
     if time.time() - _LAST_CHECK_AT < _CHECK_INTERVAL_S:
         return

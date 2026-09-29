@@ -2625,3 +2625,61 @@ def test_find_driver_by_phone_many_rows(tmp_path):
     row = st.find_driver_by_phone("1100000")
     assert row and row["driver_id"] == "needle"
     assert st.find_driver_by_phone("999999") is None
+
+
+# -------------------------------------------- guruhda /chiqish buyruqlari
+
+def _group_upd(text, sender_id=111):
+    return {
+        "message": {
+            "chat": {"id": -100500, "type": "supergroup",
+                     "title": "Haydovchilar"},
+            "from": {"id": sender_id, "first_name": "Admin",
+                     "is_bot": False},
+            "text": text,
+        }
+    }
+
+
+def test_group_chiqish_commands(monkeypatch, tmp_path):
+    from bm_automation.app.notifications.ops import group_departures, ops
+    monkeypatch.setattr(group_departures, "STATE_FILE", tmp_path / "gd.json")
+    monkeypatch.setattr(ops, "record_group_message", lambda *a, **k: None)
+    monkeypatch.setattr(ops, "resolve_role", lambda cid: Role.ADMIN)
+    monkeypatch.setattr(ops, "_bot_mentioned", lambda upd: False)
+    sent = []
+    monkeypatch.setattr(ops, "send_message",
+                        lambda text, chat_id=None, parse_mode=None:
+                        sent.append((chat_id, text)))
+
+    # /chiqish_off@Bot — guruh o'chiriladi (username bilan ham ishlaydi).
+    ops._handle_group_update(_group_upd("/chiqish_off@SomeBot"), -100500)
+    assert group_departures.chat_enabled(-100500) is False
+    assert sent[-1][0] == -100500 and "o'chirildi" in sent[-1][1]
+
+    # /chiqish_on — global off bo'lsa ham guruh qayta yoqiladi.
+    monkeypatch.setattr(group_departures, "enabled", lambda: False)
+    ops._handle_group_update(_group_upd("/chiqish_on"), -100500)
+    assert group_departures.chat_enabled(-100500) is True
+    assert sent[-1][0] == -100500 and "yoqildi" in sent[-1][1]
+
+    # /chiqish — holat so'rovi.
+    ops._handle_group_update(_group_upd("/chiqish"), -100500)
+    assert "YOQILGAN" in sent[-1][1]
+
+
+def test_group_chiqish_role_gated(monkeypatch, tmp_path):
+    from bm_automation.app.notifications.ops import group_departures, ops
+    monkeypatch.setattr(group_departures, "STATE_FILE", tmp_path / "gd.json")
+    monkeypatch.setattr(group_departures, "enabled", lambda: True)
+    monkeypatch.setattr(ops, "record_group_message", lambda *a, **k: None)
+    monkeypatch.setattr(ops, "resolve_role", lambda cid: Role.VIEWER)
+    monkeypatch.setattr(ops, "_bot_mentioned", lambda upd: False)
+    sent = []
+    monkeypatch.setattr(ops, "send_message",
+                        lambda text, chat_id=None, parse_mode=None:
+                        sent.append((chat_id, text)))
+    # Oddiy a'zo (/chiqish_off) — javob yo'q, holat o'zgarmaydi.
+    ops._handle_group_update(_group_upd("/chiqish_off"), -100500)
+    assert sent == []
+    assert group_departures.chat_enabled(-100500) is True

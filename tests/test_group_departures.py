@@ -324,6 +324,87 @@ def test_disabled_does_nothing(monkeypatch, tmp_path):
     assert sent == []
 
 
+# --- per-chat yoqish/o'chirish --------------------------------------------
+
+def test_chat_enabled_default_from_env(monkeypatch, tmp_path):
+    monkeypatch.setattr(group_departures, "STATE_FILE", tmp_path / "gd.json")
+    monkeypatch.setattr(group_departures, "enabled", lambda: True)
+    assert group_departures.chat_enabled("-100500") is True
+    monkeypatch.setattr(group_departures, "enabled", lambda: False)
+    assert group_departures.chat_enabled("-100500") is False
+
+
+def test_set_chat_reminders_toggle(monkeypatch, tmp_path):
+    monkeypatch.setattr(group_departures, "STATE_FILE", tmp_path / "gd.json")
+    monkeypatch.setattr(group_departures, "enabled", lambda: False)
+    assert group_departures.chat_enabled("-100500") is False
+    # /chiqish_on — global off bo'lsa ham guruh yoqiladi.
+    group_departures.set_chat_reminders("-100500", True)
+    assert group_departures.chat_enabled("-100500") is True
+    # /chiqish_off — qayta o'chiradi.
+    group_departures.set_chat_reminders("-100500", False)
+    assert group_departures.chat_enabled("-100500") is False
+    # global on bo'lsa default True, lekin off qilingan guruh jim.
+    monkeypatch.setattr(group_departures, "enabled", lambda: True)
+    assert group_departures.chat_enabled("-100999") is True
+    group_departures.set_chat_reminders("-100999", False)
+    assert group_departures.chat_enabled("-100999") is False
+
+
+def test_plan_preserves_chat_toggles(monkeypatch, tmp_path):
+    st = _storage(tmp_path)
+    _seed(st)
+    _wire(monkeypatch, st, tmp_path)
+    monkeypatch.setattr(group_departures, "_today", lambda: DAY)
+    group_departures.set_chat_reminders("-100500", True)
+    plan = group_departures._plan_for(st)
+    assert plan.get("on") == ["-100500"]
+    # Ertasi kun yangi reja qurilsa ham on/off saqlanadi.
+    monkeypatch.setattr(group_departures, "_today", lambda: "2026-09-30")
+    plan = group_departures._plan_for(st)
+    assert plan.get("on") == ["-100500"]
+
+
+def test_send_skips_muted_chat(monkeypatch, tmp_path):
+    st = _storage(tmp_path)
+    _seed(st)
+    sent = []
+    _wire(monkeypatch, st, tmp_path, targets=("-100500", "-100600"))
+    monkeypatch.setattr(group_departures, "send_message",
+                        lambda text, chat_id=None: sent.append((chat_id, text)))
+    monkeypatch.setattr(group_departures, "_today", lambda: DAY)
+    _at(monkeypatch, "06:00:40")
+    group_departures.set_chat_reminders("-100500", False)
+    group_departures._send_once()
+    # -100500 /chiqish_off qilingan — faqat -100600 ga boradi.
+    assert [cid for cid, _ in sent] == ["-100600"]
+
+
+def test_check_and_send_works_after_group_toggled_on(monkeypatch, tmp_path):
+    st = _storage(tmp_path)
+    _seed(st)
+    sent = []
+    _wire(monkeypatch, st, tmp_path)
+    monkeypatch.setattr(group_departures, "enabled", lambda: False)
+    monkeypatch.setattr(group_departures, "send_message",
+                        lambda text, chat_id=None: sent.append((chat_id, text)))
+    monkeypatch.setattr(group_departures, "_today", lambda: DAY)
+    _at(monkeypatch, "06:00:40")
+
+    # Global off va guruh yoqilmagan — jim.
+    monkeypatch.setattr(group_departures, "_LAST_CHECK_AT", 0.0)
+    group_departures.check_and_send()
+    time.sleep(0.3)
+    assert sent == []
+
+    # Guruh /chiqish_on qildi — endi yuboradi (env olmasdan ham).
+    group_departures.set_chat_reminders("-100500", True)
+    monkeypatch.setattr(group_departures, "_LAST_CHECK_AT", 0.0)
+    group_departures.check_and_send()
+    time.sleep(0.3)
+    assert [cid for cid, _ in sent] == ["-100500"]
+
+
 def test_no_target_skips(monkeypatch, tmp_path):
     st = _storage(tmp_path)
     _seed(st)
