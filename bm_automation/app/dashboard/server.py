@@ -189,8 +189,10 @@ _POST_ROLE_MIN: dict[str, int] = {
     "/api/sms": 3,
     "/api/documents": 3,
     "/api/rejects/tariff": 2,
+    "/api/kmrate": 2,
+    "/api/route-skm": 2,
     "/api/sync": 2,
-    "/api/electricity/price": 2,
+    "/api/electricity/price": 4,
     "/api/users": 4,
     "/api/dispatchers": 4,
 }
@@ -464,18 +466,48 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return rank >= needed
 
     def _force_route(self, path: str, qs: dict, payload: dict | None = None) -> None:
-        """Non-admin foydalanuvchi uchun `route` paramni o'z korxonasiga kesadi."""
+        """Non-admin foydalanuvchi uchun `route` paramni o'z korxonasiga kesadi.
+
+        Kompaniya qamrovi bo'sh bo'lsa hech narsaga mos kelmaydigan qiymat
+        o'rnatiladi (fail-closed) — aks holda route bo'sh qolib, butun baza
+        ochilib qolardi.
+        """
         scope = getattr(self, "_scope", None)
         if not scope or scope.get("is_admin"):
             return
         if not any(path.startswith(p) for p in _ROUTE_SCOPED_PREFIXES):
             return
-        routes = scope.get("routes") or []
-        rid = routes[0] if routes else ""
+        routes = list(scope.get("routes") or [])
+        rid = routes[0] if routes else "\x00_qamrovsiz\x00"
         if qs is not None:
-            qs["route"] = [rid] if rid else qs.get("route", [""])
+            qs["route"] = [rid]
         if payload is not None:
             payload["route"] = rid
+
+    def _route_allowed(self, route_id: str) -> bool:
+        """route_id qamrovda bo'lsa True (admin doim True)."""
+        scopes = self._scope_routes()
+        if scopes is None:
+            return True
+        return str(route_id or "") in scopes
+
+    def _driver_write_allowed(self, payload: dict, driver_id: str = "") -> bool:
+        """Haydovchiga yozish uchun route qamrovini tekshiradi.
+
+        Yangi haydovchi uchun payload.driver_id/route_id, mavjud uchun
+        joriy route ham hisobga olinadi (boshqa korxona route'iga ko'chirish
+        yoki u yerda yangi qayd ochishning oldini olish).
+        """
+        if self._scope_routes() is None:
+            return True
+        from ..db.storage import get_storage
+        did = str(payload.get("driver_id") or driver_id or "").strip()
+        existing = {}
+        if did:
+            existing = get_storage().find("drivers", external_id=did) or {}
+        route = str(payload.get("route_id")
+                    or existing.get("route_id") or "").strip()
+        return self._route_allowed(route)
 
     def _scope_routes(self) -> set | None:
         """Non-admin uchun qamrovdagi route'lar; admin/yo'q bo'lsa None."""
@@ -1650,6 +1682,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "rate": elec_price(),
                             "kwh_per_km": ELEC_KWH_PER_KM})
             elif path == "/api/export":
+                if not self._scope.get("is_admin"):
+                    escope = (_parse(qs).get("scope") or "trips").lower()
+                    if escope in ("settings", "tariffs"):
+                        # Global sozlamalar/barcha firma tariflari — faqat ADMIN.
+                        self._json({"error": "Sizda bu bo'limga ruxsat yo'q"}, 403)
+                        return
                 self._export(qs)
             elif path == "/api/check":
                 from . import check as ck
@@ -2002,8 +2040,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 driver_id = (qs.get("driver_id") or [""])[0]
                 if not driver_id:
                     self._json({"ok": False, "error": "driver_id kerak"}, 400)
-                else:
-                    self._json(self._document_autofill(driver_id))
+                    return
+                scopes = self._scope_routes()
+                if scopes is not None:
+                    from ..db.storage import get_storage
+                    if not self._driver_in_scope(get_storage(), driver_id,
+                                                 scopes):
+                        self._json({"error": "haydovchi topilmadi"}, 404)
+                        return
+                self._json(self._document_autofill(driver_id))
             elif path.startswith("/api/documents/"):
                 parts = [unquote(x) for x in path.split("/") if x]
                 # /api/documents/{id}
@@ -2029,6 +2074,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 # /api/documents/{id}/html
                 elif len(parts) == 4 and parts[3] == "html":
                     from ..documents.manager import get_manager
+                    scopes = self._scope_routes()
+                    if scopes is not None:
+                        from ..db.storage import get_storage
+                        doc = get_manager().get_document(int(parts[2]))
+                        if not doc or not self._doc_in_scope(
+                                get_storage(),
+                                str(doc.get("driver_id") or ""), scopes):
+                            self._json({"error": "Xujjat topilmadi"}, 404)
+                            return
                     html = get_manager().get_html(int(parts[2]))
                     if html:
                         self.send_response(200)
@@ -2074,7 +2128,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json(result, 200 if result.get("ok") else 400)
                 return
             elif path == "/api/kmrate":
-                result = self._update_km_rate(self._payload())
+                payload = self._payload()
+                if not self._route_allowed(payload.get("route_id")):
+                    self._json({"error": "yo'nalish topilmadi"}, 404)
+                    return
+                result = self._update_km_rate(payload)
             elif path == "/api/sync":
                 result = self._run_sync(self._payload())
             # --- MyAI Agent ---
@@ -2137,10 +2195,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._json({"ok": False,
                                 "error": "route_id yoki enabled kerak"}, 400)
                     return
+                if not self._route_allowed(route_id):
+                    self._json({"ok": False, "error": "Yo'nalish topilmadi"}, 404)
+                    return
                 result = sms_route_set(route_id=route_id,
                                        enabled=enabled if enabled is not None
                                        else None)
                 self._json({"ok": True, **result})
+                return
             elif path == "/api/admin/avans":
                 from ..db.storage import get_storage
                 from .admin_service import avans_add
@@ -2238,9 +2300,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif path == "/api/electricity/price":
                 result = self._update_elec_price(self._payload())
             elif path == "/api/rejects/tariff":
-                result = self._update_rejects_tariff(self._payload())
+                payload = self._payload()
+                if not self._route_allowed(payload.get("route_id")):
+                    self._json({"error": "yo'nalish topilmadi"}, 404)
+                    return
+                result = self._update_rejects_tariff(payload)
             elif path == "/api/route-skm":
-                result = self._update_route_skm(self._payload())
+                payload = self._payload()
+                if not self._route_allowed(payload.get("route_id")):
+                    self._json({"error": "yo'nalish topilmadi"}, 404)
+                    return
+                result = self._update_route_skm(payload)
             elif path == "/api/appeals":
                 payload = self._payload()
                 from ..db.storage import get_storage
@@ -2303,7 +2373,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._json({"ok": bool(aid), "id": aid})
                 return
             elif path == "/api/drivers":
-                result = self._save_driver(self._payload())
+                payload = self._payload()
+                if not self._driver_write_allowed(payload):
+                    self._json({"error": "haydovchi topilmadi"}, 404)
+                    return
+                result = self._save_driver(payload)
             elif path.startswith("/api/drivers/"):
                 parts = [unquote(x) for x in path.split("/") if x]
                 if len(parts) != 4:
@@ -2319,6 +2393,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         return
                 payload = self._payload()
                 if action == "profile":
+                    # Boshqa korxona route'iga ko'chirishga yo'l qo'ymaymiz.
+                    if scopes is not None and not self._driver_write_allowed(
+                            payload, driver_id):
+                        self._json({"error": "haydovchi topilmadi"}, 404)
+                        return
                     result = self._save_driver(payload, driver_id)
                 elif action == "photo":
                     result = self._save_photo(driver_id, payload)
@@ -2338,6 +2417,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # --- Xujjatlar bo'limi (documents) POST ---
             elif path == "/api/documents":
                 payload = self._payload()
+                scopes = self._scope_routes()
+                if scopes is not None and payload.get("driver_id"):
+                    from ..db.storage import get_storage
+                    if not self._driver_in_scope(
+                            get_storage(),
+                            str(payload.get("driver_id") or ""), scopes):
+                        self._json({"error": "haydovchi topilmadi"}, 404)
+                        return
                 from ..documents.manager import get_manager
                 result = get_manager().create_document(
                     template_key=payload.get("template_key", ""),
@@ -2470,12 +2557,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 # /api/documents/{id}/attach
                 elif len(parts) == 4 and parts[3] == "attach":
                     from ..documents.manager import get_manager
+                    scopes = self._scope_routes()
+                    if scopes is not None:
+                        from ..db.storage import get_storage
+                        doc = get_manager().get_document(int(parts[2]))
+                        if not doc or not self._doc_in_scope(
+                                get_storage(),
+                                str(doc.get("driver_id") or ""), scopes):
+                            self._json({"error": "Xujjat topilmadi"}, 404)
+                            return
                     payload = self._payload()
                     result = get_manager().attach_file(
                         int(parts[2]), payload.get("file_path", ""))
                 # /api/documents/{id}/detach
                 elif len(parts) == 4 and parts[3] == "detach":
                     from ..documents.manager import get_manager
+                    scopes = self._scope_routes()
+                    if scopes is not None:
+                        from ..db.storage import get_storage
+                        doc = get_manager().get_document(int(parts[2]))
+                        if not doc or not self._doc_in_scope(
+                                get_storage(),
+                                str(doc.get("driver_id") or ""), scopes):
+                            self._json({"error": "Xujjat topilmadi"}, 404)
+                            return
                     payload = self._payload()
                     result = get_manager().detach_file(
                         int(parts[2]), payload.get("file_path", ""))

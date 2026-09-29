@@ -53,6 +53,34 @@ def _check_token(handler: BaseHTTPRequestHandler, qs: dict | None = None) -> boo
     return False
 
 
+def _session_cookie(handler: BaseHTTPRequestHandler) -> str:
+    """bm_session cookie qiymati (dashboard sessiyasi)."""
+    for part in (handler.headers.get("Cookie") or "").split(";"):
+        kv = part.strip().split("=", 1)
+        if len(kv) == 2 and kv[0].strip() == "bm_session":
+            return kv[1].strip()
+    return ""
+
+
+def _user_scope(handler: BaseHTTPRequestHandler) -> dict | None:
+    """Dashboard sessiyasi bo'yicha foydalanuvchi qamrovi (token ustun).
+
+    Brauzerda master token (bm_token cookie) ham bor — sessiya uchun
+    in'ektsiya qilingan. Ko'p korxonali rejimda xodim o'z kompaniyasi
+    chegarasida qolishi uchun sessiya token'dan ustun turadi (dashboard
+    `_resolve_scope` bilan bir xil qoida).
+
+      None                            -> sessiya yo'q (master token = ADMIN)
+      {"is_admin": True, ...}         -> ADMIN sessiya
+      {"is_admin": False, "routes"}   -> kompaniya limiti
+    """
+    token = _session_cookie(handler)
+    if not token:
+        return None
+    from ..dashboard.server import _session_user
+    return _session_user(token)
+
+
 def _maybe_purge() -> None:
     """Har 6 soatda eski pozitsiyalarni tozalaydi."""
     if time.time() - _last_purge["at"] < 6 * 3600:
@@ -74,10 +102,14 @@ class GpsHandler(BaseHTTPRequestHandler):
 
     def _json(self, obj, status: int = 200) -> None:
         raw = json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8")
+        # Dashboard (:8080) sessiya cookie'si bilan to'g'ridan-to'g'ri
+        # ulanishi uchun CORS (ko'p korxonali qamrov: bm_session cookie
+        # token'dan ustun turadi → Origin'ni aks ettiramiz).
+        origin = self.headers.get("Origin") or "*"
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        # Dashboard (:8080) o'z tokeni bilan to'g'ridan-to'g'ri ulanishi uchun CORS.
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Allow-Credentials", "true")
         self.send_header(
             "Access-Control-Allow-Headers",
             "Authorization, Content-Type, Cookie",
@@ -89,8 +121,10 @@ class GpsHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):  # noqa: N802
         """CORS preflight."""
+        origin = self.headers.get("Origin") or "*"
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Allow-Credentials", "true")
         self.send_header(
             "Access-Control-Allow-Headers",
             "Authorization, Content-Type, Cookie",
@@ -117,6 +151,70 @@ class GpsHandler(BaseHTTPRequestHandler):
 
     def _qs(self) -> dict:
         return parse_qs(urlparse(self.path).query)
+
+    def _session_admin(self) -> bool:
+        """So'rov egasi ADMIN (sessiyasiz/master token yoki ADMIN sessiya)."""
+        scope = _user_scope(self)
+        return not scope or bool(scope.get("is_admin"))
+
+    def _company_vehicles(self) -> set | None:
+        """Non-admin uchun ruxsat etilgan vehicle_id'lar; admin -> None.
+
+        Kompaniya foydalanuvchisi o'z yo'nalishlaridagi avtomobillar sonini
+        ko'radi xolos; bo'sh qamrov -> bo'sh set (fail-closed).
+        """
+        scope = _user_scope(self)
+        if not scope or scope.get("is_admin"):
+            return None
+        rids = [str(r) for r in (scope.get("routes") or []) if str(r).strip()]
+        if not rids:
+            return set()
+        from ..db.storage import get_storage
+        st = get_storage()
+        if not st.enabled or not getattr(st, "db", None):
+            return set()
+        try:
+            ph = ", ".join(st.db.ph for _ in rids)
+            rows = st.db.query(
+                f"SELECT external_id FROM vehicles WHERE route_id IN ({ph})",
+                tuple(rids))
+            return {str(r.get("external_id") or "") for r in rows}
+        except Exception:  # noqa: BLE001
+            log.exception("GPS: vehicle qamrovi hisoblanmadi")
+            return set()
+
+    @staticmethod
+    def _only_vehicles(items: list, allowed: set | None) -> list:
+        """allowed None bo'lsa hammasi; aks holda vehicle_id bo'yicha filtraydi."""
+        if allowed is None:
+            return items
+        return [it for it in items
+                if str(it.get("vehicle_id") or "") in allowed]
+
+    def _allowed_imes(self, allowed: set | None) -> set:
+        """Qamrovdagi IMEI'lar (device'lar vehicle_id orqali bog'langan)."""
+        if allowed is None:
+            return set()
+        return {str(d.get("imei") or "")
+                for d in storage.list_devices()
+                if str(d.get("vehicle_id") or "") in allowed}
+
+    def _camera_allowed(self, cam_id: int) -> bool:
+        """Kamera (hls oqimi ham) qamrovga tegishli bo'lsa True."""
+        allowed = self._company_vehicles()
+        if allowed is None:
+            return True
+        for cam in storage.list_cameras():
+            if str(cam.get("id") or "") == str(cam_id):
+                return str(cam.get("vehicle_id") or "") in allowed
+        return False
+
+    def _require_admin(self) -> bool:
+        """Yozish amallari faqat ADMIN uchun (403 bo'lsa javob yuborilgan)."""
+        if self._session_admin():
+            return True
+        self._json({"error": "Sizda bu bo'limga ruxsat yo'q"}, 403)
+        return False
 
     def _serve_hls(self, fname: str) -> None:
         """HLS segmentlarini HLS_DIR'dan beradi (relay chiqishi).
@@ -194,38 +292,54 @@ class GpsHandler(BaseHTTPRequestHandler):
 
         try:
             _maybe_purge()
+            vehicles = self._company_vehicles()
             if path == "/api/gps/devices":
-                devices = storage.list_devices()
+                devices = self._only_vehicles(storage.list_devices(), vehicles)
                 self._json({"ok": True, "count": len(devices), "devices": devices})
             elif path == "/api/gps/positions":
-                self._json({
-                    "ok": True,
-                    "positions": storage.positions(
-                        imei=(qs.get("imei") or [""])[0].strip(),
-                        vehicle_id=(qs.get("vehicle_id") or [""])[0].strip(),
-                        date_from=(qs.get("from") or [""])[0].strip(),
-                        date_to=(qs.get("to") or [""])[0].strip(),
-                        limit=int((qs.get("limit") or ["5000"])[0] or 5000),
-                    ),
-                })
+                imes = self._allowed_imes(vehicles)
+                rows = storage.positions(
+                    imei=(qs.get("imei") or [""])[0].strip(),
+                    vehicle_id=(qs.get("vehicle_id") or [""])[0].strip(),
+                    date_from=(qs.get("from") or [""])[0].strip(),
+                    date_to=(qs.get("to") or [""])[0].strip(),
+                    limit=int((qs.get("limit") or ["5000"])[0] or 5000),
+                )
+                if imes:
+                    rows = [p for p in rows
+                            if str(p.get("imei") or "") in imes
+                            or str(p.get("vehicle_id") or "") in vehicles]
+                self._json({"ok": True, "positions": rows})
             elif path == "/api/video/cameras":
-                cams = storage.list_cameras()
+                cams = self._only_vehicles(storage.list_cameras(), vehicles)
                 self._json({"ok": True, "count": len(cams), "cameras": cams})
             elif path == "/api/video/relay":
+                relays = relay.status()
+                if vehicles is not None:
+                    ok_cams = {str(c.get("id") or "") for c in
+                               self._only_vehicles(storage.list_cameras(),
+                                                   vehicles)}
+                    relays = {cid: v for cid, v in relays.items()
+                              if cid in ok_cams}
                 self._json({
                     "ok": True,
                     "ffmpeg": relay.ffmpeg_available(),
                     "hls_dir": config.HLS_DIR,
-                    "relays": relay.status(),
+                    "relays": relays,
                 })
             elif path == "/api/gps/geofences":
-                fences = storage.list_geofences()
+                fences = self._only_vehicles(storage.list_geofences(), vehicles)
                 self._json({"ok": True, "count": len(fences), "geofences": fences})
             elif path == "/api/gps/alerts":
                 alerts = storage.list_alerts(
                     limit=int((qs.get("limit") or ["50"])[0] or 50),
                     imei=(qs.get("imei") or [""])[0].strip(),
                 )
+                if vehicles is not None:
+                    imes = self._allowed_imes(vehicles)
+                    alerts = [a for a in alerts
+                              if str(a.get("vehicle_id") or "") in vehicles
+                              or str(a.get("imei") or "") in imes]
                 self._json({"ok": True, "count": len(alerts), "alerts": alerts})
             elif path == "/api/gps/daily":
                 daily = storage.daily(
@@ -233,9 +347,18 @@ class GpsHandler(BaseHTTPRequestHandler):
                     date_from=(qs.get("from") or [""])[0].strip(),
                     date_to=(qs.get("to") or [""])[0].strip(),
                 )
+                if vehicles is not None:
+                    imes = self._allowed_imes(vehicles)
+                    daily = [d for d in daily
+                             if str(d.get("imei") or "") in imes]
                 self._json({"ok": True, "count": len(daily), "daily": daily})
             elif path.startswith("/hls/"):
-                self._serve_hls(path[len("/hls/"):])
+                fname = path[len("/hls/"):]
+                m = re.match(r"^cam(\d+)[.\-]", fname)
+                if m and not self._camera_allowed(int(m.group(1))):
+                    self._json({"error": "segment topilmadi"}, 404)
+                    return
+                self._serve_hls(fname)
             else:
                 self._json({"error": "topilmadi"}, 404)
         except Exception as exc:  # noqa: BLE001
@@ -247,6 +370,8 @@ class GpsHandler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         if not _check_token(self, self._qs()):
             self._json({"error": "Token noto'g'ri"}, 401)
+            return
+        if not self._require_admin():
             return
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
@@ -316,6 +441,8 @@ class GpsHandler(BaseHTTPRequestHandler):
         if not _check_token(self, self._qs()):
             self._json({"error": "Token noto'g'ri"}, 401)
             return
+        if not self._require_admin():
+            return
         path = urlparse(self.path).path.rstrip("/")
         parts = [p for p in path.split("/") if p]  # ["api","gps","devices",imei]
         try:
@@ -346,6 +473,8 @@ class GpsHandler(BaseHTTPRequestHandler):
     def do_DELETE(self):  # noqa: N802
         if not _check_token(self, self._qs()):
             self._json({"error": "Token noto'g'ri"}, 401)
+            return
+        if not self._require_admin():
             return
         path = urlparse(self.path).path.rstrip("/")
         parts = [p for p in path.split("/") if p]  # ["api","video","cameras","3"]

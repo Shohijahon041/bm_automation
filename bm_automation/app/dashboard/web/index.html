@@ -3240,8 +3240,8 @@ async function load() {
     _gpsKpi.at = now;
     try {
       const [dev, rel] = await Promise.all([
-        fetch(_gpsKpiBase() + "/api/gps/devices", { headers: { "Authorization": "Bearer " + bmToken() } }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch(_gpsKpiBase() + "/api/video/relay", { headers: { "Authorization": "Bearer " + bmToken() } }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch(_gpsKpiBase() + "/api/gps/devices", { credentials: "include", headers: { "Authorization": "Bearer " + bmToken() } }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch(_gpsKpiBase() + "/api/video/relay", { credentials: "include", headers: { "Authorization": "Bearer " + bmToken() } }).then(r => r.ok ? r.json() : null).catch(() => null),
       ]);
       const devices = (dev && dev.devices) || [];
       _gpsKpi.cache = {
