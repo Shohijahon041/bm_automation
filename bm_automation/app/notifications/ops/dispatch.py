@@ -2368,7 +2368,7 @@ def handle_callback(chat_id: int, cq: dict, data: str) -> None:
         return
 
     if data == "settings:kmrate":
-        if role not in (Role.ADMIN, Role.DISPATCHER, Role.MANAGER):
+        if role not in (Role.ADMIN, Role.MANAGER):
             answer(cq, "Huquq yo'q")
             reply(chat_id, DENIED_TEXT)
             return

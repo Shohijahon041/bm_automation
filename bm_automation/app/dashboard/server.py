@@ -165,12 +165,18 @@ _GET_ROLE_MIN: dict[str, int] = {
     "/api/settings/env": 4,
     "/api/settings/companies": 4,
     "/api/settings": 4,
-    "/api/dashboard-users": 4,
+    "/api/dashboard-users": 2,
     "/api/myai": 4,
     "/api/insights": 4,
     "/api/admin": 4,
     "/api/brutto": 2,
     "/api/rejects/tariff": 2,
+    "/api/rejects": 2,
+    "/api/kmrate": 2,
+    "/api/route-skm": 2,
+    "/api/electricity/price": 2,
+    "/api/electricity": 2,
+    "/api/drivers": 2,
     "/api/salary": 2,
     "/api/check": 3,
     "/api/sms": 3,
@@ -183,7 +189,7 @@ _POST_ROLE_MIN: dict[str, int] = {
     "/api/settings": 4,
     "/api/settings/env": 4,
     "/api/settings/companies": 4,
-    "/api/dashboard-users": 4,
+    "/api/dashboard-users": 2,
     "/api/admin": 4,
     "/api/myai": 4,
     "/api/sms": 3,
@@ -281,6 +287,37 @@ def _company_routes(company: str) -> list[str]:
     return [rid] if rid else []
 
 
+def _super_admin_names() -> set[str]:
+    """Super admin foydalanuvchi nomlari (kichik harfda).
+
+    Super admin = `.env` dagi ``DASHBOARD_ADMIN_USER`` (bootstrap) yoki
+    ``data.super`` ugli akkaunt. Uni hech kim (o'zi ham) o'chira olmaydi;
+    o'chirish huquqi faqat super adminda.
+    """
+    names = set()
+    env_u = str(os.environ.get("DASHBOARD_ADMIN_USER") or "").strip().lower()
+    if env_u:
+        names.add(env_u)
+    try:
+        from ..db.storage import get_storage
+        st = get_storage()
+        for u in st.dashboard_users_list():
+            try:
+                data = json.loads(str(u.get("data") or "{}"))
+            except (TypeError, ValueError):
+                data = {}
+            if data.get("super"):
+                names.add(str(u.get("username") or "").lower())
+    except Exception:
+        pass
+    return names
+
+
+def _is_super_username(username: str) -> bool:
+    u = str(username or "").strip().lower()
+    return bool(u) and u in _super_admin_names()
+
+
 def _session_user(token: str) -> dict | None:
     """Sessiya tokeni bo'yicha foydalanuvchi qamrovini qaytaradi."""
     with _SESSION_LOCK:
@@ -366,11 +403,13 @@ def _verify_password(password: str, salt: str, expected: str) -> bool:
 
 
 def _ensure_bootstrap_admin() -> None:
-    """Birinchi ishga tushirishda ADMIN akkauntini yaratadi.
+    """Birinchi ishga tushirishda Super ADMIN akkauntini yaratadi.
 
     Agar `dashboard_users` jadvalida akkauntlar bo'lmasa va env'da
     DASHBOARD_ADMIN_USER/PASS berilgan bo'lsa — ADMIN yaratiladi
-    (idempotent; faqat bitta). Keyingi adminlar Settings orqali qo'shiladi.
+    (idempotent; faqat bitta) va `data.super` da belgilanadi: hech kim
+    (o'zi ham) uni o'chira olmaydi, o'chirish huquqi faqat unda.
+    Keyingi adminlar Dashboard foydalanuvchilari sahifasi orqali qo'shiladi.
     """
     username = (os.environ.get("DASHBOARD_ADMIN_USER") or "").strip()
     password = (os.environ.get("DASHBOARD_ADMIN_PASS") or "").strip()
@@ -386,8 +425,9 @@ def _ensure_bootstrap_admin() -> None:
         digest, salt = _hash_password(password)
         st.dashboard_user_add(username=username.lower(), salt=salt,
                               password_hash=digest, role="ADMIN",
-                              company="", active=1)
-        log.info("Bootstrap ADMIN akkaunt yaratildi: %s", username.lower())
+                              company="", active=1, data='{"super": true}')
+        log.info("Bootstrap SUPER ADMIN akkaunt yaratildi: %s",
+                 username.lower())
     except Exception:  # noqa: BLE001 - DB bo'lmasa server davom etadi
         log.warning("Bootstrap ADMIN yaratilmadi (DB mavjud emas?)")
 
@@ -484,6 +524,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if payload is not None:
             payload["route"] = rid
 
+    _FIN_FIELDS = ("skm", "km_rate", "tariff_no_vat", "tariff_vat")
+
+    def _strip_finance(self, items: list | None) -> list | None:
+        """Moliyaviy maydonlarni DISPATCHER/VIEWER uchun o'chirib tashlaydi.
+
+        Nusxa (copy) qaytaradi — kesh so'ralgan butun ob'ektni buzmaydi
+        (summary `_summary_cache` da saqlanadi).
+        """
+        if not items:
+            return items
+        scope = getattr(self, "_scope", None)
+        if not scope or scope.get("is_admin"):
+            return items
+        rank = _ROLE_RANK.get(scope.get("role") or "VIEWER", 0)
+        if rank >= 2:
+            return items
+        out = []
+        for item in items:
+            if isinstance(item, dict):
+                out.append({k: v for k, v in item.items()
+                            if k not in self._FIN_FIELDS})
+            else:
+                out.append(item)
+        return out
+
     def _route_allowed(self, route_id: str) -> bool:
         """route_id qamrovda bo'lsa True (admin doim True)."""
         scopes = self._scope_routes()
@@ -557,6 +622,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "username": scope.get("username") or "",
             "role": scope.get("role") or "VIEWER",
             "is_admin": bool(scope.get("is_admin")),
+            "super": _is_super_username(scope.get("username") or ""),
             "login_type": "session",
             "company": {
                 "name": company_name,
@@ -624,7 +690,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             pass
 
     def _dashboard_users_api(self, payload: dict) -> dict:
-        """Dashboard foydalanuvchilarini boshqarish (faqat ADMIN)."""
+        """Dashboard foydalanuvchilarini boshqarish (MANAGER+).
+
+        Qoidalar:
+          - O'chirish faqat SUPER ADMIN'da; super admin'ni hech kim
+            (o'zi ham) o'chira olmaydi.
+          - ADMIN foydalanuvchi yaratish / rolga o'tkazish faqat super
+            admin'da.
+          - Non-admin (MANAGER/DIRECTOR) faqat o'z korxonasi qatorlarini
+            ko'radi va boshqaradi (o'chirishdan tashqari); belgilagan roli
+            o'z darajasidan past bo'lishi shart.
+        """
         from ..db.storage import get_storage
         from ..core.profiles import all_profiles
         st = get_storage()
@@ -645,11 +721,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 p = by_rvid.get(val)
             return str((p or {}).get("name") or "")
 
+        scope = getattr(self, "_scope", {}) or {}
+        caller = str(scope.get("username") or "").strip().lower()
+        caller_is_admin = bool(scope.get("is_admin"))
+        caller_company = str(scope.get("company") or "")
+        caller_rank = _ROLE_RANK.get(str(scope.get("role") or "VIEWER"), 0)
+        super_names = _super_admin_names()
+        caller_is_super = caller in super_names
+
         if action == "list":
             rows = []
             for u in st.dashboard_users_list():
                 c = str(u.get("company") or "")
+                if not caller_is_admin and c != caller_company:
+                    continue
                 profile = by_name.get(c.lower()) if c else None
+                uname = str(u.get("username") or "").lower()
                 rows.append({
                     "id": u.get("id"),
                     "username": u.get("username"),
@@ -657,13 +744,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "company": c,
                     "company_route": str((profile or {}).get("routeName") or ""),
                     "active": int(u.get("active") or 0) == 1,
+                    "super": uname in super_names,
                 })
-            return {"ok": True, "users": rows,
-                    "companies": [
-                        {"name": str(p.get("name") or ""),
-                         "routeVariantId": str(p.get("routeVariantId") or ""),
-                         "routeName": str(p.get("routeName") or "")}
-                        for p in profiles]}
+            if caller_is_admin:
+                comps = [
+                    {"name": str(p.get("name") or ""),
+                     "routeVariantId": str(p.get("routeVariantId") or ""),
+                     "routeName": str(p.get("routeName") or "")}
+                    for p in profiles]
+            else:
+                p = by_name.get(caller_company.lower()) or {}
+                comps = ([{"name": caller_company,
+                           "routeVariantId": str(p.get("routeVariantId") or ""),
+                           "routeName": str(p.get("routeName") or "")}]
+                         if caller_company else [])
+            return {"ok": True, "users": rows, "companies": comps,
+                    "is_super": caller_is_super}
         if action in ("create", "update"):
             username = str(payload.get("username") or "").strip().lower()
             password = str(payload.get("password") or "")
@@ -677,6 +773,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if role not in _ROLE_RANK:
                     role = "VIEWER"
                 company = _resolve_company(str(payload.get("company") or ""))
+                if role == "ADMIN" and not caller_is_super:
+                    return {"ok": False, "error":
+                            "ADMIN foydalanuvchi yaratish huquqi faqat "
+                            "Super Adminda"}
+                if not caller_is_admin:
+                    company = caller_company
+                    if _ROLE_RANK.get(role, 0) >= caller_rank:
+                        return {"ok": False, "error":
+                                "O'z darajangizdan past rol yarata olasiz"}
                 if role != "ADMIN" and not company:
                     return {"ok": False, "error": "Noto'g'ri kompaniya tanlandi"}
                 if role == "ADMIN":
@@ -699,36 +804,77 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not cur:
                 return {"ok": False, "error": "Foydalanuvchi topilmadi"}
             row_id = int(cur.get("id") or row_id or 0)
-            if username and str(cur.get("username")) != username:
+            cur_name = str(cur.get("username") or "").lower()
+            cur_role = str(cur.get("role") or "VIEWER").strip().upper()
+            cur_company = str(cur.get("company") or "")
+            target_is_super = cur_name in super_names
+            if target_is_super and not caller_is_super:
+                return {"ok": False, "error":
+                        "Super adminni boshqa foydalanuvchi "
+                        "tahrirlay olmaydi"}
+            if username and cur_name != username:
                 existing = st.dashboard_user_get(username=username)
                 if existing and int(existing.get("id")) != row_id:
                     return {"ok": False, "error": "Bu login allaqachon mavjud"}
-            # Yangilashda berilmagan maydonlar joriy qiymatida qoladi —
-            # parol/faollik almashtirish kompaniyani o'chirib qo'ymaydi.
-            role = str(payload.get("role") or str(cur.get("role") or "VIEWER")).strip().upper()
+            # Super admin qatori: rol/kompaniya/faollik daxlsiz (parol mumkin).
+            if target_is_super:
+                if str(payload.get("role") or "").strip().upper() \
+                        not in ("", "ADMIN"):
+                    return {"ok": False, "error": "Super admin roli daxlsiz"}
+                if payload.get("active") not in (None, ""):
+                    return {"ok": False, "error":
+                            "Super admin faolligini o'chirib bo'lmaydi"}
+                if payload.get("company") not in (None, ""):
+                    return {"ok": False, "error":
+                            "Super admin kompaniyasi daxlsiz"}
+                if password:
+                    digest, salt = _hash_password(password)
+                    ok = st.dashboard_user_update(
+                        row_id=row_id, salt=salt, password_hash=digest)
+                else:
+                    ok = True
+                return {"ok": ok}
+            role = str(payload.get("role") or cur_role).strip().upper()
             if role not in _ROLE_RANK:
                 role = "VIEWER"
-            if payload.get("company") not in (None, ""):
-                company = _resolve_company(str(payload.get("company") or ""))
+            if role == "ADMIN" and not caller_is_super:
+                return {"ok": False, "error":
+                        "ADMIN rolga o'tkazish huquqi faqat Super Adminda"}
+            if not caller_is_admin:
+                if cur_company != caller_company:
+                    return {"ok": False, "error":
+                            "Boshqa korxona foydalanuvchisini "
+                            "tahrirlay olmaysiz"}
+                if role != cur_role and _ROLE_RANK.get(role, 0) >= caller_rank:
+                    return {"ok": False, "error":
+                            "O'z darajangizdan past rol belgilang"}
+                target_company = caller_company
             else:
-                company = str(cur.get("company") or "")
-            if role != "ADMIN" and not company:
+                if payload.get("company") not in (None, ""):
+                    target_company = _resolve_company(
+                        str(payload.get("company") or ""))
+                else:
+                    target_company = cur_company
+            if role != "ADMIN" and not target_company:
                 return {"ok": False, "error": "Noto'g'ri kompaniya tanlandi"}
             if role == "ADMIN":
-                company = ""
+                target_company = ""
             if payload.get("active") not in (None, ""):
                 active = int(payload.get("active") or 0)
             else:
                 active = int(cur.get("active") or 0)
             ok = st.dashboard_user_update(
                 row_id=row_id, username=username or None, role=role,
-                company=company, active=active)
+                company=target_company, active=active)
             if password:
                 digest, salt = _hash_password(password)
                 st.dashboard_user_update(row_id=row_id, salt=salt,
                                          password_hash=digest)
             return {"ok": ok}
         if action == "delete":
+            if not caller_is_super:
+                return {"ok": False, "error":
+                        "O'chirish huquqi faqat Super Adminda"}
             try:
                 row_id = int(payload.get("id") or 0)
             except (TypeError, ValueError):
@@ -742,8 +888,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return {"ok": True}  # allaqachon o'chirilgan
                 row_id = int(cur.get("id") or 0)
             row = st.dashboard_user_get(row_id=row_id)
-            if row and str(row.get("username")) == str(
-                    getattr(self, "_scope", {}).get("username") or ""):
+            if not row:
+                return {"ok": True}
+            uname = str(row.get("username") or "").lower()
+            if uname in super_names:
+                return {"ok": False, "error": "Super adminni o'chirib bo'lmaydi"}
+            if uname == caller:
                 return {"ok": False, "error": "O'zingizni o'chira olmaysiz"}
             return {"ok": st.delete_dashboard_user(row_id)}
         return {"ok": False, "error": "Noma'lum action"}
@@ -1365,7 +1515,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._json({"error": "fayl topilmadi"}, 404)
             elif path == "/api/summary":
                 from . import metrics as m
-                self._json(m.summary(_parse(qs)))
+                rep = m.summary(_parse(qs))
+                if isinstance(rep, dict) and rep.get("routes"):
+                    rep["routes"] = self._strip_finance(rep["routes"])
+                self._json(rep)
             elif path == "/api/rejects":
                 from . import metrics as m
                 rep = m.Metrics().not_accepted_km_report(
@@ -1405,6 +1558,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if not self._scope.get("is_admin"):
                     allowed = set(self._scope.get("routes") or [])
                     routes = [r for r in routes if str(r.get("id") or "") in allowed]
+                routes = self._strip_finance(routes)
                 self._json({"ok": True, "routes": routes})
             elif path == "/api/me":
                 self._me()

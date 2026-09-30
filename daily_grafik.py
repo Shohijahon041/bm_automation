@@ -15,11 +15,13 @@ from __future__ import annotations
 import sys
 import re
 import os
+import json
 import time
 import datetime
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from threading import Lock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -32,6 +34,8 @@ from bm_automation.app.utils.tgformat import esc  # noqa: E402
 EMOJI = "\U0001F37D\ufe0f"
 PROJECT = Path(__file__).resolve().parent
 REPORTS = PROJECT / "reports"
+STATE_DIR = PROJECT / "state"
+_SENT_LOCK = Lock()
 
 def _not_found(exc) -> bool:
     """404'da 'ma'lumot yo'q' holatini aniqlaydi (xato emas).
@@ -395,6 +399,86 @@ def _send_personal_cards(res: dict, rid: str, d: datetime.date, label: str,
         print(f"  [{label}] shaxsiy kartalar xatolik: {exc}")
 
 
+def _route_targets(rid: str, chat_id) -> list[str]:
+    """Yo'nalish yuboriladigan guruh(lar)i ro'yxati.
+
+    `TG_DRIVER_ROUTE_CHATS` (``route_id:chat1,chat2;route_id:chat3``) —
+    har yo'nalish FAQAT o'z guruhiga yuboriladi. Xaritada bo'lmagan
+    yo'nalish uchun:
+      - ``chat_id`` jo'natuvchi guruh bo'lsa — shu guruhga;
+      - lekin u BOSHQA yo'nalishga biriktirilgan (nomlangan) guruh bo'lsa
+        — [] qaytadi: boshqa yo'nalish grafigi o'sha guruhga yuborilmaydi;
+      - ``chat_id`` bo'lmasa — env'dagi umumiy guruh(lar), biriktirilgan
+        guruhlar chiqarib tashlanadi.
+    """
+    from bm_automation.app.notifications.ops.group_departures import (
+        _route_chats, _targets)
+    chats = _route_chats()
+    mapped = chats.get(rid)
+    if mapped:
+        return mapped
+    owned = {str(c) for ccs in chats.values() for c in ccs}
+    if chat_id:
+        return [] if str(chat_id) in owned else [str(chat_id)]
+    return [t for t in _targets() if t not in owned]
+
+
+def _grafik_sent_state() -> dict:
+    """Yuborilgan grafiklar holati (`state/grafik_sent.json`).
+
+    Kalitlar:
+      ``<route_id>|<YYYY-MM-DD>``      -> True  (Excel + rasm shu kunga ketdi);
+      ``notfound|<route_id>|<date>``   -> True  ("e'lon qilinmagan" eslatmasi bir marta);
+      ``error|<route_id>|<date>``      -> True  ("yuborilmadi" xabar etak bir marta).
+
+    `state` katalogi mavjud bo'lmasa bo'sh dict — hech narsa bloklanmaydi.
+    """
+    if not STATE_DIR.exists():
+        return {}
+    try:
+        sf = STATE_DIR / "grafik_sent.json"
+        if sf.exists():
+            return json.loads(sf.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_grafik_sent(state: dict) -> None:
+    from bm_automation.app.utils.io import atomic_write
+    with _SENT_LOCK:
+        try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            atomic_write(STATE_DIR / "grafik_sent.json",
+                         json.dumps(state, ensure_ascii=False, indent=2))
+        except Exception as exc:
+            print(f"  [!] grafik holat saqlanmadi: {exc}")
+
+
+def _grafik_was_sent(rid: str, date_str: str) -> bool:
+    """Shu (yo'nalish, kun) Excel+rasmi allaqachon yuborilganmi?"""
+    key = f"{rid}|{date_str}"
+    return bool(_grafik_sent_state().get(key))
+
+
+def _grafik_notify_once(rid: str, date_str: str, kind: str) -> bool:
+    """Bu (yo'nalish, kun) uchun `kind` eslatma hali yuborilmagan bo'lsa True."""
+    key = f"{kind}|{rid}|{date_str}"
+    state = _grafik_sent_state()
+    if state.get(key):
+        return False
+    state[key] = True
+    _save_grafik_sent(state)
+    return True
+
+
+def _mark_grafik_sent(rid: str, date_str: str) -> None:
+    """Excel+rasm shu (yo'nalish, kun) uchun yuborilgan deb belgilaydi."""
+    state = _grafik_sent_state()
+    state[f"{rid}|{date_str}"] = True
+    _save_grafik_sent(state)
+
+
 def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word,
                    retry_until_published: bool = True):
     """Bitta yo'nalish uchun Excel + rasmni parallel bajaradi."""
@@ -404,6 +488,15 @@ def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word,
     out_prefix, rid, img_dir, label, _tpl_idx = route_tuple
     date_str = d.isoformat()
     results = []
+    targets = _route_targets(rid, chat_id)
+
+    # Kuniga bir marta: tayyor grafik takroriy yuborilmaydi.
+    if _grafik_was_sent(rid, date_str):
+        print(f"  [{label}] {date_str} grafigi bugun allaqachon yuborilgan "
+              f"— takrorlanmaydi")
+        results.append(("excel", label, True))
+        results.append(("image", label, True))
+        return results
 
     try:
         if retry_until_published:
@@ -417,14 +510,18 @@ def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word,
                     raise
                 print(f"[{label}] {d} kun grafigi topilmadi (404) — "
                       f"yuborilmadi: {exc}")
-                send_message(f"🚏 {label}: {d:%d.%m.%Y} kun uchun grafik "
-                             f"e'lon qilinmagan — Excel yuborilmadi.",
-                             chat_id=chat_id)
+                if _grafik_notify_once(rid, date_str, "notfound"):
+                    for t in targets:
+                        send_message(f"🚏 {label}: {d:%d.%m.%Y} kun uchun "
+                                     f"grafik e'lon qilinmagan — "
+                                     f"Excel yuborilmadi.", chat_id=t)
                 return results
     except Exception as exc:
         print(f"[{label}] {d} kun grafigi e'lon qilinmagan: {exc}")
-        send_message(f"🚏 {label}: {d:%d.%m.%Y} kun grafigi hali e'lon "
-                     f"qilinmagan — Excel yuborilmadi.", chat_id=chat_id)
+        if _grafik_notify_once(rid, date_str, "notfound"):
+            for t in targets:
+                send_message(f"🚏 {label}: {d:%d.%m.%Y} kun grafigi hali e'lon "
+                             f"qilinmagan — Excel yuborilmadi.", chat_id=t)
         return results
 
     graphs = duty.get("graphs") or []
@@ -464,15 +561,20 @@ def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word,
             desc = "🚏 ASL SUNDAY B-80 yo'nalishi"
         elif "FERGANATEX" in (profiles_map.get(rid) or {}).get("name", ""):
             desc = "🚏 10-YO'NALISH (FERGANATEX)"
-        send_document(str(excel_file),
-                      caption=f"{excel_file.stem}\n{desc} — {title_word} grafigi",
-                      chat_id=chat_id)
-        print(f"  [{label}] Excel yuborildi: {excel_file.name}")
+        for t in targets:
+            send_document(str(excel_file),
+                          caption=f"{excel_file.stem}\n{desc} — {title_word} grafigi",
+                          chat_id=t)
+        if targets:
+            print(f"  [{label}] Excel yuborildi: {excel_file.name}")
+        else:
+            print(f"  [{label}] Excel tayyor, yuboriladigan guruh tanlanmadi")
         results.append(("excel", label, True))
     except Exception as exc:
         print(f"  [{label}] export xatolik: {exc}")
-        send_message(f"🚏 {label}: Excel yaratishda xatolik — {exc}",
-                     chat_id=chat_id)
+        for t in targets:
+            send_message(f"🚏 {label}: Excel yaratishda xatolik — {exc}",
+                         chat_id=t)
         results.append(("excel", label, False))
 
     img = REPORTS / img_dir / f"driver-sheet_{rid[:8]}_{d.strftime('%Y%m%d')}.png"
@@ -501,8 +603,12 @@ def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word,
             # Faqat jadval rasmi yuboriladi — haydovchi rasmlari albomga
             # qo'shilmaydi. Bog'langan haydovchi o'z grafigini haydovchi
             # kartasidagi "🗓 Grafikim" tugmasi orqali oladi.
-            send_photo(str(img), caption=desc, chat_id=chat_id)
-            print(f"  [{label}] rasm yuborildi: {img.name}")
+            for t in targets:
+                send_photo(str(img), caption=desc, chat_id=t)
+            if targets:
+                print(f"  [{label}] rasm yuborildi: {img.name}")
+            else:
+                print(f"  [{label}] rasm tayyor, yuboriladigan guruh tanlanmadi")
             results.append(("image", label, True))
             # Grafik tayyor — bog'langan haydovchilarga o'z shaxsiy grafik
             # kartasi avtomatik yuboriladi (xohlaganda o'chiriladi).
@@ -513,12 +619,15 @@ def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word,
             results.append(("image", label, False))
     except Exception as exc:
         print(f"  [{label}] rasm xatolik: {exc}")
-        try:
+        for t in targets:
             send_message(f"🚏 {label}: rasm yuborishda xatolik — {exc}",
-                         chat_id=chat_id)
-        except Exception:
-            pass
+                         chat_id=t)
         results.append(("image", label, False))
+
+    # Kuniga bir marta yuborilishi uchun muvaffaqiyatli jo'natishni belgilaymiz.
+    if targets and ("excel", label, True) in results \
+            and ("image", label, True) in results:
+        _mark_grafik_sent(rid, date_str)
 
     return results
 

@@ -29,7 +29,7 @@ from .roles import Role, can, configured_roles, resolve_role, role_label
 
 log = get_logger("bm_automation.bot")
 
-# Ish haqi (salary) faqat ADMIN/DISPATCHER/MANAGER ga ko'rinadi.
+# Ish haqi (salary) faqat ADMIN/MANAGER ga ko'rinadi.
 def _can_view_salary(chat_id: int | None) -> bool:
     if chat_id is None:
         return True  # ichki/skeduler chaqiruvlar uchun boshqaruv rejimi

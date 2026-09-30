@@ -180,3 +180,62 @@ def test_fill_grafik_merged_cells(tmp_path):
     assert ws2["A1"].value == title        # merged sarlavhaga yozildi
     assert ws2["A2"].value == "Aliyev Aliy"
     assert ws2["F2"].value == "01A123AA"   # F3 MergedCell -> anchor F2
+
+
+def test_route_targets_split_groups(monkeypatch):
+    """`_route_targets`: boshqa yo'nalish guruhiga grafik yuborilmaydi."""
+    from bm_automation.app.notifications.ops import group_departures as gd
+    from daily_grafik import _route_targets
+
+    monkeypatch.setattr(gd, "_route_chats",
+                        lambda: {"r1": ["-100a", "-100b"]})
+    monkeypatch.setattr(gd, "_targets", lambda: ["-100main"])
+    # Xaritada bor -> FAQAT o'z guruh(lar)i.
+    assert _route_targets("r1", "-100x") == ["-100a", "-100b"]
+    # Xaritada yo'q va chat_id nomlangan guruh emas -> jo'natuvchi chat.
+    assert _route_targets("r2", "-100x") == ["-100x"]
+    # chat_id BOSHQA yo'nalishga biriktirilgan guruh -> [] (yuborilmaydi).
+    assert _route_targets("r2", "-100a") == []
+    # chat_id yo'q -> umumiy guruhlardan biriktirilganlar chiqarib tashlanadi.
+    assert _route_targets("r2", None) == ["-100main"]
+    monkeypatch.setattr(gd, "_targets", lambda: ["-100a", "-100b", "-100main"])
+    assert _route_targets("r2", None) == ["-100main"]
+    # Hammasi biriktirilgan bo'lsa ham -> [].
+    monkeypatch.setattr(gd, "_targets", lambda: ["-100a", "-100b"])
+    assert _route_targets("r2", None) == []
+
+
+def test_grafik_sent_once_per_day(tmp_path, monkeypatch):
+    """Excel+rasm va eslatmalar kuniga bir marta — holat fayli bilan."""
+    import daily_grafik as dg
+    monkeypatch.setattr(dg, "STATE_DIR", tmp_path / "state")
+    rid, ds = "r-1", "2026-09-30"
+    assert dg._grafik_was_sent(rid, ds) is False
+    # "e'lon qilinmagan" eslatmasi bir marta yuboriladi.
+    assert dg._grafik_notify_once(rid, ds, "notfound") is True
+    assert dg._grafik_notify_once(rid, ds, "notfound") is False
+    assert dg._grafik_notify_once(rid, ds, "error") is True
+    # Excel+rasm belgilangach takroriy jo'natish bloklanadi.
+    dg._mark_grafik_sent(rid, ds)
+    assert dg._grafik_was_sent(rid, ds) is True
+    assert dg._grafik_was_sent(rid, "2026-10-01") is False
+
+
+def test_process_route_skips_when_already_sent(monkeypatch):
+    """Allaqachon yuborilgan (yo'nalish, kun) — duty ham olinmaydi, qayta yuborilmaydi."""
+    import datetime
+
+    import daily_grafik as dg
+    calls = {"duty": 0}
+
+    def boom(*a, **k):
+        calls["duty"] += 1
+        raise AssertionError("duty olinmasligi kerak")
+
+    monkeypatch.setattr(dg, "_grafik_was_sent", lambda rid, ds: True)
+    monkeypatch.setattr(dg, "_duty_with_retry", boom)
+    res = dg._process_route(
+        ("", "r1", "img", "B-80", 0), None, datetime.date(2026, 9, 30),
+        {}, None, "ISH KUNI", retry_until_published=True)
+    assert calls["duty"] == 0
+    assert res == [("excel", "B-80", True), ("image", "B-80", True)]

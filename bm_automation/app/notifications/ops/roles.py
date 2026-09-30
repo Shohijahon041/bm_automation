@@ -91,7 +91,7 @@ _ACTION_ROLES: dict[str, set[Role]] = {
     "export": {Role.ADMIN, Role.DISPATCHER},             # /export
     "driver_edit": {Role.ADMIN, Role.DISPATCHER},       # kunlik qayd / jarima kiritish
     "plan": {Role.ADMIN, Role.DISPATCHER},              # ertangi reja
-    "salary": {Role.ADMIN, Role.DISPATCHER, Role.MANAGER},  # oylik/maosh
+    "salary": {Role.ADMIN, Role.MANAGER},  # oylik/maosh (faqat ADMIN/MANAGER)
 }
 
 

@@ -304,21 +304,29 @@ def main_menu_kb(chat_id: int | None = None) -> dict:
     """Doimiy reply-klaviatura (asosiy menyu).
 
     chat_id berilgan bo'lsa foydalanuvchi tili ruscha (ru) bo'lsa ruscha
-    menyu ko'rsatiladi. Haydovchilar uchun cheklangan menyu.
+    menyu ko'rsatiladi. Haydovchilar uchun cheklangan menyu; moliya
+    tugmalari (Brutto/Oylik) faqat salary ruxsati bor rollarga chiqadi.
     """
-    from .roles import Role, resolve_role, driver_id_for_chat
+    from .roles import Role, resolve_role, can, driver_id_for_chat
     is_driver = False
     unlinked = False
+    hide_finance = False
     if chat_id is not None:
         try:
             role = resolve_role(chat_id)
             is_driver = role is Role.DRIVER
-            # Bog'lanmagan oddiy foydalanuvchi (VIEWER) — haydovchi bo'lishi
-            # mumkin: menyuga "Raqamni ulashish" tugmasi qo'shiladi.
             unlinked = (role is Role.VIEWER
                         and not driver_id_for_chat(chat_id))
+            hide_finance = not can(role, "salary")
         except Exception:
             pass
+    def _rows_no_finance(rows):
+        if not hide_finance:
+            return rows
+        money = ("Brutto", "Oylik", "Брутто", "Зарплата")
+        return [r for r in rows
+                if not any(w in str(t) for t in r for w in money)]
+
     if is_driver:
         rows = [["📊 Dashboard", "📬 Murojaat"], ["⚙️ Settings", "❓ Yordam"]]
         ru_rows = [["📊 Дашборд", "📬 Обращение"], ["⚙️ Настройки", "❓ Помощь"]]
@@ -339,7 +347,7 @@ def main_menu_kb(chat_id: int | None = None) -> dict:
             from ...core.bot_settings import lang
             if lang(chat_id) == "ru":
                 kb_ = {
-                    "keyboard": MAIN_MENU_RU_ROWS,
+                    "keyboard": _rows_no_finance(MAIN_MENU_RU_ROWS),
                     "resize_keyboard": True,
                     "one_time_keyboard": False,
                 }
@@ -351,7 +359,7 @@ def main_menu_kb(chat_id: int | None = None) -> dict:
         except Exception:  # noqa: BLE001 - til aniqlanmasa o'zbekcha qoladi
             pass
     kb_ = {
-        "keyboard": MAIN_MENU_ROWS,
+        "keyboard": _rows_no_finance(MAIN_MENU_ROWS),
         "resize_keyboard": True,
         "one_time_keyboard": False,
     }
@@ -369,11 +377,11 @@ def share_phone_kb() -> dict:
 
 
 def settings_kb(chat_id: int | None = None) -> dict:
-    """Settings ekrani tugmalari: narxlar (ADMIN/DISPATCHER/MANAGER) + til tanlash."""
+    """Settings ekrani tugmalari: narxlar (ADMIN/MANAGER) + til tanlash."""
     from .roles import Role, can, resolve_role
     role = resolve_role(chat_id) if chat_id is not None else Role.ADMIN
     rows = []
-    if role in (Role.ADMIN, Role.DISPATCHER, Role.MANAGER):
+    if role in (Role.ADMIN, Role.MANAGER):
         rows.append([{"text": "💵 1 km narxi o'zgartirish",
                       "callback_data": "settings:kmrate"}])
     if can(role, "salary"):

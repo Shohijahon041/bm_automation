@@ -984,6 +984,7 @@ body.auth-locked .auth-overlay { display: flex; }
       <a href="#disk" data-page="disk"><i class="nav-ic" data-ic="database"></i><span>Disk</span></a>
       <a href="#documents" data-page="documents"><i class="nav-ic" data-ic="file-text"></i><span>Documents</span></a>
       <a href="#users" data-page="users"><i class="nav-ic" data-ic="user-plus"></i><span>Users</span></a>
+      <a href="#dusers" data-page="dusers"><i class="nav-ic" data-ic="user-plus"></i><span>Dashboard Users</span></a>
       <a href="#settings" data-page="settings"><i class="nav-ic" data-ic="settings"></i><span>Settings</span></a>
     </nav>
     <div class="side-bottom"><div class="live-box"><div class="live"><i></i> SYSTEM LIVE</div><small>BM monitoring markazi real vaqt rejimida.</small></div></div>
@@ -1041,14 +1042,14 @@ body.auth-locked .auth-overlay { display: flex; }
       <section class="page" id="page-routes" data-page-view="routes">
         <div class="page-hero"><div><div class="eyebrow">NETWORK</div><h2>Yo'nalishlar</h2><p>Yo'nalishlar kesimida reja, amaldagi reyslar, qabul, bekor qilish va performance.</p></div></div>
         <section class="panel full-page-panel" id="routes-block"><div class="section-head"><div><h2>Yo'nalishlar reyestri <span class="hint" id="routes-hint"></span></h2></div></div><div id="routes-tab"></div></section>
-        <section class="panel" style="margin-top:14px;padding:16px 18px" id="kmrate-block">
+        <section class="panel fin-block" style="margin-top:14px;padding:16px 18px" id="kmrate-block">
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px">
             <b style="font-family:'Big Shoulders Display',sans-serif;font-size:16px">💵 1 KM NARXI</b>
             <span class="muted" style="font-size:11px;font-family:'IBM Plex Mono',monospace">Har bir yo'nalish uchun alohida</span>
           </div>
           <div id="kmrate-body" style="display:flex;flex-wrap:wrap;gap:10px"></div>
         </section>
-        <section class="panel" style="margin-top:14px;padding:16px 18px" id="skm-block">
+        <section class="panel fin-block" style="margin-top:14px;padding:16px 18px" id="skm-block">
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px">
             <b style="font-family:'Big Shoulders Display',sans-serif;font-size:16px">🧾 BRUTTO SKM (116-son)</b>
             <span class="muted" style="font-size:11px;font-family:'IBM Plex Mono',monospace">Har bir firma (yo'nalish) uchun 1 mashina-km narxi</span>
@@ -1805,11 +1806,16 @@ body.auth-locked .auth-overlay { display: flex; }
           </div>
           <div id="companies-body" style="padding:0 18px 18px"></div>
         </section>
-        <!-- Dashboard foydalanuvchilari -->
+      </section>
+
+      <!-- DASHBOARD USERS PAGE -->
+      <section class="page" id="page-dusers" data-page-view="dusers">
+        <div class="page-hero"><div><div class="eyebrow">DASHBOARD USERS</div><h2>Dashboard foydalanuvchilari</h2><p>Login + parol bilan panelga kirish — rol va korxona kesimida. O'chirish huquqi faqat Super Adminda; Super adminni hech kim o'chira olmaydi.</p></div></div>
         <section class="panel" style="margin-bottom:14px">
           <div class="section-head"><div><div class="eyebrow">DASHBOARD USERS</div><h2>Dashboard foydalanuvchilari</h2></div>
-            <div style="display:flex;gap:8px;align-items:center">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
               <span class="hint">Login + parol bilan panelga kirish — rol va korxona kesimida</span>
+              <select class="select" id="dusers-filter" style="font-size:11px;padding:4px 8px" onchange="renderDashboardUsers()"><option value="">Barcha yo'nalishlar</option></select>
               <button class="button ghost" style="font-size:11px;padding:5px 10px" onclick="toggleUserForm()">+ FOYDALANUVCHI</button>
             </div>
           </div>
@@ -1956,10 +1962,11 @@ function _showSkeletons() {
    (PAGE_ROLES); non-admin foydalanuvchi faqat o'z korxonasi route'ini ko'radi. */
 const ROLE_RANK = {VIEWER:0, DISPATCHER:1, MANAGER:2, DIRECTOR:3, ADMIN:4};
 const PAGE_ROLES = {
-  overview:1, dispatch:1, routes:1, vehicles:1, drivers:1, appeals:1,
-  alerts:1, performance:1, 'top-performance':1, electricity:1, rejects:1,
+  overview:1, dispatch:1, routes:1, vehicles:1, drivers:2, appeals:1,
+  alerts:1, performance:1, 'top-performance':2, electricity:2, rejects:2,
   brutto:2, tariffs:2, insights:4, audit:3, myai:4, gps:1, video:1,
-  sms:3, admin:4, logs:4, disk:4, documents:3, users:4, settings:4
+  sms:3, admin:4, logs:4, disk:4, documents:3, users:4, settings:4,
+  dusers:2
 };
 const ROLE_LABEL = {VIEWER:"Kuzatuvchi", DISPATCHER:"Dispetcher",
   MANAGER:"Meneger", DIRECTOR:"Rahbar", ADMIN:"Admin"};
@@ -3689,6 +3696,7 @@ const PAGE_META = {
   logs:{title:'Tizim loglari',subtitle:'Bot, dashboard va API loglarini real vaqtda kuzatish',crumb:'LOGS'},
   documents:{title:'Xujjatlar',subtitle:'Shablonlar asosida hujjatlar yaratish va boshqarish',crumb:'DOCUMENTS'},
   users:{title:'Foydalanuvchilar',subtitle:'Telegram bot foydalanuvchilari va rollari',crumb:'BOT USERS'},
+  dusers:{title:'Dashboard foydalanuvchilari',subtitle:'Login+parol bilan kiradigan panel foydalanuvchilari — rol va korxona kesimida',crumb:'DASHBOARD USERS'},
   disk:{title:'Disk holati',subtitle:'Papkalar, baza hajmi va 30 kunlik o\'sish tendensiyasi',crumb:'DISK'},
   settings:{title:'Sozlamalar',subtitle:'Tizim konfiguratsiyasi va global sozlamalar',crumb:'SETTINGS'}
 };
@@ -3714,7 +3722,8 @@ function showPage(name, updateHash=true){
   if(name==='appeals') loadAppeals();
   if(name==='sms') startSmsPoll(); else stopSmsPoll();
   if(name==='admin') initAdmin();
-  if(name==='settings') { loadSettings(); loadCompanies(); loadEnvSettings(); loadDashboardUsers(); }
+  if(name==='settings') { loadSettings(); loadCompanies(); loadEnvSettings(); }
+  if(name==='dusers') loadDashboardUsers();
   if(name==='disk') loadDisk();
   if(name==='electricity') { bindElectricity(); loadElectricity(); }
   if(name==='rejects') { bindRejects(); loadRejects(); }
@@ -4044,22 +4053,54 @@ function userStatusBadge(u) {
     : '<span style="display:inline-block;padding:2px 8px;border-radius:6px;font:600 10px \'IBM Plex Mono\',monospace;background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.3)">O\'CHIQ</span>';
 }
 let dashCompanies = [];
+let dashIsSuper = false;
+function superBadge(u) {
+  return u.super
+    ? '<span style="display:inline-block;padding:2px 8px;border-radius:6px;font:600 10px \'IBM Plex Mono\',monospace;background:rgba(250,204,21,.12);color:#facc15;border:1px solid rgba(250,204,21,.35)">SUPER</span>'
+    : '';
+}
 function syncUserCompanyState() {
   const role = document.getElementById("du-role")?.value || "VIEWER";
   const sel = document.getElementById("du-company");
   if (!sel) return;
+  if (me && !me.is_admin) {
+    sel.disabled = true;
+    sel.value = (me.company && me.company.name) || "";
+    return;
+  }
   sel.disabled = role === "ADMIN";
   if (role === "ADMIN") sel.value = "";
+}
+function populateUserRole() {
+  const sel = document.getElementById("du-role");
+  if (!sel) return;
+  const cur = sel.value || "DISPATCHER";
+  const allowed = me && !me.is_admin
+    ? ["VIEWER", "DISPATCHER", "MANAGER", "DIRECTOR"].filter(r => ROLE_RANK[r] < myRank())
+    : ["VIEWER", "DISPATCHER", "MANAGER", "DIRECTOR", "ADMIN"];
+  sel.innerHTML = allowed.map(r =>
+    '<option value="' + r + '">' + (ROLE_LABEL[r] || r) + '</option>').join("");
+  sel.disabled = false;
+  if (allowed.indexOf(cur) >= 0) sel.value = cur;
+  else if (allowed.length) sel.value = allowed[allowed.length - 1];
 }
 function populateUserCompany() {
   const sel = document.getElementById("du-company");
   if (!sel) return;
   const cur = sel.value || "";
+  let list = dashCompanies;
+  if (me && !me.is_admin) {
+    const own = (me.company && me.company.name) || "";
+    list = dashCompanies.filter(c => c.name === own);
+  }
   let opts = '<option value="">Barchasi</option>';
-  for (const c of dashCompanies) opts += '<option value="' + esc(c.name) + '">' + esc(c.routeName || c.name) + '</option>';
+  for (const c of list) opts += '<option value="' + esc(c.name) + '">' + esc(c.routeName || c.name) + '</option>';
   sel.innerHTML = opts;
   sel.value = cur;
-  if (!sel.value && dashCompanies.length) sel.value = dashCompanies[0].name;
+  if (list.length && (!sel.value || sel.value === "Barchasi"
+      || !list.some(c => c.name === sel.value))) {
+    sel.value = me && !me.is_admin ? (me.company && me.company.name) || "" : list[0].name;
+  }
   syncUserCompanyState();
 }
 function resetUserForm() {
@@ -4071,10 +4112,11 @@ function resetUserForm() {
   const submit = document.getElementById("du-submit");
   if (name) { name.value = ""; name.readOnly = false; name.placeholder = "Login *"; }
   if (pass) { pass.value = ""; pass.placeholder = "Parol *"; }
-  if (role) role.value = "DISPATCHER";
+  if (role) { role.disabled = false; role.value = "DISPATCHER"; }
   if (submit) submit.textContent = "QO'SHISH";
   const status = document.getElementById("du-status");
   if (status) status.textContent = "";
+  populateUserRole();
   populateUserCompany();
 }
 function toggleUserForm() {
@@ -4101,10 +4143,17 @@ function editUser(key) {
   if (pass) pass.placeholder = "Parol (bo'sh = o'zgartirmaydi)";
   if (submit) submit.textContent = "SAQLASH";
   if (f) f.style.display = "block";
+  populateUserRole();
   populateUserCompany();
   const sel = document.getElementById("du-company");
   if (sel) { sel.value = u.company || ""; }
   syncUserCompanyState();
+  // Rolni o'zi tanlay olmaydigan (o'z darajasiga teng/yuqori) nusxada
+  // rol select o'chiriladi — server joriy rolni saqlab qoladi.
+  if (me && !me.is_admin && role && u.role && ROLE_RANK[u.role] >= myRank()) {
+    role.disabled = true;
+    role.value = u.role;
+  }
   const status = document.getElementById("du-status");
   if (status) status.textContent = role ? (ROLE_LABEL[role.value] || role.value) + " — rol/kompaniyani o'zgartiring" : "";
   if (f) f.scrollIntoView({behavior: "smooth", block: "center"});
@@ -4121,10 +4170,35 @@ async function loadDashboardUsers() {
     body.innerHTML = '<div class="err" style="display:block;padding:12px">' + esc(e.message) + '</div>';
     return;
   }
-  const users = d.users || [];
+  window.__dashUsers = d.users || [];
   dashCompanies = d.companies || [];
-  window.__dashUsers = users;
+  dashIsSuper = !!(d.is_super);
   populateUserCompany();
+  // Yo'nalish filteri (faqat admin uchun; non-admin o'z korxonasini ko'radi).
+  const fil = document.getElementById("dusers-filter");
+  if (fil) {
+    if (me && !me.is_admin) {
+      fil.style.display = "none";
+      fil.value = "";
+    } else {
+      fil.style.display = "";
+      const cur = fil.value || "";
+      let opts = '<option value="">Barcha yo\'nalishlar</option>';
+      for (const c of dashCompanies) {
+        opts += '<option value="' + esc(c.name) + '">' + esc(c.routeName || c.name) + '</option>';
+      }
+      fil.innerHTML = opts;
+      fil.value = cur;
+    }
+  }
+  renderDashboardUsers();
+}
+function renderDashboardUsers() {
+  const body = document.getElementById("dusers-body");
+  if (!body) return;
+  const fil = document.getElementById("dusers-filter");
+  const fcompany = (fil && fil.value) || "";
+  const users = (window.__dashUsers || []).filter(u => !fcompany || u.company === fcompany);
   if (!users.length) {
     body.innerHTML = '<div class="empty" style="padding:20px;text-align:center;color:var(--muted)">Hech qanday dashboard foydalanuvchisi yo\'q. Yuqoridagi "+ FOYDALANUVCHI" tugmasi orqali qo\'shing.</div>';
     return;
@@ -4134,15 +4208,19 @@ async function loadDashboardUsers() {
     const key = encodeURIComponent(u.username);
     const role = ROLE_LABEL[u.role] || u.role || "—";
     const company = u.company_route || u.company || "—";
+    const canDelete = dashIsSuper && !u.super;
+    const buttons = '<button class="button ghost" style="font-size:11px;padding:5px 10px" onclick="editUser(\'' + key + '\')">TAHRIRLASH</button>'
+      + '<button class="button ghost" style="font-size:11px;padding:5px 10px" onclick="resetUserPass(\'' + key + '\')">PAROL</button>'
+      + (canDelete
+          ? '<button class="button ghost" style="font-size:11px;padding:5px 10px;border-color:rgba(239,68,68,.4);color:#ef4444" onclick="deleteUser(\'' + key + '\')">O\'CHIRISH</button>'
+          : '');
     h += '<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--bg-deep)">'
       + '<div style="flex:1;min-width:0">'
-      + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><b style="font:600 13px \'IBM Plex Mono\',monospace;color:var(--ink)">' + esc(u.username) + '</b>' + userStatusBadge(u) + '</div>'
+      + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><b style="font:600 13px \'IBM Plex Mono\',monospace;color:var(--ink)">' + esc(u.username) + '</b>' + userStatusBadge(u) + superBadge(u) + '</div>'
       + '<div style="font:11px \'IBM Plex Mono\',monospace;color:var(--muted)">' + esc(role) + ' &middot; ' + esc(company) + '</div>'
       + '</div>'
       + '<label style="font:10px \'IBM Plex Mono\',monospace;color:var(--muted);display:flex;align-items:center;gap:6px"><input type="checkbox" id="du-a-' + key + '" ' + (u.active ? 'checked' : '') + ' onchange="toggleUser(\'' + key + '\', this.checked)"> Faol</label>'
-      + '<button class="button ghost" style="font-size:11px;padding:5px 10px" onclick="editUser(\'' + key + '\')">TAHRIRLASH</button>'
-      + '<button class="button ghost" style="font-size:11px;padding:5px 10px" onclick="resetUserPass(\'' + key + '\')">PAROL</button>'
-      + '<button class="button ghost" style="font-size:11px;padding:5px 10px;border-color:rgba(239,68,68,.4);color:#ef4444" onclick="deleteUser(\'' + key + '\')">O\'CHIRISH</button>'
+      + buttons
       + '</div>';
   }
   h += '</div>';
@@ -4153,14 +4231,16 @@ async function addUserForm() {
   const username = (document.getElementById("du-name")?.value || "").trim();
   const password = document.getElementById("du-pass")?.value || "";
   if (!username) { if (status) status.textContent = "Login kiritilishi shart"; return; }
-  const role = document.getElementById("du-role")?.value || "VIEWER";
+  const roleSel = document.getElementById("du-role");
+  const role = (roleSel && !roleSel.disabled) ? (roleSel.value || "VIEWER") : "";
   const company = document.getElementById("du-company")?.value || "";
-  if (role !== "ADMIN" && !company) { if (status) status.textContent = "Korxona tanlash shart (ADMIN emas)"; return; }
+  if (role && role !== "ADMIN" && !company) { if (status) status.textContent = "Korxona tanlash shart (ADMIN emas)"; return; }
   const f = document.getElementById("user-add-form");
   const edit = (f && f.dataset.edit) || "";
   if (!edit && password.length < 4) { if (status) status.textContent = "Parol kamida 4 belgi"; return; }
   if (edit && password && password.length < 4) { if (status) status.textContent = "Parol kamida 4 belgi"; return; }
-  const payload = { action: edit ? "update" : "create", username, role, company };
+  const payload = { action: edit ? "update" : "create", username, company };
+  if (role) payload.role = role;
   if (password) payload.password = password;
   const d = await postJSON("/api/dashboard-users", payload);
   if (!d.ok) { if (status) status.textContent = d.error || "Xatolik"; return; }
@@ -4187,6 +4267,9 @@ async function resetUserPass(key) {
 async function deleteUser(key) {
   let username;
   try { username = decodeURIComponent(key); } catch (e) { username = key; }
+  if (!dashIsSuper) { alert("O'chirish huquqi faqat Super Adminda"); return; }
+  const u = (window.__dashUsers || []).find(x => x.username === username);
+  if (u && u.super) { alert("Super adminni o'chirib bo'lmaydi"); return; }
   if (!confirm(username + " o'chirilsinmi? Bu amalni qaytarib bo'lmaydi.")) return;
   const d = await postJSON("/api/dashboard-users", { action: "delete", username });
   if (!d.ok) { alert("Xato: " + (d.error || "")); return; }
@@ -6139,6 +6222,9 @@ function applyAccessUI() {
   if (badge) badge.style.display = me ? "flex" : "none";
   document.querySelectorAll("#main-nav a[data-page]").forEach(a => {
     a.classList.toggle("nav-hidden", !hasPage(a.dataset.page));
+  });
+  document.querySelectorAll(".fin-block").forEach(el => {
+    el.classList.toggle("nav-hidden", myRank() < 2);
   });
   const sel = document.getElementById("f-route");
   if (sel) sel.disabled = !!(me && !me.is_admin);

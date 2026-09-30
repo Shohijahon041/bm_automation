@@ -1185,11 +1185,13 @@ class Storage:
 
     def dashboard_user_add(self, username: str, password_hash: str = "",
                            salt: str = "", role: str = "VIEWER",
-                           company: str = "", active: int = 1) -> int:
+                           company: str = "", active: int = 1,
+                           data: str = "{}") -> int:
         """Dashboard foydalanuvchisini qo'shadi; yangi id (0 = xato).
 
         ``_hash_password`` natijasini to'g'ridan-to'g'ri qabul qiladi:
         ``dashboard_user_add("ali", *hash_password("parol"))``.
+        ``data`` — qo'shimcha JSON maydon (masalan ``{"super": true}``).
         """
         if not self.enabled:
             return 0
@@ -1205,7 +1207,7 @@ class Storage:
             "role": str(role or "VIEWER").strip().upper() or "VIEWER",
             "company": str(company or "").strip(),
             "active": 1 if active else 0,
-            "data": "{}",
+            "data": str(data or "{}"),
         }
         if self.insert("dashboard_users", row):
             rows = self.query(

@@ -111,6 +111,11 @@ def test_capabilities():
     assert can(Role.DISPATCHER, "export")
     assert not can(Role.VIEWER, "export")
     assert can(Role.VIEWER, "view")
+    # Moliyaviy (salary) faqat ADMIN/MANAGER — DISPATCHER'ga emas.
+    assert can(Role.ADMIN, "salary")
+    assert can(Role.MANAGER, "salary")
+    assert not can(Role.DISPATCHER, "salary")
+    assert not can(Role.VIEWER, "salary")
 
 
 def test_is_allowed_no_config_open(monkeypatch):
@@ -1885,12 +1890,47 @@ def test_render_month_accept_rate_column(patch_met):
 
 def test_settings_kb_admin_only_kmrate(monkeypatch):
     monkeypatch.setattr(roles, "telegram_settings",
-                        lambda: _tg(admin_ids="111"))
-    for cid, expected in ((111, True), (999, False)):
+                        lambda: _tg(admin_ids="111", dispatcher_ids="333"))
+    for cid, expected in ((111, True), (333, False), (999, False)):
         buttons = [b["callback_data"] for row in kb.settings_kb(cid)["inline_keyboard"]
                    for b in row]
         assert ("settings:kmrate" in buttons) is expected
         assert "settings:lang" in buttons
+
+
+def test_dispatch_kmrate_dispatcher_denied(monkeypatch, tmp_path):
+    """DISPATCHER moliyaviy 1 KM NARXI ni o'zgartira olmaydi."""
+    import bm_automation.app.core.bot_settings as bs
+    bs._reset()
+    sent = []
+
+    def fake_reply(chat_id, text, reply_markup=None):
+        sent.append({"chat_id": chat_id, "text": text,
+                     "reply_markup": reply_markup})
+
+    monkeypatch.setattr(dispatch, "reply", fake_reply)
+    monkeypatch.setattr(dispatch, "answer", lambda cq, t="": None)
+    monkeypatch.setattr(roles, "telegram_settings",
+                        lambda: _tg(admin_ids="111", dispatcher_ids="333"))
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "dis_km.db"))))
+    monkeypatch.setattr(dispatch, "get_storage", lambda: st)
+    dispatch.handle_callback(333, {"id": "q"}, "settings:kmrate")
+    assert bs.pending(333) is None
+    assert sent[-1]["text"] == DENIED_TEXT
+
+
+def test_main_menu_hides_finance_for_dispatcher(monkeypatch):
+    """Dispetcher reply-menuda Brutto/Oylik tugmalari ko'rinmaydi."""
+    monkeypatch.setattr(roles, "telegram_settings",
+                        lambda: _tg(admin_ids="111", dispatcher_ids="333"))
+    dispatcher = kb.main_menu_kb(333)
+    dflat = [b for row in dispatcher["keyboard"] for b in row]
+    assert "🧾 Brutto" not in dflat
+    assert "💰 Oylik" not in dflat
+    admin = kb.main_menu_kb(111)
+    aflat = [b for row in admin["keyboard"] for b in row]
+    assert "🧾 Brutto" in aflat
+    assert "💰 Oylik" in aflat
 
 
 def test_lang_kb_marks_current():
