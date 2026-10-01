@@ -45,7 +45,11 @@ def resend_env(tmp_path, monkeypatch):
     dg._INFLIGHT.clear()
     monkeypatch.setattr(dg, "STATE_DIR", tmp_path / "state")
     monkeypatch.setattr(dg, "DutyRepository", _FakeRepo)
-    monkeypatch.setattr(dg, "_route_targets", lambda rid, cid: ["-100grup"])
+    # Manzillar FAQAT bot ichida (`_bot_targets` haqiqiy ishlaydi):
+    # ADMIN/DISPATCHER ro'yxati — guruh aralashmasligini tekshirish uchun.
+    monkeypatch.setattr(
+        "bm_automation.app.notifications.ops.grafik_sms._targets",
+        lambda: ["-100admin"])
 
     png = tmp_path / "sheet.png"
     png.write_bytes(b"png")
@@ -88,12 +92,13 @@ def test_resend_unchanged_sends_files(resend_env):
     dg._mark_grafik_sent(rid, ds, hash=total, drivers=drivers)  # avval yuborilgan
     _FakeRepo.duty = duty
 
-    res = dg._process_route(ROUTE, None, DAY, {}, None, "ISH KUNI",
+    res = dg._process_route(ROUTE, None, DAY, {}, "777", "ISH KUNI",
                             retry_until_published=True, resend_if_sent=True)
 
     assert res == [("resent", "B-80", True)]
-    assert len(sent["docs"]) == 1 and sent["docs"][0][2] == "-100grup"
-    assert len(sent["photos"]) == 1 and sent["photos"][0][2] == "-100grup"
+    # So'rov shaxsiy chatdan — FAQAT shu chatga (guruhlarga emas).
+    assert len(sent["docs"]) == 1 and sent["docs"][0][2] == "777"
+    assert len(sent["photos"]) == 1 and sent["photos"][0][2] == "777"
     # O'zgarishsiz — "♻️" belgisi yo'q, oddiy sarlavha.
     assert not sent["docs"][0][1].startswith("♻️")
     assert not sent["photos"][0][1].startswith("♻️")
@@ -119,15 +124,36 @@ def test_resend_changed_marks_and_cards(resend_env):
     new_total, new_drivers = dg._duty_fingerprint(new)
     assert new_total != old_total
 
-    res = dg._process_route(ROUTE, None, DAY, {}, None, "ISH KUNI",
+    res = dg._process_route(ROUTE, None, DAY, {}, "777", "ISH KUNI",
                             retry_until_published=True, resend_if_sent=True)
 
     assert res == [("resent_new", "B-80", True)]
     assert sent["docs"][0][1].startswith("♻️ YANGILANGAN — ")
     assert sent["photos"][0][1].startswith("♻️ YANGILANGAN — ")
+    assert sent["docs"][0][2] == "777" and sent["photos"][0][2] == "777"
     assert sent["cards"] == [(rid, "B-80", {"d1"})]
     info = dg._grafik_sent_info(rid, ds)
     assert info["hash"] == new_total and info["drivers"] == new_drivers
+
+
+def test_resend_group_chat_goes_to_admin_chats(resend_env):
+    """Guruh chat_id bilan so'rov — guruhga EMAS, ADMIN/DISPATCHER'ga.
+
+    Grafik guruhlarga umuman yuborilmaydi: guruhdan kelgan so'rov ham
+    bot ichidagi ADMIN/DISPATCHER chatlariga yo'naltiriladi."""
+    dg, sent = resend_env
+    rid, ds = "r-1", "2026-10-02"
+    duty = _duty()
+    total, drivers = dg._duty_fingerprint(duty)
+    dg._mark_grafik_sent(rid, ds, hash=total, drivers=drivers)
+    _FakeRepo.duty = duty
+
+    res = dg._process_route(ROUTE, None, DAY, {}, "-100guruh", "ISH KUNI",
+                            retry_until_published=True, resend_if_sent=True)
+
+    assert res == [("resent", "B-80", True)]
+    assert [d[2] for d in sent["docs"]] == ["-100admin"]
+    assert [p[2] for p in sent["photos"]] == ["-100admin"]
 
 
 def test_resend_waits_when_claimed(resend_env):

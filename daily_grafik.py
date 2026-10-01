@@ -1,6 +1,11 @@
 """Kunlik avtomatik vazifa: ertangi kun grafiklarini real BM ma'lumoti bilan
 to'ldirib Telegram'ga yuborish (B-80, 10-yo'nalish, AND ECO yo'nalishlari).
 
+Yuborish FAQAT bot ichida: so'rov yuborilgan shaxsiy chatga yoki (avtomatik
+oqimda) ADMIN/DISPATCHER chatlariga — yo'nalish guruhlariga hech qachon
+yuborilmaydi (``_bot_targets``). Haydovchilarga shaxsiy kartalar alohida
+yuboriladi (ular ham faqat shaxsiy chatlarga).
+
 Kun turi avtomatik aniqlanadi:
   Dush-Chor-Pay-Jum -> ISH KUNI
   Shanba           -> SHANBA
@@ -415,20 +420,19 @@ def _send_personal_cards(res: dict, rid: str, d: datetime.date, label: str,
         print(f"  [{label}] shaxsiy kartalar xatolik: {exc}")
 
 
-def _route_targets(rid: str, chat_id) -> list[str]:
-    """Yo'nalish yuboriladigan guruh(lar)i ro'yxati.
+def _bot_targets(rid: str, chat_id) -> list[str]:
+    """Yuborish manzillari — FAQAT bot ichida (guruhlarga hech qachon).
 
-    `TG_DRIVER_ROUTE_CHATS` (``route_id:chat1,chat2;route_id:chat3``) —
-    har yo'nalish FAQAT o'z guruhiga yuboriladi. Xaritada bo'lmagan
-    yo'nalish uchun:
-      - ``chat_id`` jo'natuvchi guruh bo'lsa — shu guruhga;
-      - lekin u BOSHQA yo'nalishga biriktirilgan (nomlangan) guruh bo'lsa
-        — [] qaytadi: boshqa yo'nalish grafigi o'sha guruhga yuborilmaydi;
-      - ``chat_id`` bo'lmasa — env'dagi umumiy guruh(lar), biriktirilgan
-        guruhlar chiqarib tashlanadi.
+    Grafik endi yo'nalish guruhlariga umuman yuborilmaydi:
+      - ``chat_id`` (tugma bosilgan shaxsiy chat) bo'lsa — faqat shu chat;
+      - aks holda (avtomatik oqim) — ADMIN/DISPATCHER chatlari.
+
+    Kanonik qoida — ``grafik_sms.bot_targets``. ``rid`` faqat chaqiruv
+    joylari bir xil ko'rinishda qolishi uchun (qoida yo'nalishga bog'liq
+    emas).
     """
-    from bm_automation.app.notifications.ops.group_departures import _route_targets
-    return _route_targets(rid, chat_id)
+    from bm_automation.app.notifications.ops.grafik_sms import bot_targets
+    return bot_targets(chat_id)
 
 
 def _grafik_sent_state() -> dict:
@@ -648,7 +652,7 @@ def _process_route_run(route_tuple, client, d, profiles_map, chat_id,
     out_prefix, rid, img_dir, label, _tpl_idx = route_tuple
     date_str = d.isoformat()
     results = []
-    targets = _route_targets(rid, chat_id)
+    targets = _bot_targets(rid, chat_id)
 
     def on_wait():
         """404 — grafik hali e'lon qilinmaganini so'rov yuboruvchiga bildiradi."""
@@ -731,7 +735,7 @@ def _process_route_run(route_tuple, client, d, profiles_map, chat_id,
         if targets:
             print(f"  [{label}] Excel yuborildi: {excel_file.name}")
         else:
-            print(f"  [{label}] Excel tayyor, yuboriladigan guruh tanlanmadi")
+            print(f"  [{label}] Excel tayyor, yuboriladigan chat topilmadi")
         results.append(("excel", label, True))
     except Exception as exc:
         print(f"  [{label}] export xatolik: {exc}")
@@ -771,7 +775,7 @@ def _process_route_run(route_tuple, client, d, profiles_map, chat_id,
             if targets:
                 print(f"  [{label}] rasm yuborildi: {img.name}")
             else:
-                print(f"  [{label}] rasm tayyor, yuboriladigan guruh tanlanmadi")
+                print(f"  [{label}] rasm tayyor, yuboriladigan chat topilmadi")
             results.append(("image", label, True))
             # Grafik tayyor — bog'langan haydovchilarga o'z shaxsiy grafik
             # kartasi avtomatik yuboriladi (xohlaganda o'chiriladi).
@@ -807,8 +811,9 @@ def _process_route_resend(route_tuple, client, d, profiles_map, chat_id,
                           title_word):
     """Allaqachon yuborilgan grafikni qayta yuboradi (tugma so'rovi bilan).
 
-    Excel + rasm joriy (eng yangi) ma'lumotdan qayta yaratiladi va guruhga
-    yuboriladi — ma'lumot o'zgarmagan bo'lsa ham. Agar ma'lumot o'zgargan
+    Excel + rasm joriy (eng yangi) ma'lumotdan qayta yaratiladi va so'rov
+    chatiga (bot ichida; guruhlarga hech qachon) yuboriladi — ma'lumot
+    o'zgarmagan bo'lsa ham. Agar ma'lumot o'zgargan
     bo'lsa (fingerprint farqi bor), sarlavhaga "♻️ YANGILANGAN" qo'shiladi
     va faqat o'zgargan haydovchilarga shaxsiy kartalar yuboriladi. Holatdagi
     fingerprint yangilanadi (kuzatuv yangi holatdan davom etadi).
@@ -818,7 +823,7 @@ def _process_route_resend(route_tuple, client, d, profiles_map, chat_id,
 
     _out_prefix, rid, img_dir, label, _tpl_idx = route_tuple
     date_str = d.isoformat()
-    targets = _route_targets(rid, chat_id)
+    targets = _bot_targets(rid, chat_id)
     prof = profiles_map.get(rid) or {}
 
     try:

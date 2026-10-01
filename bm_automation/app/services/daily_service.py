@@ -86,7 +86,7 @@ def _notify_summary(results: list, chat_id: str | None, sheet_date: date) -> Non
         if r.get("sent"):
             parts.append("jadval ✓")
         elif r.get("no_group"):
-            parts.append("jadval — guruh biriktirilmagan")
+            parts.append("jadval — yuboriladigan chat yo'q")
         elif r.get("already_sent"):
             parts.append("jadval ✓ (allaqachon yuborilgan)")
         elif r.get("error"):
@@ -279,7 +279,7 @@ def run_daily_once(send: bool = True, chat_id: str | None = None, month_offset: 
             entry["sent"] = sheet.get("sent", False)
             if sheet.get("no_group"):
                 entry["no_group"] = True
-                print(f"  [{name}] jadval tayyor, guruh biriktirilmagan")
+                print(f"  [{name}] jadval tayyor, yuboriladigan chat yo'q")
             elif sheet.get("already_sent"):
                 entry["already_sent"] = True
                 print(f"  [{name}] jadval allaqachon yuborilgan — "

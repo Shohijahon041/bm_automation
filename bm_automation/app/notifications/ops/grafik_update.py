@@ -6,8 +6,9 @@ daqiqada bugun/ertangi kun uchun AVVAL YUBORILGAN grafiklarning duty
 ma'lumotini BM API'dan qayta yuklab, `state/grafik_sent.json` dagi
 fingerprint (sha1 hash) bilan solishtiradi. Ma'lumot o'zgargan bo'lsa
 (haydovchi/avtobus/vaqt almashtirilgan):
-  - Excel qayta generatsiya qilinib yo'nalish guruhlariga yuboriladi;
-  - jadval rasmi yangilanib guruhlarga yuboriladi;
+  - Excel qayta generatsiya qilinib ADMIN/DISPATCHER chatlariga
+    (bot ichida; guruhlarga hech qachon) yuboriladi;
+  - jadval rasmi yangilanib ADMIN/DISPATCHER chatlariga yuboriladi;
   - FAQAT o'zgargan haydovchilarga shaxsiy karta qayta yuboriladi;
   - ADMIN/DISPATCHER'ga qisqa xulosa ketadi.
 
@@ -42,8 +43,8 @@ def _notify(reports: list[str]) -> None:
         if not tg:
             return
         lines = ["♻️ <b>GRAFIK YANGILANDI</b>",
-                 "Grafik ma'lumoti o'zgargani uchun guruhlarga "
-                 "qayta yuborildi:", ""]
+                 "Grafik ma'lumoti o'zgargani uchun yangilangan "
+                 "nusxa yuborildi:", ""]
         lines.extend(f"• {r}" for r in reports[:8])
         text = "\n".join(lines)
         for cid in tg:
@@ -59,9 +60,11 @@ def _send_update(client, route_tuple, duty: dict, date_str: str,
                  changed_ids: set) -> bool:
     """O'zgargan grafikni qayta yuboradi: Excel + rasm (+ kartalar).
 
-    True — Excel va rasm ikkalasi ham muvaffaqiyatli yuborildi (holat
-    yangilanadi); False — to'liq yuborilmadi (keyingi tsiklda qayta
-    uriniladi). Shaxsiy kartalar faqat ``changed_ids`` haydovchilarga.
+    Manzillar faqat bot ichida (ADMIN/DISPATCHER chatlari) — yo'nalish
+    guruhlariga hech qachon yuborilmaydi. True — Excel va rasm ikkalasi
+    ham muvaffaqiyatli yuborildi (holat yangilanadi); False — to'liq
+    yuborilmadi (keyingi tsiklda qayta uriniladi). Shaxsiy kartalar faqat
+    ``changed_ids`` haydovchilarga.
     """
     _out_prefix, rid, img_dir, label, _tpl_idx = route_tuple
     d = date.fromisoformat(date_str)
@@ -72,9 +75,9 @@ def _send_update(client, route_tuple, duty: dict, date_str: str,
     from bm_automation.app.services.driver_sheet_service import run as run_sheet
     from ..telegram import send_document, send_photo
 
-    targets = dg._route_targets(rid, None)
+    targets = dg._bot_targets(rid, None)
     if not targets:
-        print(f"  [{label}] grafik o'zgardi, lekin yuboriladigan guruh "
+        print(f"  [{label}] grafik o'zgardi, lekin yuboriladigan chat "
               f"yo'q — keyinroq qayta uriniladi")
         return False
 

@@ -249,38 +249,32 @@ def run(
         "rows": data["groups"], "route_name": data["routeName"]}
 
     if send:
-        from ..config.settings import telegram_settings
+        from ..notifications.ops.grafik_sms import bot_targets
         from ..notifications.telegram import resend_keyboard, send_photo
 
         d = date.fromisoformat(date_str)
         caption = (f"🚌 {data['routeName']} | {d:%d.%m.%Y} | "
                    f"Kunlik chiqish jadvali (grafik × haydovchi × avtobus)")
-        # Yo'nalishga biriktirilgan guruhlarga faqat o'sha yo'nalish grafigi yuborilsin.
-        targets = []
-        try:
-            from ..notifications.ops.group_departures import _route_targets
-            targets = _route_targets(route_id, chat_id)
-        except Exception:
-            # Fallback: eski logika (agarda import xatosi bo'lsa)
-            s = telegram_settings()
-            targets = [chat_id] if chat_id else []
-            if not targets:
-                t = s.get("driver_chat_id") or s.get("chat_id") or ""
-                targets = [x.strip() for x in str(t).replace(";", ",").split(",") if x.strip()]
+        # Guruhlarga hech qachon yuborilmaydi — bot ichida qoladi: tugma
+        # so'rovida so'rov chatiga, avtomatik oqimda ADMIN/DISPATCHER
+        # chatlariga (qoida: grafik_sms.bot_targets).
+        targets = bot_targets(chat_id)
+        manual = bool(chat_id) and not str(chat_id).startswith("-")
         if targets:
-            # Avtomatik yuborishda (chat_id berilmagan) retry takror yubormaydi.
-            pending = targets if chat_id else _pending_targets(route_id, date_str, targets)
+            # Avtomatik yuborishda (so'rov chatisiz) retry takror yubormaydi.
+            pending = (targets if manual
+                       else _pending_targets(route_id, date_str, targets))
             for t in pending:
                 send_photo(str(img), caption=caption, chat_id=t,
                            reply_markup=resend_keyboard(profile.get("name") if profile else None))
-            if pending and not chat_id:
+            if pending and not manual:
                 _mark_sent(route_id, date_str, pending)
             result["sent"] = True
             result["sent_to"] = targets
             if not pending:
                 result["already_sent"] = True
         else:
-            # Yo'nalishga guruh biriktirilmagan — xato emas, retry ham kerak emas.
+            # Yuboriladigan chat yo'q — xato emas, retry ham kerak emas.
             result["sent"] = False
             result["no_group"] = True
     return result

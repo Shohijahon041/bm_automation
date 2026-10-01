@@ -182,27 +182,27 @@ def test_fill_grafik_merged_cells(tmp_path):
     assert ws2["F2"].value == "01A123AA"   # F3 MergedCell -> anchor F2
 
 
-def test_route_targets_split_groups(monkeypatch):
-    """`_route_targets`: boshqa yo'nalish guruhiga grafik yuborilmaydi."""
-    from bm_automation.app.notifications.ops import group_departures as gd
-    from daily_grafik import _route_targets
+def test_bot_targets_bot_only(monkeypatch):
+    """`_bot_targets`: grafik FAQAT bot ichida — guruhlarga hech qachon.
 
-    monkeypatch.setattr(gd, "_route_chats",
-                        lambda: {"r1": ["-100a", "-100b"]})
-    monkeypatch.setattr(gd, "_targets", lambda: ["-100main"])
-    # Xaritada bor -> FAQAT o'z guruh(lar)i.
-    assert _route_targets("r1", "-100x") == ["-100a", "-100b"]
-    # Xaritada yo'q va chat_id nomlangan guruh emas -> jo'natuvchi chat.
-    assert _route_targets("r2", "-100x") == ["-100x"]
-    # chat_id BOSHQA yo'nalishga biriktirilgan guruh -> [] (yuborilmaydi).
-    assert _route_targets("r2", "-100a") == []
-    # chat_id yo'q -> umumiy guruhlardan biriktirilganlar chiqarib tashlanadi.
-    assert _route_targets("r2", None) == ["-100main"]
-    monkeypatch.setattr(gd, "_targets", lambda: ["-100a", "-100b", "-100main"])
-    assert _route_targets("r2", None) == ["-100main"]
-    # Hammasi biriktirilgan bo'lsa ham -> [].
-    monkeypatch.setattr(gd, "_targets", lambda: ["-100a", "-100b"])
-    assert _route_targets("r2", None) == []
+    Qoida: shaxsiy chat_id -> o'sha chat; aks holda (chat_id yo'q yoki
+    guruh) -> ADMIN/DISPATCHER chatlari (`grafik_sms._targets`).
+    """
+    from bm_automation.app.notifications.ops import grafik_sms as gs
+    from daily_grafik import _bot_targets
+
+    monkeypatch.setattr(gs, "_targets", lambda: ["-100main", "-100adm"])
+    # Shaxsiy chat (tugma bosilgan joy) -> faqat shu chat.
+    assert _bot_targets("r1", "777") == ["777"]
+    assert _bot_targets("r1", 12345) == ["12345"]
+    # chat_id yo'q (avtomatik oqim) -> ADMIN/DISPATCHER chatlari.
+    assert _bot_targets("r1", None) == ["-100main", "-100adm"]
+    # Guruh chat_id -> guruhga EMAS, ADMIN/DISPATCHER'ga.
+    assert _bot_targets("r1", "-100GROUP") == ["-100main", "-100adm"]
+    # ADMIN/DISPATCHER ham sozlanmagan -> [] (hech qayerga yuborilmaydi).
+    monkeypatch.setattr(gs, "_targets", lambda: [])
+    assert _bot_targets("r1", None) == []
+    assert _bot_targets("r1", "-100GROUP") == []
 
 
 def test_grafik_sent_once_per_day(tmp_path, monkeypatch):
@@ -264,7 +264,7 @@ def test_process_route_duplicate_flow_waits(monkeypatch):
 
     monkeypatch.setattr(dg, "_grafik_was_sent", lambda rid, ds: False)
     monkeypatch.setattr(dg, "_duty_with_retry", fake_retry)
-    monkeypatch.setattr(dg, "_route_targets", lambda rid, cid: [])
+    monkeypatch.setattr(dg, "_bot_targets", lambda rid, cid: [])
     monkeypatch.setattr(sms_notify, "send_sms_for_graphs",
                         lambda *a, **k: {"sent": 0, "skipped": 0, "failed": 0,
                                          "invalid": 0, "removed": 0,

@@ -74,6 +74,18 @@ def _targets() -> list[int]:
             if role in (Role.ADMIN, Role.DISPATCHER)]
 
 
+def bot_targets(chat_id) -> list[str]:
+    """Grafik yuboriladigan manzillar — FAQAT bot ichida (guruhlarga hech qachon).
+
+    Qoida: shaxsiy ``chat_id`` (tugma bosilgan chat) bo'lsa — faqat shu chat;
+    aks holda (avtomatik oqim yoki guruh chat_id) — ADMIN/DISPATCHER chatlari.
+    Yo'nalish guruhlariga grafik umuman yuborilmaydi.
+    """
+    if chat_id and not str(chat_id).startswith("-"):
+        return [str(chat_id)]
+    return [str(t) for t in _targets()]
+
+
 def _notify_summary(total: dict, reports: list[str], date_str: str) -> None:
     try:
         from ..telegram import send_message

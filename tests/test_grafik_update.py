@@ -259,6 +259,24 @@ def test_run_once_skips_inflight_route(gu_env, monkeypatch):
     assert _FakeRepo.calls == []  # duty ham so'ralmadi (o'tkazib yuborildi)
 
 
+def test_send_update_uses_bot_targets_only(gu_env, monkeypatch):
+    """`_send_update` manzillarni FAQAT bot ichidan oladi (`_bot_targets`)
+    va chat bo'lmasa keyingi tsiklga qoldiradi (False)."""
+    _dg, gu = gu_env
+    calls = []
+
+    def fake_targets(rid, chat_id):
+        calls.append((rid, chat_id))
+        return []
+
+    monkeypatch.setattr("daily_grafik._bot_targets", fake_targets)
+    ok = gu._send_update(object(), ("", "r-1", "img", "B-80", 0),
+                         {"graphs": [{"graphName": "P1"}]}, "2026-10-02",
+                         {"d1"})
+    assert calls == [("r-1", None)]
+    assert ok is False  # yuboriladigan chat yo'q — holat yangilanmaydi
+
+
 class _FakeStorage:
     enabled = True
     db = None  # km_stats so'rovi xato beradi -> km_stats=None (kodda ushlangan)
