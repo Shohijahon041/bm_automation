@@ -181,7 +181,7 @@ async def get_settings(request: Request, scope: dict = Depends(Scope())):
             "brutto_skm": bot_settings.brutto_skm(),
             "show_driver_salary": bot_settings.show_driver_salary(),
             "auto_sync": bot_settings.auto_sync(),
-            "auto_sync_hour": bot_settings.auto_sync_hour(),
+            "auto_sync_interval_min": bot_settings.auto_sync_interval_min(),
             "audit": bot_settings.audit_log(10),
         },
     }
@@ -231,13 +231,13 @@ async def update_settings(request: Request, scope: dict = Depends(Scope())):
         bot_settings.set_auto_sync(bool(asy))
         changed.append("auto_sync")
 
-    ash = payload.get("auto_sync_hour")
-    if ash is not None:
+    asi = payload.get("auto_sync_interval_min")
+    if asi is not None:
         try:
-            bot_settings.set_auto_sync_hour(int(ash))
-            changed.append("auto_sync_hour")
+            bot_settings.set_auto_sync_interval_min(int(asi))
+            changed.append("auto_sync_interval_min")
         except (TypeError, ValueError):
-            return {"ok": False, "error": "auto_sync_hour noto'g'ri qiymat"}
+            return {"ok": False, "error": "auto_sync_interval_min noto'g'ri qiymat"}
 
     rskm = payload.get("route_skm")
     if isinstance(rskm, dict):

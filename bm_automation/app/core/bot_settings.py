@@ -362,10 +362,11 @@ def set_show_driver_salary(value: bool | None) -> bool:
 # ------------------------------------------------------------- avto-sync
 
 def auto_sync() -> bool:
-    """Kunlik avtomatik sinxronlash yoqilganmi (standart: ha).
+    """Avtomatik sinxronlash yoqilganmi (standart: ha).
 
-    Bot poll-tsikli har kuni soat `auto_sync_hour()` da o'tgan kun va
-    bugungi kunni BM API'dan DB'ga sinxronlaydi (`state/sync_auto.json`).
+    Bot poll-tsikli har `auto_sync_interval_min()` daqiqada kechagi kun
+    (kun boshida) va bugungi kunni BM API'dan DB'ga sinxronlaydi
+    (`state/sync_auto.json`).
     """
     try:
         val = _load().get("auto_sync")
@@ -386,26 +387,26 @@ def set_auto_sync(value: bool | None) -> bool:
     return on
 
 
-def auto_sync_hour() -> int:
-    """Avtomatik sync soati (0-23, standart 6)."""
+def auto_sync_interval_min() -> int:
+    """Avtomatik sinxronlash oralig'i, daqiqada (1-1440, standart 10)."""
     try:
-        h = int(str(_load().get("auto_sync_hour", "6")))
+        v = int(str(_load().get("auto_sync_interval_min", "10")))
     except (TypeError, ValueError):
-        return 6
-    return max(0, min(23, h))
+        return 10
+    return max(1, min(1440, v))
 
 
-def set_auto_sync_hour(value: int | None) -> int:
-    """Avtomatik sync soatini o'rnatadi (0-23, noto'g'ri qiymat — 6)."""
+def set_auto_sync_interval_min(value: int | None) -> int:
+    """Avtomatik sinxronlash oralig'ini o'rnatadi (daqiqa, 1-1440)."""
     with _LOCK:
         _load()
-        old = auto_sync_hour()
+        old = auto_sync_interval_min()
         try:
-            v = max(0, min(23, int(value)))  # type: ignore[arg-type]
+            v = max(1, min(1440, int(value)))  # type: ignore[arg-type]
         except (TypeError, ValueError):
-            v = 6
-        _CACHE["auto_sync_hour"] = v
-        _audit("auto_sync_hour", old, v)
+            v = 10
+        _CACHE["auto_sync_interval_min"] = v
+        _audit("auto_sync_interval_min", old, v)
         _save()
     return v
 

@@ -1,16 +1,21 @@
-"""Avtomatik kunlik sinxronlash — bot poll-tsiklidan chaqiriladi.
+"""Avtomatik sinxronlash — bot poll-tsiklidan chaqiriladi.
 
-Har kuni soat `bot_settings.auto_sync_hour()` (standart 6:00) da o'tgan
-kun (+dushanba shanba/yakshanba) va bugungi kunni BM API'dan DB'ga
-sinxronlaydi:
+Har `bot_settings.auto_sync_interval_min()` daqiqada (standart: 10) BM
+API'dan DB'ga fon oqimida sinxronlaydi:
 
 - `sync_statuses` + `sync_profiles` + `sync_routes` — bir marta;
-- so'ng har bir kun `sync_days` orqali (barcha profillar/kompaniyalar).
+- kunlar: kunning birinchi sinxronlashida kechagi kun (dushanba —
+  shanba/yakshanba ham), keyingi urinishlarda faqat bugun — `sync_days`
+  orqali (barcha profillar/kompaniyalar).
 
 Sync fon oqimida ishlaydi (OneID login 1-3 daqiqa olishi mumkin) — poll
-tsikli bloklanmaydi. Holat `state/sync_auto.json` {"date": "YYYY-MM-DD"}:
-kuniga bir marta. Xatolikda kun belgilanmaydi — `_FAIL_BACKOFF_S` dan
-keyin qayta urinadi va xato `storage.record_error`ga yoziladi.
+tsikli bloklanmaydi. Holat `state/sync_auto.json`:
+``{"last_run": epoch, "date": "YYYY-MM-DD", "days": [...], "errors": n}``.
+
+- `last_run` sinxronlash boshlanishida va tugashida yangilanadi —
+  bot qayta ishga tushsa ham interval saqlanadi;
+- xatolikda `date` belgilanmaydi (keyingi urinishda kechagi kun yana
+  qo'shiladi) va xato `storage.record_error`ga yoziladi.
 
 `bot_settings.auto_sync()` (standart: yoniq) bilan o'chiriladi.
 """
@@ -29,12 +34,10 @@ from ...utils.io import atomic_write
 
 STATE_FILE = Path("state") / "sync_auto.json"
 
-_CHECK_INTERVAL_S = 300.0   # poll-tsikl ichida tekshiruvlar orasi
-_FAIL_BACKOFF_S = 900.0     # xatolikdan keyin qayta urinish oralig'i
+_CHECK_INTERVAL_S = 60.0    # poll-tsikl ichida tekshiruvlar orasi
 
 _LOCK = threading.Lock()
 _LAST_CHECK_AT = 0.0
-_LAST_FAIL_AT = 0.0
 _RUNNING = False
 
 
@@ -42,8 +45,9 @@ def enabled() -> bool:
     return bot_settings.auto_sync()
 
 
-def hour() -> int:
-    return bot_settings.auto_sync_hour()
+def interval_s() -> float:
+    """Sinxronlash oralig'i (soniya) — sozlamadan (daqiqa)."""
+    return max(1, bot_settings.auto_sync_interval_min()) * 60.0
 
 
 def _load() -> dict:
@@ -65,18 +69,24 @@ def _save(state: dict) -> None:
         print(f"Avto-sync holati saqlanmadi: {exc}")
 
 
-def _target_days(today: date | None = None) -> list[str]:
-    """Sinxronlanadigan kunlar: kecha + bugun (dushanba — sh./yak. ham)."""
+def _target_days(first: bool, today: date | None = None) -> list[str]:
+    """Sinxronlanadigan kunlar.
+
+    Kun boshida (birinchi urinishda) kechagi kun — dushanba bo'lsa
+    shanba/yakshanba ham; keyingi urinishlarda faqat bugun.
+    """
     today = today or date.today()
-    days = [(today - timedelta(days=1)).isoformat(), today.isoformat()]
-    if today.isoweekday() == 1:
-        days = [(today - timedelta(days=3)).isoformat(),
-                (today - timedelta(days=2)).isoformat()] + days
+    days = [today.isoformat()]
+    if first:
+        days = [(today - timedelta(days=1)).isoformat()] + days
+        if today.isoweekday() == 1:  # dushanba — shanba/yakshanba ham
+            days = [(today - timedelta(days=3)).isoformat(),
+                    (today - timedelta(days=2)).isoformat()] + days
     return list(dict.fromkeys(days))
 
 
 def check_and_sync() -> None:
-    """Soat kelganda kuniga bir marta fon oqimida sync boshlaydi."""
+    """Interval o'tgan bo'lsa fon oqimida sinxronlashni boshlaydi."""
     global _LAST_CHECK_AT, _RUNNING
     if _RUNNING or not enabled():
         return
@@ -84,25 +94,29 @@ def check_and_sync() -> None:
     if now - _LAST_CHECK_AT < _CHECK_INTERVAL_S:
         return
     _LAST_CHECK_AT = now
-    if time.localtime().tm_hour < hour():
-        return
-    if _LAST_FAIL_AT and now - _LAST_FAIL_AT < _FAIL_BACKOFF_S:
+    state = _load()
+    try:
+        last_run = float(state.get("last_run") or 0.0)
+    except (TypeError, ValueError):
+        last_run = 0.0
+    if now - last_run < interval_s():
         return
     storage = get_storage()
     if not storage.enabled:
-        return
-    if _load().get("date") == date.today().isoformat():
         return
     with _LOCK:
         if _RUNNING:
             return
         _RUNNING = True
-    threading.Thread(target=_bg, args=(storage,), daemon=True).start()
+    # Boshlanishdagi belgi — bot qayta ishga tushsa ham interval saqlanadi.
+    _save({**state, "last_run": now})
+    first = str(state.get("date") or "") != date.today().isoformat()
+    threading.Thread(target=_bg, args=(storage, first), daemon=True).start()
 
 
-def _bg(storage) -> None:
+def _bg(storage, first: bool) -> None:
     """Fon oqimi: login → statuses/profiles/routes → kunlar bo'yicha sync."""
-    global _RUNNING, _LAST_FAIL_AT
+    global _RUNNING
     try:
         from ...api.client import BMClient
         from ...db import sync as db_sync
@@ -113,17 +127,17 @@ def _bg(storage) -> None:
         results = [db_sync.sync_statuses(storage).as_dict(),
                    db_sync.sync_profiles(storage).as_dict(),
                    db_sync.sync_routes(storage, client).as_dict()]
-        days = _target_days()
+        days = _target_days(first)
         results += db_sync.sync_days(storage, client, days, routes=None)
 
         errors = [str(r.get("error")) for r in results if r.get("error")]
-        _save({"date": date.today().isoformat(), "days": days,
-               "errors": len(errors)})
+        _save({"last_run": time.time(), "date": date.today().isoformat(),
+               "days": days, "errors": len(errors)})
         if errors:
             storage.record_error(source="sync.auto",
                                  message="; ".join(errors[:5]))
-    except Exception as exc:  # noqa: BLE001 - keyingi tsiklda qayta urinadi
-        _LAST_FAIL_AT = time.time()
+    except Exception as exc:  # noqa: BLE001 - keyingi intervalda qayta urinadi
+        _save({**_load(), "last_run": time.time()})
         try:
             storage.record_error(source="sync.auto", message=str(exc))
         except Exception:  # noqa: BLE001

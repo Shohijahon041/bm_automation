@@ -6,9 +6,9 @@ Qamrov:
     20s interval guard'lari, status endpoint shakllari;
   * fon oqimi — BMClient/db.sync monkeypatch bilan start → tugash, lines;
   * db_sync.sync_days — yo'nalishli va barcha-profillar yo'llari;
-  * sync_auto — soat/kun/backoff guard'lari, holat fayli (state/sync_auto.json),
+  * sync_auto — interval/kun guard'lari, holat fayli (state/sync_auto.json),
     xatolikda kun belgilanmasligi;
-  * bot_settings auto_sync/auto_sync_hour round-trip.
+  * bot_settings auto_sync/auto_sync_interval_min round-trip.
 """
 
 from __future__ import annotations
@@ -70,13 +70,12 @@ def sync_bg(monkeypatch):
 
 @pytest.fixture
 def auto_state(monkeypatch, tmp_path):
-    """sync_auto'ni izolyatsiya qiladi: holat fayli tmp, soat 00:00, yoniq."""
+    """sync_auto'ni izolyatsiya qiladi: holat fayli tmp, interval 10 daq, yoniq."""
     monkeypatch.setattr(sync_auto, "STATE_FILE", tmp_path / "sync_auto.json")
     monkeypatch.setattr(sync_auto, "_LAST_CHECK_AT", 0.0)
-    monkeypatch.setattr(sync_auto, "_LAST_FAIL_AT", 0.0)
     monkeypatch.setattr(sync_auto, "_RUNNING", False)
     monkeypatch.setattr(bot_settings, "auto_sync", lambda: True)
-    monkeypatch.setattr(bot_settings, "auto_sync_hour", lambda: 0)
+    monkeypatch.setattr(bot_settings, "auto_sync_interval_min", lambda: 10)
     yield
 
 
@@ -96,8 +95,13 @@ def _fake_client(monkeypatch, login_error: Exception | None = None):
 
 
 def _fake_sync(monkeypatch, day_errors: dict | None = None):
-    """db_sync.sync_routes/sync_days'ni soxtalashtiradi va chaqiruvlarni qayd etadi."""
+    """db_sync'ni soxtalashtiradi (routelar/kunlar) va chaqiruvlarni qayd etadi."""
     calls: dict = {"routes": 0, "days": []}
+
+    monkeypatch.setattr(db_sync, "sync_statuses",
+                        lambda s: SyncResult(entity="statuses", inserted=1))
+    monkeypatch.setattr(db_sync, "sync_profiles",
+                        lambda s, profiles=None: SyncResult(entity="profiles", inserted=1))
 
     def fake_routes(storage, client, brutto=True):
         calls["routes"] += 1
@@ -321,9 +325,13 @@ def test_sync_days_progress_cb(storage, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_target_days():
-    assert sync_auto._target_days(date(2026, 9, 30)) == ["2026-09-29", "2026-09-30"]
-    assert sync_auto._target_days(date(2026, 10, 5)) == [
+    wed = date(2026, 9, 30)  # chorshanba
+    assert sync_auto._target_days(True, wed) == ["2026-09-29", "2026-09-30"]
+    assert sync_auto._target_days(False, wed) == ["2026-09-30"]
+    mon = date(2026, 10, 5)  # dushanba
+    assert sync_auto._target_days(True, mon) == [
         "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"]
+    assert sync_auto._target_days(False, mon) == ["2026-10-05"]
 
 
 def test_auto_sync_disabled(auto_state, storage, monkeypatch):
@@ -332,34 +340,26 @@ def test_auto_sync_disabled(auto_state, storage, monkeypatch):
     assert not sync_auto.STATE_FILE.exists()
 
 
-def test_auto_sync_before_hour(auto_state, storage, monkeypatch):
-    class FakeTime:
-        @staticmethod
-        def time():
-            return time.time()
-
-        @staticmethod
-        def localtime():
-            # 2026-10-01 03:00 — soat chiqmaguncha kutish
-            return time.struct_time((2026, 10, 1, 3, 0, 0, 3, 274, 0))
-
-    monkeypatch.setattr(sync_auto, "time", FakeTime)
-    monkeypatch.setattr(bot_settings, "auto_sync_hour", lambda: 6)
-    sync_auto.check_and_sync()
-    assert not sync_auto.STATE_FILE.exists()
-
-
-def test_auto_sync_date_guard(auto_state, storage):
+def test_auto_sync_interval_guard(auto_state, storage):
+    # Yaqinda ishga tushgan — interval ichida qayta boshlanmaydi
     sync_auto.STATE_FILE.write_text(
-        json.dumps({"date": date.today().isoformat()}), encoding="utf-8")
+        json.dumps({"last_run": time.time()}), encoding="utf-8")
     sync_auto.check_and_sync()
     assert not sync_auto._RUNNING
 
 
-def test_auto_sync_fail_backoff_guard(auto_state, storage, monkeypatch):
-    monkeypatch.setattr(sync_auto, "_LAST_FAIL_AT", time.time())
+def test_auto_sync_due_when_stale(auto_state, storage, monkeypatch):
+    # Interval o'tgan — boshlanadi (kun boshida: kecha + bugun)
+    sync_auto.STATE_FILE.write_text(
+        json.dumps({"last_run": time.time() - 700}), encoding="utf-8")
+    calls = _fake_sync(monkeypatch)
+    _fake_client(monkeypatch)
     sync_auto.check_and_sync()
-    assert not sync_auto._RUNNING
+    _wait_running()
+    state = json.loads(sync_auto.STATE_FILE.read_text(encoding="utf-8"))
+    assert state["date"] == date.today().isoformat()
+    assert len(calls["days"]) == 1
+    assert calls["days"][0]["days"] == sync_auto._target_days(True)
 
 
 def test_auto_sync_runs_and_marks_state(auto_state, storage, monkeypatch):
@@ -394,18 +394,36 @@ def test_auto_sync_runs_and_marks_state(auto_state, storage, monkeypatch):
     state = json.loads(sync_auto.STATE_FILE.read_text(encoding="utf-8"))
     assert state["date"] == date.today().isoformat()
     assert state["errors"] == 0
-    assert steps["days"] == sync_auto._target_days()
+    assert state["last_run"] > 0
+    assert steps["days"] == sync_auto._target_days(True)
     assert steps["statuses"] == 1 and steps["profiles"] == 1 and steps["routes"] == 1
+
+
+def test_auto_sync_second_run_today_only(auto_state, storage, monkeypatch):
+    # Bugun allaqachon sinxronlangan — keyingi urinishda faqat bugun
+    sync_auto.STATE_FILE.write_text(json.dumps({
+        "last_run": time.time() - 700,
+        "date": date.today().isoformat(),
+    }), encoding="utf-8")
+    calls = _fake_sync(monkeypatch)
+    _fake_client(monkeypatch)
+    sync_auto.check_and_sync()
+    _wait_running()
+    state = json.loads(sync_auto.STATE_FILE.read_text(encoding="utf-8"))
+    assert state["date"] == date.today().isoformat()
+    assert len(calls["days"]) == 1
+    assert calls["days"][0]["days"] == [date.today().isoformat()]
 
 
 def test_auto_sync_failure_not_marked(auto_state, storage, monkeypatch):
     _fake_client(monkeypatch, login_error=RuntimeError("login timeout"))
     sync_auto.check_and_sync()
     _wait_running()
-    assert sync_auto._LAST_FAIL_AT > 0
-    if sync_auto.STATE_FILE.exists():
-        assert json.loads(sync_auto.STATE_FILE.read_text(
-            encoding="utf-8")).get("date") != date.today().isoformat()
+    # Xatolikda kun belgilanmaydi (keyingi urinishda kechagi kun yana
+    # qo'shiladi), lekin last_run yangilanadi — interval saqlanadi.
+    state = json.loads(sync_auto.STATE_FILE.read_text(encoding="utf-8"))
+    assert state.get("date") != date.today().isoformat()
+    assert state["last_run"] > 0
 
 
 # ---------------------------------------------------------------------------
@@ -413,24 +431,27 @@ def test_auto_sync_failure_not_marked(auto_state, storage, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_auto_sync_settings_roundtrip():
-    assert bot_settings.auto_sync() is True       # standart: yoniq
-    assert bot_settings.auto_sync_hour() == 6     # standart: 6:00
+    assert bot_settings.auto_sync() is True                   # standart: yoniq
+    assert bot_settings.auto_sync_interval_min() == 10        # standart: 10 daq
     assert bot_settings.set_auto_sync(False) is False
     assert bot_settings.auto_sync() is False
-    assert bot_settings.set_auto_sync_hour(9) == 9
-    assert bot_settings.auto_sync_hour() == 9
-    assert bot_settings.set_auto_sync_hour(99) == 23
-    assert bot_settings.set_auto_sync_hour("bad") == 6
+    assert bot_settings.set_auto_sync_interval_min(5) == 5
+    assert bot_settings.auto_sync_interval_min() == 5
+    assert bot_settings.set_auto_sync_interval_min(5000) == 1440  # yuqori chegara
+    assert bot_settings.set_auto_sync_interval_min(0) == 1        # quyi chegara
+    assert bot_settings.set_auto_sync_interval_min("bad") == 10    # noto'g'ri → 10
 
 
 def test_settings_api_auto_sync_roundtrip(client):
     out = client.get("/api/settings").json()
     assert out["global"]["auto_sync"] is True
-    assert out["global"]["auto_sync_hour"] == 6
+    assert out["global"]["auto_sync_interval_min"] == 10
     res = client.post("/api/settings",
-                      json={"auto_sync": False, "auto_sync_hour": 7}).json()
+                      json={"auto_sync": False,
+                            "auto_sync_interval_min": 15}).json()
     assert res["ok"] is True
-    assert "auto_sync" in res["changed"] and "auto_sync_hour" in res["changed"]
+    assert "auto_sync" in res["changed"]
+    assert "auto_sync_interval_min" in res["changed"]
     out2 = client.get("/api/settings").json()
     assert out2["global"]["auto_sync"] is False
-    assert out2["global"]["auto_sync_hour"] == 7
+    assert out2["global"]["auto_sync_interval_min"] == 15
