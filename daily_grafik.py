@@ -17,6 +17,7 @@ import re
 import os
 import json
 import time
+import hashlib
 import datetime
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -299,13 +300,18 @@ def fill_grafik(src, out, prefix, title_word, newdate, by_graph,
 
 
 def _send_personal_cards(res: dict, rid: str, d: datetime.date, label: str,
-                         admin_chat_id: str | None) -> None:
+                         admin_chat_id: str | None,
+                         only_driver_ids: set | None = None) -> None:
     """Bog'langan haydovchilarga o'z shaxsiy grafik kartasini yuboradi.
 
     Har haydovchi faqat O'Z grafigi, vaqti va avtobusi ko'rinadigan
     karta oladi (o'z qatori ajratib ko'rsatilgan). Kartalar
     `reports/<img_dir>/personal/` keshida saqlanadi — haydovchi keyin
     "Grafikim" tugmasi orqali ham qayta ko'rishi mumkin.
+
+    ``only_driver_ids`` berilsa faqat shu haydovchilarga yuboriladi
+    (grafik yangilanishida faqat o'zgargan haydovchilarga xabar uchun);
+    ``admin_chat_id`` berilmasa admin xulosasi yuborilmaydi.
     """
     if not isinstance(res, dict):
         return
@@ -333,6 +339,9 @@ def _send_personal_cards(res: dict, rid: str, d: datetime.date, label: str,
                     if not did or did in seen:
                         continue
                     seen.add(did)
+                    if only_driver_ids is not None \
+                            and did not in only_driver_ids:
+                        continue  # yangilanishda faqat o'zgarganlarga
                     prof = st.find("driver_profiles", driver_id=did) or {}
                     tcid = str(prof.get("telegram_chat_id") or "").strip()
                     if not tcid or not prof.get("notification_enabled") \
@@ -395,12 +404,13 @@ def _send_personal_cards(res: dict, rid: str, d: datetime.date, label: str,
                               f"({did[:8]}): {exc}")
         if sent or failed:
             print(f"  [{label}] shaxsiy kartalar: sent={sent} failed={failed}")
-            try:
-                send_message(f"👤 {label}: shaxsiy grafik kartalar — "
-                             f"yuborildi: {sent}, xato: {failed}",
-                             chat_id=admin_chat_id)
-            except Exception:
-                pass
+            if admin_chat_id:
+                try:
+                    send_message(f"👤 {label}: shaxsiy grafik kartalar — "
+                                 f"yuborildi: {sent}, xato: {failed}",
+                                 chat_id=admin_chat_id)
+                except Exception:
+                    pass
     except Exception as exc:
         print(f"  [{label}] shaxsiy kartalar xatolik: {exc}")
 
@@ -459,6 +469,54 @@ def _grafik_was_sent(rid: str, date_str: str) -> bool:
     return bool(_grafik_sent_state().get(key))
 
 
+def _grafik_sent_info(rid: str, date_str: str) -> dict | None:
+    """Yuborilgan grafik yozuvi (hash + haydovchi hash'lari) yoki None.
+
+    Eski formatdagi (``True``) yozuvlar uchun None — chaqiruvchi buni
+    "hash hali yo'q" deb qabul qiladi (baseline keyingi tekshiruvda
+    yoziladi)."""
+    entry = _grafik_sent_state().get(f"{rid}|{date_str}")
+    return entry if isinstance(entry, dict) else None
+
+
+def _duty_fingerprint(duty: dict) -> tuple[str, dict[str, str]]:
+    """Duty ma'lumotidan barqaror fingerprint (umumiy + haydovchi bo'yicha).
+
+    Qaytaradi: ``(total_hash, {driver_id: row_hash})``. Har grafik qatori
+    ko'rinadigan maydonlaridan (grafik/haydovchi(lar)/davlat raqami/vaqt/
+    shift) sha1 olinadi; jami hash — saralangan qator hash'laridan.
+    Grafik e'lon qilingandan keyin haydovchi/avtobus/vaqt o'zgarsa hash
+    ham o'zgaradi — `grafik_update` agenti shunga qarab qayta yuboradi.
+    (Safar soni kirmaydi: kun davomida u o'zgarib turishi mumkin.)
+    """
+    rows = []
+    per_driver: dict[str, str] = {}
+    for g in (duty.get("graphs") or []):
+        has_second = bool(g.get("hasSecond"))
+        item = {
+            "g": g.get("graphName") or "",
+            "d": g.get("driverName") or "",
+            "d2": (g.get("secondDriverName") or "") if has_second else "",
+            "did": str(g.get("driverId") or ""),
+            "did2": str(g.get("secondDriverId") or "") if has_second else "",
+            "p": g.get("plateNum") or "",
+            "st": g.get("startTime") or "",
+            "en": g.get("endTime") or "",
+            "sh": g.get("shiftName") or "",
+        }
+        row_hash = hashlib.sha1(
+            json.dumps(item, ensure_ascii=False, sort_keys=True)
+            .encode("utf-8")).hexdigest()[:16]
+        rows.append((item["g"], item["st"], row_hash))
+        for did in (item["did"], item["did2"]):
+            if did:
+                per_driver[did] = row_hash
+    rows.sort()
+    total = hashlib.sha1(
+        "|".join(h for _g, _st, h in rows).encode("utf-8")).hexdigest()[:16]
+    return total, per_driver
+
+
 def _grafik_notify_once(rid: str, date_str: str, kind: str) -> bool:
     """Bu (yo'nalish, kun) uchun `kind` eslatma hali yuborilmagan bo'lsa True."""
     key = f"{kind}|{rid}|{date_str}"
@@ -470,10 +528,22 @@ def _grafik_notify_once(rid: str, date_str: str, kind: str) -> bool:
     return True
 
 
-def _mark_grafik_sent(rid: str, date_str: str) -> None:
-    """Excel+rasm shu (yo'nalish, kun) uchun yuborilgan deb belgilaydi."""
+def _mark_grafik_sent(rid: str, date_str: str, hash: str | None = None,
+                      drivers: dict | None = None) -> None:
+    """Excel+rasm shu (yo'nalish, kun) uchun yuborilgan deb belgilaydi.
+
+    ``hash``/``drivers`` berilsa yozuv dict ko'rinishida saqlanadi —
+    keyinroq `grafik_update` agenti ma'lumot o'zgarganini aniqlab qayta
+    yuborishi uchun. Aks holda eski True formati (moslik uchun)."""
     state = _grafik_sent_state()
-    state[f"{rid}|{date_str}"] = True
+    if hash:
+        state[f"{rid}|{date_str}"] = {
+            "at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "hash": hash,
+            "drivers": drivers or {},
+        }
+    else:
+        state[f"{rid}|{date_str}"] = True
     _save_grafik_sent(state)
 
 
@@ -691,9 +761,17 @@ def _process_route_run(route_tuple, client, d, profiles_map, chat_id,
         results.append(("image", label, False))
 
     # Kuniga bir marta yuborilishi uchun muvaffaqiyatli jo'natishni belgilaymiz.
+    # Yozuvga duty fingerprint ham qo'shiladi — `grafik_update` agenti keyin
+    # ma'lumot o'zgarganini shu hash orqali aniqlaydi.
     if targets and ("excel", label, True) in results \
             and ("image", label, True) in results:
-        _mark_grafik_sent(rid, date_str)
+        try:
+            total_hash, driver_hashes = _duty_fingerprint(duty)
+            _mark_grafik_sent(rid, date_str, hash=total_hash,
+                              drivers=driver_hashes)
+        except Exception as exc:
+            print(f"  [{label}] fingerprint saqlanmadi: {exc}")
+            _mark_grafik_sent(rid, date_str)
 
     return results
 

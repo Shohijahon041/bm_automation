@@ -1226,6 +1226,10 @@ def test_auto_agents_disabled_by_default(monkeypatch):
     # sync_auto haqiqiy fon sinxronlashni boshlamasin (state/tarmoq tegilmasin)
     from bm_automation.app.notifications.ops import sync_auto as sync_auto_mod
     monkeypatch.setattr(sync_auto_mod, "check_and_sync", lambda: None)
+    # grafik_update ham haqiqiy API tekshiruvini boshlamasin
+    from bm_automation.app.notifications.ops import (
+        grafik_update as grafik_update_mod)
+    monkeypatch.setattr(grafik_update_mod, "check_and_send", lambda: None)
     # Har qanday xabar yuborishga urinishni ushlaymiz (agentlar ochib yuborilmasin)
     from bm_automation.app.notifications.ops import (daily_summary, doc_expiry,
                                                      fines_report, grafik_sms,
@@ -1273,6 +1277,10 @@ def test_auto_agents_enabled_runs_agents(monkeypatch):
     # sync_auto haqiqiy fon sinxronlashni boshlamasin (state/tarmoq tegilmasin)
     from bm_automation.app.notifications.ops import sync_auto as sync_auto_mod
     monkeypatch.setattr(sync_auto_mod, "check_and_sync", lambda: None)
+    # grafik_update ham haqiqiy API tekshiruvini boshlamasin
+    from bm_automation.app.notifications.ops import (
+        grafik_update as grafik_update_mod)
+    monkeypatch.setattr(grafik_update_mod, "check_and_send", lambda: None)
     from bm_automation.app.notifications.ops import (daily_summary, doc_expiry,
                                                      fines_report, grafik_sms,
                                                      monthly_results, problem_alerts,

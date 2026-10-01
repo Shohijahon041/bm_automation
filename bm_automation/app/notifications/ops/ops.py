@@ -470,6 +470,14 @@ def poll_forever() -> None:
             sync_auto.check_and_sync()
         except Exception as exc:
             print(f"Avto-sync xatosi: {exc}")
+        # Grafik yangilanishi kuzatuvi — AI_AUTO_AGENTS'ga bog'liq emas:
+        # e'lon qilingandan keyin duty ma'lumoti o'zgarsa grafik (Excel +
+        # rasm + shaxsiy kartalar) qayta yuboriladi (har 15 daqiqada).
+        try:
+            from . import grafik_update
+            grafik_update.check_and_send()
+        except Exception as exc:
+            print(f"Grafik yangilash xatosi: {exc}")
         try:
             from ...utils import cleanup
             msg = cleanup.run_once()
