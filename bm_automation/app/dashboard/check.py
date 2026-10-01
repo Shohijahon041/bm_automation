@@ -20,9 +20,14 @@ from ..repositories.gross_repo import GrossRepository
 
 
 def _route_list(route: str) -> list:
-    """Tanlangan route; bo'sh bo'lsa profiles.json'dagi barcha firmalar."""
+    """Tanlangan yo'nalish(lar); bo'sh bo'lsa profiles.json'dagi barcha firmalar.
+
+    Bir nechta yo'nalish vergul (yoki bo'shliq) bilan ajratilgan bo'lishi
+    mumkin — masalan ko'p yo'nalishli kompaniya sessiyasida.
+    """
+    route = str(route or "").strip()
     if route:
-        return [route]
+        return [t for t in route.replace(",", " ").split() if t]
     return [str(p.get("routeVariantId") or "").strip()
             for p in all_profiles()
             if str(p.get("routeVariantId") or "").strip()]

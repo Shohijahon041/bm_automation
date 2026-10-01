@@ -22,7 +22,7 @@ from ..utils.logger import get_logger
 from .base import Database, DatabaseError
 from .models import (SyncResult, TripRecord, json_dumps, json_loads,
                      now_utc, params_hash)
-from .schema import init_db
+from .schema import TENANT_TABLES, init_db
 
 log = get_logger("bm_automation.db")
 
@@ -106,6 +106,29 @@ class Storage:
             self._warned = True
             log.warning("DB yozuv xatosi (keyingilari ham o'tkazib yuboriladi): %s", exc)
 
+    def _tenant_fill(self, table: str, values: dict) -> dict:
+        """Tenant jadvali yozuviga company_id ni avtomatik qo'shadi.
+
+        Faqat qiymat berilmagan (0/None/'') va kompaniya ANIQ topilgan
+        holatda qo'shiladi — aks holda tegmaydi. Bu upsert'ning
+        `company_id=EXCLUDED.company_id` yangilashi mavjud qiymatni
+        0 bilan bosib ketmasligini ta'minlaydi.
+        """
+        if table not in TENANT_TABLES:
+            return values
+        if (values or {}).get("company_id") not in (None, "", 0):
+            return values
+        try:
+            from ..core.tenant import resolve_company_id
+            # `storage=self` — global DB'ga emas, aynan shu nusxaga qaraydi
+            # (testlar va ko'p bazali muhitlar xavfsiz).
+            cid = int(resolve_company_id(table, values, storage=self) or 0)
+        except Exception:  # noqa: BLE001
+            return values
+        if cid:
+            return {**values, "company_id": cid}
+        return values
+
     def upsert(self, table: str, key_cols: list[str], values: dict) -> str:
         """Bitta yozuvni natural kalit bo'yicha upsert qiladi.
 
@@ -113,6 +136,7 @@ class Storage:
         """
         if not self.enabled:
             return "updated"
+        values = self._tenant_fill(table, values)
         now = now_utc()
         row = {"created_at": now, "updated_at": now, **values}
         cols = list(row)
@@ -156,7 +180,12 @@ class Storage:
         for r in rows:
             k = tuple(str(r.get(c) or "") for c in key_cols)
             seen[k] = r
-        rows = list(seen.values())
+        rows = [self._tenant_fill(table, r) for r in seen.values()]
+        # PostgreSQL bitta INSERT uchun barcha qatorlarda bir xil ustunlar
+        # to'plami shart — company_id bir qismida bo'lsa, qolganiga 0 qo'yamiz
+        # (bu qatorlar aynan o'sha kalitda 0 dan boshqa qiymatga ega bo'lmaydi).
+        if any("company_id" in r for r in rows):
+            rows = [{"company_id": 0, **r} for r in rows]
         if getattr(self.db, "driver", "") != "postgres":
             inserted = updated = 0
             for r in rows:
@@ -200,6 +229,7 @@ class Storage:
         """Append-only jadvalga yozuv qo'shadi (voqea jurnallari)."""
         if not self.enabled:
             return False
+        values = self._tenant_fill(table, values)
         now = now_utc()
         row = {"created_at": now, "updated_at": now, **values}
         cols = list(row)
@@ -1327,8 +1357,17 @@ class Storage:
             sets.append(f"role = {self.db.ph}")
             params.append(str(role or "VIEWER").strip().upper() or "VIEWER")
         if company is not None:
+            c = str(company or "").strip()
             sets.append(f"company = {self.db.ph}")
-            params.append(str(company or "").strip())
+            params.append(c)
+            # Nom o'zgarganda company_id ham sinxronlanadi (0 = noma'lum).
+            try:
+                from ..core.tenant import company_id_for_name
+                cid = int(company_id_for_name(c) or 0) if c else 0
+            except Exception:  # noqa: BLE001
+                cid = 0
+            sets.append(f"company_id = {self.db.ph}")
+            params.append(cid)
         if active is not None:
             sets.append(f"active = {self.db.ph}")
             params.append(1 if active else 0)

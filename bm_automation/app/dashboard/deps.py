@@ -110,6 +110,7 @@ def create_session(user: dict) -> str:
         _prune_sessions()
         _sessions[token] = {
             "username": user.get("username") or "",
+            "user_id": int(user.get("id") or 0),
             "role": user.get("role") or "VIEWER",
             "company": user.get("company") or "",
             "expires_at": time.time() + _SESSION_MAX_AGE_S,
@@ -139,16 +140,42 @@ def session_user(token: str) -> dict | None:
             return None
         company = s.get("company") or ""
         role = s.get("role") or "VIEWER"
+        is_admin = role == "ADMIN"
         return {
             "username": s.get("username") or "",
+            "user_id": int(s.get("user_id") or 0),
             "role": role,
             "company": company,
-            "is_admin": role == "ADMIN",
-            "routes": None if role == "ADMIN" else _company_routes(company),
+            # company_id har doim yangilanadi (kompaniya keyin qo'shilgan
+            # bo'lsa ham sessiya ishlashda davom etadi).
+            "company_id": 0 if is_admin else _company_id(company),
+            "is_admin": is_admin,
+            "routes": None if is_admin else _company_routes(company),
         }
 
 
+def _company_id(company: str) -> int:
+    try:
+        from ..core import tenant
+        return tenant.company_id_for_name(company or "")
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _company_routes(company: str) -> list[str]:
+    """Kompaniyaning barcha yo'nalishlari (1 kompaniya = N yo'nalish).
+
+    Manba: profiles.json (barcha shu nomdagi yozuvlar) + DB `profiles`
+    fallback — batafsil: `core.tenant.company_routes`.
+    """
+    try:
+        from ..core import tenant
+        routes = tenant.company_routes(company or "")
+        if routes:
+            return routes
+    except Exception:  # noqa: BLE001
+        pass
+    # Zaxira: eski xatti-harakat (bitta aktiv profil)
     from ..core.profiles import get_profile
     profiling = get_profile(company or "")
     rid = str((profiling or {}).get("routeVariantId") or "").strip()
@@ -390,16 +417,71 @@ def scope_routes(scope: dict) -> set[str] | None:
 
 
 def force_route(scope: dict, path: str, params: dict) -> dict:
-    """Non-admin uchun route paramni o'z korxonasiga kesadi."""
+    """Non-admin uchun route paramni o'z korxona yo'nalishlariga kesadi.
+
+    Kompaniyada bir nechta yo'nalish bo'lsa — vergul bilan birlashtiriladi
+    (metrics/export vergul ajratuvchini qo'llab-quvvatlaydi).
+    """
     if not scope or scope.get("is_admin"):
         return params
     if not any(path.startswith(p) for p in _ROUTE_SCOPED_PREFIXES):
         return params
-    routes = list(scope.get("routes") or [])
-    rid = routes[0] if routes else "\x00_qamrovsiz\x00"
+    routes = [str(r).strip() for r in (scope.get("routes") or []) if str(r).strip()]
+    rid = ",".join(routes) if routes else "\x00_qamrovsiz\x00"
     params = dict(params)
     params["route"] = rid
     return params
+
+
+def tenant_guard(request: Request):
+    """Bloklangan/muddati o'tgan kompaniya sessiyasini to'xtatadi (403).
+
+    Qoidalar:
+    - faqat /api/ yo'llar (login/logout mustasno);
+    - faqat `bm_session` cookie bor so'rovlar; ADMIN (super) tegilmaydi;
+    - noma'lum kompaniya (jadvalda yo'q) — fail-open (o'tkaziladi);
+    - har qanday xato — o'tkaziladi (dashboard to'xtab qolmasligi uchun).
+
+    Ruxsat etilgan so'rovlar uchun `request.state.tenant` to'ldiriladi.
+    Qaytaradi: 403 JSONResponse yoki None.
+    """
+    if os.environ.get("BM_TEST_MODE") == "1":
+        return None
+    path = request.url.path or ""
+    if not path.startswith("/api/"):
+        return None
+    if path.startswith("/api/login") or path.startswith("/api/logout"):
+        return None
+    cookie = request.cookies.get("bm_session", "")
+    if not cookie:
+        return None
+    try:
+        session = session_user(cookie)
+        if not session:
+            return None
+        company = str(session.get("company") or "")
+        from ..core import tenant
+        row = tenant.company_state(company) if company else None
+        request.state.tenant = {
+            "company": company,
+            "company_id": int(session.get("company_id") or 0),
+            "state": row,
+        }
+        if session.get("is_admin"):
+            return None
+        if company and not tenant.company_active(row):
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "ok": False,
+                    "detail": "Kompaniya faol emas (bloklangan yoki obuna "
+                              "muddati tugagan). Administratorga murojaat qiling.",
+                },
+            )
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
 
 def client_ip(request: Request) -> str:

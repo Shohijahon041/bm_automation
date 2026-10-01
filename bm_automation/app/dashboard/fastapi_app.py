@@ -104,6 +104,15 @@ def create_app() -> FastAPI:
                         {"error": "Juda ko'p so'rov — bir oz kuting"}, status_code=429)
         return await call_next(request)
 
+    @app.middleware("http")
+    async def tenant_middleware(request: Request, call_next):
+        """Kompaniya holati nazorati (bloklangan/muddati o'tgan tenant → 403)."""
+        from .deps import tenant_guard
+        denied = tenant_guard(request)
+        if denied is not None:
+            return denied
+        return await call_next(request)
+
     # --- Routers ---
     from .routers import auth, data, drivers, admin, system
     app.include_router(auth.router)
