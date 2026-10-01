@@ -29,11 +29,27 @@ from .roles import Role, can, configured_roles, resolve_role, role_label
 
 log = get_logger("bm_automation.bot")
 
-# Ish haqi (salary) faqat ADMIN/MANAGER ga ko'rinadi.
-def _can_view_salary(chat_id: int | None) -> bool:
+# Ish haqi (salary) faqat ADMIN/MANAGER'ga ko'rinadi. Haydovchi o'z
+# oyligini `show_driver_salary=ON` bo'lganda ko'radi (dashboarddagidek).
+def _can_view_salary(chat_id: int | None, driver_id: str = "") -> bool:
     if chat_id is None:
         return True  # ichki/skeduler chaqiruvlar uchun boshqaruv rejimi
-    return can(resolve_role(chat_id), "salary")
+    role = resolve_role(chat_id)
+    if can(role, "salary"):
+        return True
+    # Haydovchi faqat o'z kartasida oylikni ko'radi (setting bo'lsa).
+    if role is Role.DRIVER:
+        if not driver_id:
+            return False
+        try:
+            from .roles import driver_id_for_chat
+            if driver_id_for_chat(chat_id) != driver_id:
+                return False
+            from ...core.bot_settings import show_driver_salary
+            return bool(show_driver_salary())
+        except Exception:  # noqa: BLE001 - sozlama bo'lmasa yashirin
+            return False
+    return False
 
 _WEEKDAYS = ["dushanba", "seshanba", "chorshanba", "payshanba",
              "juma", "shanba", "yakshanba"]
@@ -528,7 +544,7 @@ def driver_card(driver_id: str, filters: dict | None = None,
     if rank and rank.get("position"):
         rating_txt += (f"  ·  🏆 {rank['position']}-o'rin"
                        f" (yo'nalish, {rank['total']} dan)")
-    if _can_view_salary(chat_id):
+    if _can_view_salary(chat_id, driver_id):
         rating_txt += f"  ·  💵 1 km: {fmt(d.get('km_rate') or 0, 0)} so'm"
     parts.append(rating_txt)
 
@@ -574,7 +590,7 @@ def driver_card(driver_id: str, filters: dict | None = None,
         except Exception:  # noqa: BLE001 - jarima bo'lmasa kartani buzmaydi
             fines_sum = 0.0
     rows.append(["💸 Jarima summasi", fmt(float(fines_sum or 0), 0) + " so'm"])
-    if _can_view_salary(chat_id):
+    if _can_view_salary(chat_id, driver_id):
         rows += [
             ["Brutto", fmt(d.get("gross_pay") or 0, 0)],
             ["Jarimalar", fmt(d.get("fines") or 0, 0)],

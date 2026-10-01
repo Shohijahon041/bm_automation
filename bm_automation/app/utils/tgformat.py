@@ -88,15 +88,31 @@ def table(headers: list[str], rows: list[list[str]], max_width: int = 46) -> str
             if i < len(widths):
                 widths[i] = max(widths[i], len(cell))
 
-    total = sum(w + 2 for w in widths) + len(widths) + 1
-    if total > max_width:
-        deficit = total - max_width
-        for i in range(len(widths) - 1, -1, -1):
-            if deficit <= 0:
-                break
-            cut = min(max(widths[i] - 1, 0), deficit)
-            widths[i] -= cut
-            deficit -= cut
+    n = len(widths)
+    total = sum(w + 2 for w in widths) + n + 1
+    deficit = total - max_width
+    if deficit > 0:
+        # Har bir ustun o'z sarlavhasigacha (yoki kamida 3 belgigacha)
+        # qisqarishi mumkin. Kesish eng ko'p "bo'shliq"qa ega (ya'ni eng
+        # keng, odatda erkin matnli) ustunga tushadi — shunda tor ustunlar
+        # (sana, holat, raqam) butun qoladi, avvalgiday o'ng ustunlar
+        # birinchi bo'lib "…"gacha maydalanmaydi.
+        floors = [min(w, max(len(headers[i]), 3)) for i, w in enumerate(widths)]
+        while deficit > 0:
+            best, best_slack = -1, 0
+            for i in range(n):
+                slack = widths[i] - floors[i]
+                if slack > best_slack:
+                    best, best_slack = i, slack
+            if best < 0:
+                # Hamma ustun o'z polida — baribir eng kengini qisqartiramiz.
+                cand = max(range(n), key=lambda i: widths[i])
+                if widths[cand] <= 1:
+                    break
+                widths[cand] -= 1
+            else:
+                widths[best] -= 1
+            deficit -= 1
 
     def _fit(cell: str, w: int) -> str:
         if len(cell) <= w:

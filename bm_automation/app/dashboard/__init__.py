@@ -2,7 +2,7 @@
 
 - `metrics` — DB asosidagi KPI/yo'nalish/avtobus/haydovchi/tizim metrikalari;
 - `export` — CSV/Excel/PDF eksport;
-- `server` — stdlib HTTP server + JSON API (auto-refresh brauzerda).
+- `fastapi_app` — FastAPI ilovasi (router'lar `routers/` paketida).
 
 Ishga tushirish: `python -m bm_automation dashboard`.
 """

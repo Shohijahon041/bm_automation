@@ -2501,12 +2501,112 @@ def summary(filters: dict | None = None) -> dict:
     return result
 
 
+def attendance_calendar(params: dict | None = None) -> dict:
+    """Oylik ishga chiqish kalendari: haydovchi × kun → reys/trip soni.
+
+    Uch manba birlashtiriladi (ustunlik tartibi):
+      1. trips (ACCEPTED/APPROVED) — haqiqiy reyslar;
+      2. driver_work_logs, note != 'AVTO' — qo'lda kiritilgan ish kunlari
+         (faqat trip bo'lmagan kunlarda);
+      3. driver_work_logs, note = 'AVTO' va working_day > 0 — sayt hisobi
+         (qo'lda qayd qilingan kunlarni o'zgartirmaydi).
+    """
+    params = params or {}
+    from ..db.storage import get_storage as _get_storage
+    storage = _get_storage()
+    if not storage.enabled:
+        return {"ok": False, "error": "DB rejimi o'chirilgan"}
+    month = params.get("month") or ""
+    if not month:
+        month = date.today().strftime("%Y-%m")
+    route_filter = params.get("route", "")
+    from_date = month + "-01"
+    parts = month.split("-")
+    y, mo = int(parts[0]), int(parts[1])
+    to_date = f"{y + 1}-01-01" if mo == 12 else f"{y}-{mo + 1:02d}-01"
+    ph = storage.db.ph
+
+    def _new(did, r):
+        return {"driver_id": did, "full_name": r["full_name"],
+                "route_id": r["route_id"], "work_days": {}}
+
+    query = (
+        "SELECT d.external_id AS driver_id, d.full_name, d.route_id, "
+        "  t.date, COUNT(*) AS trip_count "
+        "FROM trips t "
+        "JOIN drivers d ON d.external_id = t.driver_id "
+        f"WHERE t.date >= {ph} AND t.date < {ph} "
+        "  AND t.status IN ('ACCEPTED','APPROVED') ")
+    args: list = [from_date, to_date]
+    if route_filter:
+        query += f" AND d.route_id = {ph} "
+        args.append(route_filter)
+    query += (" GROUP BY d.external_id, d.full_name, d.route_id, t.date"
+              " ORDER BY d.full_name, t.date")
+    try:
+        rows = storage.db.query(query, args) or []
+    except Exception:  # noqa: BLE001
+        log.exception("attendance query error")
+        return {"ok": False, "error": "Query xatosi"}
+
+    drivers_map: dict = {}
+    for r in rows:
+        did = r["driver_id"]
+        drivers_map.setdefault(did, _new(did, r))
+        drivers_map[did]["work_days"][r["date"]] = r["trip_count"]
+
+    manual_keys: set = set()
+    try:
+        wl_query = (
+            "SELECT d.external_id AS driver_id, d.full_name, d.route_id,"
+            "  w.date, COALESCE(w.trip_count, 0) AS trip_count"
+            " FROM driver_work_logs w"
+            " JOIN drivers d ON d.external_id = w.driver_id"
+            f" WHERE w.note <> {ph} AND w.driver_id <> ''"
+            f"  AND w.date >= {ph} AND w.date < {ph} ")
+        wl_args: list = ["AVTO", from_date, to_date]
+        if route_filter:
+            wl_query += f" AND d.route_id = {ph} "
+            wl_args.append(route_filter)
+        for r in storage.db.query(wl_query, wl_args) or []:
+            did = r["driver_id"]
+            drivers_map.setdefault(did, _new(did, r))
+            manual_keys.add((did, r["date"]))
+            if r["date"] not in drivers_map[did]["work_days"]:
+                drivers_map[did]["work_days"][r["date"]] = r["trip_count"]
+    except Exception:  # noqa: BLE001
+        log.exception("attendance work_log query error")
+
+    try:
+        avto_query = (
+            "SELECT d.external_id AS driver_id, d.full_name, d.route_id,"
+            "  w.date, COALESCE(w.trip_count, 0) AS trip_count"
+            " FROM driver_work_logs w"
+            " JOIN drivers d ON d.external_id = w.driver_id"
+            f" WHERE w.note = {ph} AND w.driver_id <> ''"
+            f"  AND w.date >= {ph} AND w.date < {ph}"
+            f"  AND COALESCE(w.working_day, 0) > 0 ")
+        avto_args: list = ["AVTO", from_date, to_date]
+        if route_filter:
+            avto_query += f" AND d.route_id = {ph} "
+            avto_args.append(route_filter)
+        for r in storage.db.query(avto_query, avto_args) or []:
+            did = r["driver_id"]
+            drivers_map.setdefault(did, _new(did, r))
+            if (did, r["date"]) not in manual_keys:
+                drivers_map[did]["work_days"][r["date"]] = r["trip_count"]
+    except Exception:  # noqa: BLE001
+        log.exception("attendance avto query error")
+
+    drivers = sorted(drivers_map.values(), key=lambda d: d["full_name"])
+    return {"ok": True, "month": month, "drivers": drivers}
+
+
 def _route_skm_value(route_id: str) -> float:
     """Yo'nalish uchun amal qiladigan SKM (route → global fallback)."""
     from ..core.bot_settings import brutto_skm, route_skm
     base = brutto_skm()
     return float(route_skm(route_id, base) or base or 0.0)
-
 
 def _route_km_value(route_id: str) -> float:
     """Yo'nalish uchun amal qiladigan km narxi (ustunlik zanjiri bo'yicha)."""

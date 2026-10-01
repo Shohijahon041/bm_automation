@@ -1,8 +1,5 @@
 """Dashboard metrikalari va eksport testlari (SQLite / tmp)."""
 
-import io
-import json
-
 import pytest
 
 from bm_automation.app.db.base import Database
@@ -11,7 +8,6 @@ from bm_automation.app.db.storage import storage_for
 from bm_automation.app.dashboard import export as dexport
 from bm_automation.app.dashboard import metrics as metrics_mod
 from bm_automation.app.dashboard.metrics import Metrics
-from bm_automation.app.dashboard.server import DashboardHandler
 from tests.sqlite_backend import SQLiteDatabase
 
 
@@ -280,18 +276,27 @@ def test_km_rate_route_level(met, monkeypatch):
 def test_update_km_rate_without_drivers(met, monkeypatch):
     """Dashboard'dan km narx o'rnatish haydovchilar bo'lmasa ham ishlaydi."""
     import bm_automation.app.core.bot_settings as bs
-    from bm_automation.app.dashboard.server import DashboardHandler
+    from fastapi.testclient import TestClient
+    from bm_automation.app.dashboard import deps
+    from bm_automation.app.dashboard.fastapi_app import app
     saved = {}
     monkeypatch.setattr(bs, "set_route_km",
                         lambda rid, val: saved.update({rid: val}) or val)
-    handler = object.__new__(DashboardHandler)
-    res = handler._update_km_rate({"route_id": "r99", "km_rate": 2500})
+    monkeypatch.setattr(deps, "_POST_MIN_INTERVAL_S", 0.0)
+    with deps._POST_LOCK:
+        deps._last_post_at.clear()
+    client = TestClient(app)
+
+    def _post(payload):
+        return client.post("/api/kmrate", json=payload).json()
+
+    res = _post({"route_id": "r99", "km_rate": 2500})
     assert res["ok"] is True
     assert res["route_id"] == "r99" and res["km_rate"] == 2500
     assert saved == {"r99": 2500}
     # Yaroqsiz qiymat rad etiladi
-    assert handler._update_km_rate({"route_id": "r99", "km_rate": -5})["ok"] is False
-    assert handler._update_km_rate({"km_rate": 100})["ok"] is False
+    assert _post({"route_id": "r99", "km_rate": -5})["ok"] is False
+    assert _post({"km_rate": 100})["ok"] is False
 
 
 def test_routes_km_rate_field(met, monkeypatch):
@@ -626,31 +631,19 @@ def test_system_includes_db_connection_details(met, monkeypatch):
     assert "latency_ms" in d
 
 
-# ---------------------------------------------------------------- HTTP handler
-
-
-class _FakeSocket:
-    def __init__(self):
-        self._wbuf = io.BytesIO()
-
-    def makefile(self, mode, *args):
-        return io.BytesIO() if mode.startswith("r") else self._wbuf
-
-    def sendall(self, data):
-        self._wbuf.write(data)
+# ---------------------------------------------------------------- HTTP (FastAPI)
 
 
 def _get(path):
-    server = type("S", (), {"daemon_threads": True})()
-    sock = _FakeSocket()
-    h = DashboardHandler(sock, ("127.0.0.1", 0), server)
-    h.command = "GET"
-    h.path = path
-    h.requestline = "GET " + path + " HTTP/1.0"
-    h.request_version = "HTTP/1.0"
-    h.headers = {}
-    h.do_GET()
-    return json.loads(sock._wbuf.getvalue().split(b"\r\n\r\n", 1)[1].decode("utf-8"))
+    """GET so'rovini FastAPI TestClient orqali bajarib JSON qaytaradi.
+
+    `BM_TEST_MODE=1` (conftest autouse) → Scope to'liq ADMIN qaytaradi,
+    shuning uchun autentifikatsiya talab qilinmaydi.
+    """
+    from fastapi.testclient import TestClient
+    from bm_automation.app.dashboard.fastapi_app import app
+    r = TestClient(app).get(path)
+    return r.json()
 
 
 def test_api_insights_endpoint(monkeypatch):

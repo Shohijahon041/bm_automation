@@ -54,6 +54,18 @@ def _safe_loop(storage: Storage, source: str, body: Callable[[], SyncResult]) ->
         return SyncResult(entity=source, error=str(exc))
 
 
+def _warn_delete_blocked(storage: Storage, table: str, reason_source: str,
+                         reason: str) -> None:
+    """O'chirish bloklanganda xabar beradi (jurnal + `errors`)."""
+    msg = (f"Xavfsizlik: {table} eski qatorlar o'chirilmadi — {reason}. "
+           f"Manba ({reason_source}) to'liq o'qilmagan bo'lishi mumkin, "
+           f"o'chirish esa haqiqiy ma'lumotni yo'qotardi.")
+    log.warning(msg)
+    storage.record_error(source=f"sync.{table}", message=msg, context={
+        "table": table, "reason_source": reason_source, "reason": reason,
+    })
+
+
 # -------------------------------------------------------------- entity sync
 
 def sync_statuses(storage: Storage) -> SyncResult:
@@ -546,6 +558,15 @@ def sync_work_logs(storage: Storage, from_date: str = "", to_date: str = "",
         "SELECT date, driver_id, vehicle_id, distance_km, status, data FROM trips "
         f"WHERE {' AND '.join(clauses + trip_scope)}",
         tuple(params + trip_bind), limit=50000)
+    # F-06: 50k chegarasi jim qolib qolsa, qisqa ro'yxat butun diapazonni
+    # qamrab olmaydi — va `agg`ga tushmagan AVTO qatorlar quyida O'CHIRILARDI
+    # (jamlangan km ham noto'g'ri bo'lardi). Chegaraga tegilgan bo'lsa
+    # o'chirish to'liq bloklanadi, ogohlantirish yoziladi.
+    delete_blocked = len(rows) >= 50000
+    if delete_blocked:
+        _warn_delete_blocked(
+            storage, "driver_work_logs", "trips",
+            f"trips so'rovi {len(rows)} qatorda {50000} chegarasiga tegdi")
 
     done_statuses = {TripStatus.ACCEPTED.value, TripStatus.APPROVED.value}
     agg: dict[tuple, dict] = {}
@@ -613,6 +634,14 @@ def sync_work_logs(storage: Storage, from_date: str = "", to_date: str = "",
         "SELECT date, driver_id, vehicle_id FROM driver_work_logs "
         f"WHERE note = {ph}{scope_sql}",
         ("AVTO",) + scope_params, limit=50000)
+    # Chegaraga tegilgan bo'lsa haqiqiy qatorlar ko'rinmaydi — ularni
+    # "eski deb" o'chirish xato bo'lur, o'chirish to'liq to'xtatiladi.
+    if len(avto_rows) >= 50000:
+        _warn_delete_blocked(
+            storage, "driver_work_logs", "driver_work_logs",
+            f"AVTO qatorlar so'rovi {len(avto_rows)} qatorda chegaraga tegdi")
+        avto_rows = []
+        delete_blocked = True
     existing_manual = set()
     if agg:
         manual_rows = storage.query(
@@ -640,15 +669,19 @@ def sync_work_logs(storage: Storage, from_date: str = "", to_date: str = "",
         return None
 
     with storage.db.transaction():
-        for r in avto_rows:
-            key = (str(r.get("date") or ""), str(r.get("driver_id") or ""),
-                   str(r.get("vehicle_id") or ""))
-            if key not in agg:
-                storage.db.execute(
-                    f"DELETE FROM driver_work_logs WHERE date = {ph} "
-                    f"AND driver_id = {ph} AND vehicle_id = {ph}",
-                    key)
-                result.deleted += 1
+        # F-06: noto'liq/manba o'qilmagan bo'lsa eski AVTO qatorlar
+        # o'chirilmaydi — aks holda km hisobi bo'sh ko'rinib, haqiqiy
+        # ish kunlari yo'qolardi.
+        if not delete_blocked:
+            for r in avto_rows:
+                key = (str(r.get("date") or ""), str(r.get("driver_id") or ""),
+                       str(r.get("vehicle_id") or ""))
+                if key not in agg:
+                    storage.db.execute(
+                        f"DELETE FROM driver_work_logs WHERE date = {ph} "
+                        f"AND driver_id = {ph} AND vehicle_id = {ph}",
+                        key)
+                    result.deleted += 1
         for key, a in agg.items():
             if key in existing_manual:
                 continue  # qo'lda qayd mavjud — AVTO ustiga yozilmaydi

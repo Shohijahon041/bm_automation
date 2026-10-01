@@ -52,7 +52,7 @@ def _has_failures(results: list) -> bool:
         if (r.get("error") or r.get("monthly_error")
                 or r.get("driver_notification_error") or r.get("driver_sms_error")):
             return True
-        if r.get("image") and not r.get("sent"):
+        if r.get("image") and not r.get("sent") and not r.get("no_group"):
             return True
         if r.get("monthly_excel") and not r.get("monthly_sent"):
             return True
@@ -85,6 +85,10 @@ def _notify_summary(results: list, chat_id: str | None, sheet_date: date) -> Non
         parts = []
         if r.get("sent"):
             parts.append("jadval ✓")
+        elif r.get("no_group"):
+            parts.append("jadval — guruh biriktirilmagan")
+        elif r.get("already_sent"):
+            parts.append("jadval ✓ (allaqachon yuborilgan)")
         elif r.get("error"):
             parts.append(f"jadval XATO: {r['error']}")
         if r.get("monthly_sent"):
@@ -273,7 +277,15 @@ def run_daily_once(send: bool = True, chat_id: str | None = None, month_offset: 
                               out_dir=base, send=send, chat_id=chat_id, profile=p)
             entry["image"] = sheet["image"]
             entry["sent"] = sheet.get("sent", False)
-            print(f"  OK [{name}]: jadval {sheet['image']}")
+            if sheet.get("no_group"):
+                entry["no_group"] = True
+                print(f"  [{name}] jadval tayyor, guruh biriktirilmagan")
+            elif sheet.get("already_sent"):
+                entry["already_sent"] = True
+                print(f"  [{name}] jadval allaqachon yuborilgan — "
+                      f"takrorlanmaydi: {sheet['image']}")
+            else:
+                print(f"  OK [{name}]: jadval {sheet['image']}")
         except Exception as exc:
             entry["error"] = str(exc)
             print(f"  XATO [{name}] jadval: {exc}")

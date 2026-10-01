@@ -697,6 +697,35 @@ def filename(fmt: str, scope: str, date_str: str) -> str:
     return re.sub(r'[^\w.\-]+', "_", name)
 
 
+_VALID_FORMATS = {"csv", "xls", "xlsx", "pdf"}
+_VALID_SCOPES = {"trips", "today", "routes", "vehicles", "drivers", "all",
+                 "distance", "schedule", "attendance", "rating", "electricity",
+                 "rejects", "tabel", "settings", "tariffs", "brutto"}
+
+
+def run_export(params: dict) -> dict:
+    """So'rov parametrlaridan eksport faylini quradi.
+
+    Qaytaradi: `{"data", "content_type", "filename"}` yoki xato holatida
+    `{"error", "status"}`. Router bu lug'atni HTTP javobiga aylantiradi.
+    """
+    p = params or {}
+    fmt = (p.get("format") or "csv").lower()
+    scope = (p.get("scope") or "trips").lower()
+    if fmt not in _VALID_FORMATS:
+        return {"error": "format noto'g'ri", "status": 400}
+    if scope not in _VALID_SCOPES:
+        return {"error": "scope noto'g'ri", "status": 400}
+    try:
+        filters = {k: p[k] for k in ("date", "from", "to", "month", "route",
+                                     "vehicle", "driver", "status") if p.get(k)}
+        data = build_export(filters, fmt, scope)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc), "status": 400}
+    fname = filename(fmt, scope, p.get("date", "") or p.get("month", ""))
+    return {"data": data, "content_type": content_type(fmt), "filename": fname}
+
+
 def salary_filename(from_date: str, to_date: str) -> str:
     f = re.sub(r"[^0-9]", "", from_date)[:8]
     t = re.sub(r"[^0-9]", "", to_date)[:8]

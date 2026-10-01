@@ -206,6 +206,18 @@ def backup_interval_hours() -> int:
         return 6
 
 
+def destructive_resync_allowed() -> bool:
+    """Replace-sync o'chirish himoyasini o'chirish (faqat vazifa bo'yicha).
+
+    `delete_missing` / `sync_work_logs` odatda "barcha eski qatorni o'chirish"
+    dan qat'iy saqlanadi: upstream bo'sh yoki noto'g'ri javob bersa, butun
+    marshrut bo'yicha ma'lumot yo'qolmasligi kerak. Bu o'chirish
+    `BM_ALLOW_DESTRUCTIVE_RESYNC=1` bilan ataylab yoqiladi.
+    """
+    return str(os.getenv("BM_ALLOW_DESTRUCTIVE_RESYNC", "")).strip().lower() in (
+        "1", "on", "yes", "true")
+
+
 def sms_gateway_settings() -> dict:
     """Android SMS Gateway (capcom6) sozlamalari — haydovchilarga SMS.
 

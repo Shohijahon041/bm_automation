@@ -897,6 +897,206 @@ def test_sync_driver_profiles_skips_detail_when_complete(storage):
     assert storage.find("drivers", external_id="drv1")["tin"] == ""
 
 
+# ------------------------------------------------- F-05/F-06 xavfsizlik testlari
+
+def test_delete_missing_blocks_empty_keep(monkeypatch):
+    """F-05: upstream bo'sh bo'lsa replace-sync HECH NARSA o'chirmaydi.
+
+    Eski xulmada `keep` bo'sh bo'lsa, yo'nalish bo'ylab barcha qatorlar
+    o'chirilardi — bitta noto'g'ri/bo'sh API javobi butun marshrutni
+    yo'qotardi.
+    """
+    monkeypatch.delenv("BM_ALLOW_DESTRUCTIVE_RESYNC", raising=False)
+    from contextlib import nullcontext
+
+    executed = []
+
+    class FakePG:
+        driver = "postgres"
+        ph = "%s"
+        available = True
+        transaction = nullcontext
+
+        def query(self, sql, params=None, limit=None):
+            return [
+                {"date": "2026-08-11", "route_id": "r1", "graph_name": "P1",
+                 "driver_id": "d1"},
+                {"date": "2026-08-11", "route_id": "r1", "graph_name": "P2",
+                 "driver_id": "d2"},
+            ]
+
+        def execute(self, sql, params=None):
+            executed.append(sql)
+            return 1
+
+    st = Storage(FakePG(), enabled=True)
+    st._schema_ready = True
+    recorded = []
+    st.record_error = lambda **kw: recorded.append(kw) or True
+    n = st.delete_missing(
+        "schedules", ["date", "route_id", "graph_name", "driver_id"],
+        "r1", "2026-08-11", "2026-08-11", set())
+    assert n == 0
+    assert executed == [], "bo'sh keep bilan DELETE yuborilmadi"
+    assert len(recorded) == 1, "bloklash sababi errors jurnalida qoldi"
+    assert recorded[0]["context"]["would_delete"] == 2
+
+
+def test_delete_missing_empty_keep_allowed_explicitly(monkeypatch):
+    """`allow_empty=True` — ataylagan tozalashga ruxsat beriladi."""
+    monkeypatch.delenv("BM_ALLOW_DESTRUCTIVE_RESYNC", raising=False)
+    from contextlib import nullcontext
+
+    class FakePG:
+        driver = "postgres"
+        ph = "%s"
+        available = True
+        transaction = nullcontext
+
+        def query(self, sql, params=None, limit=None):
+            return [
+                {"date": "2026-08-11", "route_id": "r1", "graph_name": "P1",
+                 "driver_id": "d1"},
+            ]
+
+        def execute(self, sql, params=None):
+            return 1
+
+    st = Storage(FakePG(), enabled=True)
+    st._schema_ready = True
+    assert st.delete_missing(
+        "schedules", ["date", "route_id", "graph_name", "driver_id"],
+        "r1", "2026-08-11", "2026-08-11", set(), allow_empty=True) == 1
+
+
+def test_delete_missing_blocks_mass_removal(monkeypatch):
+    """F-05: ~90%+ qator o'chirilmoqda — bu butun jadval yiqilishi belgisi."""
+    monkeypatch.delenv("BM_ALLOW_DESTRUCTIVE_RESYNC", raising=False)
+    from contextlib import nullcontext
+
+    executed = []
+
+    class FakePG:
+        driver = "postgres"
+        ph = "%s"
+        available = True
+        transaction = nullcontext
+
+        def query(self, sql, params=None, limit=None):
+            return [{"date": "2026-08-11", "route_id": "r1",
+                     "graph_name": f"P{i}", "driver_id": f"d{i}"}
+                    for i in range(600)]
+
+        def execute(self, sql, params=None):
+            executed.append(sql)
+            return 600
+
+    st = Storage(FakePG(), enabled=True)
+    st._schema_ready = True
+    recorded = []
+    st.record_error = lambda **kw: recorded.append(kw) or True
+    # 600 ta qatordan 590 tasi keep'da yo'q (≈98%) — bloklanadi
+    keep = {("2026-08-11", "r1", f"P{i}", f"d{i}") for i in range(10)}
+    assert st.delete_missing(
+        "schedules", ["date", "route_id", "graph_name", "driver_id"],
+        "r1", "2026-08-11", "2026-08-11", keep) == 0
+    assert executed == []
+    assert len(recorded) == 1
+
+
+def test_delete_missing_allows_small_replacement(monkeypatch):
+    """Kichik o'zgarish (haydovchi almashgani) o'chishiga tegilmaydi.
+
+    Aks holda replace-sync umuman ishlamaydi va reja (trip_count) sun'iy
+    ko'payib boradi.
+    """
+    monkeypatch.delenv("BM_ALLOW_DESTRUCTIVE_RESYNC", raising=False)
+    from contextlib import nullcontext
+
+    class FakePG:
+        driver = "postgres"
+        ph = "%s"
+        available = True
+        transaction = nullcontext
+
+        def query(self, sql, params=None, limit=None):
+            return [
+                {"date": "2026-08-11", "route_id": "r1", "graph_name": "P1",
+                 "driver_id": "eski"},
+                {"date": "2026-08-11", "route_id": "r1", "graph_name": "P2",
+                 "driver_id": "d2"},
+            ]
+
+        def execute(self, sql, params=None):
+            return 1
+
+    st = Storage(FakePG(), enabled=True)
+    st._schema_ready = True
+    keep = {("2026-08-11", "r1", "P2", "d2")}
+    assert st.delete_missing(
+        "schedules", ["date", "route_id", "graph_name", "driver_id"],
+        "r1", "2026-08-11", "2026-08-11", keep) == 1
+
+
+def test_delete_missing_override_env_allows(monkeypatch):
+    """BM_ALLOW_DESTRUCTIVE_RESYNC=1 — bloklashni o'chiradi."""
+    monkeypatch.setenv("BM_ALLOW_DESTRUCTIVE_RESYNC", "1")
+    from contextlib import nullcontext
+
+    class FakePG:
+        driver = "postgres"
+        ph = "%s"
+        available = True
+        transaction = nullcontext
+
+        def query(self, sql, params=None, limit=None):
+            return [{"date": "2026-08-11", "route_id": "r1", "graph_name": "P1",
+                     "driver_id": "d1"}]
+
+        def execute(self, sql, params=None):
+            return 1
+
+    st = Storage(FakePG(), enabled=True)
+    st._schema_ready = True
+    assert st.delete_missing(
+        "schedules", ["date", "route_id", "graph_name", "driver_id"],
+        "r1", "2026-08-11", "2026-08-11", set()) == 1
+
+
+def test_sync_work_logs_does_not_delete_when_trips_truncated(
+        storage, monkeypatch):
+    """F-06: trips so'rovi 50k chegarasiga tegsa, AVTO qatorlar saqlanadi.
+
+    Eski xulmada qisqartirilgan ro'yxat butun diapazonni qamrab olmasdi va
+    qisqartirilmagan qatorlar "hisobotda yo'q" deb o'chirilardi — km hisobi
+    ham noto'g'ri bo'lardi.
+    """
+    from bm_automation.app.db import sync as sync_mod
+    monkeypatch.delenv("BM_ALLOW_DESTRUCTIVE_RESYNC", raising=False)
+    storage.save_driver_work_log("2026-08-10", "d9", "v9", 42.0, 1, note="AVTO")
+    storage.save_trip(_waybill_trip("2026-08-10", "r1", "v1", "d1", "06:00", 10.0))
+
+    real_query = storage.query
+
+    def _fake_query(sql, params=(), limit=None):
+        # trips manbasini chegaraga teggan holda qaytaramiz
+        if "FROM trips" in sql and "driver_work_logs" not in sql:
+            return [{"date": "2026-08-10", "driver_id": "d1", "vehicle_id": "v1",
+                     "distance_km": 10.0, "status": "ACCEPTED",
+                     "data": "{}"}] * 50000
+        return real_query(sql, params, limit)
+
+    monkeypatch.setattr(storage, "query", _fake_query)
+    r = sync_mod.sync_work_logs(storage, "2026-08-10", "2026-08-10")
+    assert not r.error
+    assert r.deleted == 0, "chegara teggan holda hech narsa o'chirilmasdi"
+    rows = storage.query("SELECT * FROM driver_work_logs")
+    # eski AVTO qator saqlanib qoldi — ma'lumot yo'qolmadi
+    assert any(x["vehicle_id"] == "v9" for x in rows)
+    assert any("Xavfsizlik" in str(x.get("message") or "")
+               for x in storage.query("SELECT * FROM errors"))
+
+
 def test_db_self_heals_after_transient_failure(monkeypatch):
     """Vaqtinchalik uzilishda DB o'zini tiklaydi (backoff bilan)."""
     from bm_automation.app.db.base import Database

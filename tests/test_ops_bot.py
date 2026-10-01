@@ -372,13 +372,13 @@ def test_blacklisted_driver_not_resolved_as_driver(monkeypatch, tmp_path):
 
 def test_dashboard_settings_get_includes_finance(monkeypatch, tmp_path):
     from bm_automation.app.core import bot_settings
-    from bm_automation.app.dashboard import server
+    from fastapi.testclient import TestClient
+    from bm_automation.app.dashboard.fastapi_app import app
     bot_settings.STATE_FILE = tmp_path / "s.json"
     bot_settings._reset()
     bot_settings.set_elec_price(850)
     bot_settings.set_brutto_skm(18000)
-    h = server.DashboardHandler.__new__(server.DashboardHandler)
-    out = h._get_settings()
+    out = TestClient(app).get("/api/settings").json()
     assert out["global"]["elec_price"] == 850.0
     assert out["global"]["brutto_skm"] == 18000.0
     assert out["global"]["elec_kwh_per_km"] > 0
@@ -387,11 +387,16 @@ def test_dashboard_settings_get_includes_finance(monkeypatch, tmp_path):
 
 def test_dashboard_settings_update_finance(monkeypatch, tmp_path):
     from bm_automation.app.core import bot_settings
-    from bm_automation.app.dashboard import server
+    from fastapi.testclient import TestClient
+    from bm_automation.app.dashboard import deps
+    from bm_automation.app.dashboard.fastapi_app import app
     bot_settings.STATE_FILE = tmp_path / "s.json"
     bot_settings._reset()
-    h = server.DashboardHandler.__new__(server.DashboardHandler)
-    res = h._update_settings({"elec_price": 900, "brutto_skm": 17000})
+    monkeypatch.setattr(deps, "_POST_MIN_INTERVAL_S", 0.0)
+    with deps._POST_LOCK:
+        deps._last_post_at.clear()
+    res = TestClient(app).post(
+        "/api/settings", json={"elec_price": 900, "brutto_skm": 17000}).json()
     assert res["ok"]
     assert bot_settings.elec_price() == 900.0
     assert bot_settings.brutto_skm() == 17000.0
@@ -399,13 +404,18 @@ def test_dashboard_settings_update_finance(monkeypatch, tmp_path):
 
 def test_dashboard_settings_update_bad_values(monkeypatch, tmp_path):
     from bm_automation.app.core import bot_settings
-    from bm_automation.app.dashboard import server
+    from fastapi.testclient import TestClient
+    from bm_automation.app.dashboard import deps
+    from bm_automation.app.dashboard.fastapi_app import app
     bot_settings.STATE_FILE = tmp_path / "s.json"
     bot_settings._reset()
-    h = server.DashboardHandler.__new__(server.DashboardHandler)
-    res = h._update_settings({"elec_price": -5})
+    monkeypatch.setattr(deps, "_POST_MIN_INTERVAL_S", 0.0)
+    with deps._POST_LOCK:
+        deps._last_post_at.clear()
+    client = TestClient(app)
+    res = client.post("/api/settings", json={"elec_price": -5}).json()
     assert not res["ok"]
-    res2 = h._update_settings({"brutto_skm": "abc"})
+    res2 = client.post("/api/settings", json={"brutto_skm": "abc"}).json()
     assert not res2["ok"]
 
 
@@ -449,6 +459,22 @@ def test_settings_audit_excel_sends_file(admin, monkeypatch):
     assert sent.get("name", "").startswith("settings_audit_")
     assert sent["name"].endswith(".csv")
     assert sent["data"].startswith(b"\xef\xbb\xbfsep=;"), "utf-8 BOM bo'lishi kerak"
+
+
+def test_settings_reload_from_disk_when_file_changes(tmp_path, monkeypatch):
+    """Boshqa jarayon (dashboard) faylni o'zgartirsa bot qayta o'qiydi."""
+    import json
+    from bm_automation.app.core import bot_settings
+    f = tmp_path / "s2.json"
+    bot_settings.STATE_FILE = f
+    bot_settings._reset()
+    assert bot_settings.set_show_driver_salary(True) is True
+    assert bot_settings.show_driver_salary() is True
+    # Dashboard alohida jarayonda faylni to'g'ridan-to'g'ri yozadi.
+    f.write_text(json.dumps({"show_driver_salary": False}), encoding="utf-8")
+    bot_settings._CACHE_MTIME = 0  # fayl mtime o'zgarganini simulyatsiya qilamiz
+    assert bot_settings.show_driver_salary() is False
+    assert bot_settings.show_driver_salary() is False
 
 
 def test_settings_audit_excel_denied(viewer, monkeypatch):
@@ -818,6 +844,56 @@ def test_render_driver_card_hides_salary_for_driver(patch_met, storage,
     assert "Jarima summasi" in text
     assert "20 000" in text
     assert "JAMI JARIMA" in text
+
+
+def test_render_driver_card_self_shows_salary_when_on(patch_met, storage,
+                                                      monkeypatch):
+    """Haydovchi o'z kartasida oylikni ko'radi (show_driver_salary=ON)."""
+    from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE
+    _DRIVER_CHAT_CACHE.clear()
+    _seed_driver_extras(storage)
+    storage.link_driver_telegram("d1", 999)
+    monkeypatch.setattr(render, "get_storage", lambda: storage)
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: storage)
+    monkeypatch.setattr(render, "resolve_role", lambda cid: Role.DRIVER)
+    text, _ = render.driver_card("d1", {"month": "2026-08"}, chat_id=999)
+    assert "HAYDOVCHI KARTASI" in text
+    assert "Brutto" in text and "Netto" in text and "Jarimalar" in text
+    assert "480 000" in text
+
+
+def test_render_driver_card_self_hides_salary_when_off(patch_met, storage,
+                                                       monkeypatch):
+    """Show_driver_salary=OFF — haydovchi o'z kartasida ham oylikni ko'rmaydi."""
+    import bm_automation.app.core.bot_settings as bot_settings
+    from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE
+    _DRIVER_CHAT_CACHE.clear()
+    monkeypatch.setattr(bot_settings, "show_driver_salary", lambda: False)
+    _seed_driver_extras(storage)
+    storage.link_driver_telegram("d1", 999)
+    monkeypatch.setattr(render, "get_storage", lambda: storage)
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: storage)
+    monkeypatch.setattr(render, "resolve_role", lambda cid: Role.DRIVER)
+    text, _ = render.driver_card("d1", {"month": "2026-08"}, chat_id=999)
+    assert "Brutto" not in text
+    assert "Netto" not in text
+    assert "Jarimalar" not in text
+
+
+def test_render_driver_card_other_driver_salary_hidden(patch_met, storage,
+                                                       monkeypatch):
+    """Haydovchi boshqa haydovchining kartasida oylikni ko'rmaydi."""
+    from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE
+    _DRIVER_CHAT_CACHE.clear()
+    _seed_driver_extras(storage)
+    storage.link_driver_telegram("d1", 999)  # 999 -> d1
+    storage.link_driver_telegram("d2", 888)  # d2 boshqa xaydovchi
+    monkeypatch.setattr(render, "get_storage", lambda: storage)
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: storage)
+    monkeypatch.setattr(render, "resolve_role", lambda cid: Role.DRIVER)
+    text, _ = render.driver_card("d2", {"month": "2026-08"}, chat_id=999)
+    assert "Brutto" not in text
+    assert "Netto" not in text
 
 
 def test_render_driver_card_shows_salary_for_admin(patch_met, storage,

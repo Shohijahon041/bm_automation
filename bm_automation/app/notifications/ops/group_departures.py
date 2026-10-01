@@ -173,6 +173,28 @@ def _targets_for(route_id: str) -> list[str]:
     return _targets()
 
 
+def _route_targets(route_id: str, chat_id=None) -> list[str]:
+    """Yo'nalish yuboriladigan guruh(lar)i ro'yxati.
+
+    `TG_DRIVER_ROUTE_CHATS` (``route_id:chat1,chat2;route_id:chat3``) —
+    har yo'nalish FAQAT o'z guruhiga yuboriladi. Xaritada bo'lmagan
+    yo'nalish uchun:
+      - ``chat_id`` jo'natuvchi guruh bo'lsa — shu guruhga;
+      - lekin u BOSHQA yo'nalishga biriktirilgan (nomlangan) guruh bo'lsa
+        — [] qaytadi: boshqa yo'nalish grafigi o'sha guruhga yuborilmaydi;
+      - ``chat_id`` bo'lmasa — env'dagi umumiy guruh(lar), biriktirilgan
+        guruhlar chiqarib tashlanadi.
+    """
+    chats = _route_chats()
+    mapped = chats.get(route_id)
+    if mapped:
+        return mapped
+    owned = {str(c) for ccs in chats.values() for c in ccs}
+    if chat_id:
+        return [] if str(chat_id) in owned else [str(chat_id)]
+    return [t for t in _targets() if t not in owned]
+
+
 def _today() -> str:
     return date.today().isoformat()
 

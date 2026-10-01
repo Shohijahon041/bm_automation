@@ -104,48 +104,26 @@ def reply(chat_id: int, text: str, reply_markup=None) -> None:
         log.warning("sendMessage xatosi: %s", exc)
 
 
-def _send_driver_photo(driver_id: str, chat_id: int,
-                       caption: str = "") -> bool:
-    """Haydovchi fotosini (yuklangan bo'lsa) file_id orqali yuboradi.
+def _tg_profile_photo_ref(chat_id: int) -> dict | None:
+    """Foydalanuvchining TG profil rasmi file_id'si (yoki None).
 
-    Rasm bot bir marta yuborgan bo'lsa Telegram file_id sifatida keshda
-    turadi — qayta yuklamasdan tez yuboriladi. Keshda yo'q bo'lsa fayldan
-    yuklab yuboriladi va file_id keshlanadi. Xatoda jim o'tkaziladi —
-    rasm bo'lmasa kartani matn bilan davom ettirish mumkin.
+    `getUserProfilePhotos`dan oladi — hech qanday xabar YUBORMaydi,
+    faqat manba qaytaradi (keyin albomga qo'shiladi).
     """
     try:
-        from ...db.storage import get_storage
-        profile = get_storage().find("driver_profiles", driver_id=str(driver_id)) or {}
-        raw_path = str(profile.get("photo_path") or "").strip()
-        if not raw_path:
-            return False
-        from pathlib import Path as _Path
-        path = _Path(raw_path)
-        if not path.exists():
-            return False
-        # 1) Keshlangan file_id bilan tez yuborish
-        cached = _PHOTO_FILE_ID.get(str(driver_id))
-        if cached:
-            from ..telegram import send_photo_file_id
-            if send_photo_file_id(cached, caption, chat_id=chat_id):
-                return True
-        # 2) Fayldan yuklab yuborish va file_id keshlash
-        from ..telegram import send_photo, telegram_call
-        if send_photo(str(path), caption, chat_id=chat_id):
-            try:
-                # oxirgi yuborilgan xabardan file_id olishga urinib ko'ramiz
-                # (send_photo hozircha file_id qaytarmaydi — kesh ixtiyoriy).
-                _ = telegram_call  # noqa: B018
-            except Exception:  # noqa: BLE001
-                pass
-            return True
-        return False
-    except Exception as exc:  # noqa: BLE001 - rasm kritik emas
-        log.debug("haydovchi fotosi yuborilmadi (%s): %s", driver_id, exc)
-        return False
-
-
-_PHOTO_FILE_ID: dict[str, str] = {}
+        from ..telegram import telegram_call
+        info = telegram_call("getUserProfilePhotos", {
+            "user_id": chat_id, "offset": 0, "limit": 1})
+        photos = (info or {}).get("photos") or []
+        if not photos:
+            return None
+        file_id = (photos[0] or [])[-1].get("file_id")
+        if not file_id:
+            return None
+        return {"file_id": file_id}
+    except Exception as exc:  # noqa: BLE001
+        log.debug("TG profil rasmi olinmadi: %s", exc)
+        return None
 
 
 def _send_tg_profile_photo(chat_id: int, chat_id_target: int | None = None) -> bool:
@@ -155,20 +133,11 @@ def _send_tg_profile_photo(chat_id: int, chat_id_target: int | None = None) -> b
     haydovchi o'z profilini ko'rganida rasmi chiqadi.
     """
     target = chat_id_target or chat_id
-    try:
-        from ..telegram import telegram_call, send_photo_file_id
-        info = telegram_call("getUserProfilePhotos", {
-            "user_id": chat_id, "offset": 0, "limit": 1})
-        photos = (info or {}).get("photos") or []
-        if not photos:
-            return False
-        file_id = (photos[0] or [])[-1].get("file_id")
-        if not file_id:
-            return False
-        return send_photo_file_id(file_id, "", chat_id=target)
-    except Exception as exc:  # noqa: BLE001
-        log.debug("TG profil rasmi olinmadi: %s", exc)
+    ref = _tg_profile_photo_ref(chat_id)
+    if not ref:
         return False
+    from ..telegram import send_photo_file_id
+    return send_photo_file_id(ref["file_id"], "", chat_id=target)
 
 
 def answer(cq: dict, text: str = "") -> None:
@@ -825,7 +794,6 @@ def handle_driver(chat_id: int, parts: list[str], f: dict) -> None:
               "Ro'yxat: /drivers")
         return
     reply(chat_id, *render.driver_card(driver_id, f, chat_id=chat_id))
-    _send_driver_photo(driver_id, chat_id)
 
 
 # ------------------------------------------------------ passport self-service
@@ -953,17 +921,15 @@ def _continue_passport_flow(chat_id: int, text: str) -> bool:
 
 
 def _send_driver_card(driver_id: str, chat_id: int, f: dict) -> None:
-    """Haydovchi kartasini rasm bilan yuboradi (rasm bo'lsa)."""
+    """Haydovchi kartasini BITTA xabarda yuboradi.
+
+    Avval rasm alohida albom-post, karta matni esa keyingi xabar bo'lib
+    ketardi — foydalanuvchi ikkita post ko'rardi. Karta matni HTML
+    jadvallardan iborat va 1024 belgilik rasm caption'iga sig'magani uchun
+    rasm va matnni bitta postga birlashtirib bo'lmaydi; shu sababli rasm
+    yuborilmaydi va karta yagona to'liq matnli xabar bo'lib chiqadi.
+    """
     text, markup = render.driver_card(driver_id, f, chat_id=chat_id)
-    # Haydovchi o'z kartasini ko'rsa — avval o'z TG profil rasmini yuboramiz.
-    # ("Grafikim" tugmalari render.driver_card ichida qo'shiladi.)
-    from .roles import Role, resolve_role
-    if resolve_role(chat_id) is Role.DRIVER:
-        _send_tg_profile_photo(chat_id)
-    if _send_driver_photo(driver_id, chat_id):
-        # Rasm alohida ketdi — kartani o'zi ham yuboriladi (rasm caption'da
-        # sig'maydi, HTML jadval rasm ustiga chiqa olmaydi).
-        pass
     reply(chat_id, text, markup)
 
 

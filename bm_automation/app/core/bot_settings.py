@@ -22,6 +22,7 @@ STATE_FILE = Path("state") / "bot_settings.json"
 _LOCK = threading.Lock()
 _CACHE: dict = {}
 _LOADED = False
+_CACHE_MTIME: float | None = None
 
 # Interaktiv oqimlar uchun kutilayotgan kirish (chat_id -> sozlama kaliti)
 _PENDING: dict[int, str] = {}
@@ -51,34 +52,47 @@ def _clean_amount(value, default: float = 0.0) -> float:
 
 
 def _load() -> dict:
-    global _LOADED
-    if _LOADED:
+    global _LOADED, _CACHE_MTIME
+    mtime = _file_mtime()
+    # Fayl boshqa jarayon (dashboard) tomonidan o'zgartirilgan bo'lsa — qayta o'qiladi.
+    if _LOADED and mtime is not None and mtime == _CACHE_MTIME:
         return _CACHE
     try:
         with open(STATE_FILE, encoding="utf-8") as fh:
             data = json.load(fh)
         if isinstance(data, dict):
+            _CACHE.clear()
             _CACHE.update(data)
+        _CACHE_MTIME = _file_mtime()
     except Exception:
         pass
     _LOADED = True
     return _CACHE
 
 
+def _file_mtime() -> float | None:
+    try:
+        return STATE_FILE.stat().st_mtime
+    except OSError:
+        return None
+
+
 def _save() -> None:
     try:
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(STATE_FILE, json.dumps(_CACHE, ensure_ascii=False, indent=2))
+        _CACHE_MTIME = _file_mtime()
     except Exception as exc:  # noqa: BLE001 - kichik bezak, xato bo'lsa o'tkazib yuboramiz
         print(f"Bot sozlamalari saqlanmadi: {exc}")
 
 
 def _reset() -> None:
     """Testlar uchun: xotira holatini tozalaydi."""
-    global _LOADED
+    global _LOADED, _CACHE_MTIME
     with _LOCK:
         _CACHE.clear()
         _LOADED = False
+        _CACHE_MTIME = None
         _PENDING.clear()
 
 
@@ -316,6 +330,33 @@ def set_route_tariff(route_id: str, no_vat: float | None,
         _audit("route_tariff:" + str(route_id or ""), old, dict(cur))
         _save()
     return dict(cur)
+
+
+# ------------------------------------------------------------- haydovchi summasi
+
+def show_driver_salary() -> bool:
+    """Dashboard'da haydovchilarning oylik summalari ko'rsatilsinmi.
+
+    Standart: ha (True). O'chirilsa dashboard `/api/drivers` javobidan
+    moliyaviy maydonlarni olib tashlaydi va frontend ularni yashirmaydi.
+    """
+    try:
+        val = _load().get("show_driver_salary")
+    except Exception:
+        val = None
+    return True if val is None else bool(val)
+
+
+def set_show_driver_salary(value: bool | None) -> bool:
+    """Haydovchi oylik summalarini ko'rsatishni yoqadi/o'chiradi."""
+    with _LOCK:
+        _load()
+        old = show_driver_salary()
+        on = bool(value)
+        _CACHE["show_driver_salary"] = on
+        _audit("show_driver_salary", old, on)
+        _save()
+    return on
 
 
 # ------------------------------------------------------------------- til

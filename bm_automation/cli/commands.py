@@ -259,8 +259,62 @@ def cmd_bot(args) -> int:
 
 
 def cmd_dashboard(args) -> int:
-    from ..app.dashboard.server import run
-    return run(host=args.host, port=args.port, open_browser=not args.no_browser)
+    import webbrowser
+    import uvicorn
+
+    host = args.host
+    port = args.port
+    url = f"http://{host}:{port}/"
+
+    if not args.no_browser:
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+
+    print(f"Dashboard (FastAPI): {url}")
+    print("To'xtatish: Ctrl+C")
+    uvicorn.run(
+        "bm_automation.app.dashboard.fastapi_app:app",
+        host=host,
+        port=port,
+        log_level="info",
+        access_log=True,
+    )
+    return 0
+
+
+def cmd_openapi(args) -> int:
+    """FastAPI OpenAPI (Swagger) schema'sini JSON faylga yozish.
+
+    Frontend uchun API kontraktini generatsiya qiladi:
+      python -m bm_automation openapi [-o web/openapi.json]
+    """
+    import json
+    import sys
+    from pathlib import Path
+
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
+    from ..app.dashboard.fastapi_app import app
+
+    out = Path(args.output)
+    schema = app.openapi()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(schema, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    n_paths = len(schema.get("paths", {}))
+    n_ops = sum(
+        1
+        for ops in schema.get("paths", {}).values()
+        for m in ops
+        if m in ("get", "post", "put", "patch", "delete")
+    )
+    print(f"OpenAPI schema: {out} ({n_paths} yo'l, {n_ops} operatsiya)")
+    return 0
 
 
 def cmd_insights(args) -> int:

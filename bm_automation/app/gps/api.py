@@ -1,7 +1,7 @@
 """GPS HTTP API — frontend uchun (port 8081).
 
-Dashboard server.py'dagi xuddi shu naqsh: stdlib ThreadingHTTPServer,
-DASHBOARD_TOKEN (Bearer) bilan himoyalangan, JSON javoblar.
+Stdlib ThreadingHTTPServer, DASHBOARD_TOKEN (Bearer) bilan himoyalangan,
+JSON javoblar. (Asosiy dashboard FastAPI'ga o'tgan; bu servis mustaqil.)
 """
 
 from __future__ import annotations
@@ -77,8 +77,8 @@ def _user_scope(handler: BaseHTTPRequestHandler) -> dict | None:
     token = _session_cookie(handler)
     if not token:
         return None
-    from ..dashboard.server import _session_user
-    return _session_user(token)
+    from ..dashboard.deps import session_user
+    return session_user(token)
 
 
 def _maybe_purge() -> None:

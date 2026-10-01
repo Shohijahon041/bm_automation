@@ -411,16 +411,8 @@ def _route_targets(rid: str, chat_id) -> list[str]:
       - ``chat_id`` bo'lmasa — env'dagi umumiy guruh(lar), biriktirilgan
         guruhlar chiqarib tashlanadi.
     """
-    from bm_automation.app.notifications.ops.group_departures import (
-        _route_chats, _targets)
-    chats = _route_chats()
-    mapped = chats.get(rid)
-    if mapped:
-        return mapped
-    owned = {str(c) for ccs in chats.values() for c in ccs}
-    if chat_id:
-        return [] if str(chat_id) in owned else [str(chat_id)]
-    return [t for t in _targets() if t not in owned]
+    from bm_automation.app.notifications.ops.group_departures import _route_targets
+    return _route_targets(rid, chat_id)
 
 
 def _grafik_sent_state() -> dict:

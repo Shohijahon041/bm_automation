@@ -14,6 +14,7 @@ from ..db.models import json_dumps, json_loads, now_utc
 from .engine import (
     render_template, render_html, create_document,
     generate_ai_content, validate_fields,
+    driver_autofill_context, autofill_field_values,
 )
 from .templates import TEMPLATES, get_template, list_templates
 
@@ -32,18 +33,19 @@ class DocumentManager:
                        search: str = "", driver_id: str = "",
                        limit: int = 50) -> list[dict]:
         """Xujjatlar ro'yxatini qaytaradi."""
+        ph = self.storage.db.ph
         where, params = [], []
         if category:
-            where.append("category=%s")
+            where.append(f"category={ph}")
             params.append(category)
         if status:
-            where.append("status=%s")
+            where.append(f"status={ph}")
             params.append(status)
         if driver_id:
-            where.append("driver_id=%s")
+            where.append(f"driver_id={ph}")
             params.append(driver_id)
         if search:
-            where.append("(title ILIKE %s OR body_text ILIKE %s)")
+            where.append(f"(title ILIKE {ph} OR body_text ILIKE {ph})")
             params.extend([f"%{search}%", f"%{search}%"])
 
         sql = "SELECT * FROM documents"
@@ -68,18 +70,32 @@ class DocumentManager:
     def create_document(self, template_key: str, fields: dict[str, str],
                         title: str = "", status: str = "draft",
                         driver_id: str = "",
-                        attachments: list[str] | None = None) -> dict[str, Any]:
-        """Yangi xujjat yaratadi va DB ga saqlaydi."""
+                        attachments: list[str] | None = None,
+                        autofill: bool = True) -> dict[str, Any]:
+        """Yangi xujjat yaratadi va DB ga saqlaydi.
+
+        ``driver_id`` berilgan bo'lsa xujjat haydovchiga bog'lanadi va
+        bo'sh maydonlar haydovchi/kompaniya ma'lumotlaridan avtomatik
+        to'ldiriladi (``autofill=True``).
+        """
         template = get_template(template_key)
         if not template:
             return {"ok": False, "error": f"Shablon topilmadi: {template_key}"}
 
-        errors = validate_fields(template, fields)
+        merged = dict(fields or {})
+        if autofill and driver_id:
+            ctx = driver_autofill_context(driver_id)
+            auto = autofill_field_values(template_key, ctx)
+            for k, v in auto.items():
+                if not str(merged.get(k, "")).strip():
+                    merged[k] = v
+
+        errors = validate_fields(template, merged)
         if errors:
             return {"ok": False, "error": "Validatsiya xatolari", "errors": errors}
 
-        body_text = render_template(template, fields)
-        body_html = render_html(template, fields)
+        body_text = render_template(template, merged)
+        body_html = render_html(template, merged)
 
         now = now_utc()
         self.storage.insert("documents", {
@@ -87,7 +103,7 @@ class DocumentManager:
             "template_key": template_key,
             "category": template.category,
             "driver_id": driver_id,
-            "fields": json_dumps(fields),
+            "fields": json_dumps(merged),
             "body_text": body_text,
             "body_html": body_html,
             "status": status,
@@ -98,8 +114,14 @@ class DocumentManager:
 
     def update_document(self, doc_id: int, fields: dict[str, str] | None = None,
                         title: str | None = None, status: str | None = None,
-                        attachments: list[str] | None = None) -> dict[str, Any]:
-        """Xujjatni yangilaydi."""
+                        attachments: list[str] | None = None,
+                        driver_id: str | None = None,
+                        autofill: bool = True) -> dict[str, Any]:
+        """Xujjatni yangilaydi.
+
+        ``driver_id`` berilgan bo'lsa bog'lanish yangilanadi va shu haydovchi
+        bo'yicha bo'sh maydonlar avtomatik to'ldiriladi.
+        """
         existing = self.get_document(doc_id)
         if not existing:
             return {"ok": False, "error": "Xujjat topilmadi"}
@@ -115,22 +137,42 @@ class DocumentManager:
         if attachments is not None:
             updates["attachments"] = json_dumps(attachments)
 
+        new_driver = driver_id if driver_id is not None else ""
+        if driver_id is not None:
+            updates["driver_id"] = driver_id
+
         if fields is not None:
             template = get_template(existing.get("template_key", ""))
             if template:
                 merged = {**existing.get("fields", {}), **fields}
+                fill_driver = new_driver or existing.get("driver_id", "")
+                driver_changed = bool(new_driver) and (
+                    new_driver != (existing.get("driver_id") or ""))
+                if autofill and fill_driver:
+                    ctx = driver_autofill_context(fill_driver)
+                    auto = autofill_field_values(template.key, ctx)
+                    for k, v in auto.items():
+                        if not str(v).strip():
+                            continue
+                        # Boshqa haydovchiga bog'lashda haydovchi/sana/
+                        # kompaniya maydonlari yangi haydovchi bo'yicha
+                        # yangilanadi; aks holda faqat bo'sh maydonlar.
+                        if driver_changed or not str(merged.get(k, "")).strip():
+                            merged[k] = v
                 errors = validate_fields(template, merged)
                 if errors:
-                    return {"ok": False, "error": "Validatsiya xatolari", "errors": errors}
+                    return {"ok": False, "error": "Validatsiya xatolari",
+                            "errors": errors}
 
                 updates["fields"] = json_dumps(merged)
                 updates["body_text"] = render_template(template, merged)
                 updates["body_html"] = render_html(template, merged)
 
         if updates:
-            sets = ", ".join(f"{k}=%s" for k in updates)
+            sets = ", ".join(f"{k}={self.storage.db.ph}" for k in updates)
             self.storage.db.execute(
-                f"UPDATE documents SET {sets}, updated_at=%s WHERE id=%s",
+                f"UPDATE documents SET {sets}, "
+                f"updated_at={self.storage.db.ph} WHERE id={self.storage.db.ph}",
                 tuple(updates.values()) + (now_utc(), doc_id),
             )
 
@@ -143,7 +185,7 @@ class DocumentManager:
             return {"ok": False, "error": "Xujjat topilmadi"}
 
         self.storage.db.execute(
-            "DELETE FROM documents WHERE id=%s", (doc_id,)
+            f"DELETE FROM documents WHERE id={self.storage.db.ph}", (doc_id,)
         )
         return {"ok": True, "message": f"'{existing.get('title', '')}' o'chirildi"}
 
@@ -206,7 +248,8 @@ class DocumentManager:
         if file_path not in attachments:
             attachments.append(file_path)
             self.storage.db.execute(
-                "UPDATE documents SET attachments=%s, updated_at=%s WHERE id=%s",
+                f"UPDATE documents SET attachments={self.storage.db.ph}, "
+                f"updated_at={self.storage.db.ph} WHERE id={self.storage.db.ph}",
                 (json_dumps(attachments), now_utc(), doc_id),
             )
         return {"ok": True, "message": "Fayl biriktirildi"}
@@ -221,7 +264,8 @@ class DocumentManager:
         if file_path in attachments:
             attachments.remove(file_path)
             self.storage.db.execute(
-                "UPDATE documents SET attachments=%s, updated_at=%s WHERE id=%s",
+                f"UPDATE documents SET attachments={self.storage.db.ph}, "
+                f"updated_at={self.storage.db.ph} WHERE id={self.storage.db.ph}",
                 (json_dumps(attachments), now_utc(), doc_id),
             )
         return {"ok": True, "message": "Fayl olib tashlandi"}

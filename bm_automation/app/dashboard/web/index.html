@@ -907,6 +907,43 @@ body:before { background-image: linear-gradient(var(--grid-overlay) 1px, transpa
 @media(max-width:620px){ .sidebar .orn-divider { display: none; } }
 
 /* ============================================================
+   QO'SHIMCHA SAYQAL — klaviatura fokus + tema o'tishi (a11y)
+   Mavjud tokenlardan foydalanadi; komponent qoidalaridan keyin
+   kelgani uchun ularni buzmaydi, faqat fokus/o'tish qatimini qo'shadi.
+   ============================================================ */
+::selection { background: var(--accent-soft); color: var(--ink-strong); }
+
+/* Klaviatura fokasi — barcha interaktiv elementlar uchun aniq halqa */
+a:focus-visible, button:focus-visible, .pill:focus-visible, .pill-tw:focus-visible,
+.quick-link:focus-visible, .side-nav a:focus-visible, .subnav a:focus-visible,
+.icon-button:focus-visible, .switch input:focus-visible + .slider,
+.registry tbody tr:focus-visible, .table-wrap tbody tr:focus-visible,
+.select:focus-visible, .input:focus-visible, dialog:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-sm);
+}
+/* Sichqoncha fokasi halqani ko'rsatmasin */
+:focus:not(:focus-visible) { outline: none; }
+
+/* Tema almashganda sirtlar silliq o'tadi (janksiz, qisqa) */
+body, .panel, .side-card, .kpi, .metric-box, .topbar, .new-topbar, .sidebar,
+.table-wrap th, .registry th, .board th, .input, .select, .button, .pill {
+  transition: background-color .2s var(--ease), border-color .2s var(--ease),
+              color .2s var(--ease), box-shadow .2s var(--ease);
+}
+
+/* Anchorga o'tishda sticky topbar ostida qolib ketmaslik */
+[id] { scroll-margin-top: 86px; }
+
+/* Jadval sarlavhasi yopishqoq bo'lganda ustki chegara aniqroq ko'rinsin */
+.table-wrap thead th, .new-table-wrap thead th, .registry thead th {
+  position: sticky; top: 0; z-index: 2; box-shadow: 0 1px 0 var(--line);
+}
+
+/* Bo'sh holat va yuklanish skeletlari uchun yumshoq puls */
+@keyframes bmShimmer { 0% { opacity: .55; } 50% { opacity: 1; } 100% { opacity: .55; } }
+.empty, .audit-placeholder { animation: bmShimmer 2.4s var(--ease) infinite; }
+
+/* ============================================================
    KIRISH (ko'p korxonali akkauntlar)
    ============================================================ */
 .auth-overlay { position: fixed; inset: 0; z-index: 300; display: none; align-items: center; justify-content: center; padding: 20px; background-color: var(--bg-deep); background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='46' height='46'><g fill='none' stroke='%238190a3' stroke-opacity='.06'><rect x='15' y='15' width='16' height='16'/><rect x='15' y='15' width='16' height='16' transform='rotate(45 23 23)'/></g></svg>"); }
@@ -1697,7 +1734,7 @@ body.auth-locked .auth-overlay { display: flex; }
 
       <!-- === XUJJATLAR BO'LIMI === -->
       <section class="page" id="page-documents" data-page-view="documents">
-        <div class="page-hero"><div><div class="eyebrow">DOCUMENTS</div><h2>Xujjatlar bo'limi</h2><p>Shablonlar asosida xujjatlar yaratish, tahrirlash, o'chirish va AI bilan generatsiya qilish.</p></div><div class="page-kicker" id="docs-stats-kicker">0 xujjat</div></div>
+        <div class="page-hero"><div><div class="eyebrow">DOCUMENTS</div><h2>Xujjatlar bo'limi</h2><p>Shablonlar asosida xujjatlar yaratish, haydovchiga bog'lash va maydonlarni avtomatik to'ldirish.</p></div><div class="page-kicker" id="docs-stats-kicker">0 xujjat</div></div>
         <div class="err" id="docs-err" style="display:none"></div>
         <section class="panel" id="docs-templates-panel">
           <div class="section-head"><div><div class="eyebrow">SHABLONLAR</div><h2>Xujjat shablonlari</h2></div></div>
@@ -1706,8 +1743,9 @@ body.auth-locked .auth-overlay { display: flex; }
         <section class="panel" id="docs-list-panel">
           <div class="section-head"><div><div class="eyebrow">SAQLANGAN XUJJATLAR</div><h2>Xujjatlar</h2></div>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-              <select id="docs-filter-status" class="input" style="width:auto;padding:6px 10px;font-size:12px"><option value="">Barcha holat</option><option value="draft">Qoralama</option><option value="approved">Tasdiqlangan</option><option value="archived">Arxiv</option></select>
-              <input type="search" id="docs-search" class="input" style="width:180px;padding:6px 10px;font-size:12px" placeholder="Qidirish...">
+              <select id="docs-filter-status" class="input" style="width:auto;padding:6px 10px;font-size:12px" onchange="loadDocsList()"><option value="">Barcha holat</option><option value="draft">Qoralama</option><option value="approved">Tasdiqlangan</option><option value="archived">Arxiv</option></select>
+              <select id="docs-filter-driver" class="input" style="width:auto;padding:6px 10px;font-size:12px" onchange="loadDocsList()"><option value="">Barcha haydovchilar</option></select>
+              <input type="search" id="docs-search" class="input" style="width:180px;padding:6px 10px;font-size:12px" placeholder="Qidirish..." oninput="loadDocsList()">
             </div>
           </div>
           <div id="docs-list-body" style="overflow-x:auto"></div>
@@ -1776,6 +1814,12 @@ body.auth-locked .auth-overlay { display: flex; }
             <div><label style="display:block;font:10px 'IBM Plex Mono',monospace;color:var(--muted);margin-bottom:4px">SKM 116-SON (so'm/km)</label><input class="input" id="s-brutto-skm" type="number" min="0" step="0.01" oninput="this.value=this.value.replace(',', '.')"></div>
             <div><label style="display:block;font:10px 'IBM Plex Mono',monospace;color:var(--muted);margin-bottom:4px">BACKUP INTERVAL (soat)</label><div class="input" id="s-backup-interval" style="cursor:default"></div></div>
             <div><label style="display:block;font:10px 'IBM Plex Mono',monospace;color:var(--muted);margin-bottom:4px">BACKUP STATUS</label><div class="input" id="s-backup-status" style="cursor:default"></div></div>
+            <div style="grid-column:1/-1;display:flex;align-items:center;gap:10px;padding-top:6px;border-top:1px solid var(--line)">
+              <label class="check-field" style="font:600 13px 'Inter',sans-serif;cursor:pointer">
+                <input type="checkbox" id="s-show-salary"> Haydovchi oylik summalari ko'rsatilsin
+              </label>
+              <span class="hint">O'chirilsa haydovchi reestri/profilida brutto, soliq va qo'liga tegishi summasi ko'rinmaydi.</span>
+            </div>
           </div>
           <div id="global-audit" style="padding:0 18px 14px;font:10px 'IBM Plex Mono',monospace;color:var(--muted);line-height:1.6"></div>
           <div style="padding:0 18px 18px;display:flex;gap:10px;justify-content:flex-end">
@@ -2445,12 +2489,17 @@ function driverStatus(x) {
 function renderRegistry(data) {
   const drv = data.drivers || [];
   const totals = data.totals || {};
+  const showMoney = data.show_driver_salary !== false;
   const summary = [
     ["Haydovchilar", totals.drivers || 0, ""], ["Faol", totals.active || 0, "var(--teal)"],
-    ["Jami km", num(totals.km) + " km", "var(--amber)"], ["Brutto", money(totals.gross_pay), ""],
-    ["Soliq (12%)", money(totals.tax), "var(--amber)"], ["Qo'liga tegishi", money(totals.net_pay), "var(--teal)"],
-    ["Jarimalar", money(totals.fines), totals.fines ? "var(--alert)" : "var(--teal)"],
+    ["Jami km", num(totals.km) + " km", "var(--amber)"],
   ];
+  if (showMoney) summary.push(
+    ["Brutto", money(totals.gross_pay), ""],
+    ["Soliq (12%)", money(totals.tax), "var(--amber)"],
+    ["Qo'liga tegishi", money(totals.net_pay), "var(--teal)"],
+    ["Jarimalar", money(totals.fines), totals.fines ? "var(--alert)" : "var(--teal)"],
+  );
   document.getElementById("driver-summary").innerHTML = summary.map(([l, v, c]) =>
     `<div><span>${l}</span><b style="color:${c}">${esc(v)}</b></div>`).join("");
   const filter = (document.getElementById("driver-search").value || "").trim().toLocaleLowerCase("uz");
@@ -2459,7 +2508,7 @@ function renderRegistry(data) {
     || (normFilter && String(x.phone || "").replace(/\D/g, "").replace(/^998/, "").includes(normFilter)));
   document.getElementById("registry-body").innerHTML = rows.length
     ? `<div style="overflow-x:auto"><table class="registry">
-        <thead><tr><th>Haydovchi</th><th>Firma / Yo'nalish</th><th>Holat</th><th>Kun / Reys</th><th>Km</th><th>Km stavka</th><th>Qo'liga tegishi</th><th>Reyting</th><th>Hujjat</th><th></th></tr></thead>
+        <thead><tr><th>Haydovchi</th><th>Firma / Yo'nalish</th><th>Holat</th><th>Kun / Reys</th><th>Km</th><th>Km stavka</th>${showMoney ? "<th>Qo'liga tegishi</th>" : ""}<th>Reyting</th><th>Hujjat</th><th></th></tr></thead>
         <tbody>${rows.map(x => `<tr class="reg-open" data-driver-id="${esc(x.driver_id)}" tabindex="0" title="Profilni ochish — ${esc(x.name)}">
           <td><div class="avatar-row">${avatar(x)}<div><span class="driver-name">${esc(x.name)}</span><span class="driver-sub">ID: ${esc(x.driver_id)}</span></div></div></td>
           <td class="mono muted" style="font-size:11px">${esc(x.company || "-")}${x.route_name ? `<div class="driver-sub">${esc(x.route_name)}</div>` : ""}</td>
@@ -2467,7 +2516,7 @@ function renderRegistry(data) {
           <td>${x.working_days} kun <span class="driver-sub">${x.trips} reys${x.manual_trips ? " + " + x.manual_trips + " qayd" : ""}</span></td>
           <td class="pct teal">${num(x.km)} km <span class="driver-sub">${x.automatic_km ? "API: " + num(x.automatic_km) : "qo'lda kiritiladi"}</span></td>
           <td>${money(x.km_rate)}<span class="driver-sub">1 km uchun</span></td>
-          <td><b class="pct teal">${money(x.net_pay)}</b><span class="driver-sub">brutto ${money(x.gross_pay)} · soliq ${money(x.tax)} · jarima ${money(x.fines)}</span></td>
+          ${showMoney ? `<td><b class="pct teal">${money(x.net_pay)}</b><span class="driver-sub">brutto ${money(x.gross_pay)} · soliq ${money(x.tax)} · jarima ${money(x.fines)}</span></td>` : ""}
           <td><span class="pct ${x.rating >= 4 ? "teal" : (x.rating >= 3 ? "amber" : "alert")}">★ ${Number(x.rating || 0).toFixed(1)}</span></td>
           <td>${docMarks(x)}</td>
           <td><button class="button ghost driver-open" data-driver-id="${esc(x.driver_id)}">KARTA</button></td>
@@ -2487,16 +2536,19 @@ function renderRegistry(data) {
 function renderSideDrivers(data) {
   const el = document.getElementById("side-drivers");
   if (!el) return;
+  const showMoney = data.show_driver_salary !== false;
   const drv = (data.drivers || []).filter(x => x.km > 0 || x.trips > 0);
   const t = data.totals || {};
   document.getElementById("side-drivers-hint").textContent =
     (drv.length ? drv.length : 0) + " faol / " + (t.drivers || 0) + " jami";
-  const top = drv.slice().sort((a, b) => (b.net_pay || 0) - (a.net_pay || 0)).slice(0, 8);
-  const rows = top.map(x =>
+  const ranked = showMoney
+    ? drv.slice().sort((a, b) => (b.net_pay || 0) - (a.net_pay || 0)).slice(0, 8)
+    : drv.slice().sort((a, b) => (b.km || 0) - (a.km || 0)).slice(0, 8);
+  const rows = ranked.map(x =>
     `<div class="side-drv" data-id="${esc(x.driver_id)}">
        <span class="side-drv-name" title="${esc(x.name)}">${esc(x.name)}</span>
        <span class="side-drv-meta">${num(x.km)} km · ${x.working_days} kun</span>
-       <b class="pct teal">${money(x.net_pay)}</b>
+       ${showMoney ? `<b class="pct teal">${money(x.net_pay)}</b>` : ""}
      </div>`).join("");
   el.innerHTML = `
     <div class="side-stats">
@@ -2584,6 +2636,18 @@ function renderDriverDialog(data) {
   const photo = d.photo_url
     ? `<img class="avatar avatar-lg" src="${esc(d.photo_url)}" alt="">`
     : `<span class="avatar avatar-lg avatar-empty">${esc(String(d.name || "?")[0] || "?")}</span>`;
+  const metrics = (data.show_driver_salary !== false)
+    ? `<div class="driver-metric"><label>Ish kunlari</label><b>${d.working_days || 0}</b></div>
+        <div class="driver-metric"><label>Qatnov</label><b>${d.trips || 0}</b></div>
+        <div class="driver-metric"><label>Masofa</label><b class="pct teal">${num(d.km)} km</b></div>
+        <div class="driver-metric"><label>Brutto</label><b>${money(d.gross_pay)}</b></div>
+        <div class="driver-metric"><label>Soliq (12%)</label><b class="pct amber">−${money(d.tax)}</b></div>
+        <div class="driver-metric"><label>Jarima</label><b class="pct ${d.fines ? "alert" : "teal"}">${money(d.fines)}</b></div>
+        <div class="driver-metric"><label>Qo'liga tegishi</label><b class="pct teal">${money(d.net_pay)}</b></div>`
+    : `<div class="driver-metric"><label>Ish kunlari</label><b>${d.working_days || 0}</b></div>
+        <div class="driver-metric"><label>Qatnov</label><b>${d.trips || 0}</b></div>
+        <div class="driver-metric"><label>Masofa</label><b class="pct teal">${num(d.km)} km</b></div>
+        <div class="driver-metric" style="grid-column:1/-1"><label>Oylik summa</label><b class="muted" style="font-size:11px">Yashiringan</b></div>`;
   document.getElementById("driver-dialog-content").innerHTML = `
     <div class="driver-modal-head"><div style="display:flex;align-items:center;gap:12px">${photo}
       <div><div id="driver-dialog-title" class="driver-modal-title">${esc(d.name || did)}</div>
@@ -2594,15 +2658,7 @@ function renderDriverDialog(data) {
       </div></div>
     <div class="driver-modal-body">
       <div class="driver-message" id="driver-message"></div>
-      <div class="driver-metrics">
-        <div class="driver-metric"><label>Ish kunlari</label><b>${d.working_days || 0}</b></div>
-        <div class="driver-metric"><label>Qatnov</label><b>${d.trips || 0}</b></div>
-        <div class="driver-metric"><label>Masofa</label><b class="pct teal">${num(d.km)} km</b></div>
-        <div class="driver-metric"><label>Brutto</label><b>${money(d.gross_pay)}</b></div>
-        <div class="driver-metric"><label>Soliq (12%)</label><b class="pct amber">−${money(d.tax)}</b></div>
-        <div class="driver-metric"><label>Jarima</label><b class="pct ${d.fines ? "alert" : "teal"}">${money(d.fines)}</b></div>
-        <div class="driver-metric"><label>Qo'liga tegishi</label><b class="pct teal">${money(d.net_pay)}</b></div>
-      </div>
+      <div class="driver-metrics">${metrics}</div>
       <form id="driver-profile-form">
         <section class="form-panel"><h3>Profil va ish sozlamalari</h3><div class="form-grid">
           ${inputField("F.I.SH.", "full_name", d.name || "")}
@@ -3717,7 +3773,7 @@ function showPage(name, updateHash=true){
   if(name==='audit') document.getElementById('check-block').style.display='block';
   if(name==='insights') loadInsights();
   if(name==='logs') startLogPoll(); else stopLogPoll();
-  if(name==='documents') { loadDocTemplates(); loadDocsList(); }
+  if(name==='documents') { loadDocTemplates(); loadDocDrivers().then(renderDocDriversFilter); loadDocsList(); }
   if(name==='users') { loadBotUsers(); loadGroupStats(); }
   if(name==='appeals') loadAppeals();
   if(name==='sms') startSmsPoll(); else stopSmsPoll();
@@ -3913,6 +3969,7 @@ async function loadSettings() {
     // Global
     document.getElementById("s-elec-price").value = s.global.elec_price || 0;
     document.getElementById("s-brutto-skm").value = s.global.brutto_skm || 0;
+    document.getElementById("s-show-salary").checked = s.global.show_driver_salary !== false;
     const auditEl = document.getElementById("global-audit");
     if (auditEl) {
       const rows = (s.global.audit || []).slice(0, 6);
@@ -3940,7 +3997,8 @@ async function saveSettings() {
   try {
     const body = {
       elec_price: parseFloat(document.getElementById("s-elec-price").value) || 0,
-      brutto_skm: parseFloat(document.getElementById("s-brutto-skm").value) || 0
+      brutto_skm: parseFloat(document.getElementById("s-brutto-skm").value) || 0,
+      show_driver_salary: document.getElementById("s-show-salary").checked
     };
     const d = await postJSON("/api/settings", body);
     if (!d.ok) throw new Error(d.error || "Xatolik");
@@ -4126,11 +4184,10 @@ function toggleUserForm() {
   if (f) f.style.display = opening ? "block" : "none";
   if (opening) document.getElementById("du-name").focus();
 }
-function editUser(key) {
-  let username;
-  try { username = decodeURIComponent(key); } catch (e) { username = key; }
-  const u = (window.__dashUsers || []).find(x => x.username === username);
+function editUser(idx) {
+  const u = (window.__dashUsersFiltered || [])[+idx];
   if (!u) return;
+  const username = u.username;
   resetUserForm();
   const f = document.getElementById("user-add-form");
   const name = document.getElementById("du-name");
@@ -4199,27 +4256,28 @@ function renderDashboardUsers() {
   const fil = document.getElementById("dusers-filter");
   const fcompany = (fil && fil.value) || "";
   const users = (window.__dashUsers || []).filter(u => !fcompany || u.company === fcompany);
+  window.__dashUsersFiltered = users;
   if (!users.length) {
     body.innerHTML = '<div class="empty" style="padding:20px;text-align:center;color:var(--muted)">Hech qanday dashboard foydalanuvchisi yo\'q. Yuqoridagi "+ FOYDALANUVCHI" tugmasi orqali qo\'shing.</div>';
     return;
   }
   let h = '<div style="display:grid;gap:12px">';
-  for (const u of users) {
-    const key = encodeURIComponent(u.username);
+  for (let i = 0; i < users.length; i++) {
+    const u = users[i];
     const role = ROLE_LABEL[u.role] || u.role || "—";
     const company = u.company_route || u.company || "—";
     const canDelete = dashIsSuper && !u.super;
-    const buttons = '<button class="button ghost" style="font-size:11px;padding:5px 10px" onclick="editUser(\'' + key + '\')">TAHRIRLASH</button>'
-      + '<button class="button ghost" style="font-size:11px;padding:5px 10px" onclick="resetUserPass(\'' + key + '\')">PAROL</button>'
+    const buttons = '<button class="button ghost" style="font-size:11px;padding:5px 10px" onclick="editUser(' + i + ')">TAHRIRLASH</button>'
+      + '<button class="button ghost" style="font-size:11px;padding:5px 10px" onclick="resetUserPass(' + i + ')">PAROL</button>'
       + (canDelete
-          ? '<button class="button ghost" style="font-size:11px;padding:5px 10px;border-color:rgba(239,68,68,.4);color:#ef4444" onclick="deleteUser(\'' + key + '\')">O\'CHIRISH</button>'
+          ? '<button class="button ghost" style="font-size:11px;padding:5px 10px;border-color:rgba(239,68,68,.4);color:#ef4444" onclick="deleteUser(' + i + ')">O\'CHIRISH</button>'
           : '');
     h += '<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--bg-deep)">'
       + '<div style="flex:1;min-width:0">'
       + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><b style="font:600 13px \'IBM Plex Mono\',monospace;color:var(--ink)">' + esc(u.username) + '</b>' + userStatusBadge(u) + superBadge(u) + '</div>'
       + '<div style="font:11px \'IBM Plex Mono\',monospace;color:var(--muted)">' + esc(role) + ' &middot; ' + esc(company) + '</div>'
       + '</div>'
-      + '<label style="font:10px \'IBM Plex Mono\',monospace;color:var(--muted);display:flex;align-items:center;gap:6px"><input type="checkbox" id="du-a-' + key + '" ' + (u.active ? 'checked' : '') + ' onchange="toggleUser(\'' + key + '\', this.checked)"> Faol</label>'
+      + '<label style="font:10px \'IBM Plex Mono\',monospace;color:var(--muted);display:flex;align-items:center;gap:6px"><input type="checkbox" id="du-a-' + i + '" ' + (u.active ? 'checked' : '') + ' onchange="toggleUser(' + i + ', this.checked)"> Faol</label>'
       + buttons
       + '</div>';
   }
@@ -4248,30 +4306,29 @@ async function addUserForm() {
   toggleUserForm();
   loadDashboardUsers();
 }
-async function toggleUser(key, active) {
-  let username;
-  try { username = decodeURIComponent(key); } catch (e) { username = key; }
-  const d = await postJSON("/api/dashboard-users", { action: "update", username, active });
+async function toggleUser(idx, active) {
+  const u = (window.__dashUsersFiltered || [])[+idx];
+  if (!u) return;
+  const d = await postJSON("/api/dashboard-users", { action: "update", username: u.username, active });
   if (!d.ok) { alert("Xato: " + (d.error || "")); loadDashboardUsers(); }
 }
-async function resetUserPass(key) {
-  let username;
-  try { username = decodeURIComponent(key); } catch (e) { username = key; }
-  const pw = prompt(username + " uchun yangi parol (kamida 4 belgi):");
+async function resetUserPass(idx) {
+  const u = (window.__dashUsersFiltered || [])[+idx];
+  if (!u) return;
+  const pw = prompt(u.username + " uchun yangi parol (kamida 4 belgi):");
   if (!pw) return;
   if (pw.length < 4) { alert("Parol kamida 4 belgi bo'lishi kerak"); return; }
-  const d = await postJSON("/api/dashboard-users", { action: "update", username, password: pw });
+  const d = await postJSON("/api/dashboard-users", { action: "update", username: u.username, password: pw });
   if (!d.ok) alert("Xato: " + (d.error || ""));
   else alert("Parol yangilandi");
 }
-async function deleteUser(key) {
-  let username;
-  try { username = decodeURIComponent(key); } catch (e) { username = key; }
+async function deleteUser(idx) {
+  const u = (window.__dashUsersFiltered || [])[+idx];
+  if (!u) return;
   if (!dashIsSuper) { alert("O'chirish huquqi faqat Super Adminda"); return; }
-  const u = (window.__dashUsers || []).find(x => x.username === username);
-  if (u && u.super) { alert("Super adminni o'chirib bo'lmaydi"); return; }
-  if (!confirm(username + " o'chirilsinmi? Bu amalni qaytarib bo'lmaydi.")) return;
-  const d = await postJSON("/api/dashboard-users", { action: "delete", username });
+  if (u.super) { alert("Super adminni o'chirib bo'lmaydi"); return; }
+  if (!confirm(u.username + " o'chirilsinmi? Bu amalni qaytarib bo'lmaydi.")) return;
+  const d = await postJSON("/api/dashboard-users", { action: "delete", username: u.username });
   if (!d.ok) { alert("Xato: " + (d.error || "")); return; }
   loadDashboardUsers();
 }
@@ -4845,6 +4902,44 @@ function _drvTable(items, cols, emptyMsg) {
 
 // === XUJJATLAR BO'LIMI ===
 let _docTemplates = [];
+let _docDrivers = [];
+let _docDriversLoaded = false;
+
+async function loadDocDrivers() {
+  if (_docDriversLoaded) return;
+  try {
+    const r = await bmFetch('/api/drivers/list');
+    const d = await r.json();
+    if (d.ok) { _docDrivers = d.drivers || []; _docDriversLoaded = true; }
+  } catch (e) { console.error('loadDocDrivers', e); }
+}
+
+function renderDocDriversFilter() {
+  const sel = document.getElementById('docs-filter-driver');
+  if (!sel) return;
+  const cur = sel.value || '';
+  let opts = '<option value="">Barcha haydovchilar</option>';
+  for (const dr of _docDrivers) {
+    opts += '<option value="' + esc(dr.driver_id) + '">' + esc((dr.name || dr.driver_id) + ' (' + dr.driver_id + ')') + '</option>';
+  }
+  sel.innerHTML = opts;
+  sel.value = cur;
+}
+
+function docDriverOptions(selected) {
+  let opts = '<option value="">— Haydovchi tanlanmagan —</option>';
+  for (const dr of _docDrivers) {
+    const v = dr.driver_id;
+    opts += '<option value="' + esc(v) + '"' + (v === selected ? ' selected' : '') + '>'
+      + esc((dr.name || v) + ' (' + v + ')') + '</option>';
+  }
+  return opts;
+}
+
+function docDriverLabel(driverId) {
+  const dr = _docDrivers.find(x => x.driver_id === driverId);
+  return dr ? (dr.name || driverId) : driverId;
+}
 
 async function loadDocTemplates() {
   try {
@@ -4871,9 +4966,11 @@ function renderDocTemplates() {
 async function loadDocsList() {
   try {
     const status = document.getElementById('docs-filter-status')?.value || '';
+    const driverId = document.getElementById('docs-filter-driver')?.value || '';
     const search = document.getElementById('docs-search')?.value || '';
     const p = new URLSearchParams();
     if (status) p.set('status', status);
+    if (driverId) p.set('driver_id', driverId);
     if (search) p.set('q', search);
     const r = await bmFetch('/api/documents?' + p);
     const d = await r.json();
@@ -4894,11 +4991,12 @@ function renderDocsList(docs) {
   if (!docs.length) { body.innerHTML = ''; if (empty) empty.style.display = 'block'; return; }
   if (empty) empty.style.display = 'none';
   const statusLabel = {draft:'Qoralama',approved:'Tasdiqlangan',archived:'Arxiv'};
-  body.innerHTML = '<table class="table"><thead><tr><th>#</th><th>Nomi</th><th>Shablon</th><th>Holat</th><th>Sana</th><th>Amallar</th></tr></thead><tbody>'
+  body.innerHTML = '<table class="table"><thead><tr><th>#</th><th>Nomi</th><th>Shablon</th><th>Haydovchi</th><th>Holat</th><th>Sana</th><th>Amallar</th></tr></thead><tbody>'
     + docs.map((d,i) => '<tr>'
     + '<td class="mono">' + (d.id||i+1) + '</td>'
     + '<td style="font-weight:600">' + esc(d.title||'') + '</td>'
     + '<td class="mono muted">' + esc(d.template_key||'') + '</td>'
+    + '<td class="mono muted" style="font-size:11px">' + (d.driver_id ? '<span style="color:var(--amber)">' + esc(docDriverLabel(d.driver_id)) + '</span>' : '<span style="opacity:.45">—</span>') + '</td>'
     + '<td><span class="pill-status ' + (d.status||'draft') + '">' + esc(statusLabel[d.status]||d.status) + '</span></td>'
     + '<td class="mono muted" style="font-size:11px">' + esc((d.created_at||'').slice(0,10)) + '</td>'
     + '<td style="white-space:nowrap">'
@@ -4909,7 +5007,7 @@ function renderDocsList(docs) {
     ).join('') + '</tbody></table>';
 }
 
-function openDocDialog(templateKey) {
+function openDocDialog(templateKey, driverId) {
   const tpl = _docTemplates.find(t => t.key === templateKey);
   if (!tpl) return;
   const dlg = document.getElementById('doc-dialog');
@@ -4917,6 +5015,11 @@ function openDocDialog(templateKey) {
   if (!dlg || !content) return;
   let html = '<div class="driver-modal-head"><div><div class="driver-modal-title" id="doc-dialog-title">' + esc(tpl.name) + '</div><div class="driver-modal-meta">' + esc(tpl.description) + '</div></div><button class="icon-button" onclick="document.getElementById(\'doc-dialog\').close()">✕</button></div>';
   html += '<div class="driver-modal-body">';
+  html += '<div style="display:grid;grid-template-columns:2fr 1fr;gap:10px;margin-bottom:14px">';
+  html += '<div class="field" style="margin:0"><label>Haydovchiga bog\'lash (avtomatik to\'ldirish)</label>'
+    + '<select class="input" id="doc-driver" onchange="autofillDocFields(\'' + templateKey + '\', true)">' + docDriverOptions(driverId || '') + '</select></div>';
+  html += '<div class="field" style="margin:0"><label>Bog\'langan haydovchi</label><div class="input" id="doc-driver-name" style="font:600 12px \'IBM Plex Mono\',monospace;color:var(--ink)">' + (driverId ? esc(docDriverLabel(driverId)) : '—') + '</div></div>';
+  html += '</div>';
   html += '<div class="form-grid">';
   for (const f of tpl.fields) {
     html += '<div class="field"><label>' + esc(f.label) + (f.required ? ' *' : '') + '</label>';
@@ -4936,20 +5039,58 @@ function openDocDialog(templateKey) {
   html += '</div></div>';
   content.innerHTML = html;
   dlg.showModal();
+  // Haydovchi ro'yxati yuklanmaguncha default (kompaniya+sana) to'ldiriladi.
+  loadDocDrivers().then(() => {
+    const sel = document.getElementById('doc-driver');
+    if (sel) sel.innerHTML = docDriverOptions(driverId || '');
+    autofillDocFields(templateKey, false);
+  });
+}
+
+async function autofillDocFields(templateKey, overwrite) {
+  const tpl = _docTemplates.find(t => t.key === templateKey);
+  if (!tpl) return;
+  const sel = document.getElementById('doc-driver');
+  const driverId = (sel && sel.value) || '';
+  const nameEl = document.getElementById('doc-driver-name');
+  if (nameEl) nameEl.textContent = driverId ? docDriverLabel(driverId) : '—';
+  const p = new URLSearchParams();
+  if (driverId) p.set('driver_id', driverId);
+  let fv = {};
+  try {
+    const r = await bmFetch('/api/documents/autofill?' + p);
+    const d = await r.json();
+    if (d.ok) fv = d.field_values || {};
+  } catch (e) { console.error('autofill', e); }
+  for (const f of tpl.fields) {
+    const el = document.getElementById('doc-f-' + f.key);
+    if (!el) continue;
+    const val = fv[f.key];
+    if (val === undefined || val === '') continue;
+    if (!overwrite && el.value !== '') continue;
+    el.value = val;
+  }
+}
+
+function docFieldsValues() {
+  const fields = {};
+  document.querySelectorAll('#doc-dialog-content .field input, #doc-dialog-content .field textarea, #doc-dialog-content .field select').forEach(el => {
+    if (el.id && el.id.indexOf('doc-f-') === 0) {
+      fields[el.id.replace('doc-f-', '')] = el.value;
+    }
+  });
+  return fields;
 }
 
 async function saveNewDoc(templateKey) {
   const tpl = _docTemplates.find(t => t.key === templateKey);
   if (!tpl) return;
-  const fields = {};
-  for (const f of tpl.fields) {
-    const el = document.getElementById('doc-f-' + f.key);
-    if (el) fields[f.key] = el.value;
-  }
+  const driverId = document.getElementById('doc-driver')?.value || '';
+  const fields = docFieldsValues();
   try {
     const r = await bmFetch('/api/documents', {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ template_key: templateKey, fields, title: tpl.name, status: 'draft' })
+      body: JSON.stringify({ template_key: templateKey, fields, title: tpl.name, status: 'draft', driver_id: driverId })
     });
     const d = await r.json();
     if (!d.ok) throw new Error(d.error + (d.errors ? ': ' + d.errors.join(', ') : ''));
@@ -4969,7 +5110,7 @@ async function viewDoc(id) {
     const dlg = document.getElementById('doc-dialog');
     const content = document.getElementById('doc-dialog-content');
     if (!dlg || !content) return;
-    let html = '<div class="driver-modal-head"><div><div class="driver-modal-title" id="doc-dialog-title">' + esc(doc.title||'') + '</div><div class="driver-modal-meta">' + esc(doc.template_key||'') + ' · ' + esc(doc.status||'') + '</div></div><button class="icon-button" onclick="document.getElementById(\'doc-dialog\').close()">✕</button></div>';
+    let html = '<div class="driver-modal-head"><div><div class="driver-modal-title" id="doc-dialog-title">' + esc(doc.title||'') + '</div><div class="driver-modal-meta">' + esc(doc.template_key||'') + ' · ' + esc(doc.status||'') + (doc.driver_id ? ' · ' + esc(docDriverLabel(doc.driver_id)) : '') + '</div></div><button class="icon-button" onclick="document.getElementById(\'doc-dialog\').close()">✕</button></div>';
     html += '<div class="driver-modal-body">';
     html += '<div style="background:var(--bg-deep);border:1px solid var(--line);border-radius:var(--radius);padding:20px;font-family:serif;line-height:1.8;white-space:pre-wrap;max-height:60vh;overflow-y:auto">' + esc(doc.body_text||'') + '</div>';
     html += '<div class="form-actions" style="margin-top:16px">';
@@ -4994,6 +5135,11 @@ async function editDoc(id) {
     const fields = doc.fields || {};
     let html = '<div class="driver-modal-head"><div><div class="driver-modal-title" id="doc-dialog-title">Tahrirlash: ' + esc(doc.title||'') + '</div></div><button class="icon-button" onclick="document.getElementById(\'doc-dialog\').close()">✕</button></div>';
     html += '<div class="driver-modal-body">';
+    html += '<div style="display:grid;grid-template-columns:2fr 1fr;gap:10px;margin-bottom:14px">';
+    html += '<div class="field" style="margin:0"><label>Haydovchiga bog\'lash (avtomatik to\'ldirish)</label>'
+      + '<select class="input" id="doc-driver" onchange="autofillDocFields(\'' + (tpl ? tpl.key : '') + '\', true)">' + docDriverOptions(doc.driver_id || '') + '</select></div>';
+    html += '<div class="field" style="margin:0"><label>Bog\'langan haydovchi</label><div class="input" id="doc-driver-name" style="font:600 12px \'IBM Plex Mono\',monospace;color:var(--ink)">' + (doc.driver_id ? esc(docDriverLabel(doc.driver_id)) : '—') + '</div></div>';
+    html += '</div>';
     html += '<div class="form-grid">';
     if (tpl) {
       for (const f of tpl.fields) {
@@ -5016,19 +5162,21 @@ async function editDoc(id) {
     html += '</div></div>';
     content.innerHTML = html;
     dlg.showModal();
+    loadDocDrivers().then(() => {
+      const sel = document.getElementById('doc-driver');
+      if (sel) sel.innerHTML = docDriverOptions(doc.driver_id || '');
+      autofillDocFields(tpl ? tpl.key : '', false);
+    });
   } catch(e) { alert('Xato: ' + e.message); }
 }
 
 async function updateDoc(id) {
-  const fields = {};
-  document.querySelectorAll('#doc-dialog-content .field input, #doc-dialog-content .field textarea, #doc-dialog-content .field select').forEach(el => {
-    const key = el.id.replace('doc-f-', '');
-    if (key) fields[key] = el.value;
-  });
+  const driverId = document.getElementById('doc-driver')?.value || '';
+  const fields = docFieldsValues();
   try {
     const r = await bmFetch('/api/documents/' + id, {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ fields })
+      body: JSON.stringify({ fields, driver_id: driverId })
     });
     const d = await r.json();
     if (!d.ok) throw new Error(d.error);

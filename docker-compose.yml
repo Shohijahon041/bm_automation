@@ -67,7 +67,7 @@ services:
       - ./logs:/app/logs
     ports:
       - "8081:8080"
-    command: python -m bm_automation dashboard --host 0.0.0.0 --port 8080 --no-browser
+    command: uvicorn bm_automation.app.dashboard.fastapi_app:app --host 0.0.0.0 --port 8080 --workers 2
 
 volumes:
   pgdata:

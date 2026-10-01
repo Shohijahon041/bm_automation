@@ -24,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
         cmd_login,
         cmd_login_browser,
         cmd_notify_test,
+        cmd_openapi,
         cmd_profiles,
         cmd_reports,
         cmd_report_types,
@@ -174,6 +175,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_dash.add_argument("--port", type=int, default=8080, help="Server porti (standart 8080)")
     p_dash.add_argument("--no-browser", action="store_true", help="Brauzerni ochmaslik")
     p_dash.set_defaults(func=cmd_dashboard)
+
+    p_oapi = sub.add_parser(
+        "openapi",
+        help="Dashboard OpenAPI (Swagger) schema'sini JSON'ga yozish")
+    p_oapi.add_argument(
+        "-o", "--output",
+        default="bm_automation/app/dashboard/web/openapi.json",
+        help="Chiqish fayli (standart: web/openapi.json)")
+    p_oapi.set_defaults(func=cmd_openapi)
 
     p_ins = sub.add_parser(
         "insights",

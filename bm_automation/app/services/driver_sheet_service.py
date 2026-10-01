@@ -10,15 +10,17 @@ ishlatiladi va asosiy hisobot jarayonlariga ta'sir qilmaydi.
 
 from __future__ import annotations
 
+import json
+import threading
 from collections import Counter
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from ..api.client import BMClient
 from ..exporters.sheet_image import make_sheet_image
 from ..repositories.duty_repo import DutyRepository
 from ..repositories.waybill_repo import WaybillRepository
-from ..utils.io import ensure_dir, safe_name
+from ..utils.io import atomic_write, ensure_dir, safe_name
 from ..utils.text import normalize_uz
 
 __all__ = [
@@ -34,6 +36,51 @@ DEFAULT_KONECHKA = {
     "UP": "Temiryo'l kesishmasi-10",
     "DOWN": "FERGANA TEX SERVIS YURIY",
 }
+
+SENT_STATE = Path("state") / "daily_sheet_sent.json"
+_SENT_LOCK = threading.Lock()
+_SENT_KEEP_DAYS = 14
+
+
+def _sent_state() -> dict:
+    """`state/daily_sheet_sent.json` — "<route_id>|<sana>" -> [yuborilgan guruhlar]."""
+    try:
+        if SENT_STATE.exists():
+            data = json.loads(SENT_STATE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def _prune_sent(state: dict) -> dict:
+    cutoff = (date.today() - timedelta(days=_SENT_KEEP_DAYS)).isoformat()
+    return {k: v for k, v in state.items() if str(k).split("|")[-1] >= cutoff}
+
+
+def _mark_sent(route_id: str, date_str: str, targets: list[str]) -> None:
+    """(yo'nalish, kun) uchun yuborilgan guruhlarni eslab qoladi."""
+    with _SENT_LOCK:
+        state = _prune_sent(_sent_state())
+        key = f"{route_id}|{date_str}"
+        cur = state.get(key) or []
+        if isinstance(cur, str):
+            cur = [cur]
+        state[key] = sorted({str(x) for x in cur} | {str(t) for t in targets})
+        try:
+            atomic_write(SENT_STATE, json.dumps(state, ensure_ascii=False, indent=2))
+        except Exception:
+            pass
+
+
+def _pending_targets(route_id: str, date_str: str, targets: list[str]) -> list[str]:
+    """Allaqachon yuborilgan guruhlarni chiqarib tashlaydi (retryda takror yubormaslik)."""
+    done = _sent_state().get(f"{route_id}|{date_str}") or []
+    if isinstance(done, str):
+        done = [done]
+    done = {str(x) for x in done}
+    return [t for t in targets if str(t) not in done]
 
 
 def _norm_time(t: str) -> str:
@@ -208,10 +255,34 @@ def run(
         d = date.fromisoformat(date_str)
         caption = (f"🚌 {data['routeName']} | {d:%d.%m.%Y} | "
                    f"Kunlik chiqish jadvali (grafik × haydovchi × avtobus)")
-        target = chat_id or telegram_settings().get("driver_chat_id") or None
-        send_photo(str(img), caption=caption, chat_id=target,
-                   reply_markup=resend_keyboard(profile.get("name") if profile else None))
-        result["sent"] = True
+        # Yo'nalishga biriktirilgan guruhlarga faqat o'sha yo'nalish grafigi yuborilsin.
+        targets = []
+        try:
+            from ..notifications.ops.group_departures import _route_targets
+            targets = _route_targets(route_id, chat_id)
+        except Exception:
+            # Fallback: eski logika (agarda import xatosi bo'lsa)
+            s = telegram_settings()
+            targets = [chat_id] if chat_id else []
+            if not targets:
+                t = s.get("driver_chat_id") or s.get("chat_id") or ""
+                targets = [x.strip() for x in str(t).replace(";", ",").split(",") if x.strip()]
+        if targets:
+            # Avtomatik yuborishda (chat_id berilmagan) retry takror yubormaydi.
+            pending = targets if chat_id else _pending_targets(route_id, date_str, targets)
+            for t in pending:
+                send_photo(str(img), caption=caption, chat_id=t,
+                           reply_markup=resend_keyboard(profile.get("name") if profile else None))
+            if pending and not chat_id:
+                _mark_sent(route_id, date_str, pending)
+            result["sent"] = True
+            result["sent_to"] = targets
+            if not pending:
+                result["already_sent"] = True
+        else:
+            # Yo'nalishga guruh biriktirilmagan — xato emas, retry ham kerak emas.
+            result["sent"] = False
+            result["no_group"] = True
     return result
 
 

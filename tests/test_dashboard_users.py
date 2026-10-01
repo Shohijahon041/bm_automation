@@ -1,66 +1,85 @@
-"""Dashboard ko'p korxonali login/sessiya va rol qamrovi testlari."""
+"""Dashboard ko'p korxonali login/sessiya va rol qamrovi testlari (FastAPI).
 
-import io
+Avval bu testlar stdlib `DashboardHandler`'ni to'g'ridan-to'g'ri chaqirar edi;
+FastAPI migratsiyasidan keyin ular `TestClient` orqali haqiqiy router'larni
+sinaydi. Auth/scope/rate-limit logikasi `bm_automation.app.dashboard.deps`da.
+"""
+
+import copy
 import json
 
 import pytest
+from fastapi.testclient import TestClient
 
 from bm_automation.app.core import profiles as profiles_mod
-from bm_automation.app.dashboard import server as server_mod
+from bm_automation.app.dashboard import deps
 from bm_automation.app.db.storage import storage_for
-from bm_automation.app.dashboard.server import DashboardHandler
 from tests.sqlite_backend import SQLiteDatabase
 
 
-class _FakeConn:
-    def __init__(self, body=b""):
-        self._body = body
-        self._wbuf = io.BytesIO()
+def _client() -> TestClient:
+    """Har so'rovda yangi TestClient (cookie jar toza, lifespan ishga tushmaydi)."""
+    from bm_automation.app.dashboard.fastapi_app import app
+    return TestClient(app)
 
-    def makefile(self, mode, *args):
-        return io.BytesIO(self._body) if mode.startswith("r") else self._wbuf
 
-    def sendall(self, data):
-        self._wbuf.write(data)
+def _split_headers(headers):
+    """Content-Length'ni olib tashlaydi, Cookie'ni ajratib oladi."""
+    headers = dict(headers or {})
+    cookies = {}
+    for k in list(headers):
+        if k.lower() == "content-length":
+            headers.pop(k)
+        elif k.lower() == "cookie":
+            for part in headers.pop(k).split(";"):
+                kv = part.strip().split("=", 1)
+                if len(kv) == 2:
+                    cookies[kv[0]] = kv[1]
+    return headers, cookies
+
+
+def _collect_cookies(response) -> dict:
+    out = {}
+    for k, v in response.headers.multi_items():
+        if k.lower() == "set-cookie":
+            for part in v.split(";"):
+                kv = part.strip().split("=", 1)
+                if len(kv) == 2:
+                    out[kv[0]] = kv[1]
+    return out
 
 
 def _request(storage, path, method="GET", headers=None, body=None,
              monkeypatch=None):
-    """DashboardHandler'ni to'g'ridan-to'g'ri chaqirib natijani qaytaradi.
+    """FastAPI router'ni TestClient orqali chaqirib natijani qaytaradi.
 
     `BM_TEST_MODE` o'chirilgan bo'lishi kerak (haqiqiy auth tekshiriladi).
     Qaytaradi: (status, json, cookies).
+
+    Xato javoblarida FastAPI `{"detail": ...}` qaytaradi; eski shartnoma
+    bilan moslash uchun `error`/`ok` maydonlariga normalizatsiya qilinadi.
     """
-    conn = _FakeConn(body or b"")
-    h = object.__new__(DashboardHandler)
-    h.server = type("S", (), {"daemon_threads": True})()
-    h.client_address = ("127.0.0.1", 0)
-    h.command = method
-    h.path = path
-    h.requestline = f"{method} {path} HTTP/1.0"
-    h.request_version = "HTTP/1.0"
-    headers = dict(headers or {})
-    if body and "Content-Length" not in headers:
-        headers["Content-Length"] = str(len(body))
-    h.headers = headers
-    h.rfile = io.BytesIO(body or b"")
-    h.wfile = conn._wbuf
-    if method == "GET":
-        h.do_GET()
-    else:
-        h.do_POST()
-    raw = conn._wbuf.getvalue()
-    head, _, payload = raw.partition(b"\r\n\r\n")
-    cookies = {}
-    for line in head.decode("latin1").split("\r\n"):
-        if line.lower().startswith("set-cookie:"):
-            for part in line.split(":", 1)[1].strip().split(";"):
-                kv = part.strip().split("=", 1)
-                if len(kv) == 2:
-                    cookies[kv[0]] = kv[1]
-    status = int(head.split()[1]) if head else 0
-    data = json.loads(payload.decode("utf-8")) if payload else {}
-    return status, data, cookies
+    hdrs, cookies = _split_headers(headers)
+    if body is not None and not any(k.lower() == "content-type" for k in hdrs):
+        hdrs["Content-Type"] = "application/json"
+    r = _client().request(method, path, headers=hdrs or None,
+                          content=body, cookies=cookies or None)
+    try:
+        data = r.json()
+    except ValueError:
+        data = {}
+    if isinstance(data, dict) and "detail" in data:
+        data.setdefault("error", data["detail"])
+        data.setdefault("ok", False)
+    return r.status_code, data, _collect_cookies(r)
+
+
+def _raw(env, path, method="GET", headers=None, body=b""):
+    """(status, raw bytes) — fayl/HTML javoblarini tekshirish uchun."""
+    hdrs, cookies = _split_headers(headers)
+    r = _client().request(method, path, headers=hdrs or None,
+                          content=body or None, cookies=cookies or None)
+    return r.status_code, r.content
 
 
 @pytest.fixture()
@@ -73,14 +92,18 @@ def storage(tmp_path):
 def env(monkeypatch, tmp_path):
     """Haqiqiy auth uchun muhit: BM_TEST_MODE o'chirilgan, sessiya tmp'da."""
     monkeypatch.delenv("BM_TEST_MODE", raising=False)
-    monkeypatch.setattr(server_mod, "_DASHBOARD_TOKEN", "")
-    monkeypatch.setattr(server_mod, "_sessions_file",
+    monkeypatch.setattr(deps, "_dashboard_token", lambda: "")
+    monkeypatch.setattr(deps, "_sessions_file",
                         lambda: tmp_path / "sessions.json")
-    with server_mod._SESSION_LOCK:
-        server_mod._sessions = {}
-    with server_mod._POST_LOCK:
-        server_mod._last_post_at.clear()
-    monkeypatch.setattr(server_mod, "_POST_MIN_INTERVAL_S", 0.0)
+    with deps._SESSION_LOCK:
+        deps._sessions = {}
+    with deps._POST_LOCK:
+        deps._last_post_at.clear()
+    with deps._LOGIN_LOCK:
+        deps._login_fails.clear()
+        deps._login_blocked_until.clear()
+    monkeypatch.setattr(deps, "_POST_MIN_INTERVAL_S", 0.0)
+    monkeypatch.setattr(deps, "_LOGIN_MIN_INTERVAL_S", 0.0)
     db = SQLiteDatabase(str(tmp_path / "dash.db"))
     st = storage_for(db)
     monkeypatch.setattr("bm_automation.app.db.storage.get_storage", lambda: st)
@@ -161,12 +184,12 @@ def test_dashboard_user_data_roundtrip(storage):
 
 def test_password_hash_and_verify(env):
     """Parol salt bilan xeshlanadi va to'g'ri tekshiriladi."""
-    digest, salt = server_mod._hash_password("sirli-parol")
+    digest, salt = deps.hash_password("sirli-parol")
     assert digest and salt and digest != "sirli-parol"
-    assert server_mod._verify_password("sirli-parol", salt, digest)
-    assert not server_mod._verify_password("boshqa", salt, digest)
+    assert deps.verify_password("sirli-parol", salt, digest)
+    assert not deps.verify_password("boshqa", salt, digest)
     # Turli salt -> turli hash
-    digest2, salt2 = server_mod._hash_password("sirli-parol")
+    digest2, salt2 = deps.hash_password("sirli-parol")
     assert digest2 != digest
 
 
@@ -179,7 +202,7 @@ def test_login_requires_auth(env, monkeypatch):
 
 def test_login_wrong_password(env):
     st = env
-    st.dashboard_user_add("ali", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("ali", *deps.hash_password("to'g'ri"),
                           role="ADMIN")
     status, data, _ = _login(env, "ali", "noto'g'ri")
     assert status == 401
@@ -188,7 +211,7 @@ def test_login_wrong_password(env):
 
 def test_login_success_and_session(env):
     st = env
-    st.dashboard_user_add("ali", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("ali", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     status, data, cookies = _login(env, "ali", "to'g'ri")
     assert status == 200 and data["ok"] is True
@@ -207,7 +230,7 @@ def test_login_success_and_session(env):
 
 def test_logout_destroys_session(env):
     st = env
-    st.dashboard_user_add("ali", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("ali", *deps.hash_password("to'g'ri"),
                           role="ADMIN")
     _, _, cookies = _login(env, "ali", "to'g'ri")
     token = cookies.get("bm_session")
@@ -221,8 +244,7 @@ def test_logout_destroys_session(env):
 
 def test_token_bearer_restores_admin(env, monkeypatch):
     """DASHBOARD_TOKEN bearer'da ADMIN qaytadi (DISPATCHER ham emas)."""
-    from bm_automation.app.dashboard import server as _srv
-    monkeypatch.setattr(_srv, "_DASHBOARD_TOKEN", "master-token")
+    monkeypatch.setattr(deps, "_dashboard_token", lambda: "master-token")
     status, data, _ = _request(
         env, "/api/routes",
         headers={"Authorization": "Bearer master-token"})
@@ -238,10 +260,9 @@ def test_session_wins_over_master_token(env, monkeypatch):
     Authorization header orqali keladi; bu token sessiyani bosib, DISPATCHER
     foydalanuvchini ADMIN qilib ko'rsatmasligi kerak.
     """
-    from bm_automation.app.dashboard import server as _srv
-    monkeypatch.setattr(_srv, "_DASHBOARD_TOKEN", "master-token")
+    monkeypatch.setattr(deps, "_dashboard_token", lambda: "master-token")
     st = env
-    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}",
@@ -267,7 +288,7 @@ def test_session_wins_over_master_token(env, monkeypatch):
 
 def test_inactive_user_cannot_login(env):
     st = env
-    uid = st.dashboard_user_add("ali", *server_mod._hash_password("to'g'ri"),
+    uid = st.dashboard_user_add("ali", *deps.hash_password("to'g'ri"),
                                 role="DISPATCHER", company="XTEST")
     st.dashboard_user_update(uid, active=0)
     status, _, _ = _login(env, "ali", "to'g'ri")
@@ -279,7 +300,7 @@ def test_inactive_user_cannot_login(env):
 def test_routes_only_own_company(env, monkeypatch):
     """DISPATCHER faqat o'z korxonasi route'ini ko'radi."""
     st = env
-    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -293,7 +314,7 @@ def test_routes_only_own_company(env, monkeypatch):
 def test_summary_route_forced_to_company(env):
     """Boshqa korxona route'i so'ralsa ham o'z route'iga kesiladi."""
     st = env
-    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -304,7 +325,7 @@ def test_summary_route_forced_to_company(env):
 
 def test_admin_sees_all_routes(env):
     st = env
-    st.dashboard_user_add("admin", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("admin", *deps.hash_password("to'g'ri"),
                           role="ADMIN")
     _, _, cookies = _login(env, "admin", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -316,7 +337,7 @@ def test_admin_sees_all_routes(env):
 def test_dispatcher_blocked_from_admin_endpoints(env):
     """DISPATCHER /api/users (ADMIN-only) dan 403 oladi."""
     st = env
-    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -327,7 +348,7 @@ def test_dispatcher_blocked_from_admin_endpoints(env):
 def test_director_blocked_from_myai(env):
     """DIRECTOR /api/myai (ADMIN-only) dan 403 oladi."""
     st = env
-    st.dashboard_user_add("dir", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("dir", *deps.hash_password("to'g'ri"),
                           role="DIRECTOR", company="XTEST")
     _, _, cookies = _login(env, "dir", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -338,7 +359,7 @@ def test_director_blocked_from_myai(env):
 def test_dispatcher_blocked_from_brutto(env):
     """DISPATCHER brutto (moliyaviy) ni ko'rmaydi."""
     st = env
-    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -349,14 +370,14 @@ def test_dispatcher_blocked_from_brutto(env):
 def test_dispatcher_blocked_from_rejects_report(env):
     """Qabul qilinmagan KM hisoboti (moliyaviy) DISPATCHER uchun 403."""
     st = env
-    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
     status, _, _ = _request(env, "/api/rejects", headers=hdr)
     assert status == 403
     # MANAGER ko'radi.
-    st.dashboard_user_add("mgr", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("mgr", *deps.hash_password("to'g'ri"),
                           role="MANAGER", company="XTEST")
     _, _, cookies = _login(env, "mgr", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -367,7 +388,7 @@ def test_dispatcher_blocked_from_rejects_report(env):
 def test_routes_finance_fields_stripped_for_dispatcher(env):
     """DISPATCHER /api/routes da skm/km_rate/tarif (pul) ko'rmaydi."""
     st = env
-    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -379,7 +400,7 @@ def test_routes_finance_fields_stripped_for_dispatcher(env):
         assert "tariff_no_vat" not in r
         assert "tariff_vat" not in r
     # MANAGER uchun moliyaviy maydonlar mavjud.
-    st.dashboard_user_add("mgr", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("mgr", *deps.hash_password("to'g'ri"),
                           role="MANAGER", company="XTEST")
     _, _, cookies = _login(env, "mgr", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -391,7 +412,7 @@ def test_routes_finance_fields_stripped_for_dispatcher(env):
 def test_summary_finance_fields_stripped_for_dispatcher(env):
     """DISPATCHER /api/summary routesida ham pul maydonlari yashirin."""
     st = env
-    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -411,7 +432,7 @@ def test_summary_cache_not_mutated_by_dispatcher(env, monkeypatch):
     from bm_automation.app.dashboard import metrics as metrics_mod
     metrics_mod._summary_cache = {"at": 0.0, "key": "", "data": None}
     st = env
-    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -419,7 +440,7 @@ def test_summary_cache_not_mutated_by_dispatcher(env, monkeypatch):
     assert status == 200
     assert all("km_rate" not in r for r in (data.get("routes") or []))
     # Keyingi MANAGER xuddi shu cache'dan ma'lumot oladi — finans saqlanadi.
-    st.dashboard_user_add("mgr", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("mgr", *deps.hash_password("to'g'ri"),
                           role="MANAGER", company="XTEST")
     _, _, cookies = _login(env, "mgr", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -432,7 +453,7 @@ def test_summary_cache_not_mutated_by_dispatcher(env, monkeypatch):
 
 def test_admin_creates_user_via_api(env):
     st = env
-    st.dashboard_user_add("root", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"),
                           role="ADMIN")
     _, _, cookies = _login(env, "root", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}",
@@ -451,7 +472,7 @@ def test_admin_creates_user_via_api(env):
 
 def test_nonadmin_cannot_manage_users(env):
     st = env
-    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}",
@@ -463,9 +484,9 @@ def test_nonadmin_cannot_manage_users(env):
 
 def test_admin_list_users_scrubs_secrets(env):
     st = env
-    st.dashboard_user_add("root", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"),
                           role="ADMIN")
-    uid = st.dashboard_user_add("ali", *server_mod._hash_password("x"),
+    uid = st.dashboard_user_add("ali", *deps.hash_password("x"),
                                 role="DISPATCHER", company="XTEST")
     st.dashboard_user_update(uid, active=0)
     _, _, cookies = _login(env, "root", "to'g'ri")
@@ -486,9 +507,9 @@ def test_admin_list_users_scrubs_secrets(env):
 def test_admin_edits_user_role_and_company(env):
     """TAHRIRLASH: rol va kompaniya almashadi (parol berilmasa o'zgarmaydi)."""
     st = env
-    st.dashboard_user_add("root", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"),
                           role="ADMIN")
-    uid = st.dashboard_user_add("ali", *server_mod._hash_password("eski"),
+    uid = st.dashboard_user_add("ali", *deps.hash_password("eski"),
                                 role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "root", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}",
@@ -513,9 +534,9 @@ def test_admin_deletes_user_by_username(env):
     O'chirish faqat SUPER ADMIN'da; super adminni o'zi ham o'chira olmaydi.
     """
     st = env
-    st.dashboard_user_add("root", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"),
                           role="ADMIN", data='{"super": true}')
-    uid = st.dashboard_user_add("ali", *server_mod._hash_password("x"),
+    uid = st.dashboard_user_add("ali", *deps.hash_password("x"),
                                 role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "root", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}",
@@ -538,9 +559,9 @@ def test_admin_deletes_user_by_username(env):
 def test_admin_resets_password_only_updates_password(env):
     """PAROL tugmasi: faqat parol yuboriladi — rol/kompaniya o'zgarmaydi."""
     st = env
-    st.dashboard_user_add("root", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"),
                           role="ADMIN")
-    st.dashboard_user_add("ali", *server_mod._hash_password("eski"),
+    st.dashboard_user_add("ali", *deps.hash_password("eski"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "root", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}",
@@ -564,9 +585,9 @@ def test_admin_resets_password_only_updates_password(env):
 def test_admin_toggles_active_only_keeps_company(env):
     """Faol checkbox: faqat active yuboriladi — kompaniya saqlanadi."""
     st = env
-    st.dashboard_user_add("root", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"),
                           role="ADMIN")
-    uid = st.dashboard_user_add("ali", *server_mod._hash_password("x"),
+    uid = st.dashboard_user_add("ali", *deps.hash_password("x"),
                                 role="DIRECTOR", company="XTEST")
     _, _, cookies = _login(env, "root", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}",
@@ -588,7 +609,7 @@ def test_admin_toggles_active_only_keeps_company(env):
 def _mk(env, username, role, company="XTEST", password="x", data=""):
     """Belgilangan rol/kompaniya foydalanuvchisini yaratib header qaytaradi."""
     st = env
-    st.dashboard_user_add(username, *server_mod._hash_password(password),
+    st.dashboard_user_add(username, *deps.hash_password(password),
                           role=role, company=company, data=data)
     _, _, cookies = _login(env, username, password)
     return {"Cookie": f"bm_session={cookies['bm_session']}",
@@ -602,18 +623,18 @@ def test_super_detection_env_and_data(env, monkeypatch):
     st.dashboard_user_add("boss", "h", "s", role="ADMIN",
                           data='{"super": true}')
     st.dashboard_user_add("oddiy", "h", "s", role="ADMIN")
-    assert server_mod._is_super_username("biznes") is True
-    assert server_mod._is_super_username("BOSS") is True
-    assert server_mod._is_super_username("boss") is True
-    assert server_mod._is_super_username("oddiy") is False
+    assert deps.is_super_username("biznes") is True
+    assert deps.is_super_username("BOSS") is True
+    assert deps.is_super_username("boss") is True
+    assert deps.is_super_username("oddiy") is False
 
 
 def test_me_super_flag(env):
     """/api/me super admin uchun super=true qaytaradi."""
     st = env
-    st.dashboard_user_add("basi", *server_mod._hash_password("x"),
+    st.dashboard_user_add("basi", *deps.hash_password("x"),
                           role="ADMIN", data='{"super": true}')
-    st.dashboard_user_add("oddi", *server_mod._hash_password("x"),
+    st.dashboard_user_add("oddi", *deps.hash_password("x"),
                           role="ADMIN")
     _, _, cookies = _login(env, "basi", "x")
     status, data, _ = _request(env, "/api/me",
@@ -628,7 +649,7 @@ def test_me_super_flag(env):
 def test_non_super_admin_cannot_delete(env):
     """O'chirish huquqi faqat super admin; oddiy ADMIN o'chira olmaydi."""
     st = env
-    uid = st.dashboard_user_add("ali", *server_mod._hash_password("x"),
+    uid = st.dashboard_user_add("ali", *deps.hash_password("x"),
                                 role="DISPATCHER", company="XTEST")
     hdr = _mk(env, "root2", "ADMIN")
     body = json.dumps({"action": "delete", "username": "ali"}).encode()
@@ -643,7 +664,7 @@ def test_non_super_admin_cannot_delete(env):
 def test_super_admin_deletes_others_but_not_self(env):
     """Super admin boshqasini o'chiradi; o'zini o'chirolmaydi."""
     st = env
-    uid = st.dashboard_user_add("ali", *server_mod._hash_password("x"),
+    uid = st.dashboard_user_add("ali", *deps.hash_password("x"),
                                 role="DIRECTOR", company="XTEST")
     hdr = _mk(env, "basi2", "ADMIN", data='{"super": true}')
     body = json.dumps({"action": "delete", "username": "ali"}).encode()
@@ -663,7 +684,7 @@ def test_super_admin_deletes_others_but_not_self(env):
 def test_non_super_admin_cannot_delete_super(env):
     """Boshqa ADMIN super adminni o'chira olmaydi."""
     st = env
-    st.dashboard_user_add("basi", *server_mod._hash_password("x"),
+    st.dashboard_user_add("basi", *deps.hash_password("x"),
                           role="ADMIN", data='{"super": true}')
     hdr = _mk(env, "root", "ADMIN")
     body = json.dumps({"action": "delete", "username": "basi"}).encode()
@@ -699,7 +720,7 @@ def test_only_super_creates_admin_role(env):
 def test_super_admin_role_and_company_immutable(env):
     """Super admin qatori: rol/kompaniya/faollik daxlsiz (parol mumkin)."""
     st = env
-    st.dashboard_user_add("basi", *server_mod._hash_password("x"),
+    st.dashboard_user_add("basi", *deps.hash_password("x"),
                           role="ADMIN", data='{"super": true}')
     hdr = _mk(env, "basi2", "ADMIN", data='{"super": true}')
     body = json.dumps({"action": "update", "username": "basi",
@@ -727,7 +748,7 @@ def test_super_admin_role_and_company_immutable(env):
 def test_dispatcher_cannot_list_dashboard_users(env):
     """Ro'yxat ham MANAGER+ (rang 2); DISPATCHER 403 oladi."""
     st = env
-    st.dashboard_user_add("disp", *server_mod._hash_password("x"),
+    st.dashboard_user_add("disp", *deps.hash_password("x"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "x")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -738,11 +759,11 @@ def test_dispatcher_cannot_list_dashboard_users(env):
 def test_manager_users_list_scoped(env):
     """MANAGER faqat o'z korxonasi foydalanuvchilarini ko'radi."""
     st = env
-    st.dashboard_user_add("basi", *server_mod._hash_password("x"),
+    st.dashboard_user_add("basi", *deps.hash_password("x"),
                           role="ADMIN", data='{"super": true}')
-    st.dashboard_user_add("disp", *server_mod._hash_password("x"),
+    st.dashboard_user_add("disp", *deps.hash_password("x"),
                           role="DISPATCHER", company="XTEST")
-    st.dashboard_user_add("dir", *server_mod._hash_password("x"),
+    st.dashboard_user_add("dir", *deps.hash_password("x"),
                           role="DIRECTOR", company="YTEST")
     hdr = _mk(env, "mgr", "MANAGER", "XTEST")
     status, data, _ = _request(env, "/api/dashboard-users", headers=hdr)
@@ -783,7 +804,7 @@ def test_manager_create_scoped_and_role_capped(env):
 def test_manager_cannot_edit_other_company_user(env):
     """MANAGER boshqa korxona foydalanuvchisini tahrirlay olmaydi."""
     st = env
-    st.dashboard_user_add("dir", *server_mod._hash_password("x"),
+    st.dashboard_user_add("dir", *deps.hash_password("x"),
                           role="DIRECTOR", company="YTEST")
     hdr = _mk(env, "mgr", "MANAGER", "XTEST")
     body = json.dumps({"action": "update", "username": "dir",
@@ -798,7 +819,7 @@ def test_manager_cannot_edit_other_company_user(env):
 def test_manager_cannot_promote_peer_or_admin(env):
     """MANAGER tengi yoki o'zidan yuqori rol belgilay olmaydi; ADMIN ham taqiq."""
     st = env
-    st.dashboard_user_add("pee", *server_mod._hash_password("x"),
+    st.dashboard_user_add("pee", *deps.hash_password("x"),
                           role="MANAGER", company="XTEST")
     hdr = _mk(env, "mgr", "MANAGER", "XTEST")
     body = json.dumps({"action": "update", "username": "pee",
@@ -819,9 +840,9 @@ def test_manager_cannot_promote_peer_or_admin(env):
 def test_super_list_is_super_and_has_companies(env):
     """Super admin ro'yxati is_super=true va barcha kompaniyalarni qamraydi."""
     st = env
-    st.dashboard_user_add("basi", *server_mod._hash_password("x"),
+    st.dashboard_user_add("basi", *deps.hash_password("x"),
                           role="ADMIN", data='{"super": true}')
-    st.dashboard_user_add("disp", *server_mod._hash_password("x"),
+    st.dashboard_user_add("disp", *deps.hash_password("x"),
                           role="DISPATCHER", company="XTEST")
     hdr = _mk(env, "basi2", "ADMIN", data='{"super": true}')
     status, data, _ = _request(env, "/api/dashboard-users", headers=hdr)
@@ -842,7 +863,7 @@ def test_super_list_is_super_and_has_companies(env):
 def test_viewer_can_login_but_only_me(env):
     """VIEWER /api/me ni ko'radi, boshqa endpointlardan 403 oladi."""
     st = env
-    st.dashboard_user_add("viewer", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("viewer", *deps.hash_password("to'g'ri"),
                           role="VIEWER", company="XTEST")
     _, _, cookies = _login(env, "viewer", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -855,7 +876,7 @@ def test_viewer_can_login_but_only_me(env):
 
 def test_dispatcher_blocked_from_sms_log(env):
     st = env
-    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -865,7 +886,7 @@ def test_dispatcher_blocked_from_sms_log(env):
 
 def test_dispatcher_blocked_from_sms_routes(env):
     st = env
-    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -876,7 +897,7 @@ def test_dispatcher_blocked_from_sms_routes(env):
 def test_dispatcher_cannot_see_electricity_price(env):
     """Elektr narxi/energiya hisoboti moliyaviy — DISPATCHER (rang 2) ko'rmaydi."""
     st = env
-    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}",
@@ -891,7 +912,7 @@ def test_dispatcher_cannot_see_electricity_price(env):
                             body=body)
     assert status == 403
     # MANAGER (rang 2) ko'radi.
-    st.dashboard_user_add("mgr", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("mgr", *deps.hash_password("to'g'ri"),
                           role="MANAGER", company="XTEST")
     _, _, cookies = _login(env, "mgr", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -902,7 +923,7 @@ def test_dispatcher_cannot_see_electricity_price(env):
 def test_dispatcher_blocked_from_telegram_user_admin(env):
     """/api/users/* POST (rol/delete/link) faqat ADMIN uchun."""
     st = env
-    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}",
@@ -917,7 +938,7 @@ def test_dispatcher_blocked_from_telegram_user_admin(env):
 def test_dispatcher_blocked_from_dispatcher_routing(env):
     """Dispetcher route/telefon konfiguratsiyasi faqat ADMIN uchun."""
     st = env
-    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}",
@@ -942,7 +963,7 @@ def test_director_sms_log_scoped(env, monkeypatch):
         "rows": rows, "count": 2,
         "counts": {"DELIVERED": 2, "total": 2}, "configured": True})
     st = env
-    st.dashboard_user_add("dir", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("dir", *deps.hash_password("to'g'ri"),
                           role="DIRECTOR", company="XTEST")
     _, _, cookies = _login(env, "dir", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -952,7 +973,7 @@ def test_director_sms_log_scoped(env, monkeypatch):
     assert data["count"] == 1
     assert data["counts"]["total"] == 1
     # Admin esa hammasini ko'radi.
-    st.dashboard_user_add("root", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"),
                           role="ADMIN")
     _, _, cookies = _login(env, "root", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -965,7 +986,7 @@ def test_director_sms_log_scoped(env, monkeypatch):
 def test_director_sms_routes_scoped(env):
     """DIRECTOR SMS yo'nalishlar ro'yxatida faqat o'z korxonasini ko'radi."""
     st = env
-    st.dashboard_user_add("dir", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("dir", *deps.hash_password("to'g'ri"),
                           role="DIRECTOR", company="XTEST")
     _, _, cookies = _login(env, "dir", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -998,7 +1019,7 @@ def test_director_documents_scoped_by_driver_route(env, monkeypatch):
     st = env
     st.save_driver("d1", full_name="Ali", route_id="r1")
     st.save_driver("d2", full_name="Vali", route_id="r2")
-    st.dashboard_user_add("dir", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("dir", *deps.hash_password("to'g'ri"),
                           role="DIRECTOR", company="XTEST")
     _, _, cookies = _login(env, "dir", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -1011,7 +1032,7 @@ def test_director_documents_scoped_by_driver_route(env, monkeypatch):
     status, _, _ = _request(env, "/api/documents/2", headers=hdr)
     assert status == 404
     # Admin ikkalasini ham ko'radi.
-    st.dashboard_user_add("root", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"),
                           role="ADMIN")
     _, _, cookies = _login(env, "root", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -1024,18 +1045,18 @@ def test_director_documents_scoped_by_driver_route(env, monkeypatch):
 
 def test_driver_detail_scoped_to_route(env, monkeypatch):
     """/api/drivers/{id} (haydovchi karta — moliyaviy) DISPATCHER uchun 403."""
-    from bm_automation.app.dashboard.server import DashboardHandler
     called = []
 
-    def fake_detail(self, driver_id, qs):
+    def fake_detail(self, driver_id, f=None):
         called.append(driver_id)
-        return {"ok": True, "driver_id": driver_id}
+        return {"ok": True, "driver_id": driver_id, "driver": {}}
 
-    monkeypatch.setattr(DashboardHandler, "_driver_detail", fake_detail)
+    monkeypatch.setattr(
+        "bm_automation.app.dashboard.metrics.Metrics.driver_detail", fake_detail)
     st = env
     st.save_driver("d1", full_name="Ali", route_id="r1")
     st.save_driver("d2", full_name="Vali", route_id="r2")
-    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -1043,7 +1064,7 @@ def test_driver_detail_scoped_to_route(env, monkeypatch):
     assert status == 403
     assert called == []
     # MANAGER o'z korxonasi haydovchisini ko'radi, boshqasiniki 404.
-    st.dashboard_user_add("mgr", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("mgr", *deps.hash_password("to'g'ri"),
                           role="MANAGER", company="XTEST")
     _, _, cookies = _login(env, "mgr", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -1054,7 +1075,7 @@ def test_driver_detail_scoped_to_route(env, monkeypatch):
     assert status == 404
     assert called == ["d1"]
     # Admin ikkalasini ham ocha oladi.
-    st.dashboard_user_add("root", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"),
                           role="ADMIN")
     _, _, cookies = _login(env, "root", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -1069,21 +1090,21 @@ def test_drivers_list_scoped(env):
     st.save_driver("d1", full_name="AAA", route_id="r1")
     st.save_driver("d2", full_name="BBB", route_id="r2")
     # DISPATCHER moliyaviy bo'limga kira olmaydi.
-    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
     status, _, _ = _request(env, "/api/drivers/list", headers=hdr)
     assert status == 403
     # MANAGER o'z route'i ro'yxatini oladi.
-    st.dashboard_user_add("mgr", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("mgr", *deps.hash_password("to'g'ri"),
                           role="MANAGER", company="XTEST")
     _, _, cookies = _login(env, "mgr", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
     status, data, _ = _request(env, "/api/drivers/list", headers=hdr)
     assert status == 200 and data["ok"] is True
     assert [d["driver_id"] for d in data["drivers"]] == ["d1"]
-    st.dashboard_user_add("root", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"),
                           role="ADMIN")
     _, _, cookies = _login(env, "root", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -1096,7 +1117,7 @@ def test_driver_write_scoped_to_route(env):
     st = env
     st.save_driver("d1", full_name="Ali", route_id="r1")
     st.save_driver("d2", full_name="Vali", route_id="r2")
-    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}",
@@ -1116,7 +1137,7 @@ def test_vehicle_detail_scoped(env, monkeypatch):
     st = env
     st.save_vehicle("v1", plate_number="01A", route_id="r1")
     st.save_vehicle("v2", plate_number="02B", route_id="r2")
-    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -1146,7 +1167,7 @@ def test_appeals_scoped(env, monkeypatch):
     st.save_driver("d2", full_name="Vali", route_id="r2")
     aid1 = st.appeal_add("d1", title="T1")
     aid2 = st.appeal_add("d2", title="T2")
-    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -1186,7 +1207,7 @@ def test_salary_report_scoped_to_company(env, monkeypatch):
 
     monkeypatch.setattr(export_mod, "salary_export", fake_export)
     st = env
-    st.dashboard_user_add("mgr", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("mgr", *deps.hash_password("to'g'ri"),
                           role="MANAGER", company="XTEST")
     _, _, cookies = _login(env, "mgr", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -1195,14 +1216,14 @@ def test_salary_report_scoped_to_company(env, monkeypatch):
     assert status == 200
     assert calls and calls[0][2] == "r1"
     # DISPATCHER salary'ga kira olmaydi (rang 2).
-    st.dashboard_user_add("disp", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
     status, _, _ = _request(env, q, headers=hdr)
     assert status == 403
     # ADMIN to'liq eksport qiladi (route bo'sh).
-    st.dashboard_user_add("root", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"),
                           role="ADMIN")
     _, _, cookies = _login(env, "root", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -1261,30 +1282,10 @@ def test_salary_export_filters_by_route(monkeypatch):
 #   6) qamrovsiz kompaniya -> fail-closed (hech narsa ko'rinmaydi).
 
 
-def _raw(env, path, method="GET", headers=None, body=b""):
-    """DashboardHandler'ni to'g'ridan-to'g'ri chaqirib (status, raw) qaytaradi."""
-    conn = _FakeConn(body)
-    h = object.__new__(DashboardHandler)
-    h.server = type("S", (), {"daemon_threads": True})()
-    h.client_address = ("127.0.0.1", 0)
-    h.command = method
-    h.path = path
-    h.requestline = f"{method} {path} HTTP/1.0"
-    h.request_version = "HTTP/1.0"
-    h.headers = {"Content-Length": str(len(body)), **(headers or {})}
-    h.rfile = io.BytesIO(body or b"")
-    h.wfile = conn._wbuf
-    (h.do_GET if method == "GET" else h.do_POST)()
-    raw = conn._wbuf.getvalue()
-    head = raw.partition(b"\r\n\r\n")[0]
-    status = int(head.split()[1]) if head else 0
-    return status, raw
-
-
 def _hdr(env, role, company="XTEST", password="to'g'ri"):
     """Berilgan rol/kompaniya foydalanuvchisini yaratib sessiya header qaytaradi."""
     st = env
-    st.dashboard_user_add(f"u-{role}-{company}", *server_mod._hash_password(password),
+    st.dashboard_user_add(f"u-{role}-{company}", *deps.hash_password(password),
                           role=role, company=company)
     _, _, cookies = _login(env, f"u-{role}-{company}", password)
     return {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -1292,14 +1293,13 @@ def _hdr(env, role, company="XTEST", password="to'g'ri"):
 
 def test_kmrate_route_scope_and_role(env, monkeypatch):
     """kmrate: boshqa korxona route'i 404; o'z route'i 200; DISPATCHER 403."""
-    from bm_automation.app.dashboard.server import DashboardHandler
     calls = []
 
-    def fake(self, payload):
-        calls.append(payload.get("route_id"))
-        return {"ok": True}
+    def fake(route_id, km_rate):
+        calls.append(route_id)
 
-    monkeypatch.setattr(DashboardHandler, "_update_km_rate", fake)
+    monkeypatch.setattr(
+        "bm_automation.app.core.bot_settings.set_route_km", fake)
     hdr = _hdr(env, "MANAGER")
     body = json.dumps({"route_id": "r2", "km_rate": 10}).encode()
     status, _, _ = _request(env, "/api/kmrate", method="POST", headers=hdr,
@@ -1328,14 +1328,14 @@ def test_kmrate_route_scope_and_role(env, monkeypatch):
 
 def test_route_skm_route_scope(env, monkeypatch):
     """route-skm: boshqa korxona route'i 404, o'z route'i 200."""
-    from bm_automation.app.dashboard.server import DashboardHandler
     calls = []
 
-    def fake(self, payload):
-        calls.append(payload.get("route_id"))
-        return {"ok": True}
+    def fake(rid, val):
+        calls.append(rid)
+        return val
 
-    monkeypatch.setattr(DashboardHandler, "_update_route_skm", fake)
+    monkeypatch.setattr(
+        "bm_automation.app.core.bot_settings.set_route_skm", fake)
     hdr = _hdr(env, "MANAGER")
     body = json.dumps({"route_id": "r2", "skm": 5}).encode()
     status, _, _ = _request(env, "/api/route-skm", method="POST", headers=hdr,
@@ -1349,14 +1349,14 @@ def test_route_skm_route_scope(env, monkeypatch):
 
 def test_rejects_tariff_route_scope(env, monkeypatch):
     """rejects/tariff: boshqa korxona route'i 404, o'z route'i 200."""
-    from bm_automation.app.dashboard.server import DashboardHandler
     calls = []
 
-    def fake(self, payload):
-        calls.append(payload.get("route_id"))
-        return {"ok": True}
+    def fake(rid, no_vat, vat):
+        calls.append(rid)
+        return {"no_vat": no_vat, "vat": vat}
 
-    monkeypatch.setattr(DashboardHandler, "_update_rejects_tariff", fake)
+    monkeypatch.setattr(
+        "bm_automation.app.core.bot_settings.set_route_tariff", fake)
     hdr = _hdr(env, "MANAGER")
     body = json.dumps({"route_id": "r2", "vat": 1, "no_vat": 1}).encode()
     status, _, _ = _request(env, "/api/rejects/tariff", method="POST",
@@ -1404,14 +1404,14 @@ def test_electricity_price_manager_blocked(env):
 
 def test_export_settings_tariffs_admin_only(env, monkeypatch):
     """Global sozlamalar/barcha firma tariflari eksporti - faqat ADMIN."""
-    from bm_automation.app.dashboard.server import DashboardHandler
     calls = []
 
-    def fake_export(self, qs):
-        calls.append(qs)
+    def fake_export(params):
+        calls.append(params)
         return None
 
-    monkeypatch.setattr(DashboardHandler, "_export", fake_export)
+    monkeypatch.setattr(
+        "bm_automation.app.dashboard.export.run_export", fake_export)
     hdr = _hdr(env, "DIRECTOR")
     for scope in ("settings", "tariffs"):
         status, data, _ = _request(env, f"/api/export?scope={scope}",
@@ -1421,7 +1421,7 @@ def test_export_settings_tariffs_admin_only(env, monkeypatch):
     # Qolgan eksport turlari o'z korxonasiga kesiladi va AKT'ga o'tadi.
     status, _, _ = _request(env, "/api/export?scope=trips", headers=hdr)
     assert status != 403
-    assert calls and calls[0].get("route") == ["r1"]
+    assert calls and calls[0].get("route") == "r1"
     # ADMIN settings/tariffsni ham ocha oladi (AKT'ga o'tadi, 403 emas).
     hdr = _hdr(env, "ADMIN", company="")
     before = len(calls)
@@ -1433,14 +1433,15 @@ def test_export_settings_tariffs_admin_only(env, monkeypatch):
 
 def test_document_autofill_scoped(env, monkeypatch):
     """Autofill boshqa kompaniya haydovchisi uchun 404 (PII himoyasi)."""
-    from bm_automation.app.dashboard.server import DashboardHandler
+    from bm_automation.app.documents import manager as mgr_mod
     calls = []
 
-    def fake(self, driver_id):
-        calls.append(driver_id)
-        return {"ok": True, "driver_id": driver_id}
+    class _AutofillMgr:
+        def autofill_data(self, driver_id):
+            calls.append(driver_id)
+            return {"ok": True, "driver_id": driver_id}
 
-    monkeypatch.setattr(DashboardHandler, "_document_autofill", fake)
+    monkeypatch.setattr(mgr_mod, "get_manager", lambda: _AutofillMgr())
     st = env
     st.save_driver("d1", full_name="Ali", route_id="r1")
     st.save_driver("d2", full_name="Vali", route_id="r2")
@@ -1553,14 +1554,14 @@ def test_document_attach_detach_scoped(env, monkeypatch):
 
 def test_driver_create_route_scope(env, monkeypatch):
     """Yangi haydovchi faqat o'z korxonasi route'iga qo'shiladi."""
-    from bm_automation.app.dashboard.server import DashboardHandler
+    from bm_automation.app.dashboard.routers import drivers as drivers_mod
     calls = []
 
-    def fake(self, payload, driver_id=""):
+    def fake(payload, driver_id=""):
         calls.append(payload.get("route_id"))
         return {"ok": True, "driver_id": "new1"}
 
-    monkeypatch.setattr(DashboardHandler, "_save_driver", fake)
+    monkeypatch.setattr(drivers_mod, "_save_driver", fake)
     hdr = _hdr(env, "MANAGER")
     body = json.dumps({"full_name": "Yangi", "route_id": "r2"}).encode()
     status, _, _ = _request(env, "/api/drivers", method="POST", headers=hdr,
@@ -1579,14 +1580,14 @@ def test_driver_create_route_scope(env, monkeypatch):
 
 def test_driver_profile_cannot_move_company(env, monkeypatch):
     """Haydovchini boshqa korxona route'iga ko'chirish 404 beradi."""
-    from bm_automation.app.dashboard.server import DashboardHandler
+    from bm_automation.app.dashboard.routers import drivers as drivers_mod
     calls = []
 
-    def fake(self, payload, driver_id=""):
+    def fake(payload, driver_id=""):
         calls.append((driver_id, payload.get("route_id")))
         return {"ok": True}
 
-    monkeypatch.setattr(DashboardHandler, "_save_driver", fake)
+    monkeypatch.setattr(drivers_mod, "_save_driver", fake)
     st = env
     st.save_driver("d1", full_name="Ali", route_id="r1")
     hdr = _hdr(env, "MANAGER")
@@ -1606,10 +1607,9 @@ def test_company_without_routes_fail_closed(env, monkeypatch):
     Oldin bo'sh qamrov route paramini bo'sh qoldirib, butun bazani ochib
     qo'yardi (ish haqi/summary barcha firmalar ma'lumotini chiqarardi).
     """
-    from bm_automation.app.dashboard.server import DashboardHandler
     st = env
     st.save_driver("d1", full_name="Ali", route_id="r1")
-    st.dashboard_user_add("nobody", *server_mod._hash_password("to'g'ri"),
+    st.dashboard_user_add("nobody", *deps.hash_password("to'g'ri"),
                           role="MANAGER", company="MAVJUD_EMAS")
     _, _, cookies = _login(env, "nobody", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
@@ -1619,11 +1619,12 @@ def test_company_without_routes_fail_closed(env, monkeypatch):
     # Haydovchilar ro'yxati ham bo'sh (tashqaridan driver_id ko'rinmaydi).
     calls = []
 
-    def fake_detail(self, driver_id, qs):
+    def fake_detail(self, driver_id, f=None):
         calls.append(driver_id)
-        return {"ok": True}
+        return {"ok": True, "driver": {}}
 
-    monkeypatch.setattr(DashboardHandler, "_driver_detail", fake_detail)
+    monkeypatch.setattr(
+        "bm_automation.app.dashboard.metrics.Metrics.driver_detail", fake_detail)
     status, _, _ = _request(env, "/api/drivers/d1", headers=hdr)
     assert status == 404 and calls == []
     # Yozish ham yopiq.
@@ -1631,3 +1632,163 @@ def test_company_without_routes_fail_closed(env, monkeypatch):
     status, _, _ = _request(env, "/api/kmrate", method="POST", headers=hdr,
                             body=body)
     assert status == 404
+
+
+# ------------------------------------------------------- xavfsizlik himoya
+
+def test_login_bruteforce_lockout(env):
+    """8 xato urinishdan keyin login 15 daqiqaga qulflanadi (username+IP)."""
+    digest, salt = deps.hash_password("secret")
+    env.dashboard_user_add("ali", digest, salt, "MANAGER", "XTEST", 1)
+    for i in range(8):
+        st, d, _ = _login(env, "ali", "wrong")
+        assert st == 401, f"urinish {i} 401 bo'lishi kerak edi, {st}"
+    st, d, _ = _login(env, "ali", "wrong")
+    assert st == 429
+    # Qulflangan davrda hatto to'g'ri parol ham qabul qilinmaydi.
+    st, d, _ = _login(env, "ali", "secret")
+    assert st == 429
+    # Boshqa foydalanuvchi/IP qulflanmaydi (faqat username+IP juftligi).
+    st, d, _ = _login(env, "nonexistent", "x")
+    assert st == 401
+
+
+def test_login_success_resets_fail_count(env):
+    """Muvaffaqiyatli login xato sanog'ini tozalaydi."""
+    digest, salt = deps.hash_password("secret")
+    env.dashboard_user_add("ali", digest, salt, "MANAGER", "XTEST", 1)
+    for _ in range(4):
+        _login(env, "ali", "wrong")
+    st, d, _ = _login(env, "ali", "secret")
+    assert st == 200
+    for _ in range(4):
+        st, d, _ = _login(env, "ali", "wrong")
+        assert st == 401
+
+
+def test_username_special_chars_parameterized(env):
+    """`'`/`;` li login parametrli lookup bilan xavfsiz ishlaydi.
+
+    Frontend usernameni ``esc()`` bilan HTML'dan tozalaydi; server parametri
+    SQL ishlatadi — in'ektsiya urinadigan username jadvalni buzishi mumkin.
+    """
+    name = "x'); DROP TABLE dashboard_users;--"
+    digest, salt = deps.hash_password("secret")
+    uid = env.dashboard_user_add(name, digest, salt, "MANAGER", "XTEST", 1)
+    assert uid
+    st, d, _ = _login(env, name, "secret")
+    assert st == 200
+    # Jadvalan faqat bitta qator — boshqalarga ziyon yetmadi.
+    assert env.dashboard_users_count() == 1
+    rows = env.dashboard_users_list()
+    assert len(rows) == 1 and rows[0]["username"] == name.lower()
+
+
+# ------------------------------------------------ oylik summa toggle
+
+def _admin_env(env):
+    env.dashboard_user_add("root", *deps.hash_password("to'g'ri"),
+                           role="ADMIN")
+    _, _, cookies = _login(env, "root", "to'g'ri")
+    return {"Cookie": f"bm_session={cookies['bm_session']}",
+            "Content-Type": "application/json"}
+
+
+def test_show_driver_salary_default_on(env):
+    """Standart holatda oylik summalar ko'rsatiladi."""
+    hdr = _admin_env(env)
+    status, data, _ = _request(env, "/api/settings", headers=hdr)
+    assert status == 200
+    assert data["global"]["show_driver_salary"] is True
+
+
+def test_show_driver_salary_toggle_persists(env):
+    """Sozlama saqlanadi va qayta o'qilganda saqlanib qoladi."""
+    hdr = _admin_env(env)
+    body = json.dumps({"show_driver_salary": False}).encode()
+    status, data, _ = _request(env, "/api/settings", method="POST",
+                               headers={**hdr, "Content-Length": str(len(body))},
+                               body=body)
+    assert status == 200 and data["ok"] is True
+    assert "show_driver_salary" in data["changed"]
+    status, data, _ = _request(env, "/api/settings", headers=hdr)
+    assert data["global"]["show_driver_salary"] is False
+    # Qayta yoqiladi.
+    body = json.dumps({"show_driver_salary": True}).encode()
+    status, _, _ = _request(env, "/api/settings", method="POST",
+                            headers={**hdr, "Content-Length": str(len(body))},
+                            body=body)
+    assert status == 200
+    status, data, _ = _request(env, "/api/settings", headers=hdr)
+    assert data["global"]["show_driver_salary"] is True
+
+
+def test_drivers_directory_masks_salary_when_off(env, monkeypatch):
+    import bm_automation.app.dashboard.metrics as mmod
+
+    rows = [
+        {"driver_id": "d1", "name": "Ali", "phone": "+998901234567",
+         "company": "XTEST", "route_name": "10-yo'nalish",
+         "km": 2500.0, "km_rate": 2000.0, "working_days": 20, "trips": 40,
+         "gross_pay": 5_000_000.0, "tax": 600_000.0, "fines": 50_000.0,
+         "net_pay": 4_350_000.0, "rating": 4.5, "blacklisted": False,
+         "automatic_km": 0.0, "manual_trips": 0,
+         "notification_enabled": False},
+    ]
+    canned = {"filters": {"month": "2026-08"}, "drivers": rows,
+              "totals": {"drivers": 1, "active": 1, "blacklisted": 0,
+                         "km": 2500.0, "gross_pay": 5_000_000.0,
+                         "tax": 600_000.0, "net_pay": 4_350_000.0,
+                         "fines": 50_000.0}}
+    monkeypatch.setattr(mmod.Metrics, "driver_directory",
+                        lambda self, f=None: copy.deepcopy(canned))
+
+    hdr = _admin_env(env)
+    # O'chirilgan: moliyaviy maydonlar None, km_rate saqlanadi.
+    body = json.dumps({"show_driver_salary": False}).encode()
+    _request(env, "/api/settings", method="POST",
+             headers={**hdr, "Content-Length": str(len(body))}, body=body)
+    status, data, _ = _request(env, "/api/drivers", headers=hdr)
+    assert status == 200
+    assert data.get("show_driver_salary") is False
+    dr = data["drivers"][0]
+    assert dr["net_pay"] is None and dr["gross_pay"] is None
+    assert dr["tax"] is None and dr["fines"] is None
+    assert dr["km_rate"] == 2000.0
+    assert data["totals"]["net_pay"] is None
+    assert data["totals"]["km"] == 2500.0
+    # Yoqilgan: barcha qiymatlar qaytadi.
+    body = json.dumps({"show_driver_salary": True}).encode()
+    _request(env, "/api/settings", method="POST",
+             headers={**hdr, "Content-Length": str(len(body))}, body=body)
+    status, data, _ = _request(env, "/api/drivers", headers=hdr)
+    assert status == 200
+    assert data["drivers"][0]["net_pay"] == 4_350_000.0
+    assert data["totals"]["gross_pay"] == 5_000_000.0
+
+
+def test_driver_detail_masks_salary_when_off(env, monkeypatch):
+    import bm_automation.app.dashboard.metrics as mmod
+
+    detail = {
+        "driver": {"driver_id": "d1", "name": "Ali", "km": 2500.0,
+                   "km_rate": 2000.0, "working_days": 20, "trips": 40,
+                   "gross_pay": 5_000_000.0, "tax": 600_000.0,
+                   "fines": 50_000.0, "net_pay": 4_350_000.0},
+        "profile": {}, "trips": [], "work_logs": [], "fine_rows": [],
+        "appeals": [], "fines_total": 50_000.0, "telegram_user": None,
+    }
+    monkeypatch.setattr(mmod.Metrics, "driver_detail",
+                        lambda self, driver_id, f=None: copy.deepcopy(detail))
+    hdr = _admin_env(env)
+    body = json.dumps({"show_driver_salary": False}).encode()
+    _request(env, "/api/settings", method="POST",
+             headers={**hdr, "Content-Length": str(len(body))}, body=body)
+    status, data, _ = _request(env, "/api/drivers/d1", headers=hdr)
+    assert status == 200
+    assert data.get("show_driver_salary") is False
+    d = data["driver"]
+    assert d["net_pay"] is None and d["gross_pay"] is None
+    assert d["tax"] is None and d["fines"] is None
+    assert d["km_rate"] == 2000.0
+    assert data["fines_total"] is None

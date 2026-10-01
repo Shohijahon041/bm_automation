@@ -744,12 +744,25 @@ class Storage:
     def delete_missing(self, table: str, key_cols: list[str],
                        route_id: str, from_date: str, to_date: str,
                        keep: set, extra_cond: str = "",
-                       extra_params: tuple = ()) -> int:
+                       extra_params: tuple = (),
+                       allow_empty: bool = False) -> int:
         """Replace-sync uchun: diapazondagi `keep`'da yo'q yozuvlarni o'chiradi.
 
         Faqat shu (route_id, date) oralig'idagi qatorlar tekshiriladi;
         `key_cols` to'liq natural kalitni beradi (date/route_id kiradi).
         `extra_cond` (masalan `source='WAYBILL'`) o'chirishni toraytiradi.
+
+        Xavfsizlik (F-05): upstream bo'sh yoki noto'g'ri javob bersa `keep`
+        bo'sh yoki juda kichik bo'ladi — va bu BUTUN marshrut/sana
+        ma'lumotlarini o'chirishga olib kelardi. Shuning uchun:
+
+        - `keep` bo'sh bo'lsa va diapazonda qatorlar bo'lsa —
+          hech narsa o'chirilmaydi (`allow_empty=True` bundan istisno);
+        - o'chiriladigan ulush juda katta bo'lsa (>=90% va >=500 qator)
+          — bloklanadi.
+
+        Bloklash sababi `errors` jadvaliga yoziladi. Vazifa bo'yicha
+        onatli o'chirish kerak bo'lsa `BM_ALLOW_DESTRUCTIVE_RESYNC=1`.
         """
         if not self.enabled:
             return 0
@@ -765,6 +778,8 @@ class Storage:
             if tuple(str(r.get(c) or "") for c in key_cols) not in keep
         ]
         if not doomed:
+            return 0
+        if not self._delete_allowed(table, rows, doomed, keep, allow_empty):
             return 0
         if getattr(self.db, "driver", "") != "postgres":
             # SQLite (faqat test): qator-qator o'chirish.
@@ -789,6 +804,45 @@ class Storage:
             f"(SELECT * FROM unnest({arrays}))"
         )
         return max(self._exec(sql, tuple(by_col)), 0)
+
+    # Katta mass-o'chirish chegaralari (F-05). Kichik o'zgarishlar (haydovchi
+    # almashtirilgani) o'chishiga tegilmaydi — faqat butun jadvalni yiqilishiga
+    # olib keladigan holatlar bloklanadi.
+    _DELETE_RATIO_GUARD = 0.9
+    _DELETE_COUNT_GUARD = 500
+
+    def _delete_allowed(self, table: str, rows: list, doomed: list,
+                        keep: set, allow_empty: bool = False) -> bool:
+        """Bu o'chirish xavfsizmi? Bloklansa `errors`ga yozib False qaytaradi."""
+        from ..config.settings import destructive_resync_allowed
+
+        if destructive_resync_allowed():
+            return True
+        if not keep and not allow_empty:
+            self._block_delete(table, rows, doomed, len(keep),
+                               "upstream bo'sh")
+            return False
+        if (len(doomed) >= self._DELETE_COUNT_GUARD
+                and len(doomed) >= len(rows) * self._DELETE_RATIO_GUARD):
+            self._block_delete(table, rows, doomed, len(keep),
+                               "o'chiriladigan ulush juda katta")
+            return False
+        return True
+
+    def _block_delete(self, table: str, rows: list, doomed: list,
+                      keep_count: int, reason: str) -> None:
+        msg = (f"Xavfsizlik: {table} replace-sync o'chirishi bloklandi "
+               f"({reason}: {len(doomed)}/{len(rows)} qator). "
+               f"Upstream javoni bo'sh/noto'g'ri bo'lishi mumkin. "
+               f"Ruxsat uchun: BM_ALLOW_DESTRUCTIVE_RESYNC=1")
+        log.warning(msg)
+        self.record_error(source=f"sync.{table}", message=msg, context={
+            "table": table,
+            "rows_in_scope": len(rows),
+            "would_delete": len(doomed),
+            "keep": keep_count,
+            "reason": reason,
+        })
 
     def save_report(self, name: str, report_type: str = "",
                     period_date: str = "", params: dict | None = None,
