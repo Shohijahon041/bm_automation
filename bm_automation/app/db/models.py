@@ -139,6 +139,7 @@ class SyncResult:
 
 # Jadval ro'yxati (schema.py bilan mos) — CLI/status uchun.
 TABLES = [
+    "companies",
     "profiles",
     "routes",
     "vehicles",

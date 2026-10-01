@@ -3,9 +3,13 @@
 Barcha jadvallar `id`, `created_at`, `updated_at` maydonlariga ega.
 Upsert idempotentligi UNIQUE indekslar orqali ta'minlanadi (`ON CONFLICT`).
 
+Ko'p-kompaniyali (multi-tenant) tizim: `companies` — tenant reyestri;
+barcha biznes jadvallar `company_id` bilan bog'lanadi (TENANT_TABLES).
+
 Jadvallar:
-    profiles, routes, vehicles, drivers, duties, schedules, waybills, trips,
-    trip_statuses, reports, report_runs, errors, notifications, automation_runs.
+    companies, profiles, routes, vehicles, drivers, duties, schedules,
+    waybills, trips, trip_statuses, reports, report_runs, errors,
+    notifications, automation_runs.
 """
 
 from __future__ import annotations
@@ -17,7 +21,21 @@ from .models import TABLES, TripStatus, now_utc
 log = get_logger("bm_automation.db")
 
 # Jadval: (ustun, tur) — `id/created_at/updated_at` avtomatik qo'shiladi.
-TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
+# `companies` — SaaS tenant reyestri; boshqa biznes jadvallarga
+# `company_id`/`created_by`/`updated_by` quruvchi orqali qo'shiladi
+# (pastdagi TENANT_TABLES va `_build_table_columns`).
+_RAW_TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    "companies": [
+        ("name", "TEXT NOT NULL DEFAULT ''"),
+        ("slug", "TEXT NOT NULL DEFAULT ''"),
+        ("logo", "TEXT NOT NULL DEFAULT ''"),
+        ("phone", "TEXT NOT NULL DEFAULT ''"),
+        ("email", "TEXT NOT NULL DEFAULT ''"),
+        ("address", "TEXT NOT NULL DEFAULT ''"),
+        ("subscription_plan", "TEXT NOT NULL DEFAULT 'basic'"),
+        ("subscription_expire_date", "TEXT NOT NULL DEFAULT ''"),
+        ("status", "TEXT NOT NULL DEFAULT 'active'"),
+    ],
     "profiles": [
         ("external_id", "TEXT NOT NULL DEFAULT ''"),
         ("name", "TEXT NOT NULL DEFAULT ''"),
@@ -306,8 +324,47 @@ TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
     ],
 }
 
+# ---------------------------------------------------------------------------
+# Tenant (ko'p-kompaniyali) ustunlari
+# ---------------------------------------------------------------------------
+
+# Barcha biznes jadvallar `company_id` bilan bog'lanadi; kim yaratgan va
+# o'zgartirgani `created_by`/`updated_by`da saqlanadi (actor — username
+# yoki bot aktori; bot foydalanuvchilari `dashboard_users`da bo'lmagani
+# uchun TEXT, FK emas).
+# Global/tizim jadvallari tenantga bog'lanmaydi: `trip_statuses` (lug'at),
+# `errors`, `notifications`, `automation_runs`, `report_runs` (jurnallar).
+TENANT_TABLES: tuple[str, ...] = (
+    "profiles", "routes", "vehicles", "drivers", "driver_profiles",
+    "driver_work_logs", "driver_fines", "driver_appeals", "duties",
+    "schedules", "waybills", "route_daily", "trips", "reports",
+    "dispatcher_routes", "documents", "sms_log", "sms_route_flags",
+    "avans", "staff", "dashboard_users",
+)
+
+_TENANT_COLUMNS: list[tuple[str, str]] = [
+    ("company_id", "BIGINT NOT NULL DEFAULT 0"),
+    ("created_by", "TEXT NOT NULL DEFAULT ''"),
+    ("updated_by", "TEXT NOT NULL DEFAULT ''"),
+]
+
+
+def _build_table_columns() -> dict[str, list[tuple[str, str]]]:
+    """TABLE_COLUMNS = xom sxema + tenant ustunlari (biznes jadvallar)."""
+    out: dict[str, list[tuple[str, str]]] = {}
+    for table, cols in _RAW_TABLE_COLUMNS.items():
+        merged = list(cols)
+        if table in TENANT_TABLES:
+            merged.extend(_TENANT_COLUMNS)
+        out[table] = merged
+    return out
+
+
+TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = _build_table_columns()
+
 # Jadval -> UNIQUE indeks ustunlari (upsert `ON CONFLICT` kalitlari).
 UNIQUE_KEYS: dict[str, list[str]] = {
+    "companies": ["slug"],
     "profiles": ["name"],
     "routes": ["external_id"],
     "vehicles": ["external_id"],
@@ -345,6 +402,22 @@ EXTRA_INDEXES: dict[str, list[list[str]]] = {
     "staff": [["company"], ["position"]],
     "driver_appeals": [["driver_id"], ["status"]],
 }
+
+# Tenant filtri uchun indekslar: har bir biznes jadvalda `company_id`
+# (izolyatsiya so'rovlari WHERE company_id = ...), yirik tranzaksiya
+# jadvallarida qo'shimcha `created_at` (audit/tarix saralash).
+_CREATED_AT_INDEXED: tuple[str, ...] = (
+    "trips", "route_daily", "driver_work_logs", "driver_fines",
+    "driver_appeals", "sms_log", "documents", "avans",
+)
+for _t in TENANT_TABLES:
+    EXTRA_INDEXES.setdefault(_t, [])
+    if ["company_id"] not in EXTRA_INDEXES[_t]:
+        EXTRA_INDEXES[_t].append(["company_id"])
+for _t in _CREATED_AT_INDEXED:
+    EXTRA_INDEXES.setdefault(_t, [])
+    if ["created_at"] not in EXTRA_INDEXES[_t]:
+        EXTRA_INDEXES[_t].append(["created_at"])
 
 STATUS_DESCRIPTIONS = {
     "ACCEPTED": "Qabul qilingan",
@@ -417,6 +490,21 @@ _MIGRATIONS: list[str] = [
     "ALTER TABLE driver_work_logs ADD COLUMN IF NOT EXISTS "
     "trip_approved INTEGER NOT NULL DEFAULT 0",
 ]
+
+# Tenant migratsiyasi (idempotent): eski bazalarga company_id/created_by/
+# updated_by ustunlarini qo'shadi. FK cheklovi keyingi bosqichda (barcha
+# yozuvlar company_id ni to'ldirgach) qo'shiladi — aks holda mavjud
+# yozish yo'llari (sync) buziladi.
+for _t in TENANT_TABLES:
+    _MIGRATIONS.append(
+        f"ALTER TABLE {_t} ADD COLUMN IF NOT EXISTS "
+        "company_id BIGINT NOT NULL DEFAULT 0")
+    _MIGRATIONS.append(
+        f"ALTER TABLE {_t} ADD COLUMN IF NOT EXISTS "
+        "created_by TEXT NOT NULL DEFAULT ''")
+    _MIGRATIONS.append(
+        f"ALTER TABLE {_t} ADD COLUMN IF NOT EXISTS "
+        "updated_by TEXT NOT NULL DEFAULT ''")
 
 
 def seed_statuses(db: Database) -> int:

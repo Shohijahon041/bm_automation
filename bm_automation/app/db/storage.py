@@ -54,6 +54,7 @@ class Storage:
         self.db = db
         self._forced_enabled = enabled  # None = auto (init_db + o'z-o'zini tiklash)
         self._schema_ready = False
+        self._tenancy_ready = False  # kompaniyalar reyestri + company_id backfill
         if not self.enabled:
             log.info("DB rejimi o'chirilgan вЂ” barcha DB yozuvlar o'tkazib yuboriladi.")
 
@@ -76,6 +77,19 @@ class Storage:
             if not init_db(self.db):
                 return False
             self._schema_ready = True
+        if not self._tenancy_ready:
+            # Bayroqni AVVAL ko'taramiz: bootstrap ichidagi har qanday
+            # `enabled` tekshiruvi rekursiyaga tushmasligi shart
+            # (self.enabled → bootstrap → query → self.enabled → ...).
+            self._tenancy_ready = True
+            if getattr(self.db, "driver", "") == "postgres":
+                # Faqat ishlab chiqarish (Supabase). Testlarda (SQLite)
+                # bootstrap testlar tomonidan aniq profillar bilan chaqiriladi.
+                try:
+                    from .tenancy import bootstrap_tenancy
+                    bootstrap_tenancy(self)
+                except Exception:  # noqa: BLE001
+                    log.warning("Tenant bootstrap bajarilmadi (davom etiladi)")
         return True
 
     # ------------------------------------------------------------ low level
