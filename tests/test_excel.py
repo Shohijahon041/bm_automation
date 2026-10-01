@@ -238,4 +238,126 @@ def test_process_route_skips_when_already_sent(monkeypatch):
         ("", "r1", "img", "B-80", 0), None, datetime.date(2026, 9, 30),
         {}, None, "ISH KUNI", retry_until_published=True)
     assert calls["duty"] == 0
-    assert res == [("excel", "B-80", True), ("image", "B-80", True)]
+    assert res == [("already", "B-80", True)]
+
+
+def test_process_route_duplicate_flow_waits(monkeypatch):
+    """Ikkinchi so'rov kutish oqimini takror ochmaydi — ('waiting') qaytadi."""
+    import datetime
+    import threading
+
+    import daily_grafik as dg
+    from bm_automation.app.notifications import sms_notify
+
+    entered = threading.Event()
+    release = threading.Event()
+    route = ("", "r1", "img", "B-80", 0)
+    day = datetime.date(2026, 10, 2)
+
+    def fake_retry(client, rid, d, label, on_wait=None):
+        entered.set()
+        release.wait(timeout=5)
+        return {"graphs": []}
+
+    def boom(*a, **k):
+        raise RuntimeError("test")
+
+    monkeypatch.setattr(dg, "_grafik_was_sent", lambda rid, ds: False)
+    monkeypatch.setattr(dg, "_duty_with_retry", fake_retry)
+    monkeypatch.setattr(dg, "_route_targets", lambda rid, cid: [])
+    monkeypatch.setattr(sms_notify, "send_sms_for_graphs",
+                        lambda *a, **k: {"sent": 0, "skipped": 0, "failed": 0,
+                                         "invalid": 0, "removed": 0,
+                                         "errors": 0})
+    monkeypatch.setattr("bm_automation.app.services.export_service.build_export",
+                        boom)
+    monkeypatch.setattr("bm_automation.app.services.driver_sheet_service.run",
+                        boom)
+    dg._INFLIGHT.clear()
+
+    t = threading.Thread(target=dg._process_route,
+                         args=(route, None, day, {}, None, "ISH KUNI"))
+    t.start()
+    try:
+        assert entered.wait(timeout=5)
+        # Birinchi oqim kutayotganda ikkinchi so'rov yangi oqim ochmaydi.
+        res = dg._process_route(route, None, day, {}, None, "ISH KUNI",
+                                retry_until_published=True)
+        assert res == [("waiting", "B-80", True)]
+    finally:
+        release.set()
+    t.join(timeout=10)
+    assert not t.is_alive()
+    # Oqim tugagach band bo'shatiladi — keyingi urinishlarga xalaqit bermaydi.
+    assert "r1|2026-10-02" not in dg._INFLIGHT
+
+
+def test_duty_with_retry_calls_on_wait(monkeypatch):
+    """404 bo'lganda on_wait chaqiriladi, keyin qayta urinib qaytaradi."""
+    import datetime
+
+    import daily_grafik as dg
+
+    calls = {"n": 0, "wait": 0}
+
+    class FakeRepo:
+        def __init__(self, client):
+            pass
+
+        def by_date(self, rid, ds):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("hali yo'q")
+            return {"graphs": []}
+
+    monkeypatch.setattr(dg, "DutyRepository", FakeRepo)
+    monkeypatch.setattr(dg, "_not_found",
+                        lambda exc: isinstance(exc, RuntimeError))
+    monkeypatch.setattr(dg.time, "sleep", lambda s: None)
+    monkeypatch.setattr(dg, "_warn_if_late", lambda rid, d, label: None)
+
+    def on_wait():
+        calls["wait"] += 1
+
+    res = dg._duty_with_retry(None, "r1", datetime.date(2026, 10, 2), "B-80",
+                              on_wait=on_wait)
+    assert res == {"graphs": []}
+    assert calls["n"] == 2
+    assert calls["wait"] == 1
+
+
+def test_summary_groups_and_text():
+    """Xulosa: sent/already/waiting/notfound/error to'g'ri ajratiladi."""
+    import datetime
+
+    import daily_grafik as dg
+
+    results = [("already", "B-80", True), ("waiting", "D-4", True),
+               ("excel", "B-7", True), ("image", "B-7", True),
+               ("excel", "E-17", True), ("image", "E-17", False),
+               ("notfound", "10-YO'NALISH", True),
+               ("route", "B-11", False)]
+    s = dg._summarize_results(results)
+    assert s["sent"] == ["B-7"]
+    assert s["already"] == ["B-80"]
+    assert s["waiting"] == ["D-4"]
+    assert set(s["error"]) == {"E-17", "B-11"}
+    assert s["notfound"] == ["10-YO'NALISH"]
+
+    text = dg._summary_text(s, datetime.date(2026, 10, 2), "Ertaga")
+    assert "02.10.2026" in text
+    assert "✅ Yuborildi: B-7" in text
+    assert "📤 Allaqachon yuborilgan: B-80" in text
+    assert "⏳" in text and "D-4" in text
+    assert "❌ Xatolik: B-11, E-17" in text or "❌ Xatolik: E-17, B-11" in text
+
+
+def test_summary_empty():
+    """Natija bo'sh bo'lsa ham xulosa yaroqli bo'lishi kerak."""
+    import datetime
+
+    import daily_grafik as dg
+
+    text = dg._summary_text(dg._summarize_results([]),
+                            datetime.date(2026, 10, 2), "Ertaga")
+    assert "Ma'lumot yo'q" in text

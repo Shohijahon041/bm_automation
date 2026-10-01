@@ -52,15 +52,17 @@ def _not_found(exc) -> bool:
     return isinstance(exc, BMApiError) and exc.status == 404
 
 
-def _duty_with_retry(client, rid: str, d: datetime.date, label: str) -> dict:
+def _duty_with_retry(client, rid: str, d: datetime.date, label: str,
+                     on_wait=None) -> dict:
     """Ertangi kun duty ma'lumotini 404 beruvchi davrda kutib oladi.
 
     404 (hali e'lon qilinmagan) bo'lsa grafik e'lon qilinguncha
     ``DUTY_RETRY_MINUTES`` oralig'ida **cheksiz** qayta urinadi (22:00
     cheklovi yo'q — bot har doim ishlaydi). Boshqa xatolar darhol
-    ko'tariladi.
+    ko'tariladi. ``on_wait`` — har 404 urinishida chaqiriladigan callback
+    (so'rov yuboruvchiga "hali e'lon qilinmagan" holatini bildirish uchun;
+    xabar bir marta yuborilishini chaqiruvchi o'zi ta'minlaydi).
     """
-    last = None
     warned = False
     while True:
         try:
@@ -68,14 +70,18 @@ def _duty_with_retry(client, rid: str, d: datetime.date, label: str) -> dict:
         except Exception as exc:
             if not _not_found(exc):
                 raise
-            last = exc
             print(f"[{label}] {d} duty hali e'lon qilinmagan (404) — "
                   f"{DUTY_RETRY_MINUTES} daqiqadan keyin qayta uriniladi...")
+            if on_wait:
+                try:
+                    on_wait()
+                except Exception as cb_exc:  # noqa: BLE001
+                    print(f"  [{label}] kutish xabari xatosi: {cb_exc}")
             # Grafik kechiksa — kechqurun (DUTY_LATE_WARN_HOUR dan keyin)
             # bog'langan haydovchilarga BIR MARTA eslatma yuboriladi.
             if not warned:
-                _warn_if_late(rid, d, label)
                 warned = True
+                _warn_if_late(rid, d, label)
             time.sleep(DUTY_RETRY_MINUTES * 60)
 
 
@@ -471,9 +477,74 @@ def _mark_grafik_sent(rid: str, date_str: str) -> None:
     _save_grafik_sent(state)
 
 
+# Bir vaqtning o'zida bir xil (yo'nalish, kun) uchun faqat BITTA oqim
+# ishlaydi: tugma bir necha marta bosilsa ham Excel/rasm/kartalar takror
+# yuborilmaydi (404 kutilayotgan paytda ham). Holat jarayon ichida:
+#   _INFLIGHT      — hozir ishlayotgan/kutayotgan yo'nalishlar;
+#   _WAIT_NOTIFIED — "hali e'lon qilinmagan" xabari yuborilganlar.
+_INFLIGHT_LOCK = Lock()
+_INFLIGHT: dict[str, str] = {}
+_WAIT_NOTIFIED: set[str] = set()
+
+
+def _claim_route(rid: str, date_str: str, label: str) -> bool:
+    """(yo'nalish, kun) oqimini band qiladi. Allaqachon band bo'lsa False."""
+    key = f"{rid}|{date_str}"
+    with _INFLIGHT_LOCK:
+        if key in _INFLIGHT:
+            return False
+        _INFLIGHT[key] = label
+        return True
+
+
+def _release_route(rid: str, date_str: str) -> None:
+    with _INFLIGHT_LOCK:
+        _INFLIGHT.pop(f"{rid}|{date_str}", None)
+
+
+def _mark_wait_notified(rid: str, date_str: str) -> bool:
+    """Kutish xabari birinchi marta yuborilayotgan bo'lsa True."""
+    key = f"{rid}|{date_str}"
+    with _INFLIGHT_LOCK:
+        if key in _WAIT_NOTIFIED:
+            return False
+        _WAIT_NOTIFIED.add(key)
+        return True
+
+
 def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word,
                    retry_until_published: bool = True):
-    """Bitta yo'nalish uchun Excel + rasmni parallel bajaradi."""
+    """Bitta yo'nalish: takrorlanishni to'sib, ishni himoyalangan bajaradi.
+
+    - grafik allaqachon yuborilgan bo'lsa -> ("already", label, True);
+    - shu (yo'nalish, kun) boshqa oqimda kutilyapti/ishlayapti bo'lsa
+      -> ("waiting", label, True) — yangi oqim ochilmaydi (takror yuborish
+      bo'lmaydi: kechqurun grafik e'lon qilinganda ham bittadan ketadi).
+    """
+    _out_prefix, rid, _img_dir, label, _tpl_idx = route_tuple
+    date_str = d.isoformat()
+
+    # Kuniga bir marta: tayyor grafik takroriy yuborilmaydi.
+    if _grafik_was_sent(rid, date_str):
+        print(f"  [{label}] {date_str} grafigi bugun allaqachon yuborilgan "
+              f"— takrorlanmaydi")
+        return [("already", label, True)]
+
+    if not _claim_route(rid, date_str, label):
+        print(f"  [{label}] {date_str} — boshqa so'rov allaqachon ishlamoqda "
+              f"(tayyor bo'lishi bilan yuboriladi), takroriy oqim ochilmadi")
+        return [("waiting", label, True)]
+
+    try:
+        return _process_route_run(route_tuple, client, d, profiles_map,
+                                  chat_id, title_word, retry_until_published)
+    finally:
+        _release_route(rid, date_str)
+
+
+def _process_route_run(route_tuple, client, d, profiles_map, chat_id,
+                       title_word, retry_until_published: bool = True):
+    """Bitta yo'nalish uchun Excel + rasmni parallel bajaradi (claim ostida)."""
     from bm_automation.app.services.export_service import build_export
     from bm_automation.app.services.driver_sheet_service import run as run_sheet
 
@@ -482,18 +553,20 @@ def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word,
     results = []
     targets = _route_targets(rid, chat_id)
 
-    # Kuniga bir marta: tayyor grafik takroriy yuborilmaydi.
-    if _grafik_was_sent(rid, date_str):
-        print(f"  [{label}] {date_str} grafigi bugun allaqachon yuborilgan "
-              f"— takrorlanmaydi")
-        results.append(("excel", label, True))
-        results.append(("image", label, True))
-        return results
+    def on_wait():
+        """404 — grafik hali e'lon qilinmaganini so'rov yuboruvchiga bildiradi."""
+        if not chat_id or not _mark_wait_notified(rid, date_str):
+            return
+        send_message(
+            f"⏳ <b>{esc(label)}</b>: {d:%d.%m.%Y} kun grafigi hali e'lon "
+            f"qilinmagan.\nGrafik e'lon qilinishi bilanoq avtomatik "
+            f"yuboriladi (har {DUTY_RETRY_MINUTES} daqiqada tekshiriladi).",
+            chat_id=chat_id)
 
     try:
         if retry_until_published:
             # Ertangi kun — e'lon qilinmaguncha kutamiz (faqat kelajak kun).
-            duty = _duty_with_retry(client, rid, d, label)
+            duty = _duty_with_retry(client, rid, d, label, on_wait=on_wait)
         else:
             try:
                 duty = DutyRepository(client).by_date(rid, d.isoformat())
@@ -507,14 +580,15 @@ def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word,
                         send_message(f"🚏 {label}: {d:%d.%m.%Y} kun uchun "
                                      f"grafik e'lon qilinmagan — "
                                      f"Excel yuborilmadi.", chat_id=t)
-                return results
+                return [("notfound", label, True)]
     except Exception as exc:
         print(f"[{label}] {d} kun grafigi e'lon qilinmagan: {exc}")
         if _grafik_notify_once(rid, date_str, "notfound"):
             for t in targets:
                 send_message(f"🚏 {label}: {d:%d.%m.%Y} kun grafigi hali e'lon "
                              f"qilinmagan — Excel yuborilmadi.", chat_id=t)
-        return results
+        found = _not_found(exc)
+        return [("notfound" if found else "error", label, found)]
 
     graphs = duty.get("graphs") or []
     print(f"[{label}] duty grafiklar: {len(graphs)}")
@@ -624,6 +698,62 @@ def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word,
     return results
 
 
+def _summarize_results(results) -> dict:
+    """Oqim natijalarini yo'nalish bo'yicha holat guruhlariga yig'adi."""
+    out = {"sent": [], "already": [], "waiting": [],
+           "notfound": [], "error": []}
+    seen = {k: set() for k in out}
+    flags: dict[str, dict] = {}
+
+    def _add(kind: str, label: str) -> None:
+        if label not in seen[kind]:
+            seen[kind].add(label)
+            out[kind].append(label)
+
+    for kind, label, ok in results:
+        if kind in ("excel", "image"):
+            st = flags.setdefault(label, {})
+            st[kind] = st.get(kind, True) and ok
+        elif kind in out:
+            _add(kind, label)
+        elif not ok:
+            # Kutilmagan tur (masalan yo'nalish darajasidagi xatolik).
+            _add("error", label)
+    for label, st in flags.items():
+        _add("sent" if (st.get("excel", True) and st.get("image", True))
+             else "error", label)
+    return out
+
+
+def _summary_text(summary: dict, d: datetime.date, day_word: str) -> str:
+    """So'rov yuboruvchiga ko'rinadigan xulosa matni."""
+    lines = [f"📋 <b>GRAFIK XULOSASI</b> — {esc(day_word)} {d:%d.%m.%Y}"]
+    if summary.get("sent"):
+        lines.append("✅ Yuborildi: " + ", ".join(summary["sent"]))
+    if summary.get("already"):
+        lines.append("📤 Allaqachon yuborilgan: "
+                     + ", ".join(summary["already"]))
+    if summary.get("waiting"):
+        lines.append("⏳ Jarayonda — tayyor bo'lishi bilan avtomatik "
+                     "yuboriladi: " + ", ".join(summary["waiting"]))
+    if summary.get("notfound"):
+        lines.append("🚏 E'lon qilinmagan — yuborilmadi: "
+                     + ", ".join(summary["notfound"]))
+    if summary.get("error"):
+        lines.append("❌ Xatolik: " + ", ".join(summary["error"]))
+    if len(lines) == 1:
+        lines.append("Ma'lumot yo'q")
+    return "\n".join(lines)
+
+
+def _send_summary(chat_id, results, d: datetime.date, day_word: str) -> None:
+    """So'rov yuboruvchiga ish natijasi xulosasini yuboradi (chat bo'lsa)."""
+    if not chat_id:
+        return
+    send_message(_summary_text(_summarize_results(results), d, day_word),
+                 chat_id=chat_id)
+
+
 def main(chat_id: str | None = None,
          route_ids: list[str] | None = None,
          day_offset: int = 1):
@@ -691,6 +821,13 @@ def main(chat_id: str | None = None,
                    route_ids=[r[1] for r in active_routes])
     except Exception as exc:
         print(f"  statistika yuborilmadi: {exc}")
+
+    # So'rov yuboruvchiga aniq xulosa: nima yuborildi, nima kutilyapti,
+    # nima o'tkazib yuborildi — "jimgina tugash" holati bo'lmasin.
+    try:
+        _send_summary(chat_id, all_results, d, day_label)
+    except Exception as exc:
+        print(f"  xulosa yuborilmadi: {exc}")
 
     return 0
 
