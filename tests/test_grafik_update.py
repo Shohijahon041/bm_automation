@@ -232,6 +232,33 @@ def test_run_once_skips_when_client_missing(gu_env, monkeypatch):
     assert _FakeRepo.calls == []
 
 
+def test_run_once_skips_inflight_route(gu_env, monkeypatch):
+    """Tugma (qo'lda) oqimi ishlayotgan yo'nalish kuzatuvchi tomonidan
+    tekshirilmaydi — takror yuborish bo'lmaydi."""
+    dg, gu = gu_env
+    rid = "fe319a0a-95c5-45f3-8f90-1f3ed8c4e375"
+    ds = date.today().isoformat()
+    monkeypatch.setattr(dg, "ROUTES", [("", rid, "img", "B-80", 0)])
+    old = _duty(driver="Aliyev", did="d1")
+    old_total, old_drivers = dg._duty_fingerprint(old)
+    dg._mark_grafik_sent(rid, ds, hash=old_total, drivers=old_drivers)
+    _FakeRepo.duty = _duty(driver="Karimov", did="d1")  # o'zgargan
+
+    dg._INFLIGHT.clear()
+    dg._INFLIGHT[f"{rid}|{ds}"] = "B-80"  # tugma oqimi ishlamoqda
+    sent = []
+    monkeypatch.setattr(gu, "_send_update",
+                        lambda *a, **k: sent.append(a) or True)
+    monkeypatch.setattr(gu, "_notify", lambda r: sent.append(r))
+    try:
+        gu._run_once()
+    finally:
+        dg._INFLIGHT.clear()
+
+    assert sent == []
+    assert _FakeRepo.calls == []  # duty ham so'ralmadi (o'tkazib yuborildi)
+
+
 class _FakeStorage:
     enabled = True
     db = None  # km_stats so'rovi xato beradi -> km_stats=None (kodda ushlangan)

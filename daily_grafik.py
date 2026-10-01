@@ -572,6 +572,15 @@ def _release_route(rid: str, date_str: str) -> None:
         _INFLIGHT.pop(f"{rid}|{date_str}", None)
 
 
+def _is_inflight(rid: str, date_str: str) -> bool:
+    """(yo'nalish, kun) hozir biron oqimda ishlanmoqdami (claim ostidami)?
+
+    `grafik_update` agenti shu orqali qo'lda (tugma) ishlayotgan oqim
+    ustidan takror yubormasligini ta'minlaydi."""
+    with _INFLIGHT_LOCK:
+        return f"{rid}|{date_str}" in _INFLIGHT
+
+
 def _mark_wait_notified(rid: str, date_str: str) -> bool:
     """Kutish xabari birinchi marta yuborilayotgan bo'lsa True."""
     key = f"{rid}|{date_str}"
@@ -583,10 +592,14 @@ def _mark_wait_notified(rid: str, date_str: str) -> bool:
 
 
 def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word,
-                   retry_until_published: bool = True):
+                   retry_until_published: bool = True,
+                   resend_if_sent: bool = False):
     """Bitta yo'nalish: takrorlanishni to'sib, ishni himoyalangan bajaradi.
 
     - grafik allaqachon yuborilgan bo'lsa -> ("already", label, True);
+      ``resend_if_sent=True`` (tugma so'rovi) bo'lsa esa qayta yuboriladi:
+      Excel+rasm o'zgarmagan bo'lsa ham ketadi, o'zgargan bo'lsa yangilangan
+      ("♻️ YANGILANGAN") holda + faqat o'zgargan haydovchilarga kartalar;
     - shu (yo'nalish, kun) boshqa oqimda kutilyapti/ishlayapti bo'lsa
       -> ("waiting", label, True) — yangi oqim ochilmaydi (takror yuborish
       bo'lmaydi: kechqurun grafik e'lon qilinganda ham bittadan ketadi).
@@ -594,11 +607,25 @@ def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word,
     _out_prefix, rid, _img_dir, label, _tpl_idx = route_tuple
     date_str = d.isoformat()
 
-    # Kuniga bir marta: tayyor grafik takroriy yuborilmaydi.
+    # Kuniga bir marta: tayyor grafik takroriy yuborilmaydi. Tugma orqali
+    # so'ralganda (resend_if_sent) esa allaqachon yuborilgan bo'lsa ham
+    # qayta yuboramiz.
     if _grafik_was_sent(rid, date_str):
-        print(f"  [{label}] {date_str} grafigi bugun allaqachon yuborilgan "
-              f"— takrorlanmaydi")
-        return [("already", label, True)]
+        if not resend_if_sent:
+            print(f"  [{label}] {date_str} grafigi bugun allaqachon yuborilgan "
+                  f"— takrorlanmaydi")
+            return [("already", label, True)]
+        if not _claim_route(rid, date_str, label):
+            print(f"  [{label}] {date_str} — boshqa so'rov allaqachon ishlamoqda "
+                  f"(tayyor bo'lishi bilan yuboriladi), takroriy oqim ochilmadi")
+            return [("waiting", label, True)]
+        try:
+            print(f"  [{label}] {date_str} — allaqachon yuborilgan, so'rov "
+                  f"bo'yicha qayta yuborilmoqda...")
+            return _process_route_resend(route_tuple, client, d, profiles_map,
+                                         chat_id, title_word)
+        finally:
+            _release_route(rid, date_str)
 
     if not _claim_route(rid, date_str, label):
         print(f"  [{label}] {date_str} — boshqa so'rov allaqachon ishlamoqda "
@@ -776,10 +803,129 @@ def _process_route_run(route_tuple, client, d, profiles_map, chat_id,
     return results
 
 
+def _process_route_resend(route_tuple, client, d, profiles_map, chat_id,
+                          title_word):
+    """Allaqachon yuborilgan grafikni qayta yuboradi (tugma so'rovi bilan).
+
+    Excel + rasm joriy (eng yangi) ma'lumotdan qayta yaratiladi va guruhga
+    yuboriladi — ma'lumot o'zgarmagan bo'lsa ham. Agar ma'lumot o'zgargan
+    bo'lsa (fingerprint farqi bor), sarlavhaga "♻️ YANGILANGAN" qo'shiladi
+    va faqat o'zgargan haydovchilarga shaxsiy kartalar yuboriladi. Holatdagi
+    fingerprint yangilanadi (kuzatuv yangi holatdan davom etadi).
+    """
+    from bm_automation.app.services.export_service import build_export
+    from bm_automation.app.services.driver_sheet_service import run as run_sheet
+
+    _out_prefix, rid, img_dir, label, _tpl_idx = route_tuple
+    date_str = d.isoformat()
+    targets = _route_targets(rid, chat_id)
+    prof = profiles_map.get(rid) or {}
+
+    try:
+        duty = DutyRepository(client).by_date(rid, date_str)
+    except Exception as exc:
+        if _not_found(exc):
+            print(f"[{label}] {date_str}: duty topilmadi (404) — qayta "
+                  f"yuborilmadi (avvalgi holicha qoldi)")
+            return [("error", label, False)]
+        raise
+    if not (duty.get("graphs") or []):
+        print(f"[{label}] {date_str}: grafiklar bo'sh — qayta yuborilmadi")
+        return [("error", label, False)]
+
+    # O'zgargan haydovchilarni aniqlaymiz (eski fingerprint bilan solishtirib).
+    old = _grafik_sent_info(rid, date_str) or {}
+    old_drivers = old.get("drivers") or {}
+    try:
+        total_hash, driver_hashes = _duty_fingerprint(duty)
+        changed = ({did for did, h in driver_hashes.items()
+                    if old_drivers.get(did) != h} if old_drivers else set())
+    except Exception as exc:
+        print(f"  [{label}] fingerprint hisoblanmadi: {exc}")
+        total_hash, driver_hashes, changed = None, {}, set()
+    prefix = "♻️ YANGILANGAN — " if changed else ""
+    if changed:
+        print(f"  [{label}] o'zgargan haydovchilar: {len(changed)}")
+
+    excel_ok = image_ok = False
+    res = None
+
+    try:
+        excel_file = build_export(
+            client, rid, date_str,
+            out_dir=REPORTS, profile=prof,
+            duty_data=duty,
+            mech_name=prof.get("mechName") or "",
+            dispatcher_name=prof.get("dispatcherName") or "",
+        )
+        desc = f"🚏 {label}"
+        if "ASL" in prof.get("name", ""):
+            desc = "🚏 ASL SUNDAY B-80 yo'nalishi"
+        elif "FERGANATEX" in prof.get("name", ""):
+            desc = "🚏 10-YO'NALISH (FERGANATEX)"
+        for t in targets:
+            send_document(str(excel_file),
+                          caption=f"{prefix}{excel_file.stem}\n{desc} — "
+                                  f"{title_word} grafigi",
+                          chat_id=t)
+        excel_ok = True
+        print(f"  [{label}] Excel qayta yuborildi: {excel_file.name}")
+    except Exception as exc:
+        print(f"  [{label}] export xatolik (qayta yuborish): {exc}")
+        for t in targets:
+            send_message(f"🚏 {label}: Excel yaratishda xatolik — {exc}",
+                         chat_id=t)
+
+    try:
+        # Har doim yangidan: ma'lumot o'zgargan bo'lsa eski rasm noto'g'ri.
+        res = run_sheet(client, rid, date_str=date_str,
+                        out_dir=str(REPORTS / img_dir),
+                        send=False, profile=profiles_map.get(rid),
+                        duty_data=duty)
+        img = Path(res["image"])
+        if img.exists():
+            desc = (f"🚌 {label} | {d:%d.%m.%Y} | Kunlik chiqish jadvali "
+                    f"(grafik × haydovchi × avtobus)")
+            for t in targets:
+                send_photo(str(img), caption=f"{prefix}{desc}", chat_id=t)
+            image_ok = True
+            print(f"  [{label}] rasm qayta yuborildi: {img.name}")
+        else:
+            print(f"  [{label}] rasm topilmadi: {img.name}")
+    except Exception as exc:
+        print(f"  [{label}] rasm xatolik (qayta yuborish): {exc}")
+        for t in targets:
+            send_message(f"🚏 {label}: rasm yuborishda xatolik — {exc}",
+                         chat_id=t)
+
+    # O'zgargan haydovchilarga shaxsiy kartalar (faqat o'zgarish bo'lganda).
+    if changed and image_ok and res and AUTO_NOTIFY:
+        try:
+            _send_personal_cards(res, rid, d, label, chat_id,
+                                 only_driver_ids=changed)
+        except Exception as exc:
+            print(f"  [{label}] kartalar xatosi: {exc}")
+
+    # Kuzatuv yangi holatdan davom etishi uchun fingerprint yangilanadi.
+    if targets and excel_ok and image_ok:
+        try:
+            if total_hash:
+                _mark_grafik_sent(rid, date_str, hash=total_hash,
+                                  drivers=driver_hashes)
+            else:
+                _mark_grafik_sent(rid, date_str)
+        except Exception as exc:
+            print(f"  [{label}] fingerprint saqlanmadi: {exc}")
+
+    if excel_ok and image_ok:
+        return [("resent_new" if changed else "resent", label, True)]
+    return [("error", label, False)]
+
+
 def _summarize_results(results) -> dict:
     """Oqim natijalarini yo'nalish bo'yicha holat guruhlariga yig'adi."""
-    out = {"sent": [], "already": [], "waiting": [],
-           "notfound": [], "error": []}
+    out = {"sent": [], "resent_new": [], "resent": [], "already": [],
+           "waiting": [], "notfound": [], "error": []}
     seen = {k: set() for k in out}
     flags: dict[str, dict] = {}
 
@@ -808,6 +954,11 @@ def _summary_text(summary: dict, d: datetime.date, day_word: str) -> str:
     lines = [f"📋 <b>GRAFIK XULOSASI</b> — {esc(day_word)} {d:%d.%m.%Y}"]
     if summary.get("sent"):
         lines.append("✅ Yuborildi: " + ", ".join(summary["sent"]))
+    if summary.get("resent_new"):
+        lines.append("♻️ Yangilangan holda qayta yuborildi: "
+                     + ", ".join(summary["resent_new"]))
+    if summary.get("resent"):
+        lines.append("📤 Qayta yuborildi: " + ", ".join(summary["resent"]))
     if summary.get("already"):
         lines.append("📤 Allaqachon yuborilgan: "
                      + ", ".join(summary["already"]))
@@ -834,11 +985,14 @@ def _send_summary(chat_id, results, d: datetime.date, day_word: str) -> None:
 
 def main(chat_id: str | None = None,
          route_ids: list[str] | None = None,
-         day_offset: int = 1):
+         day_offset: int = 1,
+         resend_if_sent: bool = False):
     """Grafik yuborish.
 
     route_ids — faqat shu route_id'lar uchun yuboradi (bo'sa = hammasi).
     day_offset — qaysi kun grafigi (0=bugun, 1=ertaga, -1=kechagi).
+    resend_if_sent — allaqachon yuborilgan bo'lsa ham Excel+rasm qayta
+    yuboriladi (tugma so'rovi; o'zgargan bo'lsa yangilangan holda).
     Parallel: barcha yo'nalishlar bir vaqtda (Excel + rasm).
     """
     today = datetime.date.today()
@@ -877,7 +1031,7 @@ def main(chat_id: str | None = None,
         futures = {
             pool.submit(_process_route, route, client, d,
                         profiles_map, chat_id, title_word,
-                        retry_until_published): route
+                        retry_until_published, resend_if_sent): route
             for route in active_routes
         }
         for future in as_completed(futures):

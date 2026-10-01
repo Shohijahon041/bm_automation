@@ -332,8 +332,12 @@ def _do_grafik(chat_id: int, route_ids: list[str] | None = None,
                day_offset: int = 1) -> None:
     try:
         import daily_grafik
+        # Ertangi grafik tugmasi (18:00 oqimi): allaqachon yuborilgan
+        # yo'nalishlar ham qayta yuboriladi — o'zgarmagan bo'lsa ham
+        # Excel+rasm ketadi, o'zgargan bo'lsa yangilangan holda.
         daily_grafik.main(chat_id=str(chat_id), route_ids=route_ids,
-                          day_offset=day_offset)
+                          day_offset=day_offset,
+                          resend_if_sent=(day_offset == 1))
         reply(chat_id, "✅ <b>Grafik yuborildi</b>")
     except Exception as exc:  # noqa: BLE001 - barcha xatolar foydalanuvchiga
         log.warning("grafik yuborish xatosi: %s", exc)

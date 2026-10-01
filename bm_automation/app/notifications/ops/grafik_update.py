@@ -153,6 +153,10 @@ def _run_once() -> None:
             rid, _, date_str = key.partition("|")
             if rid not in routes or date_str not in valid_dates:
                 continue
+            if dg._is_inflight(rid, date_str):
+                # Hozir tugma orqali qo'lda oqim ishlayapti — u o'zi
+                # qayta yuboradi. Takror yubormaymiz.
+                continue
             _out_prefix, _rid, _img_dir, label, _tpl_idx = routes[rid]
             try:
                 duty = DutyRepository(client).by_date(rid, date_str)
