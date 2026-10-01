@@ -97,6 +97,18 @@ def seeded_storage(monkeypatch, tmp_path):
     monkeypatch.setattr(storage_mod, "_NULL_STORAGE", None)
 
 
+@pytest.fixture
+def no_post_rate_limit(monkeypatch):
+    """Ketma-ket POST'lar uchun POST rate-limit'ni bo'shatadi.
+
+    Limit mantig'ining o'z testi alohida (test_rate_limit_post_min_interval);
+    funksional testlar 1 soniyalik intervalga tiqilib qolmasin. Holat
+    monkeypatch orqali izolyatsiya qilinadi — boshqa testlarga ta'sir yo'q.
+    """
+    monkeypatch.setattr(deps, "_POST_MIN_INTERVAL_S", 0.0)
+    monkeypatch.setattr(deps, "_last_post_at", {})
+
+
 # ---------------------------------------------------------------------------
 # App kontrakti
 # ---------------------------------------------------------------------------
@@ -337,3 +349,60 @@ def test_month_endpoint_ok(client, seeded_storage):
     r = client.get("/api/month?month=2026-08")
     assert r.status_code == 200
     assert r.json().get("ok") is True
+
+
+def test_work_log_save_delete_roundtrip(client, seeded_storage,
+                                        no_post_rate_limit):
+    """Kunlik km qaydi: saqlash (upsert) + o'chirish (natural kalit).
+
+    Regressiya: router mavjud bo'lmagan `storage.work_log_add` /
+    `work_log_delete` chaqirar edi — endpoint 500 qaytarib, frontendda
+    "Server javobi o'qilmadi" chiqardi.
+    """
+    body = {"date": "2026-08-12", "vehicle_id": "v1",
+            "distance_km": 125.5, "trip_count": 3, "note": "Odometr"}
+    r = client.post("/api/drivers/d1/work-log", json=body)
+    assert r.status_code == 200 and r.json()["ok"] is True
+
+    # Xuddi shu natural kalitda qayta saqlash — upsert: dublikat bo'lmaydi.
+    r = client.post("/api/drivers/d1/work-log",
+                    json={**body, "distance_km": 130.0, "trip_count": 4,
+                          "note": "Tuzatildi"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+
+    detail = client.get("/api/drivers/d1?month=2026-08").json()
+    logs = [x for x in detail["work_logs"] if x["date"] == "2026-08-12"]
+    assert len(logs) == 1
+    assert logs[0]["distance_km"] == 130.0 and logs[0]["trip_count"] == 4
+
+    r = client.post("/api/drivers/d1/work-log-delete",
+                    json={"date": "2026-08-12", "vehicle_id": "v1"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    detail = client.get("/api/drivers/d1?month=2026-08").json()
+    assert [x for x in detail["work_logs"] if x["date"] == "2026-08-12"] == []
+
+
+def test_work_log_validation_rejects_bad_input(client, seeded_storage,
+                                               no_post_rate_limit):
+    r = client.post("/api/drivers/d1/work-log",
+                    json={"date": "12.08.2026", "distance_km": 5})
+    assert r.status_code == 400
+    r = client.post("/api/drivers/d1/work-log",
+                    json={"date": "2026-08-12", "distance_km": "abc"})
+    assert r.status_code == 400
+    r = client.post("/api/drivers/d1/work-log-delete",
+                    json={"date": "2026-08-12", "vehicle_id": "yo'q"})
+    assert r.status_code == 400
+
+
+def test_fine_save_and_telegram_unlink(client, seeded_storage,
+                                       no_post_rate_limit):
+    """Jarima saqlash va Telegram bog'lanishni uzish ham AttributeError'lar
+    tufayli buzilgan edi (fine_add / unlink_driver_telegram)."""
+    r = client.post("/api/drivers/d1/fine",
+                    json={"date": "2026-08-12", "amount": 150000,
+                          "reason": "Kechikish"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+
+    r = client.post("/api/users/555/link-driver", json={"driver_id": ""})
+    assert r.status_code == 200 and r.json()["ok"] is True

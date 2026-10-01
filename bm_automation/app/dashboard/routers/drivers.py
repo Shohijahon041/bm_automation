@@ -6,6 +6,7 @@ import base64
 import binascii
 import math
 import re
+from datetime import date
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -382,17 +383,27 @@ def _save_work_log(driver_id: str, payload: dict) -> dict:
     storage = get_storage()
     if not storage.enabled:
         raise HTTPException(400, "DB rejimi o'chirilgan")
-    log_date = str(payload.get("date") or "").strip()
-    km = payload.get("km")
-    note = str(payload.get("note") or "").strip()[:500]
-    if not log_date:
-        raise HTTPException(400, "Sana kerak")
+    log_date = str(payload.get("date") or "").strip() or date.today().isoformat()
     try:
-        km_val = float(km) if km is not None else 0.0
+        date.fromisoformat(log_date)
+    except ValueError:
+        raise HTTPException(400, "Sana YYYY-MM-DD formatida bo'lishi kerak")
+    try:
+        distance = float(payload.get("distance_km") or 0)
+        trips = int(payload.get("trip_count") or 0)
     except (TypeError, ValueError):
-        raise HTTPException(400, "km son bo'lishi kerak")
-    row_id = storage.work_log_add(driver_id, log_date, km_val, note)
-    return {"ok": bool(row_id), "id": row_id}
+        raise HTTPException(400, "Km yoki reys soni noto'g'ri")
+    if not math.isfinite(distance) or distance < 0 or distance > 1_000_000:
+        raise HTTPException(400, "Km qiymati yaroqsiz")
+    if trips < 0 or trips > 100_000:
+        raise HTTPException(400, "Reys soni yaroqsiz")
+    vehicle_id = str(payload.get("vehicle_id") or "").strip()[:128]
+    note = str(payload.get("note") or "").strip()[:500]
+    # Natural kalit (date, driver_id, vehicle_id) — upsert: qayta kiritilsa
+    # yangilanadi (eski server.py bilan bir xil xatti-harakat).
+    storage.save_driver_work_log(
+        log_date, driver_id, vehicle_id, distance, trips, note)
+    return {"ok": True}
 
 
 def _delete_work_log(driver_id: str, payload: dict) -> dict:
@@ -400,13 +411,17 @@ def _delete_work_log(driver_id: str, payload: dict) -> dict:
     storage = get_storage()
     if not storage.enabled:
         raise HTTPException(400, "DB rejimi o'chirilgan")
+    log_date = str(payload.get("date") or "").strip()
+    if not log_date:
+        raise HTTPException(400, "Sana kerak")
     try:
-        row_id = int(payload.get("id") or 0)
-    except (TypeError, ValueError):
-        row_id = 0
-    if not row_id:
-        raise HTTPException(400, "id kerak")
-    return {"ok": storage.work_log_delete(row_id, driver_id)}
+        date.fromisoformat(log_date)
+    except ValueError:
+        raise HTTPException(400, "Sana YYYY-MM-DD formatida bo'lishi kerak")
+    vehicle_id = str(payload.get("vehicle_id") or "").strip()[:128]
+    if not storage.delete_driver_work_log(log_date, driver_id, vehicle_id):
+        raise HTTPException(400, "Bunday km qaydi topilmadi")
+    return {"ok": True}
 
 
 def _save_fine(driver_id: str, payload: dict) -> dict:
@@ -414,17 +429,17 @@ def _save_fine(driver_id: str, payload: dict) -> dict:
     storage = get_storage()
     if not storage.enabled:
         raise HTTPException(400, "DB rejimi o'chirilgan")
-    amount = payload.get("amount")
+    fine_date = str(payload.get("date") or "").strip() or date.today().isoformat()
     try:
-        amount_val = float(amount)
+        date.fromisoformat(fine_date)
+        amount = float(payload.get("amount") or 0)
     except (TypeError, ValueError):
-        raise HTTPException(400, "amount son bo'lishi kerak")
-    if not math.isfinite(amount_val) or amount_val < 0:
-        raise HTTPException(400, "amount noto'g'ri")
+        raise HTTPException(400, "Sana yoki jarima summasi noto'g'ri")
+    if not math.isfinite(amount) or amount <= 0 or amount > 1_000_000_000_000:
+        raise HTTPException(400, "Jarima summasi yaroqsiz")
     reason = str(payload.get("reason") or "").strip()[:500]
-    fine_date = str(payload.get("date") or "").strip()
-    row_id = storage.fine_add(driver_id, amount_val, reason, fine_date)
-    return {"ok": bool(row_id), "id": row_id}
+    return {"ok": bool(storage.add_driver_fine(driver_id, fine_date, amount,
+                                               reason))}
 
 
 def _test_notification(driver_id: str) -> dict:

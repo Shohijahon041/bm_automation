@@ -556,6 +556,19 @@ class Storage:
         except Exception:  # noqa: BLE001
             pass
 
+    def unlink_driver_telegram(self, chat_id: int) -> None:
+        """Telegram bog'lanishini olib tashlaydi (chat_id bo'yicha)."""
+        if not self.enabled:
+            return
+        try:
+            self._exec(
+                "UPDATE driver_profiles SET telegram_chat_id = '' "
+                f"WHERE telegram_chat_id = {self.db.ph}",
+                (str(chat_id),),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     # ------------------------------------------------- dispatcher routes
 
     def assign_route_to_dispatcher(self, chat_id: int, route_id: str,
