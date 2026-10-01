@@ -74,6 +74,19 @@ class SQLiteDatabase:
         self._failed_at = 0.0
         return True
 
+    def retry_operation(self, func, max_retries: int = 3, delay: float = 2.0):
+        """`app.db.base.Database.retry_operation` bilan API-mos dublikat."""
+        last_exc = None
+        for attempt in range(max_retries):
+            try:
+                return func()
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if attempt < max_retries - 1:
+                    time.sleep(delay)
+                    self.probe()
+        raise last_exc
+
     def _current_conn(self) -> sqlite3.Connection | None:
         stack = getattr(self._local, "conns", None)
         return stack[-1] if stack else None

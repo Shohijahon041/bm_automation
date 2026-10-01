@@ -891,6 +891,44 @@ def sync_all_profiles(storage: Storage, client: BMClient,
     return results
 
 
+def sync_days(storage: Storage, client: BMClient, days: list[str],
+              routes: list[str] | None = None,
+              progress_cb: Callable[[str, int, int], None] | None = None) -> list[dict]:
+    """Kunlar ro'yxatini ketma-ket sinxronlaydi (dashboard + avtomatik sync).
+
+    `routes` berilgan bo'lsa — har bir yo'nalish uchun `sync_route_day` +
+    waybills + work_logs; bo'sh/None — barcha profillar (`sync_all_profiles`).
+    Har bir kun `storage.db.retry_operation` bilan qayta uriniladi (uzoq
+    OneID loginlarda Neon pooler timeout bo'lishi mumkin). Natija — barcha
+    kunlar uchun `SyncResult.as_dict()` ro'yxati (JSON'ga tayyor).
+    """
+    results: list[dict] = []
+    total = len(days)
+    for idx, day in enumerate(days, 1):
+        if progress_cb:
+            try:
+                progress_cb(day, idx, total)
+            except Exception:  # noqa: BLE001 - progress xatosi syncni buzmaydi
+                pass
+
+        def _one(d: str = day) -> list[dict]:
+            day_results: list[dict] = []
+            if routes:
+                for rid in routes:
+                    for r in sync_route_day(storage, client, rid, d):
+                        day_results.append(r.as_dict())
+                    day_results.append(sync_waybills(
+                        storage, client, rid, d, d).as_dict())
+                    day_results.append(sync_work_logs(storage, d, d, rid).as_dict())
+            else:
+                for r in sync_all_profiles(storage, client, d):
+                    day_results.append(r.as_dict())
+            return day_results
+
+        results.extend(storage.db.retry_operation(_one, max_retries=3, delay=3.0))
+    return results
+
+
 # --------------------------------------------------------- AutomationLogger
 
 class AutomationLogger:

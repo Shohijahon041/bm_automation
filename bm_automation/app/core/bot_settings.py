@@ -359,6 +359,57 @@ def set_show_driver_salary(value: bool | None) -> bool:
     return on
 
 
+# ------------------------------------------------------------- avto-sync
+
+def auto_sync() -> bool:
+    """Kunlik avtomatik sinxronlash yoqilganmi (standart: ha).
+
+    Bot poll-tsikli har kuni soat `auto_sync_hour()` da o'tgan kun va
+    bugungi kunni BM API'dan DB'ga sinxronlaydi (`state/sync_auto.json`).
+    """
+    try:
+        val = _load().get("auto_sync")
+    except Exception:
+        val = None
+    return True if val is None else bool(val)
+
+
+def set_auto_sync(value: bool | None) -> bool:
+    """Avtomatik kunlik sinxronlashni yoqadi/o'chiradi."""
+    with _LOCK:
+        _load()
+        old = auto_sync()
+        on = bool(value)
+        _CACHE["auto_sync"] = on
+        _audit("auto_sync", old, on)
+        _save()
+    return on
+
+
+def auto_sync_hour() -> int:
+    """Avtomatik sync soati (0-23, standart 6)."""
+    try:
+        h = int(str(_load().get("auto_sync_hour", "6")))
+    except (TypeError, ValueError):
+        return 6
+    return max(0, min(23, h))
+
+
+def set_auto_sync_hour(value: int | None) -> int:
+    """Avtomatik sync soatini o'rnatadi (0-23, noto'g'ri qiymat — 6)."""
+    with _LOCK:
+        _load()
+        old = auto_sync_hour()
+        try:
+            v = max(0, min(23, int(value)))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            v = 6
+        _CACHE["auto_sync_hour"] = v
+        _audit("auto_sync_hour", old, v)
+        _save()
+    return v
+
+
 # ------------------------------------------------------------------- til
 
 def lang(chat_id: int) -> str:

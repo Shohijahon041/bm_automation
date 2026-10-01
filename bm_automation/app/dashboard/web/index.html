@@ -1820,6 +1820,15 @@ body.auth-locked .auth-overlay { display: flex; }
               </label>
               <span class="hint">O'chirilsa haydovchi reestri/profilida brutto, soliq va qo'liga tegishi summasi ko'rinmaydi.</span>
             </div>
+            <div style="grid-column:1/-1;display:flex;align-items:center;gap:10px;padding-top:6px;border-top:1px solid var(--line)">
+              <label class="check-field" style="font:600 13px 'Inter',sans-serif;cursor:pointer">
+                <input type="checkbox" id="s-auto-sync"> Kunlik avto-sinxronlash
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;font:10px 'IBM Plex Mono',monospace;color:var(--muted)">SOAT
+                <input class="input" id="s-auto-sync-hour" type="number" min="0" max="23" step="1" style="width:70px">
+              </label>
+              <span class="hint">Har kuni shu soatda kechagi va bugungi kun ma'lumotlari avtomatik yuklanadi (bot ishlab turishi kerak).</span>
+            </div>
           </div>
           <div id="global-audit" style="padding:0 18px 14px;font:10px 'IBM Plex Mono',monospace;color:var(--muted);line-height:1.6"></div>
           <div style="padding:0 18px 18px;display:flex;gap:10px;justify-content:flex-end">
@@ -3970,6 +3979,8 @@ async function loadSettings() {
     document.getElementById("s-elec-price").value = s.global.elec_price || 0;
     document.getElementById("s-brutto-skm").value = s.global.brutto_skm || 0;
     document.getElementById("s-show-salary").checked = s.global.show_driver_salary !== false;
+    document.getElementById("s-auto-sync").checked = s.global.auto_sync !== false;
+    document.getElementById("s-auto-sync-hour").value = s.global.auto_sync_hour != null ? s.global.auto_sync_hour : 6;
     const auditEl = document.getElementById("global-audit");
     if (auditEl) {
       const rows = (s.global.audit || []).slice(0, 6);
@@ -3998,7 +4009,9 @@ async function saveSettings() {
     const body = {
       elec_price: parseFloat(document.getElementById("s-elec-price").value) || 0,
       brutto_skm: parseFloat(document.getElementById("s-brutto-skm").value) || 0,
-      show_driver_salary: document.getElementById("s-show-salary").checked
+      show_driver_salary: document.getElementById("s-show-salary").checked,
+      auto_sync: document.getElementById("s-auto-sync").checked,
+      auto_sync_hour: parseInt(document.getElementById("s-auto-sync-hour").value, 10)
     };
     const d = await postJSON("/api/settings", body);
     if (!d.ok) throw new Error(d.error || "Xatolik");

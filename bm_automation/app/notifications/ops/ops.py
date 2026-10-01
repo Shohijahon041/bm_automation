@@ -462,6 +462,14 @@ def poll_forever() -> None:
             group_departures.check_and_send()
         except Exception as exc:
             print(f"Chiqish vaqti eslatmasi xatosi: {exc}")
+        # Avtomatik kunlik sinxronlash — AI_AUTO_AGENTS'ga bog'liq emas,
+        # o'z sozlamasi bilan boshqariladi (bot_settings.auto_sync, std: on;
+        # kuniga bir marta soat auto_sync_hour'da, fon oqimida ishlaydi).
+        try:
+            from . import sync_auto
+            sync_auto.check_and_sync()
+        except Exception as exc:
+            print(f"Avto-sync xatosi: {exc}")
         try:
             from ...utils import cleanup
             msg = cleanup.run_once()

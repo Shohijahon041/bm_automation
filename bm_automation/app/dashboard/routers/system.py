@@ -6,7 +6,7 @@ import json
 import os
 import threading
 import time
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -165,29 +165,20 @@ _SYNC_MIN_INTERVAL_S = 20.0
 _SYNC_LOCK = threading.Lock()
 _last_sync_at = 0.0
 
-_DAILY_SYNC_BG: dict = {"running": False, "progress": None, "result": None}
+# Ikki mustaqil fon holati: kunlik (/api/sync) va oylik (/api/sync/monthly).
+_DAILY_SYNC_BG: dict = {"running": False, "progress": "", "result": None}
+_MONTHLY_SYNC_BG: dict = {"running": False, "progress": "", "result": None}
 
 
 @router.post("/api/sync")
 async def api_sync(request: Request, scope: dict = Depends(Scope())):
-    global _last_sync_at
     payload = await request.json()
-    now = time.monotonic()
-    with _SYNC_LOCK:
-        if now - _last_sync_at < _SYNC_MIN_INTERVAL_S:
-            return {"ok": False, "error": "Sync yaqinda bajarilgan — 20 soniya kuting"}
-        _last_sync_at = now
     return _run_sync(payload, scope)
 
 
 @router.get("/api/sync/status")
 async def sync_status(request: Request, scope: dict = Depends(Scope())):
-    st = _DAILY_SYNC_BG
-    if st["running"]:
-        return {"ok": True, "running": True, "progress": st["progress"]}
-    elif st["result"]:
-        return {"ok": True, "running": False, **st["result"]}
-    return {"ok": True, "running": False}
+    return _sync_bg_status(_DAILY_SYNC_BG)
 
 
 @router.post("/api/sync/monthly")
@@ -198,68 +189,188 @@ async def sync_monthly(request: Request, scope: dict = Depends(Scope())):
 
 @router.get("/api/sync/monthly/status")
 async def sync_monthly_status(request: Request, scope: dict = Depends(Scope())):
-    return _sync_monthly_status()
+    return _sync_bg_status(_MONTHLY_SYNC_BG)
+
+
+def _fmt_date(ds: str) -> str:
+    """YYYY-MM-DD -> DD.MM.YYYY (progress/izoh uchun)."""
+    try:
+        return date.fromisoformat(ds).strftime("%d.%m.%Y")
+    except (TypeError, ValueError):
+        return ds
+
+
+def _sync_bg_status(st: dict) -> dict:
+    """Fon holatini javobga aylantiradi (running → progress, tugagan → natija)."""
+    if st["running"]:
+        return {"ok": True, "running": True, "progress": st["progress"]}
+    if st["result"]:
+        return {"ok": True, "running": False, **st["result"]}
+    return {"ok": True, "running": False}
+
+
+def _sync_target_routes(payload: dict, scope: dict) -> tuple[list[str], dict | None]:
+    """Sync uchun yo'nalishlar ro'yxatini scope bilan cheklab aniqlaydi.
+
+    `route` vergul bilan birlashtirilgan ham bo'lishi mumkin ("r1,r2" —
+    non-admin sessiyasida `force_route` shunday qaytaradi).
+
+    * admin: `route` berilgan bo'lsa — faqat o'shalar; bo'sh bo'lsa — []
+      (barcha profillar/kompaniyalar `sync_all_profiles` orqali).
+    * non-admin: faqat `scope_routes`dagi yo'nalishlar; ro'yxatdagi har biri
+      scope'da bo'lishi shart, bo'sh bo'lsa — barcha ruxsat etilganlari.
+      Bo'sh scope — xato (begona ma'lumot sinxronlanmaydi).
+
+    Qaytaradi: (routes, error_dict | None).
+    """
+    requested = [r.strip() for r in str(payload.get("route") or "").split(",") if r.strip()]
+    scopes = scope_routes(scope)
+    if scopes is None:
+        return requested, None
+    if any(r not in scopes for r in requested):
+        return [], {"ok": False, "error": "Yo'nalish topilmadi"}
+    routes = requested or sorted(scopes)
+    if not routes:
+        return [], {"ok": False, "error": "Yo'nalishlar aniqlanmadi"}
+    return routes, None
+
+
+def _sync_interval_ok() -> dict | None:
+    """Minimal interval tekshiruvi — tez-tez chaqirilsa xato dict qaytaradi."""
+    with _SYNC_LOCK:
+        if time.monotonic() - _last_sync_at < _SYNC_MIN_INTERVAL_S:
+            return {"ok": False, "error": "Sync juda tez-tez chaqirildi — kutib turing"}
+    return None
+
+
+def _sync_progress_cb(bg: dict):
+    def _cb(day: str, idx: int, total: int) -> None:
+        bg["progress"] = f"{_fmt_date(day)} ({idx}/{total})"
+    return _cb
+
+
+def _parse_days(payload: dict, default_from: str = "") -> tuple[list[str] | None, str | None]:
+    """Payload'dan sinxronlanadigan kunlar ro'yxatini tayyorlaydi.
+
+    ``from``/``to`` berilsa — oralıq; faqat ``date`` bo'lsa — bitta kun;
+    hech biri bo'lmasa — bugun (`default_from` — oylik oqim, oy boshi).
+    Qaytaradi: (kunlar ro'yxati, xato matni | None).
+    """
+    date_str = str(payload.get("date") or "").strip()
+    from_str = str(payload.get("from") or "").strip()
+    to_str = str(payload.get("to") or "").strip()
+    try:
+        if from_str and to_str:
+            d_from = date.fromisoformat(from_str)
+            d_to = date.fromisoformat(to_str)
+        elif date_str:
+            d_from = d_to = date.fromisoformat(date_str)
+        elif default_from:
+            d_from = date.fromisoformat(default_from)
+            d_to = date.today()
+        else:
+            d_from = d_to = date.today()
+    except ValueError:
+        return None, "Sana formati noto'g'ri (YYYY-MM-DD)"
+    if d_to < d_from:
+        return None, "'to' sana 'from'dan oldin bo'lishi mumkin emas"
+    return ([(d_from + timedelta(days=i)).isoformat()
+             for i in range((d_to - d_from).days + 1)], None)
+
+
+def _start_sync_bg(bg: dict, storage, days: list[str],
+                   routes: list[str]) -> None:
+    """Fon oqimida sync ishga tushiradi (bloklamaydi — login 1-3 daqiqa).
+
+    Oldin `sync_routes` (yo'nalishlar daraxti), so'ng har bir kun
+    `db_sync.sync_days` orqali (retry bilan). Tugagach natija `bg["result"]`
+    ga yoziladi va `_last_sync_at` yangilanadi (20s cooldown).
+    """
+    def _bg():
+        global _last_sync_at
+        try:
+            from ...api.client import BMClient
+            from ...db import sync as db_sync
+
+            bg["progress"] = "Token olinmoqda..."
+            client = BMClient()
+            client.login()
+
+            results = [db_sync.sync_routes(storage, client).as_dict()]
+            results += db_sync.sync_days(
+                storage, client, days, routes=routes,
+                progress_cb=_sync_progress_cb(bg))
+
+            ok = not any(r.get("error") for r in results)
+            _last_sync_at = time.monotonic()
+            bg["result"] = {
+                "ok": ok, "routes": routes, "from": days[0], "to": days[-1],
+                "days": len(days), "results": results, "lines": _sync_lines(results)}
+        except Exception as exc:  # noqa: BLE001 - fon oqimida 500 bo'lmaydi
+            bg["result"] = {"ok": False, "error": str(exc)}
+        finally:
+            bg["running"] = False
+            bg["progress"] = ""
+
+    bg["running"] = True
+    bg["progress"] = "Login..."
+    bg["result"] = None
+    threading.Thread(target=_bg, daemon=True).start()
 
 
 def _run_sync(payload: dict, scope: dict) -> dict:
-    from ...db.sync import sync_all
-    from ...api.client import BMClient
+    """Kunlik sinxronlash (fon oqimida — OneID login 1-3 daqiqa olishi mumkin).
 
-    route = str(payload.get("route") or "").strip()
-    sync_date = str(payload.get("date") or "").strip()
-    what = str(payload.get("what") or "statuses,profiles,routes,drivers,vehicles,duties,trips,waybills").strip()
+    ``from``/``to`` (oraliq), ``date`` (bitta kun) yoki bo'sh (bugun) qabul
+    qiladi. Natijalar `/api/sync/status` orqali olinadi. Barcha tekshiruv
+    xatolari JSON dict — endpoint hech qachon 500 qaytarmaydi.
+    """
+    if _DAILY_SYNC_BG["running"]:
+        return {"ok": False, "error": "Sinxronlash davom etmoqda",
+                "progress": _DAILY_SYNC_BG["progress"]}
+    err = _sync_interval_ok()
+    if err:
+        return err
+    routes, err = _sync_target_routes(payload, scope)
+    if err:
+        return err
+    days, err = _parse_days(payload)
+    if err:
+        return {"ok": False, "error": err}
 
-    scopes = scope_routes(scope)
-    if scopes is not None and route:
-        if route not in scopes:
-            return {"ok": False, "error": "Yo'nalish topilmadi"}
-    if scopes is not None and not route:
-        route = list(scopes)[0] if scopes else ""
+    from ...db.storage import get_storage
+    storage = get_storage()
+    if not storage.enabled:
+        return {"ok": False, "error": "DB rejimi o'chirilgan"}
 
-    try:
-        results = sync_all(route=route, date_str=sync_date, what=what)
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}
-
-    lines = _sync_lines(results)
-    return {"ok": True, "results": results, "lines": lines}
+    _start_sync_bg(_DAILY_SYNC_BG, storage, days, routes)
+    return {"ok": True, "started": True, "routes": routes,
+            "from": days[0], "to": days[-1], "days": len(days)}
 
 
 def _run_sync_monthly(payload: dict, scope: dict) -> dict:
-    from ...db.sync import sync_monthly
+    """Oylik (from/to oralig'i) sinxronlash — fon oqimida."""
+    if _MONTHLY_SYNC_BG["running"]:
+        return {"ok": False, "error": "Sinxronlash davom etmoqda",
+                "progress": _MONTHLY_SYNC_BG["progress"]}
+    err = _sync_interval_ok()
+    if err:
+        return err
+    routes, err = _sync_target_routes(payload, scope)
+    if err:
+        return err
+    days, err = _parse_days(payload, default_from=date.today().replace(day=1).isoformat())
+    if err:
+        return {"ok": False, "error": err}
 
-    route = str(payload.get("route") or "").strip()
-    month = str(payload.get("month") or "").strip()
+    from ...db.storage import get_storage
+    storage = get_storage()
+    if not storage.enabled:
+        return {"ok": False, "error": "DB rejimi o'chirilgan"}
 
-    scopes = scope_routes(scope)
-    if scopes is not None and route and route not in scopes:
-        return {"ok": False, "error": "Yo'nalish topilmadi"}
-    if scopes is not None and not route:
-        route = list(scopes)[0] if scopes else ""
-
-    def _bg():
-        _DAILY_SYNC_BG["running"] = True
-        _DAILY_SYNC_BG["result"] = None
-        try:
-            result = sync_monthly(route=route, month=month,
-                                  progress_cb=lambda p: _DAILY_SYNC_BG.update(progress=p))
-            _DAILY_SYNC_BG["result"] = {"ok": True, **result}
-        except Exception as exc:
-            _DAILY_SYNC_BG["result"] = {"ok": False, "error": str(exc)}
-        finally:
-            _DAILY_SYNC_BG["running"] = False
-
-    threading.Thread(target=_bg, daemon=True).start()
-    return {"ok": True, "started": True}
-
-
-def _sync_monthly_status() -> dict:
-    st = _DAILY_SYNC_BG
-    if st["running"]:
-        return {"ok": True, "running": True, "progress": st["progress"]}
-    elif st["result"]:
-        return {"ok": True, "running": False, **st["result"]}
-    return {"ok": True, "running": False}
+    _start_sync_bg(_MONTHLY_SYNC_BG, storage, days, routes)
+    return {"ok": True, "started": True, "routes": routes,
+            "from": days[0], "to": days[-1], "days": len(days)}
 
 
 _SYNC_ENTITY_LABELS = {
