@@ -2522,7 +2522,7 @@ function renderRegistry(data) {
           <td><div class="avatar-row">${avatar(x)}<div><span class="driver-name">${esc(x.name)}</span><span class="driver-sub">ID: ${esc(x.driver_id)}</span></div></div></td>
           <td class="mono muted" style="font-size:11px">${esc(x.company || "-")}${x.route_name ? `<div class="driver-sub">${esc(x.route_name)}</div>` : ""}</td>
           <td>${driverStatus(x)}${x.notification_enabled ? '<span class="driver-sub">🔔 Telegram yoqilgan</span>' : ''}</td>
-          <td>${x.working_days} kun <span class="driver-sub">${x.trips} reys${x.manual_trips ? " + " + x.manual_trips + " qayd" : ""}</span></td>
+          <td>${x.working_days} kun <span class="driver-sub">${x.trips} reys${x.manual_trips ? " (shundan " + x.manual_trips + " qo'lda)" : ""}</span></td>
           <td class="pct teal">${num(x.km)} km <span class="driver-sub">${x.automatic_km ? "API: " + num(x.automatic_km) : "qo'lda kiritiladi"}</span></td>
           <td>${money(x.km_rate)}<span class="driver-sub">1 km uchun</span></td>
           ${showMoney ? `<td><b class="pct teal">${money(x.net_pay)}</b><span class="driver-sub">brutto ${money(x.gross_pay)} · soliq ${money(x.tax)} · jarima ${money(x.fines)}</span></td>` : ""}

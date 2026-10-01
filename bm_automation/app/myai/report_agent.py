@@ -105,7 +105,7 @@ class ReportAgent(BaseAgent):
                 f"{d.get('working_days', 0)} ish kuni")
             lines.append(
                 f"Masofa: {d.get('km', 0)} km · "
-                f"qatnovlar: {d.get('trips', 0) + d.get('manual_trips', 0)}")
+                f"qatnovlar: {d.get('trips', 0)}")
             lines.append(
                 f"Maosh: gross {d.get('gross_pay', 0)} / "
                 f"net {d.get('net_pay', 0)} so'm · "

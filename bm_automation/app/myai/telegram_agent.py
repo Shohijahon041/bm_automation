@@ -86,7 +86,7 @@ def _build_monthly_message(drv: dict) -> str:
         d = drv["driver"]
         lines.append(f"👤 <b>{_escape(d.get('name', '-'))}</b> · {period}")
         lines.append(
-            f"📏 {d.get('km', 0)} km · {d.get('trips', 0) + d.get('manual_trips', 0)} "
+            f"📏 {d.get('km', 0)} km · {d.get('trips', 0)} "
             f"qatnov · {d.get('working_days', 0)} ish kuni")
         lines.append(
             f"💰 Maosh: gross {d.get('gross_pay', 0)}, "

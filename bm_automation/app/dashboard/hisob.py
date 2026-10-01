@@ -93,12 +93,17 @@ def _route_salary(f: dict | None, driver_id: str) -> dict:
     """Haydovchi brutto/netto (per-route) — `metrics` real hisobidan foydalanadi.
 
     Qaytaradi: {gross_pay, tax, fines, net_pay, km, km_rate, route_id,
-                quality_bonus, gross_full}
+                rating, quality_bonus, gross_full}
+
+    Haydovchi kartasi ko'rsatkichlari (`Metrics.driver_detail`) ishlatiladi —
+    u qo'lda kiritilgan km qaydlarini ham km/brutto hisobiga qo'shadi.
     """
+    rating = 5.0
     try:
         from .metrics import Metrics
         met = Metrics()
-        row = met.driver_card(driver_id, f)
+        detail = met.driver_detail(driver_id, f) or {}
+        row = detail.get("driver") or {}
         gross = _num(row.get("gross_pay"))
         tax = _num(row.get("tax"))
         fine = _num(row.get("fines"))
@@ -106,10 +111,12 @@ def _route_salary(f: dict | None, driver_id: str) -> dict:
         km = _num(row.get("km"))
         rate = _num(row.get("km_rate"))
         rid = str(row.get("route_id") or "")
+        rating = _num(row.get("rating") or 5, 5)
     except Exception:  # noqa: BLE001 - metrics bo'lmasa ichki oddiy hisob
         gross = tax = fine = net = km = 0.0
         rate = 0.0
         rid = ""
+        rating = 5.0
     return {
         "gross_pay": gross,
         "tax": tax,
@@ -118,6 +125,7 @@ def _route_salary(f: dict | None, driver_id: str) -> dict:
         "km": km,
         "km_rate": rate,
         "route_id": rid,
+        "rating": rating,
         "quality_bonus": 0.0,
         "gross_full": gross,
     }
@@ -132,12 +140,7 @@ def brutto(filters: dict | None = None, driver_id: str = "") -> dict:
     zero bo'lsa — ustama qo'shilmaydi (km × km_rate yetarli).
     """
     row = _route_salary(filters, driver_id)
-    rating = 5.0
-    try:
-        from .metrics import Metrics
-        rating = _num(Metrics().driver_card(driver_id, filters).get("rating") or 5, 5)
-    except Exception:  # noqa: BLE001
-        pass
+    rating = _num(row.get("rating") or 5, 5)
     gross = _num(row.get("gross_pay"))
     if rating >= 5.0:
         quality = 0.10

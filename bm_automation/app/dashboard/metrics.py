@@ -1255,6 +1255,12 @@ class Metrics:
         return ""
 
     def _driver_logs(self, f: dict) -> dict[str, dict]:
+        """Qo'lda kiritilgan km qaydlari (note != 'AVTO') — km/trips/sanalar.
+
+        Qaytaradi: {driver_id: {km, trips, last_date, dates: set()}}.
+        AVTO qaydlari brutto-route km'ni almashtiradi (`drivers()` merge),
+        shu sababli bu yerda ikki marta qo'shilmaydi.
+        """
         clauses, params = [], []
         if f.get("from"):
             clauses.append(f"date >= {self.ph}")
@@ -1288,7 +1294,20 @@ class Metrics:
             "FROM driver_work_logs WHERE driver_id != ''"
             f"{(' AND ' + where) if where else ''} GROUP BY driver_id"
         )
-        return {str(r["driver_id"]): r for r in self.storage.query(sql, tuple(params))}
+        out = {str(r["driver_id"]): {**r, "dates": set()}
+               for r in self.storage.query(sql, tuple(params))}
+        # Qayd sanalari — "Ish kunlari"da trips sanalari bilan birlashtiriladi
+        # (set birlashtirish: bitta kunda trips ham, qayd ham bo'lsa — bitta kun).
+        date_sql = (
+            "SELECT DISTINCT driver_id, date FROM driver_work_logs"
+            " WHERE driver_id != ''"
+            f"{(' AND ' + where) if where else ''}"
+        )
+        for r in self.storage.query(date_sql, tuple(params), limit=200000):
+            rec = out.get(str(r["driver_id"]))
+            if rec is not None and r.get("date"):
+                rec["dates"].add(str(r["date"]))
+        return out
 
     def _driver_avto_keys(self, f: dict) -> dict[tuple, dict]:
         """AVTO (brutto-route) qaydlar — (date, driver, vehicle) kalitida.
@@ -1462,7 +1481,10 @@ class Metrics:
             p = per.get(driver_id, {})
             profile = profiles.get(driver_id, {})
             drv_log = logs.get(driver_id, {})
-            days = len(p.get("days") or ())
+            manual_trips = int(drv_log.get("trips") or 0)
+            # Ish kunlari: trips sanalari + qo'lda qayd sanalari (dublikatsiz) —
+            # qo'lda ishlangan kun ham oylikda ish kuni bo'lib sanaladi.
+            days = len(set(p.get("days") or ()) | set(drv_log.get("dates") or ()))
             manual_km = float(drv_log.get("km") or 0)
             total_km = round(p.get("km", 0.0) + manual_km, 2)
 
@@ -1495,7 +1517,8 @@ class Metrics:
             fine = round(fines.get(driver_id, 0.0), 2)
             tax = round(gross * TAX_RATE, 2)
             net = round(max(gross - tax - fine, 0), 2)
-            trips = int(p.get("trips") or 0)
+            # Qatnov: avtomatik reyslar + qo'lda kiritilgan reyslar
+            trips = int(p.get("trips") or 0) + manual_trips
             out.append({
                 "driver_id": driver_id,
                 "name": names.get(driver_id, driver_id),
@@ -1503,7 +1526,7 @@ class Metrics:
                 "route_id": rid,
                 "route_name": rnames.get(rid, "") or comp.get("route_name", ""),
                 "trips": trips,
-                "manual_trips": int(drv_log.get("trips") or 0),
+                "manual_trips": manual_trips,
                 "working_days": days,
                 "issues": int(p.get("issues") or 0),
                 "attendance": round(days / total_days * 100, 1),
@@ -1708,6 +1731,9 @@ class Metrics:
         logs = self._driver_logs({**f, "driver": driver_id})
         drv_log = logs.get(driver_id, {})
         manual_km = float(drv_log.get("km") or 0)
+        manual_trips = int(drv_log.get("trips") or 0)
+        # Ish kunlari: trips sanalari + qo'lda qayd sanalari (dublikatsiz).
+        day_set = set(days) | set(drv_log.get("dates") or ())
         total_km = round(per_km + manual_km, 2)
         if manual_km > 0 and route_km:
             best = max(route_km, key=route_km.get)
@@ -1747,11 +1773,11 @@ class Metrics:
             "company": comp.get("company", ""),
             "route_id": rid,
             "route_name": self._route_names().get(rid, "") or comp.get("route_name", ""),
-            "trips": per_trips,
-            "manual_trips": int(drv_log.get("trips") or 0),
-            "working_days": len(days),
+            "trips": per_trips + manual_trips,
+            "manual_trips": manual_trips,
+            "working_days": len(day_set),
             "issues": per_issues,
-            "attendance": round(len(days) / total_days * 100, 1),
+            "attendance": round(len(day_set) / total_days * 100, 1),
             "total_days": total_days,
             "km": total_km,
             "automatic_km": round(per_km, 2),

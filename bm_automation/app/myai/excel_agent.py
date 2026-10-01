@@ -49,7 +49,7 @@ class ExcelAgent(BaseAgent):
             rows.append({
                 "Haydovchi": r.get("name", ""),
                 "Yo'nalish": r.get("route_name", ""),
-                "Reys": r.get("trips", 0) + r.get("manual_trips", 0),
+                "Reys": r.get("trips", 0),
                 "Ish kuni": r.get("working_days", 0),
                 "Davomat%": r.get("attendance", 0),
                 "KM": r.get("km", 0),

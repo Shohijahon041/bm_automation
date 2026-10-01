@@ -409,7 +409,8 @@ def test_work_logs_avto_replaces_trips_km(met):
     assert d1["km"] == 125.0            # AVTO 100.0 + qo'lda 25.0
     assert d1["automatic_km"] == 100.0  # AVTO endi avtomatik km manbasi
     assert d1["manual_trips"] == 1
-    assert d1["trips"] == 2
+    # Qatnov — umumiy: AVTO 2 + qo'lda 1 (qo'lda reys qatnovga qo'shiladi)
+    assert d1["trips"] == 3
     # saytdagi brutto-route reja ustunlari AVTO qayddan olinadi
     assert d1["plan_km"] == 150.0
     assert d1["plan_trips"] == 6
@@ -430,6 +431,47 @@ def test_work_logs_avto_merge_per_key(met):
     assert d1["trips"] == 4       # AVTO trip_count 3 + 11-08 1 reys
     assert d1["working_days"] == 2
     assert d1["attendance"] == 100.0
+
+
+def test_work_log_flows_into_monthly_metrics(met):
+    """Kunlik km qaydi (qo'lda) oylik ko'rsatkichlarga kiradi: ish kunlari,
+    qatnov, km va brutto — bot kartasi va oylik hisobi shu `drivers()` dan."""
+    storage = met.storage
+    storage.save_driver_profile("d1", km_rate=1000)
+    storage.save_driver_work_log("2026-08-13", "d1", "v1", 125.5, 3,
+                                 note="Odometr")
+    f = {"from": "2026-08-01", "to": "2026-08-31"}
+    d1 = {x["driver_id"]: x for x in met.drivers(f)}["d1"]
+    # Ish kunlari: trips 08-10, 08-11 + qayd 08-13 (dublikatsiz)
+    assert d1["working_days"] == 3
+    # Qatnov: avtomatik 3 (2 ACCEPTED + 1 PENDING) + qo'lda 3
+    assert d1["trips"] == 6
+    assert d1["manual_trips"] == 3
+    assert d1["km"] == 125.5                # trips km 0 + qayd 125.5
+    assert d1["gross_pay"] == 125500.0      # 125.5 × 1000 (profil narxi)
+    detail = met.driver_detail("d1", f)["driver"]
+    assert detail["working_days"] == 3
+    assert detail["trips"] == 6
+    assert detail["gross_pay"] == 125500.0
+
+
+def test_brutto_salary_includes_manual_work_log(met, monkeypatch):
+    """HISOB-KITOB (brutto) ekrani qo'lda kiritilgan km qaydini ham
+    hisobga oladi — avvalgi `driver_card` xatosi tufayli nol chiqardi."""
+    monkeypatch.setattr("bm_automation.app.dashboard.metrics.get_storage",
+                        lambda: met.storage)
+    from bm_automation.app.dashboard import hisob
+
+    storage = met.storage
+    storage.save_driver_profile("d1", km_rate=1000)
+    storage.save_driver_work_log("2026-08-13", "d1", "v1", 125.5, 3,
+                                 note="Odometr")
+    f = {"from": "2026-08-01", "to": "2026-08-31"}
+    b = hisob.brutto(f, "d1")
+    assert b["km"] == 125.5
+    assert b["gross_pay"] == 125500.0
+    assert b["gross_full"] == 138050.0   # reyting 5 → +10% sifat ustamasi
+    assert b["net_pay"] == 121484.0      # 138050 − 12% soliq
 
 
 def test_drivers_attendance_range(met):

@@ -186,8 +186,7 @@ class MonthlyTool(BaseTool):
         totals = {
             "drivers": len(norm),
             "active_drivers": sum(1 for r in norm if r.get("working_days", 0) > 0),
-            "total_trips": sum(int(r.get("trips", 0)) + int(r.get("manual_trips", 0))
-                               for r in norm),
+            "total_trips": sum(int(r.get("trips", 0)) for r in norm),
             "total_km": round(sum(float(r.get("km") or 0) for r in norm), 2),
             "total_gross": round(sum(float(r.get("gross_pay") or 0) for r in norm), 2),
             "total_tax": round(sum(float(r.get("tax") or 0) for r in norm), 2),
