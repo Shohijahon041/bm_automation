@@ -568,9 +568,7 @@ def driver_card(driver_id: str, filters: dict | None = None,
     parts += ["", "🪪 <b>HUJJATLAR</b>"] + doc_lines
 
     parts += ["", f"📅 <b>{_period_label(f)}</b>"]
-    manual = d.get("manual_trips") or 0
-    # Qatnov endi umumiy (avtomatik + qo'lda); qo'lda qismi izoh sifatida.
-    qatnov = fmt(d.get("trips") or 0, 0) + (f" (shundan {fmt(manual, 0)} qo'lda)" if manual else "")
+    qatnov = fmt(d.get("trips") or 0, 0)
     auto_km = d.get("automatic_km") or 0
     km = fmt(d.get("km") or 0, 1) + (f" (API {fmt(auto_km, 1)})" if auto_km else "")
     rows = [

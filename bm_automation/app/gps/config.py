@@ -70,6 +70,16 @@ SPEED_LIMIT_KMH = int(os.environ.get("GPS_SPEED_LIMIT_KMH", "0"))
 SPEED_ALERT_COOLDOWN_S = int(os.environ.get("GPS_SPEED_ALERT_COOLDOWN_S", "600"))
 SPEED_TELEGRAM = os.environ.get("GPS_SPEED_TELEGRAM", "1") in ("1", "true", "yes")
 
+# ---- To'xtashlarni aniqlash ----
+STOPS_MIN_DURATION_S = int(os.environ.get("GPS_STOPS_MIN_S", "120"))
+STOPS_RADIUS_M = int(os.environ.get("GPS_STOPS_RADIUS_M", "120"))
+
+# ---- GPS km ↔ qo'lda kiritilgan km nazorati ----
+# Farq shu foizdan oshsa hisobotda/nazoratda belgilanadi
+VS_MANUAL_TOLERANCE_PCT = int(os.environ.get("GPS_VS_MANUAL_TOLERANCE_PCT", "20"))
+# Kunlik Telegram hisobotiga nazorat bloki qo'shiladi (0 = o'chirilgan)
+VS_MANUAL_REPORT = os.environ.get("GPS_VS_MANUAL_REPORT", "1") in ("1", "true", "yes")
+
 # ---- Kunlik Telegram hisoboti ----
 REPORT_ENABLED = os.environ.get("GPS_REPORT_ENABLED", "1") in ("1", "true", "yes")
 REPORT_HOUR = int(os.environ.get("GPS_REPORT_HOUR", "7"))  # Toshkent vaqti (0-23)

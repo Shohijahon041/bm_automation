@@ -54,15 +54,19 @@ def build_report(day=None) -> str:
     )
     head = f"🚌 <b>Kunlik yurish hisoboti — {d.isoformat()}</b>\n"
     if not rows:
-        return head + "Ma'lumot yo'q — qurilmalar oqim yubormagan."
+        block = build_control_block(d)
+        return head + "Ma'lumot yo'q — qurilmalar oqim yubormagan." + (
+            "\n\n" + block if block else ""
+        )
     lines = []
+    devices = []
+    try:
+        devices = storage.list_devices()
+    except Exception:  # noqa: BLE001
+        devices = []
     for i, r in enumerate(rows, 1):
         nm = r.get("imei")
-        try:
-            rows_db = storage.list_devices()
-        except Exception:  # noqa: BLE001
-            rows_db = []
-        for dv in rows_db:
+        for dv in devices:
             if dv.get("imei") == r.get("imei"):
                 nm = dv.get("plate_number") or dv.get("name") or nm
                 break
@@ -72,7 +76,52 @@ def build_report(day=None) -> str:
             f"maks {int(r.get('max_speed') or 0)} km/h · "
             f"{int(r.get('points') or 0)} nuqta"
         )
-    return head + "\n".join(lines)
+    block = build_control_block(d)
+    tail = ("\n\n" + block) if block else ""
+    return head + "\n".join(lines) + tail
+
+
+def build_control_block(day) -> str:
+    """GPS ↔ qo'lda km nazorat bloki. Belgilanadigan qator yo'q bo'lsa ''.
+
+    Faqat farq `GPS_VS_MANUAL_TOLERANCE_PCT`dan oshsa yoki bir tomon
+    umuman yo'q bo'lsa ko'rsatiladi (shovqin qilmaslik uchun).
+    """
+    if not config.VS_MANUAL_REPORT:
+        return ""
+    from . import compare
+
+    try:
+        rows = compare.daily_comparison(day.isoformat(), day.isoformat())
+    except Exception:  # noqa: BLE001
+        log.exception("report: nazorat bloki hisoblanmadi")
+        return ""
+    flags = compare.flagged_rows(rows, config.VS_MANUAL_TOLERANCE_PCT)
+    if not flags:
+        return ""
+    lines = [f"🔎 <b>Km nazorati (GPS ↔ qo'lda) — {day.isoformat()}</b>"]
+    for r, kind in flags[:6]:
+        nm = r.get("plate") or r.get("vehicle_id") or r.get("imei")
+        g = float(r.get("gps_km") or 0)
+        m = float(r.get("manual_km") or 0)
+        pct = r.get("diff_pct")
+        if kind == "no_decl":
+            lines.append(f"❗ <b>{nm}</b> — GPS {g:.0f} km, qayd yo'q")
+        elif kind == "no_gps":
+            lines.append(f"❓ <b>{nm}</b> — qo'lda {m:.0f} km, GPS yo'q")
+        elif kind == "over":
+            lines.append(
+                f"⚠️ <b>{nm}</b> — GPS {g:.0f} / qo'lda {m:.0f} km "
+                f"(+{pct:.0f}%)"
+            )
+        else:  # under
+            lines.append(
+                f"🔻 <b>{nm}</b> — GPS {g:.0f} / qo'lda {m:.0f} km "
+                f"({pct:+.0f}%)"
+            )
+    if len(flags) > 6:
+        lines.append(f"… yana {len(flags) - 6} ta")
+    return "\n".join(lines)
 
 
 def send_daily_report(day=None) -> bool:

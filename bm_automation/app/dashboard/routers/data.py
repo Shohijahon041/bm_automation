@@ -195,15 +195,22 @@ async def api_electricity_price_set(request: Request, scope: dict = Depends(Scop
 
 
 @router.get("/api/check")
-async def api_check(request: Request, scope: dict = Depends(Scope())):
+def api_check(request: Request, scope: dict = Depends(Scope())):
+    # SYNC endpoint: run_check BM API + Playwright (sync) ishlatadi —
+    # async loop ichida ishlasa "Playwright Sync API inside the asyncio loop"
+    # xatosi beriladi va 500 qaytadi (frontend JSON kutadi).
     from .. import check as ck
     params = _parse_qs(request)
     params = force_route(scope, "/api/check", params)
-    return ck.run_check(params)
+    try:
+        return ck.run_check(params)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"Tekshiruv bajarilmadi: {exc}"}
 
 
 @router.get("/api/export")
-async def api_export(request: Request, scope: dict = Depends(Scope())):
+def api_export(request: Request, scope: dict = Depends(Scope())):
+    # SYNC endpoint: run_export BM API (requests) ni bloklovchi chaqiradi.
     from .. import export as ex
     params = _parse_qs(request)
     params = force_route(scope, "/api/export", params)
@@ -211,7 +218,12 @@ async def api_export(request: Request, scope: dict = Depends(Scope())):
         escope = (params.get("scope") or "trips").lower()
         if escope in ("settings", "tariffs"):
             raise HTTPException(403, "Sizda bu bo'limga ruxsat yo'q")
-    result = ex.run_export(params)
+    try:
+        result = ex.run_export(params)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            {"ok": False, "error": f"Eksport bajarilmadi: {exc}"},
+            status_code=500)
     if isinstance(result, dict) and result.get("data"):
         return FastResponse(
             content=result["data"],

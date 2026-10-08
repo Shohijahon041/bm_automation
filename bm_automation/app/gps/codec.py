@@ -127,8 +127,8 @@ def decode_frame(buf: bytes) -> ParsedFrame:
     (data_len,) = struct.unpack(">I", buf[4:8])
     if data_len == 0 or data_len > 8 * 1024 * 1024:
         raise CodecError(f"AVL data length notogri: {data_len}")
-    if len(buf) < 8 + data_len:
-        return ParsedFrame(kind="empty")  # hali to'liq kelmagan
+    if len(buf) < 8 + data_len + 4:
+        return ParsedFrame(kind="empty")  # hali to'liq kelmagan (CRC ham kutamiz)
 
     body = buf[8 : 8 + data_len]
     if preamble != b"\x00\x00\x00\x00":
@@ -153,21 +153,20 @@ def decode_frame(buf: bytes) -> ParsedFrame:
 
 
 def _decode_records(body: bytes, codec8e: bool) -> tuple[list, int]:
-    """Codec body'dan (codec_id dan keyingi qism) recordlarni o'qiydi."""
-    records: list = []
-    off = 0
+    """Codec body'dan (codec_id dan keyingi qism) recordlarni o'qiydi.
 
-    if codec8e:
-        # 2B record count
-        if len(body) < 2:
-            raise CodecError("Codec8E body qisqa")
-        (count,) = struct.unpack(">H", body[:2])
-        off = 2
-    else:
-        if len(body) < 1:
-            raise CodecError("Codec8 body qisqa")
-        count = body[0]
-        off = 1
+    Har ikkala codecda ham record soni 1 bayt (Codec8E'da IO countlari 2B,
+    Codec8'da 1B). IO count'lari element guruhlari bilan aralash keladi:
+    N1 -> 1B qiymatlar, N2 -> 2B, N4 -> 4B, N8 -> 8B. Codec8E'da oxirida
+    qo'shimcha NX (o'zgaruvchan uzunlik) guruhi bo'ladi.
+    """
+    records: list = []
+    id_len = 2 if codec8e else 1
+
+    if len(body) < 1:
+        raise CodecError("Codec body qisqa")
+    count = body[0]
+    off = 1
 
     for _ in range(count):
         if len(body) < off + 8 + 1:
@@ -187,34 +186,35 @@ def _decode_records(body: bytes, codec8e: bool) -> tuple[list, int]:
         (speed,) = struct.unpack(">H", body[off + 13 : off + 15])
         off += 15
 
-        # IO elementlar
+        # IO header
         if codec8e:
-            if len(body) < off + 2:
+            if len(body) < off + 4:
                 raise CodecError("Codec8E IO header qisqa")
             (event_id,) = struct.unpack(">H", body[off : off + 2])
             off += 2
-            (n_total,) = struct.unpack(">H", body[off : off + 2])
+            (_n_total,) = struct.unpack(">H", body[off : off + 2])
             off += 2
-            n1, n2, n4, n8 = _unpack_4x_n8e(body, off)
-            off += 8
         else:
-            if len(body) < off + 1:
+            if len(body) < off + 2:
                 raise CodecError("Codec8 IO header qisqa")
             event_id = body[off]
             off += 1
-            if len(body) < off + 1:
-                raise CodecError("Codec8 N_total qisqa")
-            n_total = body[off]
+            _n_total = body[off]
             off += 1
-            n1, n2, n4, n8 = _unpack_4x_n8(body, off)
-            off += 4
 
         io: dict = {}
-        for size, n in ((1, n1), (2, n2), (4, n4), (8, n8)):
-            if n == 0:
-                continue
+        for size in (1, 2, 4, 8):
+            if codec8e:
+                if len(body) < off + 2:
+                    raise CodecError("Codec8E IO group count qisqa")
+                (n,) = struct.unpack(">H", body[off : off + 2])
+                off += 2
+            else:
+                if len(body) < off + 1:
+                    raise CodecError("Codec8 IO group count qisqa")
+                n = body[off]
+                off += 1
             for _ in range(n):
-                id_len = 2 if codec8e else 1
                 if len(body) < off + id_len + size:
                     raise CodecError("IO element qisqa")
                 if codec8e:
@@ -234,6 +234,27 @@ def _decode_records(body: bytes, codec8e: bool) -> tuple[list, int]:
                     (val,) = struct.unpack(">Q", raw)
                 io[str(io_id)] = val
 
+        # Codec8E: NX (o'zgaruvchan uzunlik) IO elementlari
+        if codec8e:
+            if len(body) < off + 2:
+                raise CodecError("Codec8E NX count qisqa")
+            (nx,) = struct.unpack(">H", body[off : off + 2])
+            off += 2
+            for _ in range(nx):
+                if len(body) < off + 4:
+                    raise CodecError("Codec8E NX element qisqa")
+                (nx_id,) = struct.unpack(">H", body[off : off + 2])
+                off += 2
+                (nx_len,) = struct.unpack(">H", body[off : off + 2])
+                off += 2
+                if len(body) < off + nx_len:
+                    raise CodecError("Codec8E NX qiymat qisqa")
+                raw = body[off : off + nx_len]
+                off += nx_len
+                io[str(nx_id)] = (
+                    int.from_bytes(raw, "big") if nx_len <= 8 else raw.hex()
+                )
+
         records.append(
             AvlRecord(
                 timestamp=datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc),
@@ -250,21 +271,6 @@ def _decode_records(body: bytes, codec8e: bool) -> tuple[list, int]:
         )
 
     return records, off
-
-
-def _unpack_4x_n8e(body: bytes, off: int) -> tuple[int, int, int, int]:
-    """Codec8E: 4 x 2B group counts (1B, 2B, 4B, 8B value groups)."""
-    if len(body) < off + 8:
-        raise CodecError("Codec8E group counts qisqa")
-    n1, n2, n4, n8 = struct.unpack(">HHHH", body[off : off + 8])
-    return n1, n2, n4, n8
-
-
-def _unpack_4x_n8(body: bytes, off: int) -> tuple[int, int, int, int]:
-    """Codec8: 4 x 1B group counts."""
-    if len(body) < off + 4:
-        raise CodecError("Codec8 group counts qisqa")
-    return body[off], body[off + 1], body[off + 2], body[off + 3]
 
 
 def encode_imei_response(ok: bool = True) -> bytes:

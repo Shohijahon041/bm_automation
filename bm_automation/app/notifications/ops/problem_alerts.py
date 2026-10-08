@@ -1,14 +1,16 @@
 """Muammo alertlari — davriy tekshiruv va ADMIN/DISPATCHER'ga bildirishnoma.
 
 Bot poll-tsikli har iteratsiyada `check_and_notify()` chaqiradi; u har
-`_CHECK_INTERVAL_S` da DB'dagi joriy muammo sonini tekshiradi. Ko'rsatkich
-o'zgargan (ko'paygan yoki kamaygan) bo'lsa ruxsat etilgan chat'larga qisqa
-xabar yuboriladi.
+`_CHECK_INTERVAL_S` da aktiv kundagi (bugun; bo'sh bo'lsa oxirgi reysli kun)
+muammolar sonini tekshiradi. Ko'rsatkich o'zgargan (ko'paygan yoki kamaygan)
+bo'lsa ruxsat etilgan chat'larga qisqa xabar yuboriladi.
 
 Holat `state/problem_alerts.json` faylida saqlanadi:
   - bot restart'da takroriy spam bo'lmaydi;
   - birinchi tekshiruv faqat bazaviy holatni eslab qoladi (xabar emas) —
-    muammolar tayyor turgan paytda yangi xabarlar to'kilmaydi.
+    muammolar tayyor turgan paytda yangi xabarlar to'kilmaydi;
+  - kun almashganda ham jimgina yangi bazaviy holat yoziladi (kechagi
+    raqamlar bilan solishtirib soxta "kamaydi" xabari chiqmasin).
 
 Bildirishnomalar faqat ADMIN / DISPATCHER chat'lariga boradi
 (`configured_roles`). Rol sozlanmagan bo'lsa (ochiq rejim) — hech kimga
@@ -22,7 +24,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from ...dashboard.metrics import Metrics
+from ...dashboard.metrics import Metrics, parse_filters
 from ...db.storage import get_storage
 from ...utils.io import atomic_write
 from ..telegram import send_message
@@ -33,6 +35,9 @@ STATE_FILE = Path("state") / "problem_alerts.json"
 
 # Tekshiruvlar orasidagi eng kichik interval (soniya).
 _CHECK_INTERVAL_S = 600.0
+
+# Kunlik kesimda qatorlar 1000 dan oshishi mumkin — to'liq qamrov uchun chegara.
+_PROBLEM_ROW_LIMIT = 5000
 
 _LABELS = {
     "gps": "GPS",
@@ -88,8 +93,16 @@ def _summary(counts: dict) -> str:
             f"Noma'lum: {counts.get('unknown', 0)}")
 
 
+def _fmt_day(value: str) -> str:
+    """ISO sanani '02.10.2026' ko'rinishida qaytaradi."""
+    try:
+        return f"{datetime.fromisoformat(str(value)[:10]):%d.%m.%Y}"
+    except ValueError:
+        return str(value or "")
+
+
 def check_and_notify() -> None:
-    """Joriy muammo sonini tekshiradi, o'zgarish bo'lsa xabar yuboradi.
+    """Joriy kun muammo sonini tekshiradi, o'zgarish bo'lsa xabar yuboradi.
 
     Interval geytidan o'tmagan chaqiruvlar darhol qaytadi — poll-tsikl
     har iteratsiyada bemalol chaqirishi mumkin.
@@ -107,8 +120,12 @@ def check_and_notify() -> None:
         last = state.get("last") or {}
         last_at = state.get("at") or ""
         try:
+            # Sana filteri majburiy: filtrsiz LIMIT-oyna butun tarixdan
+            # tasodifiy qatorlar olib, raqamlar har tekshiruvda sakrardi.
+            f = parse_filters({})
+            day = str(f.get("date") or f.get("to") or now.date().isoformat())
             counts = {k: int(v) for k, v in
-                      Metrics().problems({})["counts"].items()}
+                      Metrics().problems(f, limit=_PROBLEM_ROW_LIMIT)["counts"].items()}
         except Exception as exc:  # noqa: BLE001 - DB xatosi xabar emas
             print(f"Muammo tekshiruvi xatosi: {exc}")
             return
@@ -117,13 +134,15 @@ def check_and_notify() -> None:
 
         # Muammo yo'q — bazaviy holatni tozalaymiz (keyingi paydo bo'lishi xabar).
         if total == 0:
-            if last:
-                _save({"last": {}, "at": ""})
+            if last or str(state.get("date") or "") != day:
+                _save({"last": {}, "at": "", "date": day})
             return
 
-        if not last:
-            # Birinchi aniqlash: faqat eslab qolamiz (spam bo'lmasligi uchun).
-            _save({"last": counts, "at": now.isoformat(timespec="seconds")})
+        # Kun almashdi yoki birinchi aniqlash: jimgina eslab qolamiz
+        # (kechagi raqamlar bilan solishtirib soxta farq chiqmasin).
+        if str(state.get("date") or "") != day or not last:
+            _save({"last": counts, "at": now.isoformat(timespec="seconds"),
+                   "date": day})
             return
 
         changes = _changes(last, counts)
@@ -135,12 +154,13 @@ def check_and_notify() -> None:
             for k, v in changes.items() if v)
         text = (
             "⚠️ <b>MUAMMO HOLATI O'ZGARDI</b>\n\n"
-            f"Jami: {total} ta\n"
+            f"📅 {_fmt_day(day)} · Jami: {total} ta\n"
             f"{_summary(counts)}\n"
             f"O'zgarish: {diff_txt}\n\n"
             f"🕒 {now:%H:%M} · oxirgi holat {last_at or '—'}"
         )
-        _save({"last": counts, "at": now.isoformat(timespec="seconds")})
+        _save({"last": counts, "at": now.isoformat(timespec="seconds"),
+               "date": day})
         for cid in _targets():
             try:
                 send_message(text, chat_id=str(cid),
@@ -154,6 +174,7 @@ def status_text() -> str:
     state = _load()
     last = state.get("last") or {}
     at = state.get("at") or ""
+    day = str(state.get("date") or "")
     parts = [
         "🔔 <b>MUAMMO ALERTLARI</b>",
         "",
@@ -161,9 +182,10 @@ def status_text() -> str:
         f"So'nggi tekshiruv: {at or '—'}",
     ]
     if last:
+        label = f"Saqlangan muammolar ({_fmt_day(day)}):" if day else "Saqlangan muammolar:"
         parts += [
             "",
-            "Saqlangan muammolar:",
+            label,
             f"  {_summary(last)}",
         ]
     else:

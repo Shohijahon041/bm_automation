@@ -421,13 +421,25 @@ async def get_user_detail(uid: int, request: Request, scope: dict = Depends(Scop
     raise HTTPException(404, "Foydalanuvchi topilmadi")
 
 
+_PHOTO_TTL = 6 * 3600
+_PHOTO_NEG_TTL = 600
+_PHOTO_CACHE: dict[int, tuple[float, str | None]] = {}
+
+
 @router.get("/api/users/{uid}/photo")
-async def get_user_photo(uid: int, request: Request, scope: dict = Depends(Scope())):
-    from ...core.bot_users import get_user
-    from ...notifications.telegram import get_profile_photo_url
-    user = get_user(uid) or {}
-    photo_id = user.get("photo_file_id", "")
-    url = get_profile_photo_url(uid, photo_id)
+def get_user_photo(uid: int, request: Request, scope: dict = Depends(Scope())):
+    import time
+    now = time.monotonic()
+    hit = _PHOTO_CACHE.get(uid)
+    ttl = _PHOTO_TTL if (hit and hit[1]) else _PHOTO_NEG_TTL
+    if hit and (now - hit[0]) < ttl:
+        url = hit[1]
+    else:
+        from ...core.bot_users import get_user
+        from ...notifications.telegram import get_profile_photo_url
+        user = get_user(uid) or {}
+        url = get_profile_photo_url(uid, user.get("photo_file_id", ""))
+        _PHOTO_CACHE[uid] = (now, url)
     if url:
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url)

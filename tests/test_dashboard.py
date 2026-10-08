@@ -720,6 +720,70 @@ def test_api_insights_default_days(monkeypatch):
     assert d["ok"] is True and d["enabled"] is False
 
 
+def test_api_logs_sources_and_filters(tmp_path, monkeypatch):
+    """/api/logs manba/level filtrlari va mavjud manbalar ro'yxatini qaytaradi."""
+    import bm_automation.app.utils.logger as lg
+    p = tmp_path / "bm.log"
+    p.write_text(
+        "2026-01-01 10:00:00 | INFO    | x | ishga tushdi\n"
+        "2026-01-01 10:01:00 | ERROR   | y | katta xato\n",
+        encoding="utf-8")
+    monkeypatch.setattr(lg, "FILE_LOG", p)
+    monkeypatch.setenv("BM_LOG_DIR", str(tmp_path))
+
+    d = _get("/api/logs?source=bm&lines=10")
+    assert d["ok"] is True and d["source"] == "bm"
+    assert any("katta xato" in l for l in d["lines"])
+    for name in ("gps", "bot", "dashboard", "nginx", "journal", "all"):
+        assert name in d["sources"]
+
+    d2 = _get("/api/logs?source=bm&lines=10&level=ERROR")
+    assert d2["lines"] and all("| ERROR" in l for l in d2["lines"])
+
+    d3 = _get("/api/logs?source=bm&lines=10&q=xato")
+    assert d3["lines"] and all("xato" in l for l in d3["lines"])
+
+
+def test_api_logs_unknown_source_falls_back(tmp_path, monkeypatch):
+    """Noto'g'ri source -> bm.log qaytariladi (500 emas)."""
+    import bm_automation.app.utils.logger as lg
+    p = tmp_path / "bm.log"
+    p.write_text("2026-01-01 10:00:00 | INFO | x | salom\n", encoding="utf-8")
+    monkeypatch.setattr(lg, "FILE_LOG", p)
+    monkeypatch.setenv("BM_LOG_DIR", str(tmp_path))
+    d = _get("/api/logs?source=yoq-manba&lines=5")
+    assert d["ok"] is True and d["source"] == "bm"
+
+
+def test_logs_stream_init_event(tmp_path, monkeypatch):
+    """/api/logs/stream darhol 'init' SSE hodisasini yuboradi."""
+    import asyncio
+
+    import bm_automation.app.utils.logger as lg
+    import bm_automation.app.dashboard.routers.system as sysm
+    p = tmp_path / "bm.log"
+    p.write_text("2026-01-01 10:00:00 | INFO | x | oqim satri\n", encoding="utf-8")
+    monkeypatch.setattr(lg, "FILE_LOG", p)
+    monkeypatch.setenv("BM_LOG_DIR", str(tmp_path))
+
+    class FakeReq:
+        query_params = {"source": "bm", "lines": "5"}
+
+        async def is_disconnected(self):
+            return True
+
+    async def run():
+        resp = await sysm.api_logs_stream(FakeReq(), scope={})
+        assert "text/event-stream" in resp.media_type
+        first = await resp.body_iterator.__anext__()
+        await resp.body_iterator.aclose()
+        return first
+
+    first = asyncio.run(run())
+    assert first.startswith("event: init")
+    assert "oqim satri" in first
+
+
 def test_api_brutto_master_endpoint(monkeypatch):
     """/api/brutto/master — 5 modulli master hisobot qaytaradi."""
     import bm_automation.app.dashboard.metrics as met

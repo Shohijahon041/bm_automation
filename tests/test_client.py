@@ -518,3 +518,82 @@ def test_profile_empty_id_noop(client, monkeypatch):
     client.session = FakeSession([])
     client.login_for_profile("  ")
     assert not client.session.calls
+
+
+# ---------- keepalive (12h timer) ----------
+
+def _write_tokens(tmp_path, access="old-access", refresh="old-refresh"):
+    (tmp_path / "tokens.json").write_text(json.dumps({
+        "access_token": access,
+        "refresh_token": refresh,
+    }), encoding="utf-8")
+
+
+def test_keepalive_rotates_refresh(client, tmp_path):
+    """Refresh token rotatsiya qilinadi va tekshiruv so'rovi yuboriladi."""
+    _write_tokens(tmp_path)
+    client.session = FakeSession([
+        _ok({"data": {"access_token": "new-access", "refresh_token": "new-refresh"}}),
+        _ok({"data": []}),
+    ])
+    assert client.keepalive() == "refreshed"
+    methods = [c["method"] for c in client.session.calls]
+    assert methods == ["POST", "GET"]
+    assert "refresh-token" in client.session.calls[0]["url"]
+    assert "account-authorities" in client.session.calls[1]["url"]
+    assert client.access_token == "new-access"
+    assert client.refresh_token == "new-refresh"
+
+
+def test_keepalive_without_refresh_token_relogins(client, monkeypatch):
+    """Refresh token faylda bo'lmasa to'liq login qilinadi."""
+    called = {}
+
+    def fake_login(force=False):
+        called["force"] = force
+        client.access_token = "pw-access"
+
+    monkeypatch.setattr(client, "login", fake_login)
+    client.session = FakeSession([_ok({"data": []})])
+    assert client.keepalive() == "relogin"
+    assert called.get("force") is True
+    assert [c["method"] for c in client.session.calls] == ["GET"]
+
+
+def test_keepalive_refresh_fails_relogins(client, tmp_path, monkeypatch):
+    """Refresh 401 bo'lsa to'liq qayta login ishlatiladi."""
+    _write_tokens(tmp_path)
+    called = {}
+
+    def fake_login(force=False):
+        called["force"] = force
+        client.access_token = "pw-access"
+
+    monkeypatch.setattr(client, "login", fake_login)
+    client.session = FakeSession([
+        _err(401, {"message": "refresh eskirgan"}),
+        _ok({"data": []}),
+    ])
+    assert client.keepalive() == "relogin"
+    assert called.get("force") is True
+    assert [c["method"] for c in client.session.calls] == ["POST", "GET"]
+
+
+def test_keepalive_403_on_verify_relogins(client, tmp_path, monkeypatch):
+    """Refresh ishlagan bo'lsa ham tekshiruvda 403 — to'liq login bilan uriniladi."""
+    _write_tokens(tmp_path)
+    called = {}
+
+    def fake_login(force=False):
+        called["force"] = force
+        client.access_token = "pw-access"
+
+    monkeypatch.setattr(client, "login", fake_login)
+    client.session = FakeSession([
+        _ok({"data": {"access_token": "new-access", "refresh_token": "new-refresh"}}),
+        _err(403, {"message": "ruxsat yo'q"}),
+        _ok({"data": []}),
+    ])
+    assert client.keepalive() == "relogin"
+    assert called.get("force") is True
+    assert [c["method"] for c in client.session.calls] == ["POST", "GET", "GET"]

@@ -30,6 +30,54 @@ def cmd_login_browser(args) -> int:
     return browser_run(args.extra)
 
 
+def cmd_keepalive(args) -> int:
+    """Tokenlarni tirik saqlash: refresh rotatsiyasi + tekshiruv so'rovi.
+
+    12 soatlik `bm-token-refresh` timer uchun. Xato bo'lsa adminlarga
+    Telegram ogohlantirish yuboriladi (qo'lda qayta login zarurligi
+    haqida) va 1 qaytariladi.
+    """
+    client = BMClient()
+    try:
+        result = client.keepalive()
+    except Exception as exc:  # noqa: BLE001 - timer uchun yutamiz, xabar beramiz
+        print(f"XATO: {exc}", file=sys.stderr)
+        _notify_keepalive_error(exc)
+        return 1
+    label = (
+        "refresh yangilandi"
+        if result == "refreshed"
+        else "to'liq qayta login bajarildi"
+    )
+    print(f"OK: tokenlar tirik ({label})")
+    return 0
+
+
+def _notify_keepalive_error(exc: Exception) -> None:
+    """Keep-alive xatosi haqida adminlarga Telegram ogohlantirish (best-effort)."""
+    try:
+        from ..app.config.settings import telegram_settings
+        from ..app.notifications.telegram import send_message
+
+        s = telegram_settings()
+        targets = [
+            tok for tok in str(s.get("admin_ids") or "").replace(",", " ").replace(";", " ").split()
+            if tok.strip().isdigit()
+        ]
+        if not targets and str(s.get("chat_id") or "").strip():
+            targets = [str(s.get("chat_id")).strip()]
+        text = (
+            "⚠️ <b>BM token keep-alive muammosi</b>\n"
+            f"Sana: {date.today().isoformat()}\n"
+            "Token yangilanmadi — BM API (jadval/brutto) ishlamay qolishi mumkin.\n"
+            f"Sabab: {exc}"
+        )
+        for chat in targets[:5]:
+            send_message(text, chat_id=chat)
+    except Exception:  # noqa: BLE001 - ogohlantirish muvaffaqiyatsizligi asosiy natijani o'zgartirmaydi
+        pass
+
+
 def cmd_list_reports(args) -> int:
     for name, spec in sorted(REPORTS.items()):
         excel = " (excel)" if spec.get("excel") else ""

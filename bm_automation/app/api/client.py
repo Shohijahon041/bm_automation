@@ -304,6 +304,51 @@ class BMClient:
         """Token amal qilishini tekshiradi; 401 bo'lsa refresh/relogin qiladi."""
         return self.request("GET", f"{USER_MGMT}/user-profile/account-authorities", timeout=60)
 
+    def keepalive(self) -> str:
+        """Tokenlarni tirik saqlaydi (12 soatlik keep-alive buyrug'i uchun).
+
+        Refresh tokenni rotatsiya qiladi — bu BM'ga so'rov yuboradi va
+        refresh tokenning harakatsizlik muddatini yangilaydi (uzoq sukunatdan
+        keyin 401/403 bo'lib qolishining oldini oladi). Refresh ishlamasa
+        to'liq qayta login (password -> OneID brauzer) ishlatiladi; so'ng
+        yengil autentifikatsiyalangan so'rov bilan token haqiqatan
+        ishlayotgani tekshiriladi.
+
+        Qaytaradi: "refreshed" — refresh orqali yangilandi,
+        "relogin" — to'liq qayta login bajarildi.
+        """
+        data = load_tokens(path=self.token_path)
+        access = (data or {}).get("access_token")
+        refresh = (data or {}).get("refresh_token")
+        if not refresh:
+            self.logger.warning("keepalive: refresh token yo'q — to'liq login")
+            self.login(force=True)
+            self.account_authorities()
+            return "relogin"
+        self.access_token = access
+        self.refresh_token = refresh
+        if access:
+            self.session.headers["Authorization"] = f"Bearer {access}"
+        result = "refreshed"
+        try:
+            self._refresh()
+        except BMAuthError as exc:
+            self.logger.warning("keepalive: refresh ishlamadi (%s) — to'liq qayta login", exc)
+            self.login(force=True)
+            result = "relogin"
+        try:
+            self.account_authorities()
+        except BMApiError as exc:
+            # Yangi refreshga qaramay 403 bo'lsa — token eskirgan emas, balki
+            # sessiya darajasidagi to'siq; to'liq login bilan bir marta urinamiz.
+            if result == "refreshed" and getattr(exc, "status", 0) == 403:
+                self.logger.warning("keepalive: tekshiruvda 403 — to'liq qayta login")
+                self.login(force=True)
+                self.account_authorities()
+                return "relogin"
+            raise
+        return result
+
     def _refresh(self) -> None:
         """Refresh token orqali yangi access token oladi va saqlaydi.
 

@@ -101,6 +101,14 @@
   dialog input{width:100%}
   dialog .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
   .err{color:var(--red);font-size:12px;margin-top:6px;display:none}
+  .spd-legend{display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:11px;color:var(--muted);padding:8px 14px;border-bottom:1px solid var(--line)}
+  .spd-legend i{display:inline-block;width:16px;height:4px;border-radius:2px;margin-right:5px;vertical-align:middle}
+  .pct{padding:1px 8px;border-radius:99px;font-weight:700;font-size:11px;white-space:nowrap}
+  .pct.ok{color:var(--green);border:1px solid rgba(52,211,153,.4)}
+  .pct.warn{color:var(--amber);border:1px solid rgba(240,169,62,.4)}
+  .pct.bad{color:var(--red);border:1px solid rgba(229,72,77,.4)}
+  .stops-head{display:flex;align-items:center;gap:8px;margin:12px 0 6px}
+  .stops-head b{font-size:12.5px}
 </style>
 </head>
 <body>
@@ -134,17 +142,26 @@
           <button class="btn" onclick="openBind()">+ IMEI qo'shish / bog'lash</button>
         </div>
       </div>
-      <div class="card" style="grid-column:1/-1">
+      <div class="card" style="grid-column:1/-1" id="traj-card">
         <h3>Traektoriya <span class="hint">qurilmani bosib tanlang, davrni ko'rsating</span></h3>
         <div style="padding:13px">
           <div class="traj-head">
-            <label class="f">Boshlanish <input type="date" id="traj-from"></label>
-            <label class="f">Tugash <input type="date" id="traj-to"></label>
+            <label class="f">Boshlanish <input type="datetime-local" id="traj-from"></label>
+            <label class="f">Tugash <input type="datetime-local" id="traj-to"></label>
             <button class="btn primary" onclick="loadTraj()">Ko'rsat</button>
             <button class="btn" onclick="clearTraj()">Tozalash</button>
+            <button class="btn" onclick="exportTrajCsv()">⬇ CSV</button>
           </div>
           <div class="traj-stats" id="traj-stats" style="display:none"></div>
+          <div class="spd-legend">
+            <span>Tezlik:</span>
+            <span><i style="background:#3fb6a8"></i>&le;40 km/h</span>
+            <span><i style="background:#f0a93e"></i>41–70 km/h</span>
+            <span><i style="background:#e5484d"></i>&ge;71 km/h</span>
+            <span style="margin-left:auto">To'xtash: <i style="background:#f0a93e;width:10px;height:10px;border-radius:50%"></i></span>
+          </div>
           <div id="traj-map" style="height:420px;border-radius:12px"></div>
+          <div id="traj-stops" style="display:none"></div>
           <div class="err" id="traj-err"></div>
         </div>
       </div>
@@ -175,8 +192,23 @@
             <label class="f">Dan <input type="date" id="daily-from"></label>
             <label class="f">Gacha <input type="date" id="daily-to"></label>
             <button class="btn primary" onclick="loadDaily()">Hisoblash</button>
+            <button class="btn" onclick="exportDailyCsv()">⬇ CSV</button>
+            <button class="btn" onclick="sendDaily()">📨 Telegramga yuborish</button>
           </div>
           <div id="daily-body"></div>
+        </div>
+      </div>
+      <div class="card" style="grid-column:1/-1">
+        <h3>Qo'lda km nazorati <span class="hint">GPS kunlik km ↔ haydovchi kiritgan km (qo'lda qaydlar)</span></h3>
+        <div style="padding:12px">
+          <div class="traj-head">
+            <label class="f">Dan <input type="date" id="vm-from"></label>
+            <label class="f">Gacha <input type="date" id="vm-to"></label>
+            <button class="btn primary" onclick="loadVsManual()">Tekshirish</button>
+            <button class="btn" onclick="exportVsCsv()">⬇ CSV</button>
+          </div>
+          <div class="err" id="vm-err"></div>
+          <div id="vm-body"></div>
         </div>
       </div>
       <div class="note" style="grid-column:1/-1">
@@ -224,12 +256,13 @@
 var TOK = '';
 try { TOK = new URLSearchParams(location.search).get('token') || localStorage.getItem('bm-token') || ''; } catch (e) {}
 function authHeaders(withBody) {
-  var h = { 'Authorization': 'Bearer ' + TOK };
+  var h = {};
+  if (TOK) h['Authorization'] = 'Bearer ' + TOK;
   if (withBody) h['Content-Type'] = 'application/json';
   return h;
 }
 function request(method, p, body) {
-  return fetch(p, { method: method, headers: authHeaders(!!body), body: body ? JSON.stringify(body) : undefined })
+  return fetch(p, { method: method, headers: authHeaders(!!body), credentials: 'same-origin', body: body ? JSON.stringify(body) : undefined })
     .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || r.status)); }); });
 }
 var API = {
@@ -240,7 +273,7 @@ var API = {
 };
 
 /* ============ xarita ============ */
-var map, trajMap, markers = {}, cluster = null, trajLine = null, trajStart = null, trajEnd = null;
+var map, trajMap, markers = {}, cluster = null, trajStart = null, trajEnd = null;
 var didFit = false; /* fitBounds faqat birinchi yuklashda — refresh foydalanuvchi view'ini buzmasin */
 function initMaps() {
   if (map) return;
@@ -336,43 +369,84 @@ function renderMap() {
 }
 
 /* ============ traektoriya ============ */
-var curImei = '';
+var curImei = '', curPts = [], curStops = [], trajSegs = [], stopMarkers = [];
+var SEG_COLORS = { slow: '#3fb6a8', mid: '#f0a93e', fast: '#e5484d' };
 function openTraj(imei) {
   curImei = imei;
-  document.getElementById('traj-from').value = todayStr();
-  document.getElementById('traj-to').value = todayStr();
+  document.getElementById('traj-from').value = dtToday(0);
+  document.getElementById('traj-to').value = dtToday(1);
   var card = document.getElementById('traj-card');
   if (card) card.scrollIntoView({ behavior: 'smooth' });
   loadTraj();
 }
 function todayStr() { var d = new Date(); return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()); }
+/* dtToday(0) = bugun 00:00, dtToday(1) = bugun 23:59 (datetime-local formatida) */
+function dtToday(edge) { return todayStr() + (edge ? 'T23:59' : 'T00:00'); }
+/* datetime-local qiymati → Toshkent (+05:00) offsetli ISO */
+function iso5(v) { if (!v) return ''; return (v.length === 16 ? v + ':00' : v) + '+05:00'; }
 function p2(n) { return (n < 10 ? '0' : '') + n; }
+function ymd(off) {
+  var d = new Date(); d.setDate(d.getDate() + off);
+  return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate());
+}
 function loadTraj() {
   if (!curImei) { trajErr('Avval qurilmani tanlang'); return; }
-  var f = document.getElementById('traj-from').value || todayStr();
-  var t = document.getElementById('traj-to').value || f;
-  API.get('/api/gps/positions?imei=' + encodeURIComponent(curImei) + '&from=' + f + '&to=' + t + '&limit=20000')
-    .then(function (r) { drawTraj(r.positions || []); })
-    .catch(function (e) { trajErr(e.message); });
+  var f = document.getElementById('traj-from').value || dtToday(0);
+  var t = document.getElementById('traj-to').value || dtToday(1);
+  var q = 'imei=' + encodeURIComponent(curImei) +
+    '&from=' + encodeURIComponent(iso5(f)) + '&to=' + encodeURIComponent(iso5(t));
+  trajErr('');
+  Promise.all([
+    API.get('/api/gps/positions?' + q + '&limit=20000'),
+    API.get('/api/gps/stops?' + q).catch(function () { return { stops: [] }; })
+  ]).then(function (rs) {
+    drawTraj(rs[0].positions || [], rs[1].stops || []);
+  }).catch(function (e) { trajErr(e.message); });
 }
 function clearTraj() {
-  if (trajLine) { trajMap.removeLayer(trajLine); trajLine = null; }
+  trajSegs.forEach(function (l) { trajMap.removeLayer(l); });
+  trajSegs = [];
   if (trajStart) { trajMap.removeLayer(trajStart); trajStart = null; }
   if (trajEnd) { trajMap.removeLayer(trajEnd); trajEnd = null; }
+  stopMarkers.forEach(function (m) { trajMap.removeLayer(m); });
+  stopMarkers = [];
   document.getElementById('traj-stats').style.display = 'none';
+  var st = document.getElementById('traj-stops');
+  st.style.display = 'none'; st.innerHTML = '';
   trajErr('');
 }
-function drawTraj(pts) {
+function drawTraj(pts, stops) {
   initTrajMap();
   clearTraj();
   if (!pts.length) { trajErr("Bu davrda pozitsiya yo'q"); return; }
-  var lls = pts.map(function (p) { return [p.lat, p.lng]; });
-  trajLine = L.polyline(lls, { color: '#3fb6a8', weight: 3, opacity: .9 }).addTo(trajMap);
-  trajStart = L.circleMarker(lls[0], { radius: 7, color: '#34d399', fillOpacity: 1 }).bindTooltip('Boshlanish').addTo(trajMap);
-  trajEnd = L.circleMarker(lls[lls.length - 1], { radius: 7, color: '#e5484d', fillOpacity: 1 }).bindTooltip('Tugash').addTo(trajMap);
-  trajMap.fitBounds(trajLine.getBounds().pad(.2));
+  curPts = pts;
+  /* Tezlikka qarab bo'yalgan segmentlar (<=40 yashil, 41-70 sariq, >=71 qizil) */
+  var segs = [], cur = null;
+  for (var i = 1; i < pts.length; i++) {
+    var sp = pts[i].speed || 0;
+    var cls = sp >= 71 ? 'fast' : (sp >= 41 ? 'mid' : 'slow');
+    if (!cur || cur.cls !== cls) {
+      cur = { cls: cls, lls: [[pts[i - 1].lat, pts[i - 1].lng], [pts[i].lat, pts[i].lng]] };
+      segs.push(cur);
+    } else {
+      cur.lls.push([pts[i].lat, pts[i].lng]);
+    }
+  }
+  segs.forEach(function (s) {
+    trajSegs.push(L.polyline(s.lls, { color: SEG_COLORS[s.cls], weight: 4, opacity: .85 }).addTo(trajMap));
+  });
+  trajStart = L.circleMarker([pts[0].lat, pts[0].lng], { radius: 7, color: '#34d399', fillOpacity: 1 }).bindTooltip('Boshlanish').addTo(trajMap);
+  var last = pts[pts.length - 1];
+  trajEnd = L.circleMarker([last.lat, last.lng], { radius: 7, color: '#e5484d', fillOpacity: 1 }).bindTooltip('Tugash').addTo(trajMap);
+  /* To'xtashlar — sariq markerlar */
+  curStops = stops || [];
+  curStops.forEach(function (st) {
+    stopMarkers.push(L.circleMarker([st.lat, st.lng], { radius: 6, color: '#0b0f19', weight: 2, fillColor: '#f0a93e', fillOpacity: 1 })
+      .bindTooltip(stopLabel(st), { direction: 'top' }).addTo(trajMap));
+  });
+  trajMap.fitBounds(L.latLngBounds(pts.map(function (p) { return [p.lat, p.lng]; })).pad(.2));
   var dist = 0;
-  for (var i = 1; i < pts.length; i++) dist += haversine(pts[i - 1], pts[i]);
+  for (var j = 1; j < pts.length; j++) dist += haversine(pts[j - 1], pts[j]);
   var sp = pts.map(function (p) { return p.speed || 0; });
   var mx = Math.max.apply(null, sp);
   var avg = sp.reduce(function (a, b) { return a + b; }, 0) / sp.length;
@@ -382,6 +456,46 @@ function drawTraj(pts) {
     statCard(avg.toFixed(0) + ' km/h', 'Ort. tezlik', '') +
     statCard(pts.length, 'Nuqtalar', '');
   document.getElementById('traj-stats').style.display = 'grid';
+  renderStops(curStops);
+}
+function hm(iso) {
+  var d = new Date(iso);
+  return p2(d.getHours()) + ':' + p2(d.getMinutes());
+}
+function mdhm(iso) {
+  var d = new Date(iso);
+  return p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes());
+}
+function durHm(sec) {
+  var m = Math.round(sec / 60);
+  if (m < 60) return m + ' daq';
+  var h = Math.floor(m / 60), r = m % 60;
+  return h + ' soat' + (r ? ' ' + r + ' daq' : '');
+}
+function stopLabel(st) {
+  return "To'xtash " + hm(st.start) + '–' + hm(st.end) + ' (' + durHm(st.duration_s) + ')' +
+    (st.fence ? ' — ' + st.fence : '');
+}
+function focusStop(i) {
+  var st = curStops[i];
+  if (!st || !trajMap) return;
+  trajMap.setView([st.lat, st.lng], 17);
+  if (stopMarkers[i]) stopMarkers[i].openTooltip();
+}
+function renderStops(stops) {
+  var el = document.getElementById('traj-stops');
+  if (!stops.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  var rows = stops.map(function (s, i) {
+    return '<tr style="cursor:pointer" onclick="focusStop(' + i + ')"><td>' + esc(mdhm(s.start)) + '</td>' +
+      '<td>' + durHm(s.duration_s) + '</td>' +
+      '<td>' + (s.fence ? '<b>' + esc(s.fence) + '</b>' : s.lat.toFixed(5) + ', ' + s.lng.toFixed(5)) + '</td>' +
+      '<td>' + s.points + '</td>' +
+      '<td>' + (s.ignition_off ? "o'chgan" : 'ishlagan') + '</td></tr>';
+  }).join('');
+  el.style.display = 'block';
+  el.innerHTML = '<div class="stops-head"><b>To\'xtashlar · ' + stops.length + ' ta</b>' +
+    '<button class="btn" style="margin-left:auto" onclick="exportStopsCsv()">⬇ CSV</button></div>' +
+    '<div style="max-height:240px;overflow:auto"><table class="mini"><tr><th>Boshlanish</th><th>Davomiylik</th><th>Joy</th><th>Nuqtalar</th><th>Dvigatel</th></tr>' + rows + '</table></div>';
 }
 function haversine(a, b) {
   var R = 6371000, dLat = (b[0] - a[0]) * Math.PI / 180, dLng = (b[1] - a[1]) * Math.PI / 180;
@@ -390,6 +504,37 @@ function haversine(a, b) {
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 function trajErr(m) { var e = document.getElementById('traj-err'); e.textContent = m || ''; e.style.display = m ? 'block' : 'none'; }
+
+/* ============ CSV eksport ============ */
+function csvDownload(name, headers, rows) {
+  var lines = [headers.join(',')].concat(rows.map(function (r) {
+    return r.map(function (v) {
+      v = String(v == null ? '' : v);
+      return /[",\n;]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+    }).join(',');
+  }));
+  var blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+}
+function exportTrajCsv() {
+  if (!curPts.length) { trajErr('Avval traektoriyani yuklang'); return; }
+  var f = (document.getElementById('traj-from').value || '').replace(/[T:\-]/g, '');
+  csvDownload('traj_' + curImei + '_' + f + '.csv',
+    ['ts', 'lat', 'lng', 'speed', 'satellites', 'ignition'],
+    curPts.map(function (p) { return [p.ts, p.lat, p.lng, p.speed || 0, p.satellites || 0, p.ignition || 0]; }));
+}
+function exportStopsCsv() {
+  if (!curStops.length) return;
+  csvDownload('stops_' + curImei + '.csv',
+    ['start', 'end', 'duration_s', 'lat', 'lng', 'fence', 'points', 'ignition_off'],
+    curStops.map(function (s) {
+      return [s.start, s.end, s.duration_s, s.lat, s.lng, s.fence || '', s.points, s.ignition_off ? 1 : 0];
+    }));
+}
 
 /* ============ video kameralar ============ */
 var cams = [];
@@ -562,11 +707,13 @@ function loadAlerts() {
     }).join('') : '<div class="empty">Ogohlantirishlar yo\'q — hammasi tartibda.</div>';
   }).catch(function () {});
 }
+var curDaily = [], vmRows = [];
 function loadDaily() {
   var f = document.getElementById('daily-from').value || todayStr();
   var t = document.getElementById('daily-to').value || f;
   API.get('/api/gps/daily?from=' + f + '&to=' + t).then(function (d) {
     var rows = d.daily || [];
+    curDaily = rows;
     var el = document.getElementById('daily-body');
     if (!rows.length) { el.innerHTML = '<div class="empty">Bu davrda ma\'lumot yo\'q</div>'; return; }
     el.innerHTML = '<table class="mini"><tr><th>Sana</th><th>Qurilma</th><th>Nuqtalar</th><th>Masofa</th><th>Maks</th><th>Ort.</th><th>Harakat</th></tr>' +
@@ -576,6 +723,71 @@ function loadDaily() {
           '<td>' + (r.avg_speed || 0).toFixed(0) + ' km/h</td><td>' + r.moving_points + ' nuqta</td></tr>';
       }).join('') + '</table>';
   }).catch(function (e) { document.getElementById('daily-body').innerHTML = '<div class="empty">Xato: ' + esc(e.message) + '</div>'; });
+}
+function exportDailyCsv() {
+  if (!curDaily.length) return;
+  csvDownload('gps_kunlik.csv',
+    ['sana', 'imei', 'nuqtalar', 'masofa_km', 'maks_kmh', 'ort_kmh', 'harakat_nuqtalari'],
+    curDaily.map(function (r) {
+      return [r.day, r.imei, r.points, (r.distance_m / 1000).toFixed(1), r.max_speed, Math.round(r.avg_speed || 0), r.moving_points];
+    }));
+}
+function sendDaily() {
+  var day = document.getElementById('daily-from').value || '';
+  API.post('/api/gps/daily/send', { day: day }).then(function (r) {
+    alert(r.ok ? "Hisobot Telegramga yuborildi" : "Yuborilmadi (bot sozlanmagan bo'lishi mumkin)");
+  }).catch(function (e) { alert('Xato: ' + e.message); });
+}
+
+/* ============ qo'lda km nazorati ============ */
+function loadVsManual() {
+  var f = document.getElementById('vm-from').value || ymd(-7);
+  var t = document.getElementById('vm-to').value || ymd(-1);
+  var err = document.getElementById('vm-err'); err.style.display = 'none';
+  API.get('/api/gps/vs-manual?from=' + f + '&to=' + t).then(function (d) {
+    vmRows = d.rows || [];
+    renderVsManual();
+  }).catch(function (e) { err.textContent = e.message; err.style.display = 'block'; });
+}
+function vmNote(r) {
+  if (r.manual_km > 0 && r.gps_km <= 0.5) return "GPS yozuvi yo'q — qurilma o'chiqmi?";
+  if (r.gps_km > 0 && r.manual_km <= 0) return r.gps_km >= 20 ? "qo'lda qayd yo'q" : '';
+  return '';
+}
+function pctBadge(r) {
+  if (r.diff_pct == null) {
+    if (r.manual_km > 0) return '<span class="pct bad">GPS yo\'q</span>';
+    if (r.gps_km >= 20) return '<span class="pct warn">qayd yo\'q</span>';
+    return '<span class="muted">—</span>';
+  }
+  var p = r.diff_pct;
+  var cls = Math.abs(p) <= 10 ? 'ok' : (Math.abs(p) <= 25 ? 'warn' : 'bad');
+  return '<span class="pct ' + cls + '">' + (p > 0 ? '+' : '') + p.toFixed(0) + '%</span>';
+}
+function renderVsManual() {
+  var el = document.getElementById('vm-body');
+  if (!vmRows.length) { el.innerHTML = '<div class="empty">Bu davrda ma\'lumot yo\'q (GPS yig\'ama va qo\'lda qaydlar topilmadi)</div>'; return; }
+  var tg = 0, tm = 0;
+  var rows = vmRows.map(function (r) {
+    tg += r.gps_km; tm += r.manual_km;
+    return '<tr><td>' + esc(r.day) + '</td><td><b>' + esc(r.plate || r.vehicle_id || r.imei) + '</b>' +
+      (r.plate && r.vehicle_id ? '<div class="dev-sub">' + esc(r.vehicle_id) + '</div>' : '') + '</td>' +
+      '<td>' + r.gps_km.toFixed(1) + '</td><td>' + r.manual_km.toFixed(1) + '</td>' +
+      '<td>' + (r.diff_km > 0 ? '+' : '') + r.diff_km.toFixed(1) + '</td>' +
+      '<td>' + pctBadge(r) + '</td><td class="muted">' + esc(vmNote(r)) + '</td></tr>';
+  }).join('');
+  el.innerHTML = '<div class="muted" style="font-size:12px;margin-bottom:8px">Jami: GPS <b>' + tg.toFixed(1) +
+    ' km</b> · qo\'lda <b>' + tm.toFixed(1) + ' km</b> · farq <b>' + ((tm - tg) > 0 ? '+' : '') + (tm - tg).toFixed(1) + ' km</b></div>' +
+    '<table class="mini"><tr><th>Sana</th><th>Avtobus</th><th>GPS km</th><th>Qo\'lda km</th><th>Farq</th><th>Farq %</th><th>Izoh</th></tr>' + rows + '</table>';
+}
+function exportVsCsv() {
+  if (!vmRows.length) return;
+  csvDownload('gps_nazorat_' + (document.getElementById('vm-from').value || '') + '.csv',
+    ['sana', 'avtobus', 'vehicle_id', 'gps_km', 'qolda_km', 'farq_km', 'farq_pct', 'izoh'],
+    vmRows.map(function (r) {
+      return [r.day, r.plate || '', r.vehicle_id, r.gps_km, r.manual_km, r.diff_km,
+        r.diff_pct == null ? '' : r.diff_pct, vmNote(r)];
+    }));
 }
 
 /* ============ yordamchi ============ */
@@ -600,14 +812,17 @@ function checkHealth() {
 showTab(tabFromHash());
 checkHealth();
 initMaps();
-document.getElementById('traj-from').value = todayStr();
-document.getElementById('traj-to').value = todayStr();
+document.getElementById('traj-from').value = dtToday(0);
+document.getElementById('traj-to').value = dtToday(1);
 document.getElementById('daily-from').value = todayStr();
 document.getElementById('daily-to').value = todayStr();
+document.getElementById('vm-from').value = ymd(-7);
+document.getElementById('vm-to').value = ymd(-1);
 refresh();
 refreshCams();
 loadFences();
 loadAlerts();
+loadVsManual();
 initSearch();
 setInterval(refresh, 10000);
 setInterval(refreshCams, 30000);

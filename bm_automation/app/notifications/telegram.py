@@ -21,25 +21,28 @@ _MAX_RETRIES = 3
 _RETRY_DELAY_BASE = 2
 
 
-def telegram_call(method: str, payload: dict | None = None, files=None):
+def telegram_call(method: str, payload: dict | None = None, files=None,
+                  timeout: int = 120, retries: int = _MAX_RETRIES):
     """Telegram Bot API'ga bevosita qo'ng'iroq. result ni qaytaradi.
 
     429 (rate limit) va tarmoq xatolari uchun avtomatik qayta urinadi.
+    ``timeout``/``retries`` — sekin yoki muvaffaqiyatsiz chaqiriqlar uchun
+    (masalan, dashboard'dagi rahm yuklash qisqa timeout bilan chaqiriladi).
     """
     s = telegram_settings()
     if not s["token"]:
         raise ValueError("TG_BOT_TOKEN .env'da ko'rsatilmagan")
     url = API.format(token=s["token"], method=method)
     last_exc: Exception | None = None
-    for attempt in range(_MAX_RETRIES):
+    for attempt in range(max(1, retries)):
         try:
             if files:
                 body = dict(payload or {})
                 if "reply_markup" in body:
                     body["reply_markup"] = json.dumps(body["reply_markup"])
-                resp = requests.post(url, data=body, files=files, timeout=120)
+                resp = requests.post(url, data=body, files=files, timeout=timeout)
             else:
-                resp = requests.post(url, json=payload or {}, timeout=120)
+                resp = requests.post(url, json=payload or {}, timeout=timeout)
             if resp.status_code == 429:
                 retry_after = (resp.json().get("parameters", {})
                                .get("retry_after", _RETRY_DELAY_BASE * (attempt + 1)))
@@ -76,14 +79,15 @@ def get_profile_photo_url(chat_id: int, photo_file_id: str = "") -> str | None:
     try:
         info = telegram_call("getUserProfilePhotos", {
             "user_id": chat_id, "offset": 0, "limit": 1,
-        })
+        }, timeout=6, retries=1)
         photos = (info or {}).get("photos") or []
         if not photos:
             return None
         file_id = photos[0][-1].get("file_id")
         if not file_id:
             return None
-        file_info = telegram_call("getFile", {"file_id": file_id})
+        file_info = telegram_call("getFile", {"file_id": file_id},
+                                  timeout=6, retries=1)
         file_path = file_info.get("file_path")
         if not file_path:
             return None

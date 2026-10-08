@@ -12,7 +12,8 @@ import pytest
 
 from bm_automation.app.db.storage import storage_for
 from bm_automation.app.gps import api as gps_api
-from bm_automation.app.gps import relay, storage as gstorage
+from bm_automation.app.gps import relay, report as greport
+from bm_automation.app.gps import storage as gstorage
 from bm_automation.app.gps.api import GpsHandler
 from tests.sqlite_backend import SQLiteDatabase
 
@@ -233,3 +234,139 @@ def test_admin_write_allowed(env, monkeypatch):
                             scope=None)
     assert status == 200 and data.get("ok") is True
     assert calls == [("reg", "999"), ("bind", "999", "v9", "X")]
+
+
+# --------------------------------------------------------------- token
+
+def _patch_session(monkeypatch, valid_tok="sess-tok"):
+    monkeypatch.setattr(
+        "bm_automation.app.dashboard.deps.session_user",
+        lambda tok: _SCOPE if tok == valid_tok else None)
+
+
+def test_master_bearer_and_query_token(env, monkeypatch):
+    status, _ = _request(monkeypatch, "/api/gps/devices",
+                         headers=_auth(), scope=None)
+    assert status == 200
+    status, _ = _request(monkeypatch, "/api/gps/devices?token=master",
+                         headers={}, scope=None)
+    assert status == 200
+
+
+def test_empty_bearer_with_session_cookie(env, monkeypatch):
+    """Dashboard `bmFetch` bo'sh `Bearer ` yuboradi — sessiya cookie ishlashi kerak."""
+    _patch_session(monkeypatch)
+    status, data = _request(
+        monkeypatch, "/api/gps/devices",
+        headers={"Authorization": "Bearer ", "Cookie": "bm_session=sess-tok"},
+        scope=_SCOPE)
+    assert status == 200
+    assert [d["imei"] for d in data["devices"]] == ["111"]
+
+
+def test_empty_bearer_does_not_block_query_token(env, monkeypatch):
+    """Bo'sh Bearer ?token= ni bloklamasligi kerak (eski kod erta False qaytarardi)."""
+    _patch_session(monkeypatch, valid_tok="boshqa")
+    status, _ = _request(
+        monkeypatch, "/api/gps/devices?token=master",
+        headers={"Authorization": "Bearer "}, scope=None)
+    assert status == 200
+
+
+def test_invalid_session_rejected(env, monkeypatch):
+    _patch_session(monkeypatch)
+    status, data = _request(
+        monkeypatch, "/api/gps/devices",
+        headers={"Authorization": "Bearer ", "Cookie": "bm_session=bad"},
+        scope=None)
+    assert status == 401
+    assert "Bearer" in data["error"]
+
+
+def test_no_auth_rejected(env, monkeypatch):
+    _patch_session(monkeypatch, valid_tok="boshqa")
+    status, _ = _request(monkeypatch, "/api/gps/devices", headers={},
+                         scope=None)
+    assert status == 401
+
+# ------------------------------------------------- stops / vs-manual / send
+
+def test_stops_scoped_and_served(env, monkeypatch):
+    """To'xtashlar endpointi qamrovga rioya qiladi, natijaga plate qo'shiladi."""
+    calls = []
+
+    def fake_stops_for(imei, date_from="", date_to="", min_s=None,
+                       radius_m=None):
+        calls.append(imei)
+        return [{"start": "2026-10-07T07:00:00+00:00",
+                 "end": "2026-10-07T07:20:00+00:00", "duration_s": 1200,
+                 "lat": 41.3, "lng": 69.2, "points": 5, "max_speed": 0,
+                 "ignition_off": True}]
+
+    monkeypatch.setattr(gps_api.stops, "stops_for", fake_stops_for)
+    # Boshqa kompaniya qurilmasi — hech narsa chaqirilmaydi (fail-closed).
+    status, data = _request(monkeypatch, "/api/gps/stops?imei=222",
+                            headers=_auth(), scope=_SCOPE)
+    assert status == 200 and data["count"] == 0 and calls == []
+    # O'z qurilmasi — natija keladi va kontekst maydonlari qo'shiladi.
+    status, data = _request(monkeypatch, "/api/gps/stops?imei=111",
+                            headers=_auth(), scope=_SCOPE)
+    assert status == 200 and data["count"] == 1
+    assert calls == ["111"]
+    s = data["stops"][0]
+    assert s["imei"] == "111" and s["vehicle_id"] == "v1"
+    assert s["duration_s"] == 1200
+    # Admin (sessiyasiz) boshqa qurilmani ham ko'radi.
+    status, data = _request(monkeypatch, "/api/gps/stops?imei=222",
+                            headers=_auth(), scope=None)
+    assert status == 200 and data["count"] == 1
+    assert calls[-1] == "222"
+
+
+def test_vs_manual_scope_and_defaults(env, monkeypatch):
+    seen = {}
+
+    def fake_compare(date_from, date_to, scope_vehicles=None):
+        seen["args"] = (date_from, date_to, scope_vehicles)
+        return [{"day": date_from, "vehicle_id": "v1", "gps_km": 100.0,
+                 "manual_km": 120.0, "diff_km": 20.0, "diff_pct": 20.0}]
+
+    monkeypatch.setattr(gps_api.compare, "daily_comparison", fake_compare)
+    status, data = _request(
+        monkeypatch, "/api/gps/vs-manual?from=2026-10-01&to=2026-10-07",
+        headers=_auth(), scope=_SCOPE)
+    assert status == 200 and data["count"] == 1
+    assert seen["args"] == ("2026-10-01", "2026-10-07", {"v1"})
+    # ADMIN: qamrovsiz (None).
+    _request(monkeypatch, "/api/gps/vs-manual?from=2026-10-01&to=2026-10-07",
+             headers=_auth(), scope=None)
+    assert seen["args"] == ("2026-10-01", "2026-10-07", None)
+    # Default: to = bugun, from = 6 kun oldin.
+    status, data = _request(monkeypatch, "/api/gps/vs-manual",
+                            headers=_auth(), scope=None)
+    assert status == 200 and data["from"] <= data["to"]
+
+
+def test_daily_send_admin_only(env, monkeypatch):
+    """Kunlik hisobotni qo'lda yuborish faqat ADMIN uchun."""
+    from datetime import date as _date
+
+    calls = []
+    monkeypatch.setattr(greport, "send_daily_report",
+                        lambda day=None: (calls.append(day), True)[1])
+    # Non-admin — 403, chaqirilmaydi.
+    status, _ = _request(monkeypatch, "/api/gps/daily/send", method="POST",
+                         headers=_auth(), scope=_SCOPE,
+                         body=b'{"day":"2026-10-06"}')
+    assert status == 403 and calls == []
+    # ADMIN — yuboriladi, sana parse qilinadi.
+    status, data = _request(monkeypatch, "/api/gps/daily/send", method="POST",
+                            headers=_auth(), scope=None,
+                            body=b'{"day":"2026-10-06"}')
+    assert status == 200 and data["ok"] is True
+    assert calls == [_date(2026, 10, 6)]
+    # Noto'g'ri sana — 400.
+    status, data = _request(monkeypatch, "/api/gps/daily/send", method="POST",
+                            headers=_auth(), scope=None,
+                            body=b'{"day":"xx"}')
+    assert status == 400 and calls == [_date(2026, 10, 6)]

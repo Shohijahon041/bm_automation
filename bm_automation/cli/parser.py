@@ -20,6 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
         cmd_gross_route,
         cmd_gross_trip,
         cmd_insights,
+        cmd_keepalive,
         cmd_list_reports,
         cmd_login,
         cmd_login_browser,
@@ -54,6 +55,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_loginb = sub.add_parser("login-browser", help="OneID orqali brauzer login")
     p_loginb.set_defaults(func=cmd_login_browser)
+
+    p_ka = sub.add_parser("keepalive", help="Tokenlarni tirik saqlash (refresh + tekshiruv)")
+    p_ka.set_defaults(func=cmd_keepalive)
     p_list = sub.add_parser("list-reports", help="Mavjud hisobotlarni ko'rsatish")
     p_list.set_defaults(func=cmd_list_reports)
 

@@ -12,13 +12,13 @@ import os
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from pathlib import Path
 
-from . import config, listener, relay, storage
+from . import compare, config, listener, relay, stops, storage
 
 log = logging.getLogger(__name__)
 
@@ -29,28 +29,57 @@ _last_purge = {"at": 0.0}
 UI_FILE = Path(__file__).with_name("gps_ui.html")
 
 
+def _int_or(qs: dict, key: str, default=None):
+    """Query parametr → musbat int yoki default (bo'sh/noto'g'ri bo'lsa)."""
+    try:
+        v = int((qs.get(key) or [""])[0] or 0)
+        return v if v > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
 def _check_token(handler: BaseHTTPRequestHandler, qs: dict | None = None) -> bool:
     """DASHBOARD_TOKEN sozlangan bo'lsa tekshiradi (dashboard bilan bir xil).
 
     Qabul qilinadigan usullar:
       1) Authorization: Bearer <token>
-      2) bm_token cookie (dashboard bilan umumiy sessiya)
+      2) bm_token cookie (dashboard master token)
       3) ?token=<token> query parametri (sahifa linklari / <video> tegi uchun)
+      4) bm_session cookie — dashboard foydalanuvchi sessiyasi (ko'p korxonali
+         rejim: qamrov _company_vehicles orqali kompaniya bilan cheklanadi).
+
+    Bo'sh yoki noto'g'ri Bearer boshqa usullarni bloklamaydi: dashboard
+    `bmFetch` har doim `Authorization: Bearer <token>` yuboradi (token
+    bo'lmasa bo'sh) — shuning uchun bu yerda erta `return False` qilinmaydi.
     """
     if not config.GPS_API_TOKEN:
         return True
-    auth = handler.headers.get("Authorization") or ""
-    if auth.startswith("Bearer "):
-        return auth[7:].strip() == config.GPS_API_TOKEN
+    want = config.GPS_API_TOKEN
+    auth = (handler.headers.get("Authorization") or "").strip()
+    if auth[:7].lower() == "bearer " and auth[7:].strip() == want:
+        return True
     for part in (handler.headers.get("Cookie") or "").split(";"):
         kv = part.strip().split("=", 1)
-        if len(kv) == 2 and kv[0].strip() == "bm_token":
-            return kv[1].strip() == config.GPS_API_TOKEN
+        if len(kv) == 2 and kv[0].strip() == "bm_token" and kv[1].strip() == want:
+            return True
     if qs:
         qtok = (qs.get("token") or [""])[0].strip()
-        if qtok and qtok == config.GPS_API_TOKEN:
+        if qtok and qtok == want:
             return True
-    return False
+    return _valid_session(handler)
+
+
+def _valid_session(handler: BaseHTTPRequestHandler) -> bool:
+    """Dashboard sessiyasi (bm_session) haqiqiy bo'lsa True."""
+    token = _session_cookie(handler)
+    if not token:
+        return False
+    from ..dashboard.deps import session_user
+    try:
+        return bool(session_user(token))
+    except Exception:  # noqa: BLE001
+        log.exception("GPS: sessiya tekshiruvi xatosi")
+        return False
 
 
 def _session_cookie(handler: BaseHTTPRequestHandler) -> str:
@@ -352,6 +381,65 @@ class GpsHandler(BaseHTTPRequestHandler):
                     daily = [d for d in daily
                              if str(d.get("imei") or "") in imes]
                 self._json({"ok": True, "count": len(daily), "daily": daily})
+            elif path == "/api/gps/stops":
+                # To'xtashlar: imei yoki vehicle_id yoki qamrovdagi barcha
+                # qurilmalar (ko'pi bilan 20 ta) uchun aniqlanadi.
+                imei = (qs.get("imei") or [""])[0].strip()
+                vehicle = (qs.get("vehicle_id") or [""])[0].strip()
+                date_from = (qs.get("from") or [""])[0].strip()
+                date_to = (qs.get("to") or [""])[0].strip()
+                min_s = _int_or(qs, "min_s")
+                radius = _int_or(qs, "radius")
+                dev_scope = self._only_vehicles(storage.list_devices(),
+                                                vehicles)
+                if imei:
+                    targets = [d for d in dev_scope
+                               if str(d.get("imei")) == imei]
+                elif vehicle:
+                    targets = [d for d in dev_scope
+                               if str(d.get("vehicle_id")) == vehicle]
+                else:
+                    targets = dev_scope[:20]
+                result = []
+                for dv in targets:
+                    im = str(dv.get("imei") or "")
+                    if not im:
+                        continue
+                    try:
+                        found = stops.stops_for(
+                            im, date_from=date_from, date_to=date_to,
+                            min_s=min_s, radius_m=radius,
+                        )
+                    except Exception:  # noqa: BLE001
+                        log.exception("stops: %s uchun xato", im)
+                        continue
+                    for s in found:
+                        s["imei"] = im
+                        s["vehicle_id"] = str(dv.get("vehicle_id") or "")
+                        s["plate"] = str(
+                            dv.get("plate_number") or dv.get("name") or "")
+                        result.append(s)
+                result.sort(key=lambda s: str(s.get("start") or ""))
+                self._json({"ok": True, "count": len(result),
+                            "stops": result[:2000]})
+            elif path == "/api/gps/vs-manual":
+                # GPS kunlik km ↔ qo'lda kiritilgan km (driver_work_logs)
+                date_to = (qs.get("to") or [""])[0].strip()
+                date_from = (qs.get("from") or [""])[0].strip()
+                if not date_to:
+                    date_to = datetime.now(timezone.utc).date().isoformat()
+                if not date_from:
+                    try:
+                        date_from = (
+                            datetime.fromisoformat(date_to).date()
+                            - timedelta(days=6)
+                        ).isoformat()
+                    except ValueError:
+                        date_from = date_to
+                rows = compare.daily_comparison(
+                    date_from, date_to, scope_vehicles=vehicles)
+                self._json({"ok": True, "count": len(rows),
+                            "from": date_from, "to": date_to, "rows": rows})
             elif path.startswith("/hls/"):
                 fname = path[len("/hls/"):]
                 m = re.match(r"^cam(\d+)[.\-]", fname)
@@ -412,6 +500,20 @@ class GpsHandler(BaseHTTPRequestHandler):
                     except Exception:  # noqa: BLE001
                         log.exception("relay darhol ishga tushmadi (kamera %s)", cid)
                 self._json({"ok": True, "id": cid})
+            elif path == "/api/gps/daily/send":
+                # Kunlik hisobotni Telegram'ga qo'lda yuborish (admin).
+                raw_day = str(payload.get("day") or "").strip()
+                day = None
+                if raw_day:
+                    try:
+                        day = datetime.strptime(raw_day, "%Y-%m-%d").date()
+                    except ValueError:
+                        self._json({"ok": False, "error": "sana noto'g'ri"}, 400)
+                        return
+                from . import report as gps_report
+
+                ok = bool(gps_report.send_daily_report(day))
+                self._json({"ok": ok})
             elif path == "/api/gps/geofences":
                 try:
                     lat = float(payload.get("lat"))

@@ -1435,12 +1435,14 @@ body.auth-locked .auth-overlay { display: flex; }
     if (f.dataset.src) { try { f.contentWindow.postMessage('tab:gps', '*'); } catch(e) {} return; }
     var tok = '';
     try { tok = localStorage.getItem('bm-token') || ''; } catch(e) {}
-    var base = (location.hostname === 'localhost') ? 'http://127.0.0.1:8081' : ('http://' + location.hostname + ':8081');
-    var url = base + '/?token=' + encodeURIComponent(tok);
+    var _gpsLocal = (location.hostname === 'localhost' || location.hostname === '127.0.0.1');
+    var apiBase = _gpsLocal ? 'http://127.0.0.1:8081' : location.origin;
+    var uiBase = _gpsLocal ? 'http://127.0.0.1:8081' : (location.origin + '/gps');
+    var url = uiBase + '/' + (tok ? '?token=' + encodeURIComponent(tok) : '');
     f.dataset.src = url;
     f.src = url;
     var k = document.getElementById('gps-kicker');
-    fetch(base + '/api/gps/health').then(function(r){ return r.json(); }).then(function(h){
+    fetch(apiBase + '/api/gps/health').then(function(r){ return r.json(); }).then(function(h){
       if (k && h && h.ok) k.textContent = 'GPS servis: online — TCP ' + h.tcp_port;
       else if (k) k.textContent = 'GPS servis: javob bermadi';
     }).catch(function(){ if (k) k.textContent = 'GPS servis: O\u2018CHIQ (python -m bm_automation.app.gps)'; });
@@ -1460,8 +1462,9 @@ body.auth-locked .auth-overlay { display: flex; }
     if (f.dataset.src) { try { f.contentWindow.postMessage('tab:video', '*'); } catch(e) {} return; }
     var tok = '';
     try { tok = localStorage.getItem('bm-token') || ''; } catch(e) {}
-    var base = (location.hostname === 'localhost') ? 'http://127.0.0.1:8081' : ('http://' + location.hostname + ':8081');
-    var url = base + '/?token=' + encodeURIComponent(tok) + '#video';
+    var _vLocal = (location.hostname === 'localhost' || location.hostname === '127.0.0.1');
+    var uiBase = _vLocal ? 'http://127.0.0.1:8081' : (location.origin + '/gps');
+    var url = uiBase + '/' + (tok ? '?token=' + encodeURIComponent(tok) : '') + '#video';
     f.dataset.src = url;
     f.src = url;
   }
@@ -1645,7 +1648,11 @@ body.auth-locked .auth-overlay { display: flex; }
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
               <select id="log-source" class="input" style="width:auto;padding:6px 10px;font-size:12px">
                 <option value="bm">bm.log (asosiy)</option>
-                <option value="bot">Bot stdout/stderr</option>
+                <option value="gps">GPS (qurilmalar)</option>
+                <option value="bot">Bot (servis)</option>
+                <option value="dashboard">Dashboard (servis)</option>
+                <option value="nginx">Nginx (access + error)</option>
+                <option value="journal">Systemd journal</option>
                 <option value="watchdog">Watchdog</option>
                 <option value="all">Hammasi (birlashgan)</option>
               </select>
@@ -1663,7 +1670,7 @@ body.auth-locked .auth-overlay { display: flex; }
                 <option value="1000">1000</option>
               </select>
               <label style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px;cursor:pointer">
-                <input type="checkbox" id="log-auto" checked> Auto-refresh
+                <input type="checkbox" id="log-live" checked> Jonli (real-time)
               </label>
               <button class="button ghost" id="log-refresh-btn" style="font-size:12px">YANGILASH</button>
             </div>
@@ -1946,6 +1953,7 @@ body.auth-locked .auth-overlay { display: flex; }
 let route = "";              // tanlangan yo'nalish (firma)
 let chart = null;
 let _logTimer = null;
+let _logES = null, _logStats = null;
 
 const state = { routes: [], names: {}, plates: {}, dnames: {}, lastData: null,
   driverDirectory: null, currentDriver: null };
@@ -2088,7 +2096,11 @@ async function api(path, params) {
     const r = await bmFetch(url, {headers: bmAuthHeaders()});
     if (r.status === 401) expireAuth();
     _grun();
-    const d = await r.json();
+    const d = await r.json().catch(() => ({ok: false, error: "Server javobi o'qilmadi (" + r.status + ")"}));
+    if (!r.ok && d && typeof d === "object" && d.ok !== false) {
+      d.ok = false;
+      if (!d.error) d.error = "Server xatosi: " + r.status;
+    }
     _gdone();
     return d;
   } catch (e) { _gdone(); throw e; }
@@ -2522,7 +2534,7 @@ function renderRegistry(data) {
           <td><div class="avatar-row">${avatar(x)}<div><span class="driver-name">${esc(x.name)}</span><span class="driver-sub">ID: ${esc(x.driver_id)}</span></div></div></td>
           <td class="mono muted" style="font-size:11px">${esc(x.company || "-")}${x.route_name ? `<div class="driver-sub">${esc(x.route_name)}</div>` : ""}</td>
           <td>${driverStatus(x)}${x.notification_enabled ? '<span class="driver-sub">🔔 Telegram yoqilgan</span>' : ''}</td>
-          <td>${x.working_days} kun <span class="driver-sub">${x.trips} reys${x.manual_trips ? " (shundan " + x.manual_trips + " qo'lda)" : ""}</span></td>
+          <td>${x.working_days} kun <span class="driver-sub">${x.trips} reys</span></td>
           <td class="pct teal">${num(x.km)} km <span class="driver-sub">${x.automatic_km ? "API: " + num(x.automatic_km) : "qo'lda kiritiladi"}</span></td>
           <td>${money(x.km_rate)}<span class="driver-sub">1 km uchun</span></td>
           ${showMoney ? `<td><b class="pct teal">${money(x.net_pay)}</b><span class="driver-sub">brutto ${money(x.gross_pay)} · soliq ${money(x.tax)} · jarima ${money(x.fines)}</span></td>` : ""}
@@ -3304,7 +3316,8 @@ async function load() {
      asosiy ma'lumot kartalariga hech qanday ta'sir yo'q. */
   const _gpsKpi = { cache: null, at: 0 };
   function _gpsKpiBase() {
-    return (location.hostname === "localhost") ? "http://127.0.0.1:8081" : ("http://" + location.hostname + ":8081");
+    const h = location.hostname;
+    return (h === "localhost" || h === "127.0.0.1") ? "http://127.0.0.1:8081" : location.origin;
   }
   async function _fetchGpsKpi(force) {
     const now = Date.now();
@@ -3312,8 +3325,8 @@ async function load() {
     _gpsKpi.at = now;
     try {
       const [dev, rel] = await Promise.all([
-        fetch(_gpsKpiBase() + "/api/gps/devices", { credentials: "include", headers: { "Authorization": "Bearer " + bmToken() } }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch(_gpsKpiBase() + "/api/video/relay", { credentials: "include", headers: { "Authorization": "Bearer " + bmToken() } }).then(r => r.ok ? r.json() : null).catch(() => null),
+    fetch(_gpsKpiBase() + "/api/gps/devices", { credentials: "include", headers: bmAuthHeaders() }).then(r => r.ok ? r.json() : null).catch(() => null),
+    fetch(_gpsKpiBase() + "/api/video/relay", { credentials: "include", headers: bmAuthHeaders() }).then(r => r.ok ? r.json() : null).catch(() => null),
       ]);
       const devices = (dev && dev.devices) || [];
       _gpsKpi.cache = {
@@ -6449,65 +6462,121 @@ initAuth();
 
 /* ========================== LOG VIEWER ========================== */
 
+function _logEl(id) { return document.getElementById(id); }
+
+function _logParams() {
+  return {
+    level: _logEl("log-level").value,
+    search: _logEl("log-search").value,
+    count: _logEl("log-count").value,
+    source: _logEl("log-source") ? _logEl("log-source").value : "bm"
+  };
+}
+
+function _logReset() {
+  _logStats = { total: 0, err: 0, warn: 0, info: 0 };
+  _logEl("log-body").innerHTML = '<div style="padding:14px;color:var(--muted)">Yuklanmoqda...</div>';
+}
+
+function _logStatus() {
+  if (!_logStats) return;
+  _logEl("log-status").textContent =
+    "Jami: " + _logStats.total + " | Xato: " + _logStats.err +
+    " | Ogoh: " + _logStats.warn + " | " + new Date().toLocaleTimeString() +
+    (_logES ? " | JONLI" : "");
+}
+
+function _logLineHtml(line, search) {
+  let cls = "log-line";
+  if (line.includes("| ERROR")) { cls += " log-err"; _logStats.err++; }
+  else if (line.includes("| WARNING")) { cls += " log-warn"; _logStats.warn++; }
+  else if (line.includes("| DEBUG")) cls += " log-debug";
+  else _logStats.info++;
+  _logStats.total++;
+  let displayLine = escHtml(line);
+  if (search) {
+    const re = new RegExp('(' + search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+    displayLine = displayLine.replace(re, '<mark style="background:var(--amber);color:var(--ink);padding:0 2px;border-radius:2px">$1</mark>');
+  }
+  return '<div class="' + cls + '">' + displayLine + "</div>";
+}
+
+function _logAppend(lines, search) {
+  const body = _logEl("log-body");
+  let html = "";
+  for (const line of lines) html += _logLineHtml(line, search);
+  if (html) body.insertAdjacentHTML("beforeend", html);
+  const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 120;
+  if (nearBottom) body.scrollTop = body.scrollHeight;
+  _logStatus();
+}
+
+function _logUrl(base, p) {
+  let url = base + "?lines=" + p.count + "&source=" + encodeURIComponent(p.source);
+  if (p.level) url += "&level=" + encodeURIComponent(p.level);
+  if (p.search) url += "&q=" + encodeURIComponent(p.search);
+  return url;
+}
+
 function loadLogs() {
-  const level = document.getElementById("log-level").value;
-  const search = document.getElementById("log-search").value;
-  const count = document.getElementById("log-count").value;
-  const source = document.getElementById("log-source") ? document.getElementById("log-source").value : "bm";
-  const body = document.getElementById("log-body");
-  const status = document.getElementById("log-status");
-  let url = "/api/logs?lines=" + count + "&source=" + encodeURIComponent(source);
-  if (level) url += "&level=" + encodeURIComponent(level);
-  if (search) url += "&q=" + encodeURIComponent(search);
-  bmFetch(url, {headers: {"Authorization": "Bearer " + (sessionStorage.getItem("bm-token") || "")}})
+  const p = _logParams();
+  bmFetch(_logUrl("/api/logs", p))
     .then(r => r.json())
     .then(d => {
-      if (!d.ok) { status.textContent = "Xato: " + (d.error || ""); return; }
-      const lines = d.lines || [];
-      status.textContent = "Jami: " + d.total + " | Ko'rsatilgan: " + lines.length + " | " + new Date().toLocaleTimeString();
-      let html = "";
-      let errCount = 0, warnCount = 0, infoCount = 0;
-      for (const line of lines) {
-        let cls = "log-line";
-        if (line.includes("| ERROR")) { cls += " log-err"; errCount++; }
-        else if (line.includes("| WARNING")) { cls += " log-warn"; warnCount++; }
-        else if (line.includes("| DEBUG")) cls += " log-debug";
-        else infoCount++;
-        // Qidiruv so'zini ajratib ko'rsatish
-        let displayLine = escHtml(line);
-        if (search) {
-          const re = new RegExp('(' + search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
-          displayLine = displayLine.replace(re, '<mark style="background:var(--amber);color:var(--ink);padding:0 2px;border-radius:2px">$1</mark>');
-        }
-        html += '<div class="' + cls + '">' + displayLine + "</div>";
-      }
-      body.innerHTML = html || '<div style="padding:14px;color:var(--muted)">Loglar topilmadi</div>';
-      // Auto-scroll faqat pastda bo'lganda
-      const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
-      if (nearBottom) body.scrollTop = body.scrollHeight;
+      if (!d.ok) { _logEl("log-status").textContent = "Xato: " + (d.error || ""); return; }
+      _logReset();
+      _logAppend(d.lines || [], p.search);
     })
-    .catch(e => { status.textContent = "Ulanish xatosi: " + e.message; });
+    .catch(e => { _logEl("log-status").textContent = "Ulanish xatosi: " + e.message; });
 }
+
+function startLogStream() {
+  _stopLogTimer();
+  _closeLogStream();
+  const p = _logParams();
+  _logReset();
+  _logEl("log-status").textContent = "Ulanmoqda...";
+  _logES = new EventSource(_logUrl("/api/logs/stream", p));
+  _logES.addEventListener("init", function(ev) {
+    _logReset();
+    try { _logAppend(JSON.parse(ev.data).lines || [], p.search); } catch (e) {}
+    _logStatus();
+  });
+  _logES.onmessage = function(ev) {
+    try { _logAppend(JSON.parse(ev.data).lines || [], p.search); } catch (e) {}
+  };
+  _logES.onerror = function() {
+    _logEl("log-status").textContent = "Oqim uzildi, qayta ulanmoqda...";
+  };
+}
+
 function escHtml(s) {
   return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 }
+function _stopLogTimer() {
+  if (_logTimer) { clearInterval(_logTimer); _logTimer = null; }
+}
+function _closeLogStream() {
+  if (_logES) { _logES.close(); _logES = null; }
+}
 function startLogPoll() {
   stopLogPoll();
+  const live = _logEl("log-live");
+  if (live && live.checked) { startLogStream(); return; }
   loadLogs();
   _logTimer = setInterval(loadLogs, 3000);
 }
 function stopLogPoll() {
-  if (_logTimer) { clearInterval(_logTimer); _logTimer = null; }
+  _stopLogTimer();
+  _closeLogStream();
 }
-document.getElementById("log-refresh-btn").addEventListener("click", loadLogs);
-document.getElementById("log-auto").addEventListener("change", function() {
-  if (this.checked) startLogPoll(); else stopLogPoll();
-});
-document.getElementById("log-level").addEventListener("change", loadLogs);
-document.getElementById("log-source").addEventListener("change", loadLogs);
-document.getElementById("log-count").addEventListener("change", loadLogs);
+document.getElementById("log-refresh-btn").addEventListener("click", startLogPoll);
+document.getElementById("log-live").addEventListener("change", startLogPoll);
+document.getElementById("log-level").addEventListener("change", startLogPoll);
+document.getElementById("log-source").addEventListener("change", startLogPoll);
+document.getElementById("log-count").addEventListener("change", startLogPoll);
 document.getElementById("log-search").addEventListener("keydown", function(e) {
-  if (e.key === "Enter") loadLogs();
+  if (e.key === "Enter") startLogPoll();
 });
 
 /* ============================================================ MYAI AGENT CONTROL CENTER */

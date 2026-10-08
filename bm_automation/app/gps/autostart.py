@@ -45,6 +45,15 @@ def start_background() -> bool:
         return False
     _state["started"] = True
 
+    # Dashboard (uvicorn) root logger'ni sozlamaydi — GPS INFO loglari yo'qoladi.
+    # Fayl+stdout handlerni o'rnatamiz, shunda qurilma ulanishlari logs/bm.log'ga tushadi.
+    try:
+        from ..utils.logger import setup_logging
+
+        setup_logging()
+    except Exception:  # noqa: BLE001
+        pass
+
     def _run() -> None:
         try:
             import asyncio

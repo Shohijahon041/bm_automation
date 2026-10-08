@@ -135,6 +135,50 @@ Bot sozlanmagan bo'lsa hisobot faqat log'da qoladi.
 yoki IMEI bo'yicha; tanlanganda xarita o'sha nuqtaga uchib boradi
 va popup ochiladi.
 
+## Traektoriya (kengaytirilgan)
+
+- **Vaqt oralig'i**: boshlanish/tugash `datetime-local` bilan (soat aniqligida, Toshkent +05:00).
+- **Rangli chiziq**: tezlikka qarab segmentlar — ≤40 yashil, 41–70 sariq, ≥71 qizil.
+- **To'xtashlar**: bir joyda ≥2 daqiqa turgan epizodlar sariq markerlar
+  va jadval bilan (boshlanish, davomiylik, joy, dvigatel holati).
+  Jadvaldagi qatorni bosish xaritada shu nuqtaga yaqinlashtiradi.
+- **CSV eksport**: "⬇ CSV" — pozitsiyalar; to'xtashlar jadvalida alohida CSV.
+
+## To'xtashlarni aniqlash (API)
+
+`GET /api/gps/stops?imei=&from=&to=&min_s=&radius=` — bir joyda uzoq
+turgan epizodlar. `imei` o'rniga `vehicle_id` yoki hech narsa
+(qamrovdagi barcha qurilmalar, ko'pi bilan 20 ta) berilishi mumkin.
+Nuqtalar radius ichida qolsa bitta guruh; harakat nuqtalari (tezlik
+>15 km/h) guruhga kirmaydi, lekin radiusdan chiqsa guruh yopiladi.
+Geofence ichida to'xtagan bo'lsa — zona nomi `fence` maydonida.
+
+## GPS km ↔ qo'lda km nazorati
+
+`GET /api/gps/vs-manual?from=&to=` — `gps_daily` (GPS o'lchagan kunlik
+masofa) va `driver_work_logs` (haydovchi kiritgan km, `note != 'AVTO'`)
+ni (avtobus, kun) bo'yicha taqqoslaydi. UI'da "Qo'lda km nazorati"
+kartasi: farq % (yashil ≤10%, sariq ≤25%, qizil >25%), CSV eksport.
+Kunlik Telegram hisobotiga ham nazorat bloki qo'shiladi (faqat
+`GPS_VS_MANUAL_TOLERANCE_PCT`dan oshgan qatorlar):
+
+- ⚠️ qo'lda kiritilgan km GPS'dan ancha ko'p
+- 🔻 qo'lda km GPS'dan ancha kam
+- ❓ qo'lda yozuv bor, GPS yozuvi yo'q (qurilma o'chiq?)
+- ❗ GPS yurgan (≥20 km), qayd yo'q
+
+Kunlik hisobotni qo'lda yuborish: UI'da "📨 Telegramga yuborish"
+(POST `/api/gps/daily/send`, admin).
+
+## Konfiguratsiya (qo'shimcha)
+
+| Var | Standart | Ma'no |
+|---|---|---|
+| `GPS_STOPS_MIN_S` | `120` | to'xtash minimal davomiyligi (sekund) |
+| `GPS_STOPS_RADIUS_M` | `120` | to'xtash radiusi (metr) |
+| `GPS_VS_MANUAL_TOLERANCE_PCT` | `20` | GPS↔qo'lda km farqi hisobotda belgilanadigan chegara (%) |
+| `GPS_VS_MANUAL_REPORT` | `1` | kunlik Telegram hisobotiga nazorat bloki qo'shish (0 = o'chirilgan) |
+
 ## API
 
 Himoya: `Authorization: Bearer <DASHBOARD_TOKEN>`

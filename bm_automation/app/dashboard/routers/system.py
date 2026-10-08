@@ -39,72 +39,210 @@ async def api_disk(request: Request, scope: dict = Depends(Scope())):
     return _disk_usage()
 
 
+def _log_dir() -> Path:
+    return Path(os.getenv("BM_LOG_DIR", "logs"))
+
+
+def _nginx_log_dir() -> Path:
+    return Path(os.getenv("BM_NGINX_LOG_DIR", "/var/log/nginx"))
+
+
+def _log_file_map() -> dict[str, list[tuple[str, Path]]]:
+    """Manba -> [(teg, fayl), ...]. Teg bo'sh bo'lsa satr o'zgarishsiz qoladi."""
+    from ...utils.logger import FILE_LOG
+
+    d = _log_dir()
+    n = _nginx_log_dir()
+    return {
+        "bm": [("", FILE_LOG)],
+        "bot": [("BOT", d / "bot_service.log"),
+                ("BOT-ERR", d / "bot_service.err.log")],
+        "dashboard": [("DASH", d / "dashboard_service.log"),
+                      ("DASH-ERR", d / "dashboard_service.err.log")],
+        "nginx": [("NGX", n / "access.log"),
+                  ("NGX-ERR", n / "error.log")],
+        "watchdog": [("WD", Path("state") / "watchdog.log")],
+        "gps": [("", FILE_LOG)],
+    }
+
+
+LOG_SOURCES = ["bm", "bot", "dashboard", "nginx", "gps", "watchdog",
+               "journal", "all"]
+
+
+def _tail_lines(path: Path, n: int) -> list[str]:
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+    if size == 0:
+        return []
+    read_n = min(size, max(n * 200 + 8192, 65536))
+    try:
+        with open(path, "rb") as f:
+            f.seek(size - read_n)
+            raw = f.read(read_n)
+        return raw.decode("utf-8", errors="replace").splitlines()[-n:]
+    except OSError:
+        return []
+
+
+def _journal_lines(n: int) -> list[str]:
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["journalctl", "-n", str(n), "--no-pager", "-o", "short-iso",
+             "-u", "bm-bot", "-u", "bm-dashboard"],
+            capture_output=True, text=True, timeout=10)
+        return r.stdout.splitlines()[-n:]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _apply_filters(lines: list[str], level_filter: str,
+                   search: str) -> list[str]:
+    if level_filter:
+        lines = [l for l in lines if f"| {level_filter}" in l]
+    if search:
+        sl = search.lower()
+        lines = [l for l in lines if sl in l.lower()]
+    return lines
+
+
+def _files_for(source: str) -> list[tuple[str, Path]]:
+    """Manba uchun fayllar ro'yxati ('journal' bundan mustasno)."""
+    if source == "all":
+        m = _log_file_map()
+        return [("", m["bm"][0][1]), m["bot"][0], m["bot"][1],
+                m["dashboard"][0], m["dashboard"][1],
+                ("NGX-ERR", _nginx_log_dir() / "error.log")]
+    return _log_file_map().get(source) or _log_file_map()["bm"]
+
+
+def _read_tagged(source: str, n: int) -> list[str]:
+    """Manba bo'yicha loglarni o'qiydi; ko'p fayl bo'lsa 'TEG | satr' ko'rinishida."""
+    if source == "journal":
+        return _journal_lines(n)
+    files = _files_for(source)
+    per = max(n // max(len(files), 1), 20)
+    out: list[str] = []
+    multi = len(files) > 1
+    for tag, path in files:
+        for line in _tail_lines(path, per):
+            out.append(f"[{tag}] {line}" if (tag and multi) else line)
+    if source == "gps":
+        out = [l for l in out if ".gps" in l]
+    return out
+
+
 @router.get("/api/logs")
 async def api_logs(request: Request, scope: dict = Depends(Scope())):
-    from ...utils.logger import FILE_LOG
     params = _parse_qs(request)
+    source = (params.get("source") or "bm").strip().lower()
+    if source not in LOG_SOURCES:
+        source = "bm"
     try:
         lines = int(params.get("lines", "200"))
     except (TypeError, ValueError):
         lines = 200
-    lines = min(lines, 2000)
+    lines = max(1, min(lines, 5000))
     level_filter = params.get("level", "").upper()
     search = params.get("q", "")
-    source = params.get("source", "bm").strip().lower()
 
-    def _tail_lines(path: Path, n: int) -> list[str]:
-        try:
-            size = path.stat().st_size
-        except OSError:
-            return []
-        if size == 0:
-            return []
-        read_n = min(size, max(n * 200 + 8192, 65536))
-        try:
-            with open(path, "rb") as f:
-                f.seek(size - read_n)
-                raw = f.read(read_n)
-            return raw.decode("utf-8", errors="replace").splitlines()[-n:]
-        except OSError:
-            return []
+    all_lines = _apply_filters(_read_tagged(source, lines), level_filter, search)
+    return {"ok": True, "lines": all_lines[-lines:], "total": len(all_lines),
+            "source": source, "sources": LOG_SOURCES}
 
-    bot_log = Path("state") / "watchdog_bot.out.log"
-    wd_log = Path("state") / "watchdog.log"
 
-    if source == "bot":
-        all_lines = _tail_lines(bot_log, lines)
-    elif source == "watchdog":
-        all_lines = _tail_lines(wd_log, lines)
-    elif source == "all":
-        per = max(lines // 3, 20)
-        bm_tail = _tail_lines(FILE_LOG, per)
-        all_lines = ([f"[BOT] {l}" for l in _tail_lines(bot_log, per)]
-                     + [f"[WD] {l}" for l in _tail_lines(wd_log, per)]
-                     + [f"[BM] {l}" for l in bm_tail])
-    else:
-        try:
-            size = FILE_LOG.stat().st_size
-        except OSError:
-            size = 0
-        if size == 0:
-            all_lines = []
-        else:
-            read_n = min(size, max(lines * 160 + 8192, 65536))
+@router.get("/api/logs/stream")
+async def api_logs_stream(request: Request, scope: dict = Depends(Scope())):
+    """SSE — log fayllarini real vaqtda (tail -f) oqim sifatida yuboradi."""
+    import asyncio
+
+    params = _parse_qs(request)
+    source = (params.get("source") or "bm").strip().lower()
+    if source not in LOG_SOURCES:
+        source = "bm"
+    try:
+        backfill = int(params.get("lines", "200"))
+    except (TypeError, ValueError):
+        backfill = 200
+    backfill = max(0, min(backfill, 1000))
+    level_filter = params.get("level", "").upper()
+    search = params.get("q", "")
+
+    def _prefix(tag: str, line: str, multi: bool) -> str:
+        return f"[{tag}] {line}" if (tag and multi) else line
+
+    async def gen():
+        initial = _read_tagged(source, backfill) if backfill else []
+        initial = _apply_filters(initial, level_filter, search)
+        yield "event: init\ndata: " + json.dumps({"lines": initial}) + "\n\n"
+
+        if source == "journal":
+            seen = len(_journal_lines(200))
+            while True:
+                if await request.is_disconnected():
+                    return
+                await asyncio.sleep(3)
+                cur = _journal_lines(200)
+                if len(cur) > seen:
+                    new = _apply_filters(cur[seen:], level_filter, search)
+                    seen = len(cur)
+                    if new:
+                        yield "data: " + json.dumps({"lines": new}) + "\n\n"
+            return
+
+        files = _files_for(source)
+        multi = len(files) > 1
+        handles: dict[str, list] = {}
+        for tag, path in files:
             try:
-                with open(FILE_LOG, "rb") as f:
-                    f.seek(size - read_n)
-                    raw = f.read(read_n)
-                all_lines = raw.decode("utf-8", errors="replace").splitlines()
+                fh = open(path, "rb")
+                fh.seek(0, 2)
+                handles[str(path)] = [tag, path, fh]
             except OSError:
-                all_lines = []
+                continue
+        idle = 0
+        while True:
+            if await request.is_disconnected():
+                return
+            new: list[str] = []
+            for key, entry in list(handles.items()):
+                tag, path, fh = entry
+                try:
+                    if path.stat().st_size < fh.tell():
+                        fh.close()
+                        fh = open(path, "rb")
+                        entry[2] = fh
+                except OSError:
+                    pass
+                try:
+                    data = fh.read()
+                except Exception:  # noqa: BLE001
+                    data = b""
+                if not data:
+                    continue
+                for line in data.decode("utf-8", errors="replace").splitlines():
+                    new.append(_prefix(tag, line, multi))
+            if source == "gps":
+                new = [l for l in new if ".gps" in l]
+            new = _apply_filters(new, level_filter, search)
+            if new:
+                idle = 0
+                yield "data: " + json.dumps({"lines": new}) + "\n\n"
+            else:
+                idle += 1
+                if idle % 25 == 0:
+                    yield ": keepalive\n\n"
+            await asyncio.sleep(0.6)
 
-    if level_filter:
-        all_lines = [l for l in all_lines if f"| {level_filter}" in l]
-    if search:
-        sl = search.lower()
-        all_lines = [l for l in all_lines if sl in l.lower()]
-
-    return {"ok": True, "lines": all_lines[-lines:], "total": len(all_lines), "source": source}
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache, no-store",
+                 "X-Accel-Buffering": "no",
+                 "Connection": "keep-alive"})
 
 
 @router.get("/api/insights")

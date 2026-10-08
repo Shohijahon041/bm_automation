@@ -1792,3 +1792,34 @@ def test_driver_detail_masks_salary_when_off(env, monkeypatch):
     assert d["tax"] is None and d["fines"] is None
     assert d["km_rate"] == 2000.0
     assert data["fines_total"] is None
+
+
+def test_user_photo_cached_redirect(env, monkeypatch):
+    """Rasm endpoint Telegram'ni bir marta chaqiradi (TTL kesh) va redirect qaytaradi.
+
+    Bu endpoint sinxron (threadpool) bo'lishi shart — aks holda sekin Telegram
+    chaqiruvi dashboard event loop'ini bloklab qo'yadi (Batafsil osilishi).
+    """
+    from bm_automation.app.core import bot_users
+    from bm_automation.app.dashboard.routers import admin as admin_mod
+    from bm_automation.app.notifications import telegram as tg_mod
+
+    calls = []
+    monkeypatch.setattr(bot_users, "get_user",
+                        lambda uid: {"chat_id": uid, "photo_file_id": "F1"})
+    monkeypatch.setattr(
+        tg_mod, "get_profile_photo_url",
+        lambda chat_id, photo_file_id="": calls.append(chat_id) or "https://t.me/p.jpg")
+    admin_mod._PHOTO_CACHE.clear()
+
+    import inspect
+    assert not inspect.iscoroutinefunction(admin_mod.get_user_photo)
+
+    hdr = _hdr(env, "ADMIN")
+    hdrs, cookies = _split_headers(hdr)
+    for _ in range(2):
+        r = _client().request("GET", "/api/users/555/photo", headers=hdrs,
+                              cookies=cookies, follow_redirects=False)
+        assert r.status_code == 307
+        assert r.headers["location"] == "https://t.me/p.jpg"
+    assert calls == [555]

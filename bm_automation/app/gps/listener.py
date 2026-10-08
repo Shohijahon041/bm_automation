@@ -83,8 +83,8 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) ->
                     writer.write(codec.encode_keepalive_response())
                     await writer.drain()
                     continue
-                # AVL paket
-                consumed = 8 + _frame_len(buf)
+                # AVL paket (4B CRC ham iste'mol qilinadi)
+                consumed = _frame_len(buf)
                 buf = buf[consumed:]
                 _STATS["packets"] += 1
                 n = 0
@@ -137,10 +137,10 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) ->
 
 
 def _frame_len(buf: bytes) -> int:
-    """AVL frame'ning umumiy uzunligi (8 + data_len)."""
+    """AVL frame'ning umumiy uzunligi (8 + data_len + 4B CRC)."""
     import struct
     (data_len,) = struct.unpack(">I", buf[4:8])
-    return 8 + data_len
+    return 8 + data_len + 4
 
 
 async def run_tcp(host: str, port: int) -> None:

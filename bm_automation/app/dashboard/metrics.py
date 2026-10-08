@@ -2174,7 +2174,7 @@ class Metrics:
                        "SELECT external_id, full_name FROM drivers")}
         return {"routes": routes, "vehicles": vehicles, "drivers": drivers}
 
-    def problems(self, f: dict) -> dict:
+    def problems(self, f: dict, limit: int = 1000) -> dict:
         """Muammolarni kategoriyalarga ajratadi.
 
         Kategoriyalar (ma'lumotlar mavjud bo'lgan ko'rsatkichlar asosida):
@@ -2188,13 +2188,15 @@ class Metrics:
         - **unknown** — noma'lum status yoki yo'nalish/avtobus bog'lanmagan.
 
         `counts` + har bir kategoriya uchun `items` (batafsil) qaytaradi.
+        `limit` — o'qiladigan qatorlar chegarasi (kunlik kesimda 1000 dan
+        oshishi mumkin — to'liq qamrov uchun oshirib beriladi).
         """
         where, params = self._trip_where(f)
         sql = ("SELECT date, route_id, vehicle_id, driver_id, planned_time, "
                "actual_time, status FROM trips")
         if where:
             sql += f" WHERE {where}"
-        rows = self.storage.query(sql, tuple(params), limit=1000)
+        rows = self.storage.query(sql, tuple(params), limit=limit)
 
         names = self._names()
         gps_veh, tech_veh = {}, {}
@@ -2239,7 +2241,7 @@ class Metrics:
         for wb in self.storage.query(
             "SELECT date, route_id, vehicle_id, driver_id, plate_number, status"
             " FROM waybills" + (f" WHERE {w_where}" if w_where else ""),
-            tuple(w_params), limit=1000):
+            tuple(w_params), limit=limit):
             if wb.get("status") != "REJECTED":
                 continue
             wid = wb.get("vehicle_id") or wb.get("plate_number") or ""
