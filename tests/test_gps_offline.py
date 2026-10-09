@@ -19,7 +19,9 @@ def _dev(imei: str, minutes_ago: int, enabled: int = 1) -> dict:
 
 def _setup(monkeypatch, calls):
     monkeypatch.setattr(offline, "_offline", set())
+    monkeypatch.setattr(offline, "_seeded", True)
     monkeypatch.setattr(offline.config, "OFFLINE_AFTER_S", 1800)
+    monkeypatch.setattr(offline.config, "OFFLINE_MAX_AGE_S", 86400)
     monkeypatch.setattr(offline.config, "OFFLINE_TELEGRAM", False)
     monkeypatch.setattr(gstorage, "insert_alert", lambda **kw: calls.append(kw))
 
@@ -63,3 +65,26 @@ def test_offline_recovery_then_again(monkeypatch):
     offline.check_devices([_dev("111", 1)])   # qaytdi
     offline.check_devices([_dev("111", 50)])  # yana uzildi
     assert len(calls) == 2
+
+
+def test_offline_warmup_silent_first_check(monkeypatch):
+    """Ishga tushgandan keyingi birinchi tekshiruv alert bermaydi."""
+    calls = []
+    _setup(monkeypatch, calls)
+    monkeypatch.setattr(offline, "_seeded", False)
+    assert offline.check_devices([_dev("111", 40)]) == []
+    assert calls == []
+    assert "111" in offline._offline
+    # qaytgach yana uzilsa — endi alert bo'ladi
+    offline.check_devices([_dev("111", 1)])
+    offline.check_devices([_dev("111", 40)])
+    assert len(calls) == 1
+
+
+def test_offline_skips_too_old(monkeypatch):
+    """Juda uzoq vaqt o'chiq turgan qurilma ogohlantirilmaydi."""
+    calls = []
+    _setup(monkeypatch, calls)
+    assert offline.check_devices([_dev("111", 60 * 24 * 2)]) == []
+    assert calls == []
+    assert "111" not in offline._offline

@@ -67,6 +67,7 @@ ro'yxatga olinadi. So'ng frontend'da avtobusga bog'lanadi.
 | `GPS_OFFLINE_ALERT_ENABLED` | `1` | aloqa uzilishi ogohlantirishi yoqilgan |
 | `GPS_OFFLINE_AFTER_S` | `1800` | shu sekunddan beri yubormasa offline |
 | `GPS_OFFLINE_CHECK_S` | `300` | offline tekshiruv intervali (sekund) |
+| `GPS_OFFLINE_MAX_AGE_S` | `86400` | shundan uzoq o'chiq turganlar ogohlantirilmaydi |
 | `GPS_OFFLINE_TELEGRAM` | `1` | offline alertini Telegram'ga yuborish |
 
 Token: dashboard bilan bir xil `DASHBOARD_TOKEN` ishlatiladi.

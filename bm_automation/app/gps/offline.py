@@ -3,9 +3,13 @@
 Fon tredi davriy (`OFFLINE_CHECK_S`) har bir yoqilgan qurilmaning oxirgi
 aloqa vaqtini tekshiradi:
   1. oxirgi ko'rinishdan `OFFLINE_AFTER_S` dan ko'p o'tgan bo'lsa → OFFLINE
-  2. bir uzilish davrida faqat bir marta ogohlantiriladi (state saqlanadi)
-  3. qurilma qayta yubora boshlasa — holat "online"ga o'zgaradi
-  4. gps_alerts'ga yoziladi + Telegram'ga yuboriladi (sozlangan bo'lsa)
+  2. `OFFLINE_MAX_AGE_S`dan uzoq o'chiq turgan "eski" qurilmalar
+     ogohlantirilmaydi (o'lik qurilmalar shovqin qilmasin)
+  3. ishga tushgandan keyingi birinchi tekshiruv "warmup" — mavjud holat
+     jimgina qayd etiladi, alert berilmaydi (deploy'da spam bo'lmasin)
+  4. bir uzilish davrida faqat bir marta ogohlantiriladi (state saqlanadi)
+  5. qurilma qayta yubora boshlasa — holat "online"ga o'zgaradi
+  6. gps_alerts'ga yoziladi + Telegram'ga yuboriladi (sozlangan bo'lsa)
 
 Telegram xatosi hech qachon oqimni buzmaydi (fail-safe).
 """
@@ -24,6 +28,8 @@ log = logging.getLogger(__name__)
 # Hozir offline deb belgilangan IMEI'lar (takroriy alertning oldini oladi)
 _offline: set[str] = set()
 _lock = threading.Lock()
+# Birinchi tekshiruv warmup: mavjud offline holat alert bermasdan qayd etiladi
+_seeded = False
 
 
 def _age_s(last_seen) -> float | None:
@@ -43,12 +49,14 @@ def _age_s(last_seen) -> float | None:
 
 def check_devices(devices: list | None = None) -> list:
     """Bir marta tekshiradi. Yangi offline qurilmalar ro'yxatini qaytaradi."""
+    global _seeded
     if devices is None:
         try:
             devices = storage.list_devices()
         except Exception:  # noqa: BLE001
             log.exception("offline: qurilmalar olinmadi")
             return []
+    alert_ok = _seeded  # warmup tugamagan bo'lsa alert bermaymiz
     newly: list = []
     for d in devices or []:
         imei = str(d.get("imei") or "")
@@ -62,15 +70,22 @@ def check_devices(devices: list | None = None) -> list:
         if age is None:
             continue  # hech qachon ko'rinmagan — hisobga olinmaydi
         if age >= config.OFFLINE_AFTER_S:
+            if age > config.OFFLINE_MAX_AGE_S:
+                with _lock:
+                    _offline.discard(imei)
+                continue  # juda eski (o'lik) qurilma — ogohlantirmaymiz
             with _lock:
                 if imei in _offline:
                     continue
                 _offline.add(imei)
+            if not alert_ok:
+                continue  # warmup — jimgina qayd etildi
             newly.append(d)
             _raise_offline(d, age)
         else:
             with _lock:
                 _offline.discard(imei)
+    _seeded = True
     return newly
 
 

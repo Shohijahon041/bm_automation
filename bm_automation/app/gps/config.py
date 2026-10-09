@@ -103,6 +103,9 @@ OFFLINE_ALERT_ENABLED = os.environ.get(
 ) in ("1", "true", "yes")
 OFFLINE_AFTER_S = int(os.environ.get("GPS_OFFLINE_AFTER_S", "1800"))
 OFFLINE_CHECK_S = int(os.environ.get("GPS_OFFLINE_CHECK_S", "300"))
+# Shu sekunddan uzoq o'chiq turgan qurilmalar "eski" hisoblanadi va
+# ogohlantirilmaydi (o'lik/olib tashlangan qurilmalar shovqin qilmasin)
+OFFLINE_MAX_AGE_S = int(os.environ.get("GPS_OFFLINE_MAX_AGE_S", "86400"))
 OFFLINE_TELEGRAM = os.environ.get(
     "GPS_OFFLINE_TELEGRAM", "1"
 ) in ("1", "true", "yes")
