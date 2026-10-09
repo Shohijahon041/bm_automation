@@ -61,6 +61,13 @@ ro'yxatga olinadi. So'ng frontend'da avtobusga bog'lanadi.
 | `GPS_SPEED_TELEGRAM` | `1` | tezlik alertini Telegram'ga yuborish |
 | `GPS_REPORT_ENABLED` | `1` | ertalabki kunlik masofa hisoboti |
 | `GPS_REPORT_HOUR` | `7` | hisobot soati (Toshkent vaqti, 0–23) |
+| `GPS_IDLE_MIN_S` | `600` | bekorchi ishlash (idling) minimal davomiyligi (sekund) |
+| `GPS_IDLE_TELEGRAM` | `1` | idling alertini Telegram'ga yuborish |
+| `GPS_IDLE_MAX_SPEED_KMH` | `0` | "harakat yo'q" deb hisoblash chegarasi (km/h) |
+| `GPS_OFFLINE_ALERT_ENABLED` | `1` | aloqa uzilishi ogohlantirishi yoqilgan |
+| `GPS_OFFLINE_AFTER_S` | `1800` | shu sekunddan beri yubormasa offline |
+| `GPS_OFFLINE_CHECK_S` | `300` | offline tekshiruv intervali (sekund) |
+| `GPS_OFFLINE_TELEGRAM` | `1` | offline alertini Telegram'ga yuborish |
 
 Token: dashboard bilan bir xil `DASHBOARD_TOKEN` ishlatiladi.
 
@@ -122,6 +129,21 @@ tarix arzon saqlanadi. API: `GET /api/gps/daily?from=&to=&imei=`.
 `GPS_SPEED_LIMIT_KMH` (standart 0 = o'chirilgan) belgilansa —
 qurilma shu tezlikdan oshsa `overspeed` alerti yoziladi va
 Telegram'ga yuboriladi (bir qurilma uchun 10 daqiqalik cooldown).
+
+## Bekorchi ishlash (idling)
+
+Qurilma dvigateli yoniq, lekin harakat qilmay (`GPS_IDLE_MAX_SPEED_KMH`dan
+sekin) `GPS_IDLE_MIN_S` (standart 10 daqiqa) davomida tursa — `idling`
+alerti yoziladi va Telegram'ga yuboriladi. Har bir epizod uchun bir marta;
+harakat boshlansa yoki dvigatel o'chsa epizod yopiladi.
+
+## Aloqa uzilishi (offline)
+
+Fon tredi (`GPS_OFFLINE_CHECK_S`, standart 5 daqiqa) har bir yoqilgan
+qurilmaning oxirgi aloqa vaqtini tekshiradi. `GPS_OFFLINE_AFTER_S`
+(standart 30 daqiqa) dan beri yubormagan bo'lsa — `offline` alerti
+yoziladi va Telegram'ga yuboriladi. Bir uzilish davrida bir marta; qurilma
+qayta yubora boshlasa holat "online"ga o'zgaradi.
 
 ## Ertalabki kunlik hisobot
 

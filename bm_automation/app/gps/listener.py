@@ -101,7 +101,7 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) ->
                             )
                             if n:
                                 try:
-                                    from . import geofence, speed
+                                    from . import geofence, idling, route_alert, speed
 
                                     geofence.check_position(
                                         imei, r0.latitude, r0.longitude,
@@ -110,6 +110,14 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) ->
                                     speed.check_position(
                                         imei, r0.latitude, r0.longitude,
                                         r0.speed, r0.timestamp,
+                                    )
+                                    route_alert.check_position(
+                                        imei, r0.latitude, r0.longitude,
+                                        r0.speed, r0.timestamp,
+                                    )
+                                    idling.check_position(
+                                        imei, r0.latitude, r0.longitude,
+                                        r0.speed, r0.ignition, r0.timestamp,
                                     )
                                 except Exception:  # noqa: BLE001
                                     log.exception("nazorat hook xatosi (%s)", imei)

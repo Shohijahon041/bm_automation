@@ -50,6 +50,22 @@ GEOFENCE_ALERT_COOLDOWN_S = int(os.environ.get("GEOFENCE_ALERT_COOLDOWN_S", "300
 # Telegram'ga yuborish (bot sozlangan bo'lsa) — 0 = faqat DB (gps_alerts)
 GEOFENCE_TELEGRAM = os.environ.get("GEOFENCE_TELEGRAM", "1") in ("1", "true", "yes")
 
+# ---- Yo'nalish yo'lagi (marshrutdan chiqish) ----
+# Yo'lakdan shu metrdan uzoqlashsa ogohlantirish (standart)
+ROUTE_DEVIATION_TOLERANCE_M = int(
+    os.environ.get("GPS_ROUTE_DEVIATION_M", "200")
+)
+# Bir qurilma/yo'nalish uchun alertlar orasidagi min interval
+ROUTE_DEVIATION_COOLDOWN_S = int(
+    os.environ.get("GPS_ROUTE_DEVIATION_COOLDOWN_S", "600")
+)
+ROUTE_DEVIATION_TELEGRAM = os.environ.get(
+    "GPS_ROUTE_DEVIATION_TELEGRAM", "1"
+) in ("1", "true", "yes")
+# Yo'lak o'rganishda soddalashtirish toleransi (metr)
+ROUTE_LEARN_SIMPLIFY_M = int(os.environ.get("GPS_ROUTE_LEARN_SIMPLIFY_M", "40"))
+
+
 # ---- RTSP → HLS relay (ffmpeg) ----
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN", "ffmpeg")
 HLS_DIR = os.environ.get(
@@ -73,6 +89,23 @@ SPEED_TELEGRAM = os.environ.get("GPS_SPEED_TELEGRAM", "1") in ("1", "true", "yes
 # ---- To'xtashlarni aniqlash ----
 STOPS_MIN_DURATION_S = int(os.environ.get("GPS_STOPS_MIN_S", "120"))
 STOPS_RADIUS_M = int(os.environ.get("GPS_STOPS_RADIUS_M", "120"))
+
+# ---- Bekorchi ishlash (idling): dvigatel yoniq, lekin harakat yo'q ----
+# Shu sekunddan uzoq turgan bo'lsa ogohlantirish
+IDLE_MIN_S = int(os.environ.get("GPS_IDLE_MIN_S", "600"))
+IDLE_TELEGRAM = os.environ.get("GPS_IDLE_TELEGRAM", "1") in ("1", "true", "yes")
+# Harakat yo'q deb hisoblash uchun maksimal tezlik (km/h)
+IDLE_MAX_SPEED_KMH = int(os.environ.get("GPS_IDLE_MAX_SPEED_KMH", "0"))
+
+# ---- Aloqa uzilishi (offline): qurilma shu sekunddan beri yubormadi ----
+OFFLINE_ALERT_ENABLED = os.environ.get(
+    "GPS_OFFLINE_ALERT_ENABLED", "1"
+) in ("1", "true", "yes")
+OFFLINE_AFTER_S = int(os.environ.get("GPS_OFFLINE_AFTER_S", "1800"))
+OFFLINE_CHECK_S = int(os.environ.get("GPS_OFFLINE_CHECK_S", "300"))
+OFFLINE_TELEGRAM = os.environ.get(
+    "GPS_OFFLINE_TELEGRAM", "1"
+) in ("1", "true", "yes")
 
 # ---- GPS km ↔ qo'lda kiritilgan km nazorati ----
 # Farq shu foizdan oshsa hisobotda/nazoratda belgilanadi

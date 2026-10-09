@@ -53,6 +53,22 @@ def test_company_context_active_profile(storage, monkeypatch):
     assert ctx["stir"] == "123456789"
 
 
+def test_manager_autofill_data(storage):
+    """DocumentManager.autofill_data: /api/documents/autofill javobi —
+    `field_values` xaritasi (frontend live-preview uchun)."""
+    res = _fresh_manager().autofill_data("d1")
+    assert res["ok"] is True
+    assert res["driver_id"] == "d1"
+    fv = res["field_values"]
+    assert fv["haydovchi_fio"] == "Ali Valiyev"
+    assert fv["haydovchi_tin"] == "30101001234567"
+    assert fv["yo_nishoni"] == "10-yo'nalish"
+    # Haydovchisiz so'rov ham ishlaydi (faqat kompaniya/sana).
+    base = _fresh_manager().autofill_data("")
+    assert base["ok"] is True
+    assert "haydovchi_fio" not in base["field_values"]
+
+
 def test_driver_autofill_context(storage):
     ctx = driver_autofill_context("d1")
     assert ctx["full_name"] == "Ali Valiyev"

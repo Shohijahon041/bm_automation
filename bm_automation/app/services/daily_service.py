@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
 import time
 from datetime import date, timedelta
 from pathlib import Path
@@ -32,7 +33,54 @@ from ..notifications.telegram import (resend_keyboard, send_document,
                                       send_message)
 from ..services.driver_sheet_service import run as run_sheet
 from ..services.summary_service import run as run_summary
-from ..utils.io import safe_name
+from ..utils.io import atomic_write, safe_name
+
+
+# Oylik Excel retry'da takror yuborilmasligi uchun holat fayli:
+# "<route>|<from>..<to>|<chat>" -> 1. Jadval rasmida ham xuddi shunday
+# (SENT_STATE) dedup bor.
+MONTHLY_SENT_STATE = Path("state") / "daily_monthly_sent.json"
+_MONTHLY_LOCK = threading.Lock()
+_MONTHLY_KEEP_DAYS = 45
+
+
+def _monthly_state() -> dict:
+    try:
+        if MONTHLY_SENT_STATE.exists():
+            data = json.loads(MONTHLY_SENT_STATE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def _monthly_prune(state: dict) -> dict:
+    """Eski (oy almashgan) yozuvlarni tozalaydi."""
+    cutoff = (date.today() - timedelta(days=_MONTHLY_KEEP_DAYS)).isoformat()
+    out = {}
+    for key, val in state.items():
+        parts = str(key).split("|")
+        to_date = parts[1].split("..")[-1] if len(parts) > 1 else ""
+        if to_date >= cutoff:
+            out[key] = val
+    return out
+
+
+def _monthly_pending(route_id: str, from_date: date, to_date: date, target: str) -> bool:
+    key = f"{route_id}|{from_date.isoformat()}..{to_date.isoformat()}|{target}"
+    return key not in _monthly_state()
+
+
+def _monthly_mark(route_id: str, from_date: date, to_date: date, target: str) -> None:
+    key = f"{route_id}|{from_date.isoformat()}..{to_date.isoformat()}|{target}"
+    with _MONTHLY_LOCK:
+        state = _monthly_prune(_monthly_state())
+        state[key] = 1
+        try:
+            atomic_write(MONTHLY_SENT_STATE, json.dumps(state, ensure_ascii=False, indent=2))
+        except Exception:
+            pass
 
 
 def _auth_error(results: list) -> bool:
@@ -92,7 +140,10 @@ def _notify_summary(results: list, chat_id: str | None, sheet_date: date) -> Non
         elif r.get("error"):
             parts.append(f"jadval XATO: {r['error']}")
         if r.get("monthly_sent"):
-            parts.append("oylik ✓")
+            if r.get("monthly_already_sent"):
+                parts.append("oylik ✓ (avval yuborilgan)")
+            else:
+                parts.append("oylik ✓")
         elif r.get("monthly_error"):
             parts.append(f"oylik XATO: {r['monthly_error']}")
         if r.get("driver_notifications"):
@@ -260,9 +311,11 @@ def run_daily_once(send: bool = True, chat_id: str | None = None, month_offset: 
             continue
 
         # Profil tokeni (kompaniya). FERGANATEX'da profileId bo'sh -> asosiy token.
+        # login_for_profile: profil tokeni 401/403 bo'lsa asosiy tokenga qaytadi —
+        # kompaniya butunlay o'tkazib yuborilmaydi, jadval/oylik davom etadi.
         try:
             if pid:
-                client.login_by_profile(pid)   # faqat xotirada, tokens.json buzilmaydi
+                client.login_for_profile(pid, fallback_to_main=True)
             else:
                 use_main()
         except Exception as exc:
@@ -338,11 +391,25 @@ def run_daily_once(send: bool = True, chat_id: str | None = None, month_offset: 
                 print(f"  XATO [{name}] oylik: ma'lumot topilmadi (0 kun)")
             else:
                 if send:
-                    caption = (f"📊 {name} | Oylik yig'ma hisobot "
-                               f"({month_start:%d.%m.%Y} - {today:%d.%m.%Y})")
-                    send_document(sm["excel_file"], caption=caption, chat_id=chat_id,
-                                  reply_markup=resend_keyboard(name))
-                    entry["monthly_sent"] = True
+                    # Qo'lda so'rov (shaxsiy chat_id) — har doim yuboriladi;
+                    # avtomatik oqimda bir kunda bir marta: retry (masalan
+                    # jadval hali tayyor bo'lmagani uchun) oylikni
+                    # takrorlab yubormaydi.
+                    manual = bool(chat_id) and not str(chat_id).startswith("-")
+                    target = str(chat_id) if chat_id else "default"
+                    if manual or _monthly_pending(route, month_start, today, target):
+                        caption = (f"📊 {name} | Oylik yig'ma hisobot "
+                                   f"({month_start:%d.%m.%Y} - {today:%d.%m.%Y})")
+                        send_document(sm["excel_file"], caption=caption, chat_id=chat_id,
+                                      reply_markup=resend_keyboard(name))
+                        entry["monthly_sent"] = True
+                        if not manual:
+                            _monthly_mark(route, month_start, today, target)
+                    else:
+                        entry["monthly_sent"] = True
+                        entry["monthly_already_sent"] = True
+                        print(f"  [{name}] oylik allaqachon yuborilgan — "
+                              f"takrorlanmaydi: {sm['excel_file']}")
                 print(f"  OK [{name}]: oylik {sm['excel_file']}")
         except Exception as exc:
             entry["monthly_error"] = str(exc)

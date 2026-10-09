@@ -14,7 +14,7 @@ import asyncio
 import logging
 import threading
 
-from . import config, listener, relay, report, rollup, storage
+from . import config, listener, offline, relay, report, rollup, storage
 from .api import run_api
 
 logging.basicConfig(
@@ -48,6 +48,10 @@ def main() -> int:
         report.start_monitor()
     except Exception:  # noqa: BLE001
         log.exception("report monitor ishga tushmadi")
+    try:
+        offline.start_monitor()
+    except Exception:  # noqa: BLE001
+        log.exception("offline monitor ishga tushmadi")
 
     httpd = run_api(config.GPS_API_HOST, config.GPS_API_PORT)
     api_thread = threading.Thread(target=httpd.serve_forever, daemon=True)

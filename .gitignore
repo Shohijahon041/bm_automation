@@ -5,7 +5,6 @@ tokens/
 tokens.json
 profiles.json
 state/
-atto_tokens.json
 backup/
 
 # Python

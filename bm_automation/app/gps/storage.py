@@ -90,6 +90,14 @@ CREATE TABLE IF NOT EXISTS gps_daily (
     last_ts TIMESTAMPTZ,
     PRIMARY KEY (imei, day)
 );
+CREATE TABLE IF NOT EXISTS gps_route_paths (
+    route_id TEXT PRIMARY KEY,
+    name TEXT DEFAULT '',
+    points JSONB NOT NULL,
+    tolerance_m INTEGER DEFAULT 200,
+    enabled INTEGER DEFAULT 1,
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
 """
 
 
@@ -232,7 +240,7 @@ def list_devices() -> list:
         SELECT d.imei, d.vehicle_id, d.name, d.model, d.last_seen,
                d.last_lat, d.last_lng, d.last_speed, d.last_ignition,
                d.last_satellites, d.enabled,
-               v.plate_number
+               v.plate_number, v.route_id AS route_id
         FROM gps_devices d
         LEFT JOIN vehicles v ON v.external_id = d.vehicle_id
         ORDER BY d.imei
@@ -262,6 +270,25 @@ def list_devices() -> list:
         r["_now"] = now  # debugging uchun emas — API'da ishlatilmaydi
         del r["_now"]
     return rows
+
+
+def route_names(ids) -> dict:
+    """route_id → nom (routes jadvalidan O'QISH). Topilmasa bo'sh."""
+    clean = [str(i) for i in (ids or []) if str(i or "").strip()]
+    st = _st()
+    if not st.enabled or not clean:
+        return {}
+    out: dict = {}
+    try:
+        ph = ", ".join(st.db.ph for _ in clean)
+        rows = st.db.query(
+            f"SELECT external_id, name FROM routes WHERE external_id IN ({ph})",
+            tuple(clean))
+        for r in rows:
+            out[str(r.get("external_id"))] = str(r.get("name") or "")
+    except Exception:  # noqa: BLE001
+        log.exception("GPS: route nomlari olinmadi")
+    return out
 
 
 def positions(
@@ -440,6 +467,81 @@ def list_alerts(limit: int = 50, imei: str = "") -> list:
         r["ts"] = (r["ts"].isoformat()
                     if isinstance(r["ts"], datetime) else str(r["ts"]))
     return rows
+
+
+# -------------------------------------------------------------- route paths
+
+def _route_path_row(r: dict) -> dict:
+    p = r.get("points")
+    if isinstance(p, str):
+        try:
+            r["points"] = json.loads(p)
+        except Exception:  # noqa: BLE001
+            r["points"] = []
+    return r
+
+
+def list_route_paths(only_enabled: bool = False) -> list:
+    st = _st()
+    if not st.enabled:
+        return []
+    sql = ("SELECT route_id, name, points, tolerance_m, enabled, updated_at "
+           "FROM gps_route_paths")
+    if only_enabled:
+        sql += " WHERE enabled = 1"
+    rows = st.db.query(sql + " ORDER BY route_id")
+    return [_route_path_row(r) for r in rows]
+
+
+def get_route_path(route_id: str) -> dict | None:
+    st = _st()
+    if not st.enabled:
+        return None
+    ph = st.db.ph
+    rows = st.db.query(
+        "SELECT route_id, name, points, tolerance_m, enabled "
+        f"FROM gps_route_paths WHERE route_id = {ph}",
+        (str(route_id or ""),), limit=1)
+    return _route_path_row(rows[0]) if rows else None
+
+
+def upsert_route_path(route_id: str, points: list, name: str = "",
+                      tolerance_m: int = 200) -> bool:
+    st = _st()
+    if not st.enabled:
+        return False
+    ph = st.db.ph
+    st.db.execute(
+        "INSERT INTO gps_route_paths "
+        "(route_id, name, points, tolerance_m, enabled) "
+        f"VALUES ({ph},{ph},{ph},{ph},1) "
+        "ON CONFLICT (route_id) DO UPDATE SET "
+        "name = EXCLUDED.name, points = EXCLUDED.points, "
+        "tolerance_m = EXCLUDED.tolerance_m, enabled = 1, "
+        "updated_at = CURRENT_TIMESTAMP",
+        (str(route_id or ""), str(name or ""), json.dumps(points),
+         int(tolerance_m or 0)),
+    )
+    return True
+
+
+def delete_route_path(route_id: str) -> None:
+    st = _st()
+    if not st.enabled:
+        return
+    ph = st.db.ph
+    st.db.execute(f"DELETE FROM gps_route_paths WHERE route_id = {ph}",
+                  (str(route_id or ""),))
+
+
+def set_route_path_enabled(route_id: str, enabled: bool) -> None:
+    st = _st()
+    if not st.enabled:
+        return
+    ph = st.db.ph
+    st.db.execute(
+        f"UPDATE gps_route_paths SET enabled = {ph} WHERE route_id = {ph}",
+        (1 if enabled else 0, str(route_id or "")))
 
 
 # ------------------------------------------------------------------ daily

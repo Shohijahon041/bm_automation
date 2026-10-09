@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlparse
 
 from pathlib import Path
 
-from . import compare, config, listener, relay, stops, storage
+from . import compare, config, listener, relay, route_alert, stops, storage
 
 log = logging.getLogger(__name__)
 
@@ -324,7 +324,32 @@ class GpsHandler(BaseHTTPRequestHandler):
             vehicles = self._company_vehicles()
             if path == "/api/gps/devices":
                 devices = self._only_vehicles(storage.list_devices(), vehicles)
+                route_q = (qs.get("route") or [""])[0].strip()
+                if route_q:
+                    devices = [d for d in devices
+                               if str(d.get("route_id") or "") == route_q]
                 self._json({"ok": True, "count": len(devices), "devices": devices})
+            elif path == "/api/gps/routes":
+                # GPS qurilmasi bog'langan avtobuslar bo'yicha yo'nalishlar
+                # (qamrov allaqachon qurilmalarga qo'llangan).
+                devs = self._only_vehicles(storage.list_devices(), vehicles)
+                agg: dict = {}
+                for d in devs:
+                    rid = str(d.get("route_id") or "").strip()
+                    if not rid:
+                        continue
+                    a = agg.setdefault(rid, {"id": rid, "name": "",
+                                             "devices": 0, "online": 0})
+                    a["devices"] += 1
+                    if d.get("online"):
+                        a["online"] += 1
+                names = storage.route_names(list(agg.keys()))
+                routes = []
+                for rid, a in agg.items():
+                    a["name"] = names.get(rid) or rid
+                    routes.append(a)
+                routes.sort(key=lambda x: x["name"])
+                self._json({"ok": True, "count": len(routes), "routes": routes})
             elif path == "/api/gps/positions":
                 imes = self._allowed_imes(vehicles)
                 rows = storage.positions(
@@ -359,6 +384,16 @@ class GpsHandler(BaseHTTPRequestHandler):
             elif path == "/api/gps/geofences":
                 fences = self._only_vehicles(storage.list_geofences(), vehicles)
                 self._json({"ok": True, "count": len(fences), "geofences": fences})
+            elif path == "/api/gps/route-paths":
+                paths = storage.list_route_paths()
+                if vehicles is not None:
+                    devs = self._only_vehicles(storage.list_devices(), vehicles)
+                    allowed = {str(d.get("route_id") or "") for d in devs}
+                    paths = [p for p in paths
+                             if str(p.get("route_id") or "") in allowed]
+                for p in paths:
+                    p["points_count"] = len(p.get("points") or [])
+                self._json({"ok": True, "count": len(paths), "paths": paths})
             elif path == "/api/gps/alerts":
                 alerts = storage.list_alerts(
                     limit=int((qs.get("limit") or ["50"])[0] or 50),
@@ -531,6 +566,35 @@ class GpsHandler(BaseHTTPRequestHandler):
                     vehicle_id=str(payload.get("vehicle_id") or "").strip(),
                 )
                 self._json({"ok": True, "id": fid})
+            elif path == "/api/gps/route-paths":
+                route_id = str(payload.get("route_id") or "").strip()
+                if not route_id:
+                    self._json({"ok": False, "error": "route_id kerak"}, 400)
+                    return
+                tol = int(payload.get("tolerance_m")
+                          or config.ROUTE_DEVIATION_TOLERANCE_M)
+                name = str(payload.get("name") or "").strip()
+                if not name:
+                    name = storage.route_names([route_id]).get(route_id, "")
+                points = payload.get("points")
+                if not points or payload.get("learn"):
+                    points = route_alert.learn_route_path(
+                        route_id,
+                        date_from=str(payload.get("date_from") or "").strip(),
+                        date_to=str(payload.get("date_to") or "").strip(),
+                        imei=str(payload.get("imei") or "").strip(),
+                        simplify_m=payload.get("simplify_m"),
+                    )
+                if not points or len(points) < 2:
+                    self._json({"ok": False,
+                                "error": "yo'lak nuqtalari topilmadi"}, 400)
+                    return
+                storage.upsert_route_path(
+                    route_id=route_id, points=points, name=name,
+                    tolerance_m=tol)
+                self._json({"ok": True, "route_id": route_id,
+                            "points": len(points), "name": name,
+                            "tolerance_m": tol})
             else:
                 self._json({"error": "topilmadi"}, 404)
         except Exception as exc:  # noqa: BLE001
@@ -548,8 +612,8 @@ class GpsHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path.rstrip("/")
         parts = [p for p in path.split("/") if p]  # ["api","gps","devices",imei]
         try:
+            payload = self._payload()
             if len(parts) == 4 and parts[:3] == ["api", "gps", "devices"]:
-                payload = self._payload()
                 if "enabled" in payload:
                     storage.set_device_enabled(parts[3], bool(payload["enabled"]))
                 if "vehicle_id" in payload or "name" in payload:
@@ -561,10 +625,16 @@ class GpsHandler(BaseHTTPRequestHandler):
                 self._json({"ok": True})
                 return
             if (len(parts) == 4 and parts[:3] == ["api", "gps", "geofences"]
-                    and "enabled" in self._payload()):
+                    and "enabled" in payload):
                 storage.set_geofence_enabled(
-                    int(parts[3]), bool(self._payload()["enabled"])
+                    int(parts[3]), bool(payload["enabled"])
                 )
+                self._json({"ok": True})
+                return
+            if (len(parts) == 4 and parts[:3] == ["api", "gps", "route-paths"]
+                    and "enabled" in payload):
+                storage.set_route_path_enabled(
+                    parts[3], bool(payload["enabled"]))
                 self._json({"ok": True})
                 return
             self._json({"error": "topilmadi"}, 404)
@@ -588,6 +658,10 @@ class GpsHandler(BaseHTTPRequestHandler):
                 return
             if len(parts) == 4 and parts[:3] == ["api", "gps", "geofences"]:
                 storage.delete_geofence(int(parts[3]))
+                self._json({"ok": True})
+                return
+            if len(parts) == 4 and parts[:3] == ["api", "gps", "route-paths"]:
+                storage.delete_route_path(parts[3])
                 self._json({"ok": True})
                 return
             self._json({"error": "topilmadi"}, 404)

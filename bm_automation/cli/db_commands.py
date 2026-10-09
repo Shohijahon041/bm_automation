@@ -180,7 +180,8 @@ def cmd_db_fill_drivers(args) -> int:
             continue
         try:
             if pid:
-                client.login_by_profile(pid)
+                # 401/403 bo'lsa asosiy tokenga qaytadi (login_for_profile).
+                client.login_for_profile(pid, fallback_to_main=True)
             else:
                 use_main()
         except Exception as exc:  # noqa: BLE001 - token xatosi bir profilni to'xtatadi

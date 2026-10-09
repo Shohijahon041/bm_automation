@@ -26,9 +26,9 @@ class TestModule1Contract:
 
     def test_mandatory_equipment(self):
         eq = contract.mandatory_equipment()
-        assert len(eq) == 4
+        assert len(eq) == 3
         assert contract.equipment_complete(list(eq))
-        assert contract.equipment_complete(["GPS-tracker", "ATTO"]) is False
+        assert contract.equipment_complete(["GPS-tracker"]) is False
 
     def test_indexed_price(self):
         assert contract.indexed_price(16176, 12.0) == pytest.approx(18117.12)

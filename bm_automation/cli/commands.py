@@ -204,7 +204,7 @@ def cmd_drivers(args) -> int:
         if not route:
             route = str(profile.get("routeVariantId", ""))
         if profile.get("profileId"):
-            client.login_by_profile(profile["profileId"])
+            client.login_for_profile(profile["profileId"], fallback_to_main=True)
     rid = resolve_route_id(client, route)
     result = run_driver_sheet(
         client,

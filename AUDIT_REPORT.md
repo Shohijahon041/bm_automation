@@ -19,39 +19,35 @@ Bu auditda topilgan va **bugun tuzatilgan** muammolar:
 | Daraja | Muammo | Holat |
 |---|---|---|
 | P0 | `requirements.txt` ishchi kopyadan o'chirilgan — VDS'da `docker compose build` buzar edi | ✅ Git HEAD'dan tiklandi |
-| P0 | `bm_automation/atto_tokens.json` (jonli Atto sessiya tokeni) va `backup/` (142 MB PII'li DB dump) `.gitignore`da yo'q edi | ✅ Qo'shildi, `git check-ignore` bilan tekshirildi |
+| P0 | `backup/` (142 MB PII'li DB dump) `.gitignore`da yo'q edi | ✅ Qo'shildi, `git check-ignore` bilan tekshirildi |
 | P1 | 10 test yiqilgan (5 ta `test_ops_bot` eski deny-model, 5 ta `test_verify` sana-bog'liq) | ✅ Joriy modelga moslashtirildi; 380/380 yashil |
 | P2 | `DASHBOARD_TOKEN` hujjatlarida yo'q edi; SPA tokeni ~30 chaqiruvning faqat 1 tasida yuborardi | ✅ `.env.example`, DEPLOY_VDS.md, server-ogohlantirish va SPA wiring tuzatildi |
 | P2 | docker-compose izohi "Supabase ishlatilmaydi" deb yozgan, `.env.example` esa Supabase backup'ni sozlagan | ✅ Izohlar moslashtirildi |
-| P3 | 12 ta ishlatilmaydigan `atto_*` skript (8 tida hardcode kredensial!) paket ildizida; `tools/debug*.py`; ildizda ortiqcha loglar | ✅ `tools/atto_dev/` va `logs/`ga ko'chirildi |
+| P3 | `tools/debug*.py`; ildizda ortiqcha loglar | ✅ `tools/` va `logs/`ga ko'chirildi |
 
 ## 2. Ochiq (tuzatilmagan) tavsiyalar
 
-1. ~~**Atto parolini almashtiring**~~ — ✅ 2026-09-12: skriptlar endi
-   `.env` (`ATTO_LOGIN`/`ATTO_PASSWORD`) dan o'qiydi (`tools/atto_dev/atto_env.py`),
-   hardcode kredensiallar olib tashlandi. **Parolni baribir almashtiring** —
-   u haftalar davomida ochiq matnda yotgan.
-2. **Bitta TG_BOT_TOKEN = bitta mashina.** Windows watchdog va VDS konteyneri
+1. **Bitta TG_BOT_TOKEN = bitta mashina.** Windows watchdog va VDS konteyneri
    bir token bilan birga ishlasa, Telegram 409 (getUpdates conflict) qaytadi
    (8-sentabr logida ko'rilgan). Faqat bittasida ishga tushiring.
-3. ~~**Retention siyosati yo'q**~~ — ✅ 2026-09-12: `logs/` ham tozalanadigan
+2. ~~**Retention siyosati yo'q**~~ — ✅ 2026-09-12: `logs/` ham tozalanadigan
    bo'ldi (`cleanup.prune_logs`, 30 kun, `BM_LOGS_RETENTION_DAYS`; faol `bm.log`
    va log bo'lmagan fayllar tegilmaydi). `reports/` (30 kun) allaqachon edi.
    `data/` (haydovchi rasmlari/hujjatlari) **ataylab** TTL'dan tashqarida —
    bu arxiv ma'lumot, o'chirish kerak emas.
-4. **Repo tarixi:** hali ham bitta commit + ~170 o'zgartirilgan fayl commit
+3. **Repo tarixi:** hali ham bitta commit + ~170 o'zgartirilgan fayl commit
    qilinmagan holatda. Birinchi commitdan oldin `git status`ni secretlar bo'yicha
    yana bir marta tekshiring (`git check-ignore` hamma maxfiy yo'llarni bloklaydi).
-5. **Muhit farqi:** lokal Python 3.14 (Windows), konteyner 3.12 — asosiy oqimlar
+4. **Muhit farqi:** lokal Python 3.14 (Windows), konteyner 3.12 — asosiy oqimlar
    uchun muammo emas, lekin CI qo'shsangiz versiyani bir xillashtiring.
-6. ~~`psycopg_pool` DeprecationWarning~~ — ✅ 2026-09-12: `ConnectionPool(open=True)`
+5. ~~`psycopg_pool` DeprecationWarning~~ — ✅ 2026-09-12: `ConnectionPool(open=True)`
    aniq ko'rsatildi (`app/db/base.py`).
 
 ## 3. Tuzatishlar tafsiloti (2026-09-12)
 
 - `requirements.txt` — git HEAD'dan tiklandi (requests, python-dotenv, openpyxl,
   matplotlib, playwright, pytest, psycopg[binary]).
-- `.gitignore` — `atto_tokens.json` va `backup/` qo'shildi.
+- `.gitignore` — `backup/` qo'shildi.
 - `tests/test_verify.py` — fake site klienti endi haqiqiy API kabi faqat
   so'ralgan oraliq ichidagi kunlarni qaytaradi; `test_month_bounds` sana-bog'liqlikdan
   xalos qilindi.
@@ -67,14 +63,14 @@ Bu auditda topilgan va **bugun tuzatilgan** muammolar:
 - `.env.example` + `DEPLOY_VDS.md` — `DASHBOARD_TOKEN` hujjatlashtirildi
   (generatsiya buyrug'i bilan), Supabase zaxira izohlari to'g'irlandi.
 - `docker-compose.yml` — izoh drifti tuzatildi.
-- `bm_automation/atto_*.py` (12 fayl) → `tools/atto_dev/`; `backend2.*`,
-  `backend_job.*` → `logs/`. `schedule.log` qoldi (`run_daily.cmd` faol yozadi).
+- `backend2.*`, `backend_job.*` → `logs/`. `schedule.log` qoldi
+  (`run_daily.cmd` faol yozadi).
 
 ## 4. Tekshirish
 
 ```
 python -X utf8 -m pytest tests bm_automation/tests   # 380 passed
-git check-ignore -v bm_automation/atto_tokens.json backup/
+git check-ignore -v backup/
 ```
 
 ---

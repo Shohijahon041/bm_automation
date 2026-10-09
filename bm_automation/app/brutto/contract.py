@@ -2,8 +2,8 @@
 
 116-son qaror va tender shartlari asosida:
 - shartnoma muddati avtobusning o'rtacha yoshiga qarab 7 yilgacha;
-- GPS-tracker, ATTO validatorlar, dispetcherlik monitoringi va
-  videokuzatuv tashuvchining majburiyatlari;
+- GPS-tracker, dispetcherlik monitoringi va videokuzatuv
+  tashuvchining majburiyatlari;
 - to'lov 12 oyda bir marta CPI (iste'mol narxlari indeksi) bo'yicha
   indekslanadi;
 - yoqilg'i, elektr energiyasi yoki soliqlar 10% dan ortiq o'zgarsa,
@@ -31,7 +31,6 @@ REVIEW_THRESHOLD = 0.10      # narxni qayta ko'rib chiqish chegarasi (10%)
 
 MANDATORY_EQUIPMENT: tuple[str, ...] = (
     "GPS-tracker",
-    "ATTO validatorlar",
     "Dispetcherlik monitoringi",
     "Videokuzatuv",
 )

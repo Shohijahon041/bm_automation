@@ -2001,9 +2001,14 @@ const FEATHER = {
   "user-plus": '<path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/>',
   "message-square": '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
   "database": '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>',
+  "briefcase": '<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>',
+  "map-pin": '<path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>',
+  "video": '<polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/>',
 };
 function featherIcon(name) { const p = FEATHER[name] || FEATHER["activity"]; return `<svg viewBox="0 0 24 24" aria-hidden="true">${p}</svg>`; }
-function _initKpiIcons(root) { (root || document).querySelectorAll(".kpi-ic").forEach(el => { if (!el.dataset.ic) return; el.innerHTML = featherIcon(el.dataset.ic); }); }
+function _initKpiIcons(root) { (root || document).querySelectorAll(".kpi-ic, .nav-ic").forEach(el => { if (!el.dataset.ic) return; el.innerHTML = featherIcon(el.dataset.ic); }); }
+/* sidebar ikonkalari (statik HTML) darhol chiziladi */
+_initKpiIcons();
 /* Skeleton yuklanish ekranlari (spec §16) — ma'lumot kelguncha placeholder */
 function _showSkeletons() {
   const hero = document.getElementById("hero-body");

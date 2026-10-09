@@ -109,6 +109,14 @@
   .pct.bad{color:var(--red);border:1px solid rgba(229,72,77,.4)}
   .stops-head{display:flex;align-items:center;gap:8px;margin:12px 0 6px}
   .stops-head b{font-size:12.5px}
+  .dev-filter{padding:8px 12px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center}
+  .dev-filter select{flex:1;min-width:0;font-size:12px}
+  .dev-filter .lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;white-space:nowrap}
+  .dev-sub .rt{color:var(--teal)}
+  .play-bar{display:none;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0 6px}
+  .play-bar input[type=range]{flex:1;min-width:160px;accent-color:var(--teal)}
+  .play-bar .info{color:var(--muted);font-size:12px;white-space:nowrap;min-width:150px}
+  .play-bar select{padding:5px 8px}
 </style>
 </head>
 <body>
@@ -137,22 +145,42 @@
       </div>
       <div class="card">
         <h3>Qurilmalar <span class="hint" id="dev-count"></span></h3>
+        <div class="dev-filter">
+          <span class="lbl">Yo'nalish</span>
+          <select id="route-filter" onchange="onRouteFilter()"><option value="">Barcha yo'nalishlar</option></select>
+        </div>
         <div class="dev-list" id="dev-list"></div>
         <div style="padding:10px 12px;border-top:1px solid var(--line);display:flex;justify-content:flex-end">
           <button class="btn" onclick="openBind()">+ IMEI qo'shish / bog'lash</button>
         </div>
       </div>
       <div class="card" style="grid-column:1/-1" id="traj-card">
-        <h3>Traektoriya <span class="hint">qurilmani bosib tanlang, davrni ko'rsating</span></h3>
+        <h3>Traektoriya <span class="hint" id="traj-title">qurilmani bosib tanlang, davrni ko'rsating</span></h3>
         <div style="padding:13px">
           <div class="traj-head">
             <label class="f">Boshlanish <input type="datetime-local" id="traj-from"></label>
             <label class="f">Tugash <input type="datetime-local" id="traj-to"></label>
             <button class="btn primary" onclick="loadTraj()">Ko'rsat</button>
+            <button class="btn" onclick="presetDay(0)">Bugun</button>
+            <button class="btn" onclick="presetDay(-1)">Kecha</button>
             <button class="btn" onclick="clearTraj()">Tozalash</button>
             <button class="btn" onclick="exportTrajCsv()">⬇ CSV</button>
           </div>
           <div class="traj-stats" id="traj-stats" style="display:none"></div>
+          <div class="play-bar" id="play-bar">
+            <button class="btn primary" id="play-btn" onclick="togglePlay()">⏵ Harakat</button>
+            <label class="f" style="flex-direction:row;align-items:center;gap:6px">Tezlik
+              <select id="play-speed">
+                <option value="1">1×</option>
+                <option value="2">2×</option>
+                <option value="4" selected>4×</option>
+                <option value="8">8×</option>
+                <option value="16">16×</option>
+              </select>
+            </label>
+            <input type="range" id="play-range" min="0" max="1000" value="0" oninput="seekPlay(this.value)">
+            <span class="info" id="play-info"></span>
+          </div>
           <div class="spd-legend">
             <span>Tezlik:</span>
             <span><i style="background:#3fb6a8"></i>&le;40 km/h</span>
@@ -179,6 +207,20 @@
           </div>
           <div class="err" id="gf-err"></div>
           <div id="gf-list"></div>
+        </div>
+      </div>
+      <div class="card" style="grid-column:1/-1">
+        <h3>Yo'nalish yo'laklari <span class="hint">avtobus marshrutdan chiqsa — Telegram ogohlantirish</span></h3>
+        <div style="padding:12px">
+          <div class="traj-head">
+            <label class="f">Yo'nalish <select id="rp-route" style="min-width:170px"></select></label>
+            <label class="f">Tolerantlik (m) <input id="rp-tol" type="number" value="200" style="width:100px"></label>
+            <label class="f">O'rganish (kun) <input id="rp-days" type="number" value="7" style="width:80px"></label>
+            <button class="btn primary" onclick="learnPath()">📐 O'rganib saqlash</button>
+          </div>
+          <div class="note" style="margin-top:2px">Yo'lak avtobusning oxirgi kunlardagi harakatidan avtomatik o'rganiladi (eng boy kun tanlanadi). Keyin shu yo'nalishdagi avtobuslardan <b>tolerantlik</b>dan uzoqlashsa ogohlantirish keladi.</div>
+          <div class="err" id="rp-err"></div>
+          <div id="rp-list"></div>
         </div>
       </div>
       <div class="card" style="grid-column:1/-1">
@@ -319,32 +361,75 @@ window.addEventListener('message', function (e) {
 });
 
 /* ============ qurilmalar ============ */
-var devices = [];
+var devices = [], routes = [], routeFilter = '';
 function refresh() {
-  API.get('/api/gps/devices').then(function (d) {
-    devices = d.devices || [];
+  Promise.all([
+    API.get('/api/gps/devices'),
+    API.get('/api/gps/routes').catch(function () { return { routes: [] }; })
+  ]).then(function (rs) {
+    devices = rs[0].devices || [];
+    routes = rs[1].routes || [];
+    renderRouteFilter();
     renderStats(); renderDevices(); renderMap();
   }).catch(function (e) { setStatus('Xato: ' + e.message, true); });
 }
+function routeName(id) {
+  for (var i = 0; i < routes.length; i++) if (routes[i].id === id) return routes[i].name;
+  return id || '';
+}
+function visibleDevices() {
+  if (!routeFilter) return devices;
+  return devices.filter(function (d) { return String(d.route_id || '') === routeFilter; });
+}
+function renderRouteFilter() {
+  var sel = document.getElementById('route-filter');
+  if (sel) {
+    var opts = ['<option value="">Barcha yo\'nalishlar</option>'];
+    routes.forEach(function (r) {
+      opts.push('<option value="' + esc(r.id) + '">' + esc(r.name) + ' (' + r.devices + ')</option>');
+    });
+    sel.innerHTML = opts.join('');
+    if (routeFilter && routes.some(function (r) { return r.id === routeFilter; })) sel.value = routeFilter;
+    else routeFilter = '';
+  }
+  var rsel = document.getElementById('rp-route');
+  if (rsel) {
+    var prev = rsel.value || routeFilter;
+    rsel.innerHTML = routes.length ? routes.map(function (r) {
+      return '<option value="' + esc(r.id) + '">' + esc(r.name) + '</option>';
+    }).join('') : '<option value="">Yo\'nalish yo\'q</option>';
+    if (prev && routes.some(function (r) { return r.id === prev; })) rsel.value = prev;
+  }
+}
+function onRouteFilter() {
+  var sel = document.getElementById('route-filter');
+  routeFilter = sel ? sel.value : '';
+  renderStats(); renderDevices(); renderMap();
+}
 function renderStats() {
-  var on = devices.filter(function (d) { return d.online; }).length;
-  var moving = devices.filter(function (d) { return d.online && (d.last_speed || 0) > 3; }).length;
+  var list = visibleDevices();
+  var on = list.filter(function (d) { return d.online; }).length;
+  var moving = list.filter(function (d) { return d.online && (d.last_speed || 0) > 3; }).length;
   document.getElementById('stats').innerHTML =
-    statCard(devices.length, 'Jami qurilma', '') + statCard(on, 'Online', 'ok') +
-    statCard(moving, 'Harakatda', 'ok') + statCard(devices.length - on, 'Offline', 'bad');
+    statCard(list.length, 'Jami qurilma', '') + statCard(on, 'Online', 'ok') +
+    statCard(moving, 'Harakatda', 'ok') + statCard(list.length - on, 'Offline', 'bad');
 }
 function statCard(v, l, c) { return '<div class="stat"><b class="' + c + '">' + v + '</b><span>' + l + '</span></div>'; }
 function renderDevices() {
   var el = document.getElementById('dev-list');
-  el.innerHTML = devices.length ? devices.map(function (d) {
+  var list = visibleDevices();
+  el.innerHTML = list.length ? list.map(function (d) {
     var nm = d.name || d.plate_number || d.imei;
+    var rn = d.route_id ? routeName(d.route_id) : '';
+    var sub = (d.plate_number ? '<b>' + esc(d.plate_number) + '</b> · ' : '') + esc(d.imei);
+    if (rn) sub += ' · <span class="rt">' + esc(rn) + '</span>';
     return '<div class="dev" onclick="openTraj(\'' + d.imei + '\')">' +
       '<span class="dot ' + (d.online ? 'on' : '') + '"></span>' +
       '<div><div class="dev-name">' + esc(nm) + '</div>' +
-      '<div class="dev-sub">' + (d.plate_number ? '<b>' + esc(d.plate_number) + '</b> · ' : '') + esc(d.imei) + '</div></div>' +
+      '<div class="dev-sub">' + sub + '</div></div>' +
       '<span class="go">' + (d.online ? (d.last_speed || 0).toFixed(0) + ' km/h' : 'offline') + '</span></div>';
   }).join('') : '<div class="empty">Qurilmalar yo\'q. FMB920 TCP 5027 ga ulanganda avtomatik paydo bo\'ladi.</div>';
-  document.getElementById('dev-count').textContent = devices.length ? devices.length + ' ta' : '';
+  document.getElementById('dev-count').textContent = list.length ? list.length + ' ta' : '';
 }
 function renderMap() {
   initMaps(); initCluster();
@@ -352,13 +437,15 @@ function renderMap() {
   else Object.keys(markers).forEach(function (k) { map.removeLayer(markers[k]); });
   markers = {};
   var pts = [];
-  devices.forEach(function (d) {
+  visibleDevices().forEach(function (d) {
     if (d.last_lat == null || d.last_lng == null) return;
     var nm = d.name || d.plate_number || d.imei;
+    var rn = d.route_id ? routeName(d.route_id) : '';
     var m = L.marker([d.last_lat, d.last_lng], {
       icon: L.divIcon({ className: '', html: '<span class="dev-pin ' + (d.online ? 'on' : 'off') + '"></span>', iconSize: [14, 14], iconAnchor: [7, 7] })
     });
     m.bindPopup('<b>' + esc(nm) + '</b><br>' +
+      (rn ? "Yo'nalish: " + esc(rn) + '<br>' : '') +
       (d.plate_number ? 'Avtobus: ' + esc(d.plate_number) + '<br>' : '') +
       'Tezlik: ' + (d.last_speed || 0).toFixed(0) + ' km/h<br>' +
       '<a href="#" onclick="openTraj(\'' + d.imei + '\');return false">Traektoriya &#9656;</a>');
@@ -370,13 +457,25 @@ function renderMap() {
 
 /* ============ traektoriya ============ */
 var curImei = '', curPts = [], curStops = [], trajSegs = [], stopMarkers = [];
+var playTimer = null, playIdx = 0, playMarker = null, playing = false;
 var SEG_COLORS = { slow: '#3fb6a8', mid: '#f0a93e', fast: '#e5484d' };
 function openTraj(imei) {
   curImei = imei;
   document.getElementById('traj-from').value = dtToday(0);
   document.getElementById('traj-to').value = dtToday(1);
+  var dv = null;
+  for (var i = 0; i < devices.length; i++) if (devices[i].imei === imei) dv = devices[i];
+  var title = dv ? (dv.name || dv.plate_number || imei) : imei;
+  if (dv && dv.route_id) title += ' · ' + routeName(dv.route_id);
+  var te = document.getElementById('traj-title');
+  if (te) te.textContent = title;
   var card = document.getElementById('traj-card');
   if (card) card.scrollIntoView({ behavior: 'smooth' });
+  loadTraj();
+}
+function presetDay(off) {
+  document.getElementById('traj-from').value = ymd(off) + 'T00:00';
+  document.getElementById('traj-to').value = ymd(off) + 'T23:59';
   loadTraj();
 }
 function todayStr() { var d = new Date(); return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()); }
@@ -404,6 +503,12 @@ function loadTraj() {
   }).catch(function (e) { trajErr(e.message); });
 }
 function clearTraj() {
+  stopPlay();
+  if (playMarker && trajMap) { trajMap.removeLayer(playMarker); playMarker = null; }
+  playIdx = 0;
+  var pr = document.getElementById('play-range'); if (pr) pr.value = 0;
+  var pb = document.getElementById('play-bar'); if (pb) pb.style.display = 'none';
+  updatePlayInfo();
   trajSegs.forEach(function (l) { trajMap.removeLayer(l); });
   trajSegs = [];
   if (trajStart) { trajMap.removeLayer(trajStart); trajStart = null; }
@@ -450,13 +555,77 @@ function drawTraj(pts, stops) {
   var sp = pts.map(function (p) { return p.speed || 0; });
   var mx = Math.max.apply(null, sp);
   var avg = sp.reduce(function (a, b) { return a + b; }, 0) / sp.length;
+  var durSec = 0;
+  if (pts[0].ts && last.ts) durSec = Math.max(0, (new Date(last.ts) - new Date(pts[0].ts)) / 1000);
   document.getElementById('traj-stats').innerHTML =
     statCard((dist / 1000).toFixed(1) + ' km', 'Masofa', '') +
+    statCard(durSec ? durHm(durSec) : '—', 'Davomiylik', '') +
     statCard(mx.toFixed(0) + ' km/h', 'Maks tezlik', '') +
-    statCard(avg.toFixed(0) + ' km/h', 'Ort. tezlik', '') +
-    statCard(pts.length, 'Nuqtalar', '');
+    statCard(avg.toFixed(0) + ' km/h', 'Ort. tezlik', '');
   document.getElementById('traj-stats').style.display = 'grid';
   renderStops(curStops);
+  resetPlay(pts);
+}
+/* --- harakatlanish tarixi pleeri --- */
+function resetPlay(pts) {
+  stopPlay();
+  playIdx = 0;
+  if (playMarker && trajMap) { trajMap.removeLayer(playMarker); playMarker = null; }
+  var bar = document.getElementById('play-bar');
+  if (!pts || !pts.length) { if (bar) bar.style.display = 'none'; return; }
+  playMarker = L.circleMarker([pts[0].lat, pts[0].lng],
+    { radius: 8, color: '#fff', weight: 3, fillColor: '#2f9d91', fillOpacity: 1 })
+    .bindTooltip('Harakat', { direction: 'top' }).addTo(trajMap);
+  var pr = document.getElementById('play-range'); if (pr) pr.value = 0;
+  if (bar) bar.style.display = 'flex';
+  updatePlayInfo();
+}
+function togglePlay() { if (playing) stopPlay(); else startPlay(); }
+function startPlay() {
+  if (!curPts.length) return;
+  if (!playMarker) resetPlay(curPts);
+  playing = true;
+  var b = document.getElementById('play-btn'); if (b) b.textContent = '⏸ To\'xtat';
+  if (playTimer) clearInterval(playTimer);
+  playTimer = setInterval(stepPlay, 120);
+}
+function stopPlay() {
+  if (playTimer) { clearInterval(playTimer); playTimer = null; }
+  playing = false;
+  var b = document.getElementById('play-btn'); if (b) b.textContent = '⏵ Harakat';
+}
+function playStep() {
+  var sel = document.getElementById('play-speed');
+  var sp = parseFloat(sel && sel.value) || 4;
+  return Math.max(1, Math.round(curPts.length / 400 * sp));
+}
+function stepPlay() {
+  if (!curPts.length) { stopPlay(); return; }
+  playIdx += playStep();
+  if (playIdx >= curPts.length - 1) { playIdx = curPts.length - 1; placePlay(); stopPlay(); return; }
+  placePlay();
+}
+function placePlay() {
+  var p = curPts[playIdx];
+  if (!p) return;
+  if (playMarker) playMarker.setLatLng([p.lat, p.lng]);
+  if (trajMap) trajMap.panTo([p.lat, p.lng], { animate: false });
+  var pr = document.getElementById('play-range');
+  if (pr && curPts.length > 1) pr.value = Math.round(playIdx / (curPts.length - 1) * 1000);
+  updatePlayInfo();
+}
+function seekPlay(v) {
+  if (!curPts.length) return;
+  stopPlay();
+  if (!playMarker) resetPlay(curPts);
+  playIdx = Math.round(v / 1000 * (curPts.length - 1));
+  placePlay();
+}
+function updatePlayInfo() {
+  var el = document.getElementById('play-info');
+  if (!el) return;
+  var p = curPts[playIdx];
+  el.textContent = p ? hm(p.ts) + ' · ' + (p.speed || 0).toFixed(0) + ' km/h' : '';
 }
 function hm(iso) {
   var d = new Date(iso);
@@ -694,14 +863,77 @@ function renderFences() {
 }
 function toggleGf(id, en) { API.patch('/api/gps/geofences/' + id, { enabled: !!en }).then(loadFences); }
 function delGf(id) { if (!confirm("Zonani o'chirish?")) return; API.del('/api/gps/geofences/' + id).then(loadFences); }
+
+/* ============ yo'nalish yo'laklari (marshrutdan chiqish) ============ */
+var routePaths = [], corridorLayer = null;
+function loadRoutePaths() {
+  API.get('/api/gps/route-paths').then(function (d) {
+    routePaths = d.paths || [];
+    renderRoutePaths();
+    drawRoutePaths();
+  }).catch(function () {});
+}
+function renderRoutePaths() {
+  var el = document.getElementById('rp-list');
+  if (!el) return;
+  if (!routePaths.length) {
+    el.innerHTML = '<div class="empty">Yo\'laklar yo\'q. Yo\'nalishni tanlab "O\'rganib saqlash" tugmasini bosing.</div>';
+    return;
+  }
+  el.innerHTML = '<table class="mini"><tr><th>Yo\'nalish</th><th>Nuqtalar</th><th>Tolerantlik</th><th>Holat</th><th></th></tr>' +
+    routePaths.map(function (p) {
+      var nm = p.name || p.route_id;
+      var n = p.points_count || (p.points ? p.points.length : 0);
+      return '<tr><td><b>' + esc(nm) + '</b><div class="dev-sub">' + esc(p.route_id) + '</div></td>' +
+        '<td>' + n + '</td><td>' + (p.tolerance_m || 0) + ' m</td>' +
+        '<td>' + (p.enabled ? '<span class="badge hls">YOQILGAN</span>' : '<span class="badge">O\'CHIRILGAN</span>') + '</td>' +
+        '<td style="text-align:right"><button class="btn" onclick="toggleRp(\'' + esc(p.route_id) + '\',' + (p.enabled ? 0 : 1) + ')">' + (p.enabled ? 'O\'chir' : 'Yoq') + '</button> ' +
+        '<button class="btn danger" onclick="delRp(\'' + esc(p.route_id) + '\')">✕</button></td></tr>';
+    }).join('') + '</table>';
+}
+function learnPath() {
+  var err = document.getElementById('rp-err');
+  var rid = document.getElementById('rp-route').value;
+  if (!rid) { err.textContent = "Yo'nalish tanlang"; err.style.display = 'block'; return; }
+  var tol = parseInt(document.getElementById('rp-tol').value, 10) || 200;
+  var days = parseInt(document.getElementById('rp-days').value, 10) || 7;
+  err.style.display = 'none';
+  API.post('/api/gps/route-paths', {
+    route_id: rid, learn: true, tolerance_m: tol,
+    date_from: ymd(-days), date_to: ymd(0)
+  }).then(function () { loadRoutePaths(); })
+    .catch(function (e) { err.textContent = e.message; err.style.display = 'block'; });
+}
+function toggleRp(rid, en) { API.patch('/api/gps/route-paths/' + encodeURIComponent(rid), { enabled: !!en }).then(loadRoutePaths); }
+function delRp(rid) { if (!confirm("Yo'lakni o'chirish?")) return; API.del('/api/gps/route-paths/' + encodeURIComponent(rid)).then(loadRoutePaths); }
+function drawRoutePaths() {
+  if (!map || !window.L) return;
+  if (!corridorLayer) { corridorLayer = L.layerGroup().addTo(map); }
+  corridorLayer.clearLayers();
+  routePaths.forEach(function (p) {
+    var pts = p.points || [];
+    if (pts.length < 2) return;
+    var ll = pts.map(function (q) { return [q[0], q[1]]; });
+    L.polyline(ll, {
+      color: p.enabled ? '#8b5cf6' : '#6b7280', weight: 3,
+      opacity: p.enabled ? 0.75 : 0.35, dashArray: '6 6'
+    }).bindTooltip("Yo'lak: " + (p.name || p.route_id), { sticky: true })
+      .addTo(corridorLayer);
+  });
+}
 function loadAlerts() {
   API.get('/api/gps/alerts?limit=50').then(function (d) {
     alerts = d.alerts || [];
     document.getElementById('al-count').textContent = alerts.length ? alerts.length + ' ta' : '';
     document.getElementById('al-list').innerHTML = alerts.length ? alerts.map(function (a) {
-      var kind = a.kind === 'overspeed'
-        ? '<span class="m warn">⚡️ tezlik oshdi</span>'
-        : '<span class="m">🚨 zonadan chiqdi</span>';
+      var KINDS = {
+        overspeed: ['warn', '⚡️ tezlik oshdi'],
+        route_deviation: ['bad', "🛣 marshrutdan chiqdi"],
+        idling: ['warn', '🅿️ bekorchi ish'],
+        offline: ['bad', '📵 aloqa uzildi']
+      };
+      var k = KINDS[a.kind] || ['', '🚨 zonadan chiqdi'];
+      var kind = '<span class="m ' + k[0] + '">' + k[1] + '</span>';
       return '<div class="al"><span class="t">' + esc(String(a.ts || '').replace('T', ' ').slice(0, 16)) + '</span>' +
         kind + '<span><b>' + esc(a.vehicle_id || a.imei) + '</b> · ' + esc(a.message) + '</span></div>';
     }).join('') : '<div class="empty">Ogohlantirishlar yo\'q — hammasi tartibda.</div>';
@@ -821,6 +1053,7 @@ document.getElementById('vm-to').value = ymd(-1);
 refresh();
 refreshCams();
 loadFences();
+loadRoutePaths();
 loadAlerts();
 loadVsManual();
 initSearch();

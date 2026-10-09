@@ -19,11 +19,11 @@ from tests.sqlite_backend import SQLiteDatabase
 
 _FAKE_DEVICES = [
     {"imei": "111", "vehicle_id": "v1", "name": "A", "online": True,
-     "last_speed": 5},
+     "last_speed": 5, "route_id": "r1"},
     {"imei": "222", "vehicle_id": "v2", "name": "B", "online": True,
-     "last_speed": 0},
+     "last_speed": 0, "route_id": "r2"},
     {"imei": "333", "vehicle_id": "", "name": "C", "online": False,
-     "last_speed": 0},
+     "last_speed": 0, "route_id": ""},
 ]
 _FAKE_CAMERAS = [
     {"id": 1, "name": "k1", "vehicle_id": "v1", "url": "cam1"},
@@ -44,6 +44,12 @@ _FAKE_DAILY = [
 _FAKE_POSITIONS = [
     {"imei": "111", "vehicle_id": "v1", "ts": 1},
     {"imei": "222", "vehicle_id": "v2", "ts": 2},
+]
+_FAKE_PATHS = [
+    {"route_id": "r1", "name": "1-yo'nalish", "tolerance_m": 150,
+     "enabled": 1, "points": [[41.0, 69.0], [41.0, 69.01]]},
+    {"route_id": "r2", "name": "2-yo'nalish", "tolerance_m": 150,
+     "enabled": 1, "points": [[40.0, 69.0], [40.0, 69.01]]},
 ]
 
 _SCOPE = {"username": "ali", "role": "DIRECTOR", "company": "XTEST",
@@ -94,8 +100,11 @@ def env(monkeypatch, tmp_path):
     st = storage_for(db)
     st.save_vehicle(external_id="v1", route_id="r1")
     st.save_vehicle(external_id="v2", route_id="r2")
+    st.save_route(external_id="r1", name="1-yo'nalish")
+    st.save_route(external_id="r2", name="2-yo'nalish")
     monkeypatch.setattr("bm_automation.app.db.storage.get_storage",
                         lambda: st)
+    monkeypatch.setattr(gstorage, "get_storage", lambda: st)
     monkeypatch.setattr(gstorage, "list_devices", lambda: _FAKE_DEVICES)
     monkeypatch.setattr(gstorage, "list_cameras", lambda: _FAKE_CAMERAS)
     monkeypatch.setattr(gstorage, "list_geofences", lambda: _FAKE_FENCES)
@@ -103,6 +112,9 @@ def env(monkeypatch, tmp_path):
                         lambda limit=50, imei="": _FAKE_ALERTS)
     monkeypatch.setattr(gstorage, "daily",
                         lambda imei="", date_from="", date_to="": _FAKE_DAILY)
+    monkeypatch.setattr(
+        gstorage, "list_route_paths",
+        lambda only_enabled=False: _FAKE_PATHS)
     monkeypatch.setattr(
         gstorage, "positions",
         lambda imei="", vehicle_id="", date_from="", date_to="",
@@ -187,6 +199,113 @@ def test_company_without_routes_fail_closed(env, monkeypatch):
     status, data = _request(monkeypatch, "/api/gps/devices",
                             headers=_auth(), scope=scope)
     assert status == 200 and data["devices"] == []
+
+
+def test_routes_scoped_and_named(env, monkeypatch):
+    """/api/gps/routes qurilmalardan yo'nalishlarni nom bilan yig'adi."""
+    status, data = _request(monkeypatch, "/api/gps/routes",
+                            headers=_auth(), scope=_SCOPE)
+    assert status == 200 and data["ok"] is True
+    # Faqat kompaniya qurilmasi (v1 -> r1) kiradi.
+    assert [r["id"] for r in data["routes"]] == ["r1"]
+    r = data["routes"][0]
+    assert r["name"] == "1-yo'nalish"
+    assert r["devices"] == 1 and r["online"] == 1
+    # ADMIN (sessiyasiz) hammasini ko'radi (r1, r2) — nom bo'yicha saralangan.
+    status, data = _request(monkeypatch, "/api/gps/routes",
+                            headers=_auth(), scope=None)
+    assert [r["id"] for r in data["routes"]] == ["r1", "r2"]
+    assert [r["name"] for r in data["routes"]] == ["1-yo'nalish", "2-yo'nalish"]
+
+
+def test_devices_route_filter(env, monkeypatch):
+    """?route= qurilmalarni yo'nalish bo'yicha filtrlaydi."""
+    status, data = _request(monkeypatch, "/api/gps/devices?route=r2",
+                            headers=_auth(), scope=None)
+    assert status == 200
+    assert [d["imei"] for d in data["devices"]] == ["222"]
+    status, data = _request(monkeypatch, "/api/gps/devices?route=r1",
+                            headers=_auth(), scope=None)
+    assert [d["imei"] for d in data["devices"]] == ["111"]
+    # Boshqa kompaniya qurilmasi qamrovdan tashqari — bo'sh.
+    status, data = _request(monkeypatch, "/api/gps/devices?route=r2",
+                            headers=_auth(), scope=_SCOPE)
+    assert status == 200 and data["devices"] == []
+
+
+def test_route_paths_scoped(env, monkeypatch):
+    """/api/gps/route-paths qamrovga rioya qiladi (faqat o'z yo'nalishi)."""
+    status, data = _request(monkeypatch, "/api/gps/route-paths",
+                            headers=_auth(), scope=_SCOPE)
+    assert status == 200
+    assert [p["route_id"] for p in data["paths"]] == ["r1"]
+    assert data["paths"][0]["points_count"] == 2
+    # ADMIN — hammasi.
+    status, data = _request(monkeypatch, "/api/gps/route-paths",
+                            headers=_auth(), scope=None)
+    assert sorted(p["route_id"] for p in data["paths"]) == ["r1", "r2"]
+
+
+def test_route_paths_admin_write_only(env, monkeypatch):
+    """Yo'lak saqlash/toggle/o'chirish faqat ADMIN uchun."""
+    body = b'{"route_id":"r1","points":[[41.0,69.0],[41.0,69.01]]}'
+    status, _ = _request(monkeypatch, "/api/gps/route-paths", method="POST",
+                         headers=_auth(), scope=_SCOPE, body=body)
+    assert status == 403
+    status, _ = _request(monkeypatch, "/api/gps/route-paths/r1",
+                         method="PATCH", headers=_auth(), scope=_SCOPE,
+                         body=b'{"enabled":false}')
+    assert status == 403
+    status, _ = _request(monkeypatch, "/api/gps/route-paths/r1",
+                         method="DELETE", headers=_auth(), scope=_SCOPE)
+    assert status == 403
+
+
+def test_route_paths_save_and_learn(env, monkeypatch):
+    saved = []
+    monkeypatch.setattr(
+        gstorage, "upsert_route_path",
+        lambda route_id, points, name="", tolerance_m=150:
+        saved.append((route_id, len(points), name, tolerance_m)) or True)
+    # Qo'lda nuqtalar bilan saqlash (nom route_names'dan olinadi).
+    status, data = _request(
+        monkeypatch, "/api/gps/route-paths", method="POST", headers=_auth(),
+        scope=None, body=b'{"route_id":"r1","points":[[41.0,69.0],[41.0,69.01]]}')
+    assert status == 200 and data["ok"] is True and data["points"] == 2
+    assert saved[-1] == ("r1", 2, "1-yo'nalish",
+                         gps_api.config.ROUTE_DEVIATION_TOLERANCE_M)
+    # O'rganish (points yo'q) — route_alert.learn_route_path chaqiriladi.
+    monkeypatch.setattr(
+        gps_api.route_alert, "learn_route_path",
+        lambda route_id, date_from="", date_to="", imei="", simplify_m=None:
+        [[41.0, 69.0], [41.0, 69.01], [41.0, 69.02]])
+    status, data = _request(
+        monkeypatch, "/api/gps/route-paths", method="POST", headers=_auth(),
+        scope=None, body=b'{"route_id":"r1","learn":true,"tolerance_m":250}')
+    assert status == 200 and data["points"] == 3
+    assert saved[-1][3] == 250
+    # O'rganish natijasi bo'sh -> 400.
+    monkeypatch.setattr(gps_api.route_alert, "learn_route_path",
+                        lambda *a, **k: [])
+    status, _ = _request(
+        monkeypatch, "/api/gps/route-paths", method="POST", headers=_auth(),
+        scope=None, body=b'{"route_id":"r2","learn":true}')
+    assert status == 400
+
+
+def test_route_paths_patch_delete(env, monkeypatch):
+    toggled, deleted = [], []
+    monkeypatch.setattr(gstorage, "set_route_path_enabled",
+                        lambda rid, en: toggled.append((rid, en)))
+    monkeypatch.setattr(gstorage, "delete_route_path",
+                        lambda rid: deleted.append(rid))
+    status, _ = _request(monkeypatch, "/api/gps/route-paths/r1",
+                         method="PATCH", headers=_auth(), scope=None,
+                         body=b'{"enabled":false}')
+    assert status == 200 and toggled == [("r1", False)]
+    status, _ = _request(monkeypatch, "/api/gps/route-paths/r1",
+                         method="DELETE", headers=_auth(), scope=None)
+    assert status == 200 and deleted == ["r1"]
 
 
 # ----------------------------------------------------------- boshqaruv

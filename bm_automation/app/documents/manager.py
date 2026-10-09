@@ -67,6 +67,17 @@ class DocumentManager:
             row["attachments"] = json_loads(row.get("attachments", "[]"))
         return row
 
+    def autofill_data(self, driver_id: str = "") -> dict[str, Any]:
+        """Haydovchi bo'yicha avto-to'ldirish qiymatlari (live ko'rinish).
+
+        Dashboard `/api/documents/autofill` dan chaqiriladi; frontend
+        ``field_values`` xaritasini kutadi (barcha shablon maydonlari).
+        """
+        did = str(driver_id or "").strip()
+        ctx = driver_autofill_context(did)
+        return {"ok": True, "driver_id": did,
+                "field_values": autofill_field_values("", ctx)}
+
     def create_document(self, template_key: str, fields: dict[str, str],
                         title: str = "", status: str = "draft",
                         driver_id: str = "",

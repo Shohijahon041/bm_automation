@@ -13,7 +13,7 @@ fund, master) — barcha izohlar o'zbekcha (lotin), uslub snake_case.
 
 Master prompt talabi:
 - shartnoma muddati avtobusning o'rtacha yoshiga qarab **7 yilgacha**;
-- tashuvchida GPS-tracker, ATTO validatorlar, dispetcherlik monitoringi
+- tashuvchida GPS-tracker, dispetcherlik monitoringi
   va videokuzatuv **majburiy**;
 - to'lov (SKM) har **12 oyda bir marta CPI** bo'yicha indekslanadi;
 - yoqilg'i, elektr energiyasi yoki soliqlar **10% dan ortiq** o'zgarsa,

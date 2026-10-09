@@ -66,11 +66,12 @@ def start_background() -> bool:
                 return
             # Fon xizmatlari: RTSP relay + kunlik rollup + hisobot (har biri fail-safe)
             try:
-                from . import relay, report, rollup
+                from . import offline, relay, report, rollup
 
                 relay.start_monitor(lambda: storage.list_cameras())
                 rollup.start_monitor()
                 report.start_monitor()
+                offline.start_monitor()
             except Exception:  # noqa: BLE001
                 log.exception("GPS fon xizmatlari ishga tushmadi (davom etamiz)")
             httpd = run_api(config.GPS_API_HOST, config.GPS_API_PORT)

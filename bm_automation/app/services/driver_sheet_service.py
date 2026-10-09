@@ -310,7 +310,8 @@ def run_all(
             continue
         try:
             if pid:
-                client.login_by_profile(pid)
+                # 401/403 bo'lsa login_for_profile asosiy tokenga qaytadi.
+                client.login_for_profile(pid, fallback_to_main=True)
             res = run(
                 client,
                 route_id,

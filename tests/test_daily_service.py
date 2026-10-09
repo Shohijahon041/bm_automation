@@ -143,3 +143,220 @@ def test_auth_error_detection():
     assert _auth_error([{"error": "avtorizatsiya talab qilinadi"}]) is True
     assert _auth_error([{"monthly_error": "HTTP 401 talab"}]) is True
     assert _auth_error([{"error": "boshqa xato"}]) is False
+
+
+def _daily_env(monkeypatch, calls, profile, raise_token=False):
+    """run_daily_once token oqimi testlari uchun izolyatsiya."""
+    from types import SimpleNamespace
+
+    from bm_automation.app.services import daily_service as ds
+
+    class _FakeClient:
+        def __init__(self):
+            self.access_token = "main-access"
+            self.refresh_token = "main-refresh"
+            self.session = SimpleNamespace(headers={})
+
+        def login(self):
+            calls.append(("login",))
+
+        def login_for_profile(self, pid, fallback_to_main=True):
+            calls.append(("login_for_profile", pid, fallback_to_main))
+            if raise_token:
+                raise RuntimeError("boshqa xato")
+
+        def login_by_profile(self, pid):  # eski yo'l — chaqirilmasligi kerak
+            calls.append(("login_by_profile", pid))
+
+    def _fake_sheet(*_a, **_k):
+        calls.append(("run_sheet",))
+        return {"image": "sheet.png", "sent": True}
+
+    monkeypatch.setattr(ds, "BMClient", _FakeClient)
+    monkeypatch.setattr(ds, "all_profiles", lambda: [profile])
+    monkeypatch.setattr(ds, "run_sheet", _fake_sheet)
+    monkeypatch.setattr(ds, "run_summary",
+                        lambda *_a, **_k: {"excel_file": "monthly.xlsx",
+                                           "days_with_duty": 5})
+    return ds
+
+
+def test_run_daily_once_uses_login_for_profile(monkeypatch):
+    """Profil tokeni login_for_profile orqali olinadi (401/403 fallback) —
+    kompaniya butunlay o'tkazib yuborilmaydi (AND ECO 401 holati)."""
+    calls = []
+    profile = {"name": "AND ECO TRANSPORT MCHJ", "profileId": "p-1",
+               "routeVariantId": "r-1"}
+    ds = _daily_env(monkeypatch, calls, profile)
+
+    results = ds.run_daily_once(send=False)
+
+    assert ("login_for_profile", "p-1", True) in calls
+    assert not any(c[0] == "login_by_profile" for c in calls)
+    assert ("run_sheet",) in calls
+    assert results[0]["profile"] == "AND ECO TRANSPORT MCHJ"
+    assert results[0].get("error") is None
+
+
+def test_run_daily_once_token_error_skips_profile(monkeypatch):
+    """401/403 dan boshqa token xatosi — kompaniya o'tkazib yuboriladi
+    (xato yozib qo'yiladi, jadval yaratilmaydi)."""
+    calls = []
+    profile = {"name": "AND ECO TRANSPORT MCHJ", "profileId": "p-1",
+               "routeVariantId": "r-1"}
+    ds = _daily_env(monkeypatch, calls, profile, raise_token=True)
+
+    results = ds.run_daily_once(send=False)
+
+    assert ("run_sheet",) not in calls
+    assert results[0]["error"].startswith("kompaniya tokeni olinmadi")
+
+
+def test_run_all_uses_login_for_profile(monkeypatch, tmp_path):
+    """'Grafik' oqimi (run_all) ham 401/403 da asosiy tokenga qaytadi."""
+    from bm_automation.app.core import profiles as profiles_mod
+    from bm_automation.app.services import driver_sheet_service as dss
+
+    calls = []
+    profile = {"name": "AND ECO TRANSPORT MCHJ", "profileId": "p-9",
+               "routeVariantId": "r-9"}
+    monkeypatch.setattr(profiles_mod, "all_profiles", lambda: [profile])
+
+    class _FakeClient:
+        def login_for_profile(self, pid, fallback_to_main=True):
+            calls.append(("login_for_profile", pid, fallback_to_main))
+
+        def login_by_profile(self, pid):
+            calls.append(("login_by_profile", pid))
+
+    def _fake_run(client, route_id, **_kw):
+        calls.append(("run", route_id))
+        return {"image": "x.png", "profile": profile["name"]}
+
+    monkeypatch.setattr(dss, "run", _fake_run)
+
+    results = dss.run_all(_FakeClient(), date_str="2026-10-09",
+                          out_dir=str(tmp_path), send=False)
+
+    assert ("login_for_profile", "p-9", True) in calls
+    assert not any(c[0] == "login_by_profile" for c in calls)
+    assert results[0]["profile"] == "AND ECO TRANSPORT MCHJ"
+    assert results[0]["image"] == "x.png"
+
+
+# ------------------------------------------------ oylik dedup (retry spam)
+
+def _monthly_env(monkeypatch, tmp_path, calls):
+    """run_daily_once(send=True) oylik dedup testlari uchun izolyatsiya."""
+    from types import SimpleNamespace
+
+    from bm_automation.app.db import storage as storage_mod
+    from bm_automation.app.db import sync as sync_mod
+    from bm_automation.app.notifications import driver_schedule as drv_mod
+    from bm_automation.app.notifications import sms_notify as sms_mod
+    from bm_automation.app.services import daily_service as ds
+
+    sent_docs = []
+
+    class _FakeClient:
+        def __init__(self):
+            self.access_token = "main-access"
+            self.refresh_token = "main-refresh"
+            self.session = SimpleNamespace(headers={})
+
+        def login(self):
+            calls.append(("login",))
+
+        def login_for_profile(self, pid, fallback_to_main=True):
+            calls.append(("login_for_profile", pid, fallback_to_main))
+
+    profile = {"name": "AND ECO TRANSPORT MCHJ", "profileId": "p-1",
+               "routeVariantId": "r-1"}
+    monkeypatch.setattr(ds, "BMClient", _FakeClient)
+    monkeypatch.setattr(ds, "all_profiles", lambda: [profile])
+    monkeypatch.setattr(ds, "run_sheet",
+                        lambda *_a, **_k: {"image": "sheet.png", "sent": True,
+                                           "no_group": True})
+    monkeypatch.setattr(ds, "run_summary",
+                        lambda *_a, **_k: {"excel_file": "monthly.xlsx",
+                                           "days_with_duty": 5})
+    monkeypatch.setattr(ds, "send_document",
+                        lambda f, caption="", chat_id=None, **kw:
+                        sent_docs.append((str(chat_id), f)) or True)
+    monkeypatch.setattr(ds, "resend_keyboard", lambda *a, **k: None)
+    monkeypatch.setattr(ds, "MONTHLY_SENT_STATE", tmp_path / "daily_monthly_sent.json")
+    monkeypatch.setattr(storage_mod, "get_storage", lambda: object())
+    monkeypatch.setattr(sync_mod, "sync_duties",
+                        lambda *a, **k: SimpleNamespace(error=None))
+    monkeypatch.setattr(drv_mod, "send_driver_schedule_notifications",
+                        lambda *a, **k: {"sent": 0, "failed": 0, "errors": []})
+    monkeypatch.setattr(sms_mod, "send_driver_schedule_sms",
+                        lambda *a, **k: {"sent": 0, "failed": 0, "invalid": 0,
+                                         "removed": 0, "errors": []})
+    return ds, sent_docs
+
+
+def test_run_daily_once_monthly_not_resent_on_retry(monkeypatch, tmp_path):
+    """Retry urinishida (jadval 404 tufayli) oylik Excel qayta
+    yuborilmaydi — bugungi 6 marta takror yuborilish muammosi."""
+    calls = []
+    ds, sent_docs = _monthly_env(monkeypatch, tmp_path, calls)
+
+    r1 = ds.run_daily_once(send=True)
+    assert r1[0]["monthly_sent"] is True
+    assert len(sent_docs) == 1
+    assert _has_failures(r1) is False
+
+    r2 = ds.run_daily_once(send=True)
+    assert r2[0]["monthly_sent"] is True
+    assert r2[0]["monthly_already_sent"] is True
+    assert not r2[0].get("monthly_error")
+    assert len(sent_docs) == 1              # takror yuborilmadi
+    assert _has_failures(r2) is False
+
+
+def test_run_daily_once_monthly_manual_resend_always_sends(monkeypatch, tmp_path):
+    """Qo'lda /resend (shaxsiy chat_id) dedupdan qat'i nazar yuboriladi."""
+    calls = []
+    ds, sent_docs = _monthly_env(monkeypatch, tmp_path, calls)
+
+    ds.run_daily_once(send=True)                 # avtomatik — 1 marta
+    ds.run_daily_once(send=True, chat_id="777")  # qo'lda — yana yuboriladi
+
+    assert len(sent_docs) == 2
+    assert sent_docs[1][0] == "777"
+
+
+def test_run_daily_once_monthly_group_chat_dedups(monkeypatch, tmp_path):
+    """Guruh chat_id bilan ham retry takror yubormaydi."""
+    calls = []
+    ds, sent_docs = _monthly_env(monkeypatch, tmp_path, calls)
+
+    ds.run_daily_once(send=True, chat_id="-100G")
+    ds.run_daily_once(send=True, chat_id="-100G")
+
+    assert len(sent_docs) == 1
+
+
+def test_run_daily_once_monthly_error_allows_retry(monkeypatch, tmp_path):
+    """Oylik yuborish xato bo'lsa belgilanmaydi — keyingi urinishda qayta."""
+    calls = []
+    ds, sent_docs = _monthly_env(monkeypatch, tmp_path, calls)
+
+    attempts = {"n": 0}
+
+    def _fail_once(f, caption="", chat_id=None, **kw):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RuntimeError("telegram xatosi")
+        sent_docs.append((str(chat_id), f))
+        return True
+
+    monkeypatch.setattr(ds, "send_document", _fail_once)
+
+    r1 = ds.run_daily_once(send=True)
+    assert r1[0]["monthly_error"] == "telegram xatosi"
+
+    r2 = ds.run_daily_once(send=True)
+    assert r2[0]["monthly_sent"] is True
+    assert len(sent_docs) == 1
