@@ -16,6 +16,7 @@ Foydalanish:
 from __future__ import annotations
 
 import sys
+import time
 
 from playwright.sync_api import TimeoutError as PWTimeout
 from playwright.sync_api import sync_playwright
@@ -29,6 +30,18 @@ SITE_BASES = {
 }
 
 ONEID_HREF_PART = "sso.egov.uz"
+
+# /sign-in sahifasi ba'zi IP'larda (masalan, server — datacenter IP) 403
+# qaytaradi. Shu sababli to'g'ridan-to'g'ri SSO oqimi ishlatiladi:
+# id.egov.uz'da login qilinadi, qaytish havolasidagi `code` ushlanadi
+# (bloklangan sahifa yuklanmaydi) va BM API orqali token olinadi.
+PROD_SITE = "https://bm.dtransport.uz"
+DIRECT_SSO_URL = (
+    "https://sso.egov.uz/sso/oauth/Authorization.do?response_type=one_code"
+    "&client_id=bm_dtransport_uz"
+    "&redirect_uri=https%3A%2F%2Fbm.dtransport.uz%2Flogin%2Foneid"
+    "&scope=myportal&state=testState"
+)
 
 
 def _site_base(api_base: str) -> str:
@@ -123,6 +136,76 @@ def _select_organization(page, want: str):
     return True
 
 
+def _direct_sso_code(username: str, password: str, headless: bool, timeout: int) -> str:
+    """id.egov.uz orqali kirib, qaytish havolasidagi OneID `code`ni ushlaydi.
+
+    Bloklangan /sign-in sahifasi umuman yuklanmaydi — faqat sso.egov.uz /
+    id.egov.uz ishlatiladi; qaytish URL'i (`/login/oneid?code=...`) esa
+    yuklanmasdan bekor qilinadi va `code` ushlanadi.
+    """
+    code_box = {"code": ""}
+
+    def on_request(request):
+        url = request.url
+        if "/login/oneid" in url and "code=" in url and not code_box["code"]:
+            code_box["code"] = url.split("code=")[1].split("&")[0]
+            try:
+                request.abort()
+            except Exception:
+                pass
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=headless)
+        context = browser.new_context(ignore_https_errors=True, locale="uz")
+        page = context.new_page()
+        page.on("request", on_request)
+        page.goto(DIRECT_SSO_URL, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(2000)
+        if not _fill_oneid(page, username, password):
+            browser.close()
+            raise RuntimeError("OneID login formasi topilmadi")
+        _handle_sms_if_needed(page, interactive=not headless)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and not code_box["code"]:
+            page.wait_for_timeout(500)
+        browser.close()
+
+    if not code_box["code"]:
+        raise RuntimeError("OneID code olinmadi (login yoki 2FA bajarilmadi)")
+    return code_box["code"]
+
+
+def _exchange_code(code: str, organization: str) -> dict:
+    """OneID `code`ni tokenlarga almashtiradi va tokens.json'ga saqlaydi."""
+    from ..api.client import BMClient
+
+    client = BMClient()
+    data = client.login_via_oneid(code)
+    token = (data or {}).get("token") or {}
+    profiles = (data or {}).get("profiles") or []
+    access = token.get("access_token")
+    refresh = token.get("refresh_token")
+    if not access:
+        raise RuntimeError("OneID login access token bermadi")
+    org = organization
+    if not org and profiles:
+        org = profiles[0].get("organizationName") or profiles[0].get("fullName") or ""
+    save_tokens(access, refresh, base_url=client.config.base_url, organization=org)
+    label = org or "noma'lum"
+    print(f"Token saqlandi (to'g'ridan-to'g'ri SSO). Kompaniya: {label}")
+    print(f"  Profillar: {len(profiles)}")
+    for prof in profiles[:10]:
+        print("   -", prof.get("organizationName") or prof.get("fullName"), "/",
+              prof.get("role") or "", "/", prof.get("tin") or "")
+    if profiles:
+        from ..core.profiles import discover_from_oneid
+
+        added = discover_from_oneid(profiles)
+        if added:
+            print(f"  profiles.json'ga saqlandi: {len(added)} profil")
+    return {"access_token": access, "refresh_token": refresh, "org": org}
+
+
 def browser_login(
     username: str = "",
     password: str = "",
@@ -137,6 +220,15 @@ def browser_login(
     password = password or cfg.password
     organization = organization or cfg.organization
     site = _site_base(cfg.base_url)
+
+    # Avval to'g'ridan-to'g'ri SSO oqimi (server kabi /sign-in 403 bo'lgan
+    # muhitlarda ham ishlaydi). Muvaffaqiyatsiz bo'lsa /sign-in oqimi.
+    if site == PROD_SITE and username and password:
+        try:
+            code = _direct_sso_code(username, password, headless, timeout)
+            return _exchange_code(code, organization)
+        except Exception as exc:  # noqa: BLE001 - fallback ataylab
+            print(f"  to'g'ridan-to'g'ri SSO ishlamadi ({exc}); /sign-in oqimiga o'tilmoqda")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
