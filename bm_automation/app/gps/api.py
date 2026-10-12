@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import shutil
 from pathlib import Path
 
 from . import (compare, config, jt1078, jt808, listener, relay, route_alert,
@@ -256,22 +257,38 @@ class GpsHandler(BaseHTTPRequestHandler):
             self._json({"error": "noto'g'ri fayl nomi"}, 400)
             return
         f = Path(config.HLS_DIR) / fname
-        if not f.exists():
+        try:
+            st = f.stat()
+        except OSError:
             # live oqim boshlanishida segment hali tayyor bo'lmasligi mumkin
             self._json({"error": "segment hali tayyor emas"}, 404)
             return
-        ctype = (
-            "application/vnd.apple.mpegurl"
-            if fname.endswith(".m3u8")
-            else "video/mp2t"
-        )
-        body = f.read_bytes()
+        is_playlist = fname.endswith(".m3u8")
+        etag = '"%x-%x"' % (int(st.st_mtime), st.st_size)
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.end_headers()
+            return
         self.send_response(200)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Cache-Control", "no-store" if fname.endswith(".m3u8") else "max-age=30")
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header(
+            "Content-Type",
+            "application/vnd.apple.mpegurl" if is_playlist else "video/mp2t")
+        self.send_header("ETag", etag)
+        self.send_header(
+            "Last-Modified", self.date_time_string(int(st.st_mtime)))
+        if fname.endswith(".m3u8"):
+            self.send_header("Cache-Control", "no-store")
+        else:
+            self.send_header("Cache-Control", "public, max-age=60")
+        self.send_header("Content-Length", str(st.st_size))
         self.end_headers()
-        self.wfile.write(body)
+        if self.command == "HEAD":
+            return
+        # Bo'laklab yuboramiz — bitta sekin mijoz katta segmentni RAM'ga
+        # to'liq yuklamaydi.
+        with f.open("rb") as fh:
+            shutil.copyfileobj(fh, self.wfile, 256 * 1024)
 
     def _payload(self) -> dict:
         raw_len = (self.headers.get("Content-Length") or "0").strip()

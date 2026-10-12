@@ -227,8 +227,9 @@
   .cam .body{aspect-ratio:16/9;background:#000;position:relative}
   .cam .body video{width:100%;height:100%;display:block}
   .cam iframe{width:100%;height:100%;border:0;display:block}
-  .cam .foot{display:flex;gap:6px;padding:8px 10px;border-top:1px solid var(--line);font-size:11px;color:var(--muted);align-items:center}
-  .cam .foot .grow{margin-left:auto;display:flex;gap:6px}
+.cam .foot{display:flex;gap:6px;padding:8px 10px;border-top:1px solid var(--line);font-size:11px;color:var(--muted);align-items:center}
+.cam .foot .grow{margin-left:auto;display:flex;gap:6px}
+.cam .body .ph{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px;cursor:pointer;background:rgba(9,13,22,.45);text-align:center;padding:10px}
   .jt-rec{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:13px;background:rgba(15,22,35,.5)}
   .jt-rec .rbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
   .jt-rec table.mini{width:100%;border-collapse:collapse;max-height:200px;display:block;overflow:auto}
@@ -472,6 +473,13 @@
         <button class="btn primary" onclick="addCam()">+ Kamera qo'shish</button>
       </div>
       <div class="err" id="cam-err"></div>
+    </div>
+    <div class="jt-head" style="margin:16px 0 8px">
+      <b>Ro'yxatdagi kameralar</b>
+      <span class="muted grow" id="cam-status"></span>
+      <button class="btn sm" onclick="refreshCams()">↻ Yangilash</button>
+      <button class="btn primary sm" onclick="playAllCams()">▶ Hammasini ochish</button>
+      <button class="btn sm" onclick="stopAllCams()">⏹ Hammasini to'xtatish</button>
     </div>
     <div class="cam-grid" id="cam-grid"></div>
     <div class="empty" id="cam-empty" style="display:none">Kameralar yo'q. Yuqorida manba qo'shib kuzatuvni boshlang.</div>
@@ -1048,35 +1056,116 @@ function exportStopsCsv() {
 
 /* ============ video kameralar ============ */
 var cams = [];
+var camSig = '';
+var camPlayers = {};         /* id -> {hls, video} */
+var CAM_MAX_LIVE = 12;       /* bir vaqtda ochiq oqimlar chegarasi (100+ kamera uchun) */
+
 function refreshCams() {
   API.get('/api/video/cameras').then(function (d) { cams = d.cameras || []; renderCams(); })
     .catch(function (e) { console.warn('kamera xato', e); });
 }
+function _camSignature() {
+  return cams.map(function (c) {
+    return c.id + ':' + (c.source_type || '') + ':' + (c.name || '') + ':' +
+      (c.url || '') + ':' + (c.vehicle_id || '');
+  }).join('|');
+}
+function _camLiveCount() { return Object.keys(camPlayers).length; }
+function _camStatus() {
+  var el = document.getElementById('cam-status');
+  if (el) el.textContent = cams.length + ' kamera · ' + _camLiveCount() + ' ochiq';
+}
 function renderCams() {
-  document.getElementById('cam-grid').innerHTML = cams.map(camCard).join('');
+  var grid = document.getElementById('cam-grid');
+  if (!grid) return;
+  var sig = _camSignature();
+  if (sig === camSig) { _camStatus(); return; }   /* o'zgarish yo'q — oqimlarni uzmaymiz */
+  camSig = sig;
+  stopAllCams();
+  grid.innerHTML = cams.map(camCard).join('');
   document.getElementById('cam-empty').style.display = cams.length ? 'none' : 'block';
-  cams.forEach(function (c) { if (c.source_type === 'hls') mountHls(c); });
+  _camStatus();
+  /* Avtomatik ochmaymiz: 100+ kamera bo'lsa ham brauzer qotmaydi —
+     oqim faqat foydalanuvchi bosganda boshlanadi. */
 }
 function camCard(c) {
   var badge = c.source_type === 'embed' ? '<span class="badge embed">EMBED</span>'
     : c.source_type === 'rtsp' ? '<span class="badge rtsp">RTSP→HLS</span>' : '<span class="badge hls">HLS</span>';
-  var body = c.source_type === 'embed' ? '<iframe src="' + esc(c.url) + '" allowfullscreen></iframe>'
-    : '<video id="v-' + c.id + '" controls muted playsinline></video>';
+  var body, act = '';
+  if (c.source_type === 'embed') {
+    body = '<iframe src="' + esc(c.url) + '" loading="lazy" allowfullscreen></iframe>';
+  } else {
+    body = '<video id="v-' + c.id + '" controls muted playsinline preload="none"></video>' +
+      '<div class="ph" id="ph-' + c.id + '" onclick="playCam(' + c.id + ')">▶ Ochish uchun bosing</div>';
+    act = '<button class="btn primary sm" id="tg-' + c.id + '" onclick="toggleCam(' + c.id + ')">▶ Ochish</button>';
+  }
   return '<div class="cam"><div class="head"><span class="dot"></span>' + esc(c.name) + ' ' + badge + '</div>' +
     '<div class="body">' + body + '</div>' +
     '<div class="foot"><span class="muted">' + esc(c.url) + '</span><span class="grow">' +
+    act +
     '<button class="btn danger sm" onclick="delCam(' + c.id + ')">O\'chirish</button></span></div></div>';
 }
-function mountHls(c) {
-  var v = document.getElementById('v-' + c.id);
+function playCam(id) {
+  var c = cams.filter(function (x) { return x.id === id; })[0];
+  if (!c || camPlayers[id]) return;
+  if (_camLiveCount() >= CAM_MAX_LIVE) {
+    alert('Bir vaqtda ko\'pi bilan ' + CAM_MAX_LIVE + ' ta oqim ochiladi. Avval birini to\'xtating.');
+    return;
+  }
+  var v = document.getElementById('v-' + id);
   if (!v) return;
   var src = c.source_type === 'rtsp' ? ('/hls/cam' + c.id + '.m3u8') : c.url;
-  if (v.canPlayType('application/vnd.apple.mpegurl')) { v.src = src; v.play().catch(function () {}); return; }
+  var ph = document.getElementById('ph-' + id);
+  if (ph) ph.style.display = 'none';
+  var tg = document.getElementById('tg-' + id);
+  if (v.canPlayType('application/vnd.apple.mpegurl')) {
+    v.src = src; v.play().catch(function () {});
+    camPlayers[id] = { hls: null, video: v };
+    if (tg) { tg.textContent = '⏹ To\'xtatish'; tg.classList.remove('primary'); }
+    _camStatus();
+    return;
+  }
   if (!window.Hls || !Hls.isSupported()) return;
   var hls = new Hls({ liveDurationInfinity: true });
   hls.loadSource(src);
   hls.attachMedia(v);
-  hls.on(Hls.Events.ERROR, function (_, data) { if (data.fatal) showCamNote(c, data.details); });
+  hls.on(Hls.Events.ERROR, function (_, data) {
+    if (!data || !data.fatal) return;
+    if (data.type === Hls.ErrorTypes.NETWORK_ERROR) { try { hls.startLoad(); return; } catch (e) {} }
+    showCamNote(c, data.details);
+    stopCam(id);
+  });
+  camPlayers[id] = { hls: hls, video: v };
+  if (v) v.play().catch(function () {});
+  var b = document.getElementById('tg-' + id);
+  if (b) { b.textContent = '⏹ To\'xtatish'; b.classList.remove('primary'); }
+  _camStatus();
+}
+function stopCam(id) {
+  var p = camPlayers[id];
+  if (p) {
+    try { if (p.hls) p.hls.destroy(); } catch (e) {}
+    try { if (p.video) { p.video.pause(); p.video.removeAttribute('src'); p.video.load(); } } catch (e) {}
+    delete camPlayers[id];
+  }
+  var ph = document.getElementById('ph-' + id);
+  if (ph) ph.style.display = 'flex';
+  var b = document.getElementById('tg-' + id);
+  if (b) { b.textContent = '▶ Ochish'; b.classList.add('primary'); }
+  _camStatus();
+}
+function toggleCam(id) { if (camPlayers[id]) stopCam(id); else playCam(id); }
+function stopAllCams() {
+  Object.keys(camPlayers).forEach(function (id) { stopCam(id); });
+  camPlayers = {};
+  _camStatus();
+}
+function playAllCams() {
+  cams.forEach(function (c) {
+    if (c.source_type === 'embed') return;
+    if (_camLiveCount() >= CAM_MAX_LIVE) return;
+    playCam(c.id);
+  });
 }
 function showCamNote(c, details) {
   var v = document.getElementById('v-' + c.id);
@@ -1105,7 +1194,7 @@ function addCam() {
 function delCam(id) { if (!confirm("Kamerani o'chirish?")) return; API.del('/api/video/cameras/' + id).then(refreshCams); }
 
 /* ============ JT1078 / CMSV6 4G kameralar (avto-aniqlangan) ============ */
-var jtStreams = [], jtDevices = [], jtSig = '';
+var jtStreams = [], jtDevices = [], jtSig = '', jtHlsMap = {};
 function fmtBytes(n) {
   n = n || 0;
   if (n < 1024) return n + ' B';
@@ -1134,6 +1223,7 @@ function renderJtStreams() {
     jtStreams.map(function (s) { return s.sim + '_' + s.channel; }).sort().join(',');
   if (sig === jtSig) { updateJtBytes(); return; }  // o'yinni uzmaslik uchun
   jtSig = sig;
+  destroyJtPlayers();
   var html = '';
   jtStreams.forEach(function (s) { html += jtStreamCard(s); });
   jtDevices.forEach(function (sim) {
@@ -1196,8 +1286,15 @@ function updateJtBytes() {
     if (el) el.textContent = fmtBytes(s.bytes);
   });
 }
+function destroyJtPlayers() {
+  Object.keys(jtHlsMap).forEach(function (k) {
+    try { if (jtHlsMap[k]) jtHlsMap[k].destroy(); } catch (e) {}
+  });
+  jtHlsMap = {};
+}
 function mountJtHls(s) {
-  var v = document.getElementById('jt-' + s.sim + '-' + s.channel);
+  var vid = 'jt-' + s.sim + '-' + s.channel;
+  var v = document.getElementById(vid);
   if (!v) return;
   if (v.canPlayType('application/vnd.apple.mpegurl')) { v.src = s.hls; v.play().catch(function () {}); return; }
   if (!window.Hls || !Hls.isSupported()) return;
@@ -1209,6 +1306,7 @@ function mountJtHls(s) {
     if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
     else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
   });
+  jtHlsMap[vid] = hls;
 }
 function fullscreenVid(id) {
   var v = document.getElementById(id);

@@ -73,25 +73,43 @@ def _sessions_file() -> Path:
     return Path("state") / "dashboard_sessions.json"
 
 
+_loaded_mtime: float | None = None
+
+
 def _load_sessions() -> None:
-    global _sessions
+    """Sessiyalar faylini o'qiydi, lekin fayl o'zgarmagan bo'lsa — xotiradagi
+    nusxani qoldiradi. Har bir HLS segment so'rovida diskdan qayta o'qishni
+    yo'q qiladi (100+ kamera oqimida muhim)."""
+    global _sessions, _loaded_mtime
     p = _sessions_file()
-    if not p.exists():
+    try:
+        mtime = p.stat().st_mtime
+    except OSError:
         _sessions = {}
+        _loaded_mtime = None
+        return
+    if _loaded_mtime == mtime:
         return
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
         _sessions = data if isinstance(data, dict) else {}
+        _loaded_mtime = mtime
     except (OSError, json.JSONDecodeError):
         _sessions = {}
+        _loaded_mtime = None
 
 
 def _save_sessions() -> None:
+    global _loaded_mtime
     try:
         from ..utils.io import atomic_write
         p = _sessions_file()
         p.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(p, json.dumps(_sessions, ensure_ascii=False))
+        try:
+            _loaded_mtime = p.stat().st_mtime
+        except OSError:
+            _loaded_mtime = None
     except Exception:  # noqa: BLE001
         pass
 
