@@ -410,6 +410,7 @@ class GpsHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "ffmpeg": relay.ffmpeg_available(),
                     "hls_dir": config.HLS_DIR,
+                    "limit": config.HLS_RELAY_MAX,
                     "relays": relays,
                 })
             elif path == "/api/video/jt-streams":
@@ -550,9 +551,13 @@ class GpsHandler(BaseHTTPRequestHandler):
             elif path.startswith("/hls/"):
                 fname = path[len("/hls/"):]
                 m = re.match(r"^cam(\d+)[.\-]", fname)
-                if m and not self._camera_allowed(int(m.group(1))):
-                    self._json({"error": "segment topilmadi"}, 404)
-                    return
+                if m:
+                    cam_id = int(m.group(1))
+                    # On-demand: RTSP relay faqat ko'rilganda tirik qolsin.
+                    relay.note_viewer(cam_id)
+                    if not self._camera_allowed(cam_id):
+                        self._json({"error": "segment topilmadi"}, 404)
+                        return
                 self._serve_hls(fname)
             else:
                 self._json({"error": "topilmadi"}, 404)
@@ -773,6 +778,30 @@ class GpsHandler(BaseHTTPRequestHandler):
                     jt1078.clear_playback(phone, channel)
                 self._json({"ok": bool(ok), "phone": phone,
                             "channel": channel, "control": control})
+            elif path == "/api/video/relay":
+                # On-demand: UI "Ochish" bosganda RTSP relay'ni ko'taradi.
+                try:
+                    cam_id = int(payload.get("id"))
+                except (TypeError, ValueError):
+                    self._json({"ok": False, "error": "id kerak"}, 400)
+                    return
+                cam = relay.resolve_camera(cam_id)
+                if not cam:
+                    self._json({"ok": False, "error": "kamera topilmadi"}, 404)
+                    return
+                relay.note_viewer(cam_id)
+                ok = relay.ensure_for_camera(cam)
+                self._json({"ok": bool(ok), "id": cam_id,
+                            "hls": relay.public_url(cam_id),
+                            "limit": config.HLS_RELAY_MAX})
+            elif path == "/api/video/relay-stop":
+                try:
+                    cam_id = int(payload.get("id"))
+                except (TypeError, ValueError):
+                    self._json({"ok": False, "error": "id kerak"}, 400)
+                    return
+                relay.stop_for_camera(cam_id)
+                self._json({"ok": True, "id": cam_id})
             else:
                 self._json({"error": "topilmadi"}, 404)
         except Exception as exc:  # noqa: BLE001

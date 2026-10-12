@@ -31,6 +31,45 @@ log = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 _procs: dict[int, dict] = {}  # camera_id -> {"proc": Popen, "cam": dict}
+# On-demand: kamera HLS'iga oxirgi so'rov vaqti. Viewer yo'q bo'lsa
+# HLS_RELAY_IDLE_S sekunddan keyin relay to'xtatiladi (100+ kamera uchun).
+_last_seen: dict[int, float] = {}
+_cam_provider = None  # cameras_provider (start_monitor o'rnatadi)
+
+
+def _now() -> float:
+    return time.time()
+
+
+def note_viewer(cam_id: int) -> None:
+    """Kamera HLS'i so'ralganda chaqiriladi — relay tirik qoladi (on-demand)."""
+    with _lock:
+        _last_seen[int(cam_id)] = _now()
+
+
+def viewer_active(cam_id: int, now: float | None = None) -> bool:
+    now = _now() if now is None else now
+    with _lock:
+        last = _last_seen.get(int(cam_id))
+    return bool(last and now - last < config.HLS_RELAY_IDLE_S)
+
+
+def resolve_camera(cam_id: int) -> dict | None:
+    """cameras_provider orqali kamera metama'lumotini topadi (on-demand)."""
+    if _cam_provider is None:
+        return None
+    try:
+        for cam in _cam_provider():
+            if str(cam.get("id")) == str(cam_id):
+                return cam
+    except Exception:  # noqa: BLE001
+        log.exception("relay: kamera ro'yxatini olish xatosi")
+    return None
+
+
+def _running_count() -> int:
+    """Tirik relay'lar soni (lock ushlab turilganda chaqiriladi)."""
+    return sum(1 for e in _procs.values() if e["proc"].poll() is None)
 
 
 def ffmpeg_available() -> bool:
@@ -78,23 +117,32 @@ def _start(cam: dict) -> None:
     log.info("relay: kamera %s (%s) → %s", cam_id, cam.get("name"), out)
 
 
-def ensure_for_camera(cam: dict) -> None:
-    """Kamera uchun relay ishlab turganini ta'minlaydi (idempotent)."""
+def ensure_for_camera(cam: dict) -> bool:
+    """Kamera uchun relay ishlab turganini ta'minlaydi (idempotent).
+
+    Global limit (`HLS_RELAY_MAX`) dan oshsa ishga tushirmaydi — ortiqcha
+    ffmpeg serverga yuklama qilmasin. Qaytaradi: relay tirikmi.
+    """
     if not relay_enabled_for(cam):
-        return
+        return False
     cam_id = int(cam["id"])
     with _lock:
         entry = _procs.get(cam_id)
         if entry and entry["proc"].poll() is None:
-            return
-        # o'lik jarayon bo'lsa tozalaymiz
+            return True
+        # o'lgan relay bo'lsa tozalaymiz
         if entry:
             try:
                 entry["proc"].wait(timeout=1)
             except Exception:  # noqa: BLE001
                 pass
             _procs.pop(cam_id, None)
+        if _running_count() >= config.HLS_RELAY_MAX:
+            log.info("relay: limit %s — kamera %s ishga tushirilmadi",
+                     config.HLS_RELAY_MAX, cam_id)
+            return False
         _start(cam)
+        return cam_id in _procs
 
 
 def relay_enabled_for(cam: dict) -> bool:
@@ -125,17 +173,21 @@ def stop_for_camera(cam_id: int) -> None:
 
 
 def sync(cameras: list) -> None:
-    """Kamera ro'yxati bilan relay'larni sinxronlaydi.
+    """Kamera ro'yxati bilan relay'larni sinxronlaydi (on-demand).
 
-    * rtsp + enabled  → relay ishga tushadi (yo'q bo'lsa)
-    * o'chirilgan/rtsp bo'lmagan → relay to'xtatiladi
+    * rtsp + enabled + yaqinda ko'rilgan → relay ishga tushadi (limit ichida)
+    * ko'rilmagan / o'chirilgan / rtsp emas → relay to'xtatiladi
     * ffmpeg yo'q bo'lsa hech narsa qilmaydi (log bir marta)
+
+    Endi barcha rtsp kamera doim ishlamaydi: faqat HLS'iga so'rov kelgan
+    (`note_viewer`) kameralar uchun relay ko'tariladi (100+ kamera uchun).
     """
     if not ffmpeg_available():
         return
+    now = _now()
     wanted: dict[int, dict] = {}
     for cam in cameras:
-        if relay_enabled_for(cam):
+        if relay_enabled_for(cam) and viewer_active(int(cam["id"]), now):
             wanted[int(cam["id"])] = cam
     for cam_id, cam in wanted.items():
         ensure_for_camera(cam)
@@ -159,6 +211,8 @@ def status() -> dict:
 
 def start_monitor(cameras_provider, interval: float | None = None) -> None:
     """Fon tredi: periodik sync + o'lgan relay'larni qayta ko'tarish."""
+    global _cam_provider
+    _cam_provider = cameras_provider
 
     def _loop() -> None:
         while True:

@@ -1058,6 +1058,7 @@ function exportStopsCsv() {
 var cams = [];
 var camSig = '';
 var camPlayers = {};         /* id -> {hls, video} */
+var camStarting = {};        /* id -> 1 (relay/playlist kutilmoqda) */
 var CAM_MAX_LIVE = 12;       /* bir vaqtda ochiq oqimlar chegarasi (100+ kamera uchun) */
 
 function refreshCams() {
@@ -1107,21 +1108,51 @@ function camCard(c) {
 }
 function playCam(id) {
   var c = cams.filter(function (x) { return x.id === id; })[0];
-  if (!c || camPlayers[id]) return;
+  if (!c || camPlayers[id] || camStarting[id]) return;
   if (_camLiveCount() >= CAM_MAX_LIVE) {
     alert('Bir vaqtda ko\'pi bilan ' + CAM_MAX_LIVE + ' ta oqim ochiladi. Avval birini to\'xtating.');
     return;
   }
+  var src = c.source_type === 'rtsp' ? ('/hls/cam' + c.id + '.m3u8') : c.url;
+  if (c.source_type === 'rtsp') {
+    /* On-demand: relay faqat shu kamera ochilganda ko'tariladi (100+ kamera). */
+    camStarting[id] = 1;
+    _startRelay(c.id, function (ok) {
+      if (!ok) { delete camStarting[id]; showCamNote(c, 'relay ishga tushmadi (limit?)'); return; }
+      _waitHls(src, 12, function () { delete camStarting[id]; _mountCam(c, src); });
+    });
+  } else {
+    _mountCam(c, src);
+  }
+}
+function _startRelay(id, cb) {
+  API.post('/api/video/relay', { id: id })
+    .then(function (d) { cb(d && d.ok !== false); })
+    .catch(function () { cb(false); });
+}
+function _waitHls(url, tries, cb) {
+  var sep = url.indexOf('?') < 0 ? '?' : '&';
+  var u = TOK ? (url + sep + 'token=' + encodeURIComponent(TOK)) : url;
+  fetch(u, { method: 'GET', credentials: 'same-origin' }).then(function (r) {
+    if (r.ok || tries <= 0) { cb(); return; }
+    setTimeout(function () { _waitHls(url, tries - 1, cb); }, 1000);
+  }).catch(function () {
+    if (tries <= 0) { cb(); return; }
+    setTimeout(function () { _waitHls(url, tries - 1, cb); }, 1000);
+  });
+}
+function _mountCam(c, src) {
+  var id = c.id;
+  if (camPlayers[id]) return;
   var v = document.getElementById('v-' + id);
   if (!v) return;
-  var src = c.source_type === 'rtsp' ? ('/hls/cam' + c.id + '.m3u8') : c.url;
   var ph = document.getElementById('ph-' + id);
   if (ph) ph.style.display = 'none';
-  var tg = document.getElementById('tg-' + id);
+  var b = document.getElementById('tg-' + id);
+  if (b) { b.textContent = '⏹ To\'xtatish'; b.classList.remove('primary'); }
   if (v.canPlayType('application/vnd.apple.mpegurl')) {
     v.src = src; v.play().catch(function () {});
     camPlayers[id] = { hls: null, video: v };
-    if (tg) { tg.textContent = '⏹ To\'xtatish'; tg.classList.remove('primary'); }
     _camStatus();
     return;
   }
@@ -1136,12 +1167,15 @@ function playCam(id) {
     stopCam(id);
   });
   camPlayers[id] = { hls: hls, video: v };
-  if (v) v.play().catch(function () {});
-  var b = document.getElementById('tg-' + id);
-  if (b) { b.textContent = '⏹ To\'xtatish'; b.classList.remove('primary'); }
+  v.play().catch(function () {});
   _camStatus();
 }
 function stopCam(id) {
+  delete camStarting[id];
+  var c = cams.filter(function (x) { return x.id === id; })[0];
+  if (c && c.source_type === 'rtsp') {
+    API.post('/api/video/relay-stop', { id: id }).catch(function () {});
+  }
   var p = camPlayers[id];
   if (p) {
     try { if (p.hls) p.hls.destroy(); } catch (e) {}

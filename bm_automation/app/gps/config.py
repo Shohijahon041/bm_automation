@@ -99,6 +99,10 @@ HLS_DIR = os.environ.get(
 )
 HLS_RELAY_ENABLED = os.environ.get("GPS_HLS_RELAY", "1") in ("1", "true", "yes")
 HLS_RELAY_CHECK_S = int(os.environ.get("GPS_HLS_RELAY_CHECK_S", "30"))
+# Bir vaqtda ishlay oladigan ffmpeg relay soni (100+ kamera uchun muhim)
+HLS_RELAY_MAX = int(os.environ.get("GPS_HLS_RELAY_MAX", "8"))
+# Ko'ruvchi bo'lmasa shu sekunddan keyin relay to'xtatiladi (on-demand)
+HLS_RELAY_IDLE_S = int(os.environ.get("GPS_HLS_RELAY_IDLE_S", "90"))
 # HLS segmentlarni shu sekunddan eski bo'lsa tozalash (server to'lmasin)
 HLS_MAX_AGE_S = int(os.environ.get("GPS_HLS_MAX_AGE_S", "3600"))
 

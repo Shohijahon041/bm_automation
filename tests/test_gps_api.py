@@ -620,3 +620,58 @@ def test_jt_live_requires_admin_and_phone(env, monkeypatch):
                             headers=_auth(), scope=None,
                             body=b'{"phone":"123"}')
     assert status == 400 and "host" in data["error"]
+
+
+# ------------------------------------------------- relay on-demand (100+ kamera)
+
+def test_relay_start_endpoint(env, monkeypatch):
+    """POST /api/video/relay: on-demand relay ko'tariladi (viewer belgilanadi)."""
+    calls = []
+    monkeypatch.setattr(relay, "resolve_camera",
+                        lambda cid: {"id": cid, "url": "rtsp://x",
+                                     "source_type": "rtsp", "enabled": 1})
+    monkeypatch.setattr(relay, "note_viewer",
+                        lambda cid: calls.append(("view", cid)))
+    monkeypatch.setattr(relay, "ensure_for_camera",
+                        lambda cam: calls.append(("start", cam["id"])) or True)
+    monkeypatch.setattr(relay, "public_url",
+                        lambda cid: "/hls/cam%d.m3u8" % cid)
+    body = json.dumps({"id": 7}).encode()
+    status, data = _request(monkeypatch, "/api/video/relay", method="POST",
+                            headers=_auth(), scope=None, body=body)
+    assert status == 200 and data["ok"] is True
+    assert data["hls"] == "/hls/cam7.m3u8"
+    assert ("view", 7) in calls and ("start", 7) in calls
+    # id yo'q -> 400.
+    status, _ = _request(monkeypatch, "/api/video/relay", method="POST",
+                         headers=_auth(), scope=None, body=b"{}")
+    assert status == 400
+    # kamera topilmasa -> 404.
+    monkeypatch.setattr(relay, "resolve_camera", lambda cid: None)
+    status, _ = _request(monkeypatch, "/api/video/relay", method="POST",
+                         headers=_auth(), scope=None, body=body)
+    assert status == 404
+    # Non-admin -> 403 (yozuv amali).
+    status, _ = _request(monkeypatch, "/api/video/relay", method="POST",
+                         headers=_auth(), scope=_SCOPE, body=body)
+    assert status == 403
+
+
+def test_relay_stop_endpoint(env, monkeypatch):
+    stopped = []
+    monkeypatch.setattr(relay, "stop_for_camera",
+                        lambda cid: stopped.append(cid))
+    status, data = _request(monkeypatch, "/api/video/relay-stop", method="POST",
+                            headers=_auth(), scope=None,
+                            body=json.dumps({"id": 3}).encode())
+    assert status == 200 and data["ok"] is True and stopped == [3]
+    status, _ = _request(monkeypatch, "/api/video/relay-stop", method="POST",
+                         headers=_auth(), scope=None, body=b"{}")
+    assert status == 400
+
+
+def test_relay_status_reports_limit(env, monkeypatch):
+    status, data = _request(monkeypatch, "/api/video/relay",
+                            headers=_auth(), scope=None)
+    assert status == 200 and "limit" in data
+
