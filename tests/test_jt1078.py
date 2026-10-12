@@ -7,20 +7,27 @@ data_type bayti: bits5-4 = kadr turi, bits1-0 = subpaket belgisi. Muxer
 """
 
 from bm_automation.app.gps import jt1078
-from bm_automation.app.gps.jt1078 import (DT_AUDIO, DT_TRANSPARENT,
+from bm_automation.app.gps.jt1078 import (AUDIO_HEADER_LEN, DT_AUDIO,
+                                          DT_TRANSPARENT, DT_VIDEO_B,
                                           DT_VIDEO_I, DT_VIDEO_P, FLAG,
                                           SUB_ATOMIC, SUB_FIRST, SUB_LAST,
-                                          SUB_MIDDLE)
+                                          SUB_MIDDLE, TRANSPARENT_HEADER_LEN)
 
 
 def _pkt(typ, payload, sub=SUB_ATOMIC, sim="000000000123", ch=1,
          ts=1700000000, seq=0):
-    """Real qurilma sarlavhasiga mos JT1078 paketini qurish."""
-    dtb = ((typ & 0x03) << 4) | (sub & 0x03)
+    """Real qurilma sarlavhasiga mos JT1078 paketini qurish.
+
+    Sarlavha uzunligi turiga bog'liq: video 30, audio 26, shaffof 18 bayt.
+    """
+    dtb = ((typ & 0x0F) << 4) | (sub & 0x0F)
     head = (FLAG + b"\x81\x62" + seq.to_bytes(2, "big")
-            + bytes.fromhex(sim) + bytes([ch, dtb])
-            + ts.to_bytes(8, "big") + b"\x00\x00" + b"\x00\x00"
-            + len(payload).to_bytes(2, "big"))
+            + bytes.fromhex(sim) + bytes([ch, dtb]))
+    if typ != DT_TRANSPARENT:
+        head += ts.to_bytes(8, "big")
+    if typ in (DT_VIDEO_I, DT_VIDEO_P, DT_VIDEO_B):
+        head += b"\x00\x00" + b"\x00\x00"
+    head += len(payload).to_bytes(2, "big")
     return head + payload
 
 
@@ -70,7 +77,7 @@ def test_parse_video_packet():
     raw = _pkt(DT_VIDEO_I, b"PAYLOAD", sub=SUB_FIRST, ch=3)
     p, consumed = jt1078.parse_packet(raw)
     assert consumed == len(raw)
-    assert p["sim"] == "123"
+    assert p["sim"] == "000000000123"
     assert p["channel"] == 3
     assert p["data_type"] == DT_VIDEO_I
     assert p["subpacket"] == SUB_FIRST
@@ -79,13 +86,72 @@ def test_parse_video_packet():
 
 
 def test_parse_transparent_type():
-    """0x30 = bits5-4=3 (shaffof), bits1-0=0 (atomic)."""
+    """data_type=0100 (4) — bits5-4=4, bits1-0=0 (atomic)."""
     dtb = (DT_TRANSPARENT << 4) | SUB_ATOMIC
-    assert dtb == 0x30
+    assert dtb == 0x40
     raw = _pkt(DT_TRANSPARENT, b"XXXX", sub=SUB_ATOMIC)
     p, consumed = jt1078.parse_packet(raw)
+    assert consumed == len(raw)
     assert p["data_type"] == DT_TRANSPARENT
     assert p["payload"] == b"XXXX"
+    assert p["ts"] == 0        # shaffof turida timestamp yo'q
+
+
+def test_transparent_header_length():
+    """Shaffof (0100) sarlavha 18 bayt — timestamp/oraliq maydonlari yo'q."""
+    raw = _pkt(DT_TRANSPARENT, b"Z")
+    assert len(raw) == TRANSPARENT_HEADER_LEN + 1
+    p, _ = jt1078.parse_packet(raw)
+    assert p is not None and p["payload"] == b"Z"
+
+
+def test_audio_header_length():
+    """Audio (0011) sarlavha 26 bayt — timestamp bor, oraliq maydonlar yo'q."""
+    raw = _pkt(DT_AUDIO, b"audio")
+    assert len(raw) == AUDIO_HEADER_LEN + 5
+    p, _ = jt1078.parse_packet(raw)
+    assert p is not None and p["data_type"] == DT_AUDIO
+    assert p["payload"] == b"audio"
+
+
+def test_parse_video_b_frame():
+    raw = _pkt(DT_VIDEO_B, b"BFRAME", sub=SUB_ATOMIC)
+    p, consumed = jt1078.parse_packet(raw)
+    assert consumed == len(raw)
+    assert p["data_type"] == DT_VIDEO_B
+    assert p["payload"] == b"BFRAME"
+
+
+def test_sim_keeps_leading_zeros():
+    """SIM BCD dekodida yetakchi nollar yo'qolmasligi kerak."""
+    raw = _pkt(DT_VIDEO_I, b"x", sim="012345678901")
+    p, _ = jt1078.parse_packet(raw)
+    assert p["sim"] == "012345678901"
+
+
+def test_all_subpacket_values_parsed():
+    for sub in (SUB_ATOMIC, SUB_FIRST, SUB_MIDDLE, SUB_LAST):
+        raw = _pkt(DT_VIDEO_I, b"x", sub=sub)
+        p, _ = jt1078.parse_packet(raw)
+        assert p["subpacket"] == sub
+
+
+def test_audio_incomplete_returns_none():
+    raw = _pkt(DT_AUDIO, b"x" * 10)
+    p, consumed = jt1078.parse_packet(raw[:20])   # sarlavha (26) to'liq emas
+    assert p is None and consumed == 0
+
+
+def test_extract_mixed_types_no_desync():
+    """Audio + shaffof + video bitta buferda — turlicha sarlavha uzunligi
+    to'g'ri o'qilib, desinxron bo'lmasligi kerak."""
+    raw = (_pkt(DT_AUDIO, b"a" * 10) + _pkt(DT_TRANSPARENT, b"t" * 5)
+           + _pkt(DT_VIDEO_I, b"v" * 20))
+    pkts, rest = jt1078.extract_packets(raw)
+    assert [p["data_type"] for p in pkts] == [DT_AUDIO, DT_TRANSPARENT,
+                                              DT_VIDEO_I]
+    assert [p["payload"] for p in pkts] == [b"a" * 10, b"t" * 5, b"v" * 20]
+    assert rest == b""
 
 
 def test_parse_incomplete_returns_none():
@@ -164,6 +230,16 @@ def test_session_ignores_audio_and_transparent(monkeypatch):
     _feed(sess, DT_TRANSPARENT, SUB_FIRST, b"priv2")
     sess.close()
     assert _FakeMuxer.instances == []
+
+
+def test_session_accepts_b_frames(monkeypatch):
+    """B-kadrlar ham I/P kabi muxerga uzatilishi kerak."""
+    _reset(monkeypatch)
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I")
+    _feed(sess, DT_VIDEO_B, SUB_ATOMIC, b"B")
+    sess.close()
+    assert _FakeMuxer.instances[0].aus == [b"I", b"B"]
 
 
 def test_session_separates_channels(monkeypatch):
@@ -264,6 +340,9 @@ def test_cleanup_hls_dir_removes_stale_and_empty(monkeypatch, tmp_path):
     removed = jt1078.cleanup_hls_dir()
     assert removed == 2
     assert fresh.exists() and not old.exists() and not empty.exists()
+
+
+def test_reap_idle_muxers_closes_idle(monkeypatch):
     """Uzoq vaqt data kelmasa muxer yopiladi (ffmpeg leak'ining oldini oladi)."""
     _reset(monkeypatch)
     sess = jt1078._Session()

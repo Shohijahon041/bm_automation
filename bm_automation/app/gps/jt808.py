@@ -14,6 +14,7 @@ Media (video) oqimi alohida JT1078 listener'ida (jt1078.py) qabul qilinadi.
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import struct
 from datetime import datetime, timezone
@@ -30,10 +31,15 @@ MSG_TERM_AUTH = 0x0102
 MSG_TERM_LOCATION = 0x0200
 MSG_TERM_BATCH_LOCATION = 0x0704
 MSG_TERM_DEVICE_INFO = 0x0104   # 0x8104 so'roviga javob: terminal paramlari
+MSG_TERM_ATTRS = 0x0107         # 0x8107 so'roviga javob: terminal atributlari
+MSG_TERM_AV_ATTRS = 0x1003      # 0x9003 so'roviga javob: audio/video atributlari
 MSG_TERM_AV_RESOURCE_LIST = 0x1205  # qurilma xotirasidagi yozuvlar ro'yxati
 MSG_PLAT_GENERAL_RESP = 0x8001
 MSG_PLAT_REGISTER_RESP = 0x8100
 MSG_PLAT_QUERY_PARAMS = 0x8104      # barcha terminal paramlarini so'rash
+MSG_PLAT_QUERY_SPECIFIC = 0x8106    # aniq terminal paramlarini so'rash
+MSG_PLAT_QUERY_ATTRS = 0x8107       # terminal atributlarini so'rash (HW/soft)
+MSG_PLAT_QUERY_AV_ATTRS = 0x9003    # audio/video atributlarini so'rash
 MSG_PLAT_AV_REQUEST = 0x9101        # jonli audio/video oqimini so'rash
 MSG_PLAT_AV_CONTROL = 0x9102
 MSG_PLAT_PLAYBACK_REQUEST = 0x9201  # yozuv (playback) oqimini so'rash
@@ -62,6 +68,24 @@ _RESOURCES: dict = {}
 #   manufacturer, model, terminal_id, plate, imei, hw_version, fw_version,
 #   term_type, gnss, comm, reg_hex, at
 _DEVINFO: dict = {}
+# phone -> {attrs_hex, av_hex, ...} (0x0107 / 0x1003 so'rovlariga javob keshi)
+_EXTRA: dict = {}
+# Diagnostika: oxirgi ikki tomonlama kadrlar (id, yo'nalish, vaqt, xom hex).
+_RAW = collections.deque(maxlen=300)
+
+
+def _remember(direction: str, phone: str, msg_id: int, raw: bytes) -> None:
+    """Diagnostika uchun xom kadrni ring-bufferga yozish (in/out)."""
+    try:
+        _RAW.append({
+            "at": datetime.now(timezone.utc).isoformat(),
+            "dir": direction,
+            "phone": phone,
+            "msg_id": msg_id,
+            "hex": raw.hex(),
+        })
+    except Exception:  # noqa: BLE001
+        pass
 
 
 class Jt808Error(Exception):
@@ -237,14 +261,15 @@ def parse_location(body: bytes) -> dict:
 # ---------------------------------------------------------------- javoblar
 
 def parse_resource_list(body: bytes) -> list:
-    """0x1205 tanasi: seq(2) + total(4) + [kanal(1)+start[6]+end[6]+
-    alarm(4)+resurs_turi(1)+oqim_turi(1)+xotira_turi(1)+hajm(4)] * N."""
+    """0x1205 tanasi (JT/T 1078-2016 Table 23): seq(2) + total(4) +
+    [kanal(1)+start[6]+end[6]+alarm(8)+resurs_turi(1)+oqim_turi(1)+
+    xotira_turi(1)+hajm(4)] * N.  Alarm belgisi 64-bit (8 bayt)."""
     if len(body) < 6:
         raise Jt808Error("resurs ro'yxati qisqa")
     total = struct.unpack(">I", body[2:6])[0]
     items = []
     i = 6
-    item_len = 1 + 6 + 6 + 4 + 1 + 1 + 1 + 4
+    item_len = 1 + 6 + 6 + 8 + 1 + 1 + 1 + 4
     while i + item_len <= len(body):
         start = bcd6_to_iso(body[i + 1:i + 7])
         end = bcd6_to_iso(body[i + 7:i + 13])
@@ -255,11 +280,11 @@ def parse_resource_list(body: bytes) -> list:
             "channel": body[i],
             "start": start,
             "end": end,
-            "alarm": struct.unpack(">I", body[i + 13:i + 17])[0],
-            "resource_type": body[i + 17],
-            "stream_type": body[i + 18],
-            "memory_type": body[i + 19],
-            "size": struct.unpack(">I", body[i + 20:i + 24])[0],
+            "alarm": struct.unpack(">Q", body[i + 13:i + 21])[0],
+            "resource_type": body[i + 21],
+            "stream_type": body[i + 22],
+            "memory_type": body[i + 23],
+            "size": struct.unpack(">I", body[i + 24:i + 28])[0],
         })
         i += item_len
     return items[:total] if total else items
@@ -360,6 +385,21 @@ def device_info(phone: str | None = None):
     return {p: dict(v) for p, v in _DEVINFO.items()}
 
 
+def av_info(phone: str | None = None):
+    """0x1003 (audio/video atributlari) keshi: bitta phone yoki hammasi."""
+    if phone:
+        return dict(_EXTRA.get(phone) or {})
+    return {p: dict(v) for p, v in _EXTRA.items()}
+
+
+def raw_log(limit: int = 60, phone: str | None = None) -> list:
+    """Oxirgi xom JT808 kadrlar (in/out) — diagnostika uchun."""
+    items = list(_RAW)
+    if phone:
+        items = [x for x in items if x["phone"] == phone]
+    return items[-max(1, int(limit)):]
+
+
 def _general_resp(phone: str, seq: int, resp_id: int, result: int = 0,
                   version: int = 0) -> bytes:
     body = struct.pack(">HHB", seq, resp_id, result)
@@ -427,6 +467,7 @@ async def _handle(reader: asyncio.StreamReader,
                 version = m["version"]
                 _CONNECTED[phone] = writer
                 _VERSION[phone] = version
+                _remember("in", phone, m["msg_id"], fr)
                 await _dispatch(writer, m)
     except (asyncio.IncompleteReadError, ConnectionResetError):
         pass
@@ -527,6 +568,19 @@ async def _dispatch(writer: asyncio.StreamWriter, m: dict) -> None:
             _STATS["errors"] += 1
         writer.write(_general_resp(phone, seq, mid, 0, ver))
         await writer.drain()
+    elif mid in (MSG_TERM_ATTRS, MSG_TERM_AV_ATTRS):
+        # 0x0107 terminal atributlari / 0x1003 audio-video atributlari —
+        # xom hex diagnostika uchun saqlanadi (qurilma imkoniyatlarini o'rganish).
+        key = "attrs_hex" if mid == MSG_TERM_ATTRS else "av_hex"
+        cur = _EXTRA.setdefault(phone, {})
+        cur[key] = body[:256].hex()
+        cur[f"{key}_len"] = len(body)
+        cur["at"] = datetime.now(timezone.utc).timestamp()
+        log.info("JT808: %s phone=%s (%s bayt) hex=%s",
+                 "0x0107 attrlar" if mid == MSG_TERM_ATTRS else "0x1003 AV attrlar",
+                 phone, len(body), body[:48].hex())
+        writer.write(_general_resp(phone, seq, mid, 0, ver))
+        await writer.drain()
     else:
         # boshqa xabarlar uchun umumiy javob (qurilma kutmoqda)
         writer.write(_general_resp(phone, seq, mid, 0, ver))
@@ -557,7 +611,9 @@ async def _send(phone: str, msg_id: int, body: bytes) -> bool:
     w = _writer_for(phone)
     if not w:
         return False
-    w.write(build_frame(msg_id, phone, _next_seq(), body, _ver(phone)))
+    frame = build_frame(msg_id, phone, _next_seq(), body, _ver(phone))
+    _remember("out", phone, msg_id, frame)
+    w.write(frame)
     await w.drain()
     return True
 
@@ -607,9 +663,13 @@ async def request_av_resource_list(phone: str, channel: int, start_bcd: bytes,
                                    end_bcd: bytes, resource_type: int = 0,
                                    stream_type: int = 0,
                                    memory_type: int = 0) -> bool:
-    """0x9205: qurilma xotirasidagi yozuvlar ro'yxatini so'rash."""
+    """0x9205: qurilma xotirasidagi yozuvlar ro'yxatini so'rash.
+
+    Tana (JT/T 1078-2016 Table 21): kanal(1) + start BCD[6] + end BCD[6] +
+    alarm(8, 64-bit) + resurs_turi(1) + oqim_turi(1) + xotira_turi(1).
+    """
     body = (bytes([channel & 0xFF]) + start_bcd + end_bcd
-            + struct.pack(">I", 0)
+            + struct.pack(">Q", 0)
             + bytes([resource_type & 0xFF, stream_type & 0xFF,
                      memory_type & 0xFF]))
     ok = await _send(phone, MSG_PLAT_AV_RESOURCE_REQUEST, body)
@@ -628,6 +688,41 @@ async def playback_control(phone: str, channel: int, control: int,
     if ok:
         log.info("JT808: 0x9202 yozuv boshqaruvi phone=%s ch=%s ctrl=%s",
                  phone, channel, control)
+    return ok
+
+
+async def query_params(phone: str) -> bool:
+    """0x8104: barcha terminal parametrlarini so'rash (0x0104 bilan javob)."""
+    ok = await _send(phone, MSG_PLAT_QUERY_PARAMS, b"")
+    if ok:
+        log.info("JT808: 0x8104 terminal paramlari so'rildi phone=%s", phone)
+    return ok
+
+
+async def query_attrs(phone: str) -> bool:
+    """0x8107: terminal atributlarini so'rash (0x0107 bilan javob)."""
+    ok = await _send(phone, MSG_PLAT_QUERY_ATTRS, b"")
+    if ok:
+        log.info("JT808: 0x8107 terminal atributlari so'rildi phone=%s", phone)
+    return ok
+
+
+async def query_av_attrs(phone: str) -> bool:
+    """0x9003: audio/video atributlarini so'rash (0x1003 bilan javob)."""
+    ok = await _send(phone, MSG_PLAT_QUERY_AV_ATTRS, b"")
+    if ok:
+        log.info("JT808: 0x9003 AV atributlari so'rildi phone=%s", phone)
+    return ok
+
+
+async def query_specific(phone: str, param_ids: list) -> bool:
+    """0x8106: aniq terminal parametrlarini so'rash (ro'yxat param_id)."""
+    body = bytes([len(param_ids) & 0xFF]) + b"".join(
+        struct.pack(">I", int(p)) for p in param_ids)
+    ok = await _send(phone, MSG_PLAT_QUERY_SPECIFIC, body)
+    if ok:
+        log.info("JT808: 0x8106 aniq paramlar so'rildi phone=%s ids=%s",
+                 phone, param_ids)
     return ok
 
 
@@ -675,6 +770,22 @@ def send_playback_control(phone: str, channel: int, control: int,
                           speed: int = 0, time_bcd: bytes | None = None) -> bool:
     return bool(_run_coro(
         playback_control(phone, channel, control, speed, time_bcd)))
+
+
+def send_query_params(phone: str) -> bool:
+    return bool(_run_coro(query_params(phone)))
+
+
+def send_query_attrs(phone: str) -> bool:
+    return bool(_run_coro(query_attrs(phone)))
+
+
+def send_query_av_attrs(phone: str) -> bool:
+    return bool(_run_coro(query_av_attrs(phone)))
+
+
+def send_query_specific(phone: str, param_ids: list) -> bool:
+    return bool(_run_coro(query_specific(phone, param_ids)))
 
 
 async def run_tcp(host: str, port: int) -> None:

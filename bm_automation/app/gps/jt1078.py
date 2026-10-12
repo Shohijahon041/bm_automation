@@ -4,7 +4,8 @@ Qurilma JT808 orqali 0x9101 (jonli) / 0x9201 (playback) so'rovini olgach,
 video oqimini shu TCP portga (JT1078 RTP-simon paketlar) yuboradi. Bu modul:
   * paketlarni 0x30316364 flag + body-length bilan freymleydi (TCP
     birlashtirgan/bo'laklagan holatlarda ham to'g'ri)
-  * 30 baytli sarlavhadan SIM, kanal, data type, timestamp, payload oladi
+  * sarlavhadan (video 30 / audio 26 / shaffof 18 bayt) SIM, kanal, data
+    type, timestamp, payload oladi
   * subpaketlarni (birinchi/oraliq/oxirgi) yig'ib to'liq H.264 kadrini
     hosil qiladi; audio/shaffof paketlar tashlanadi
   * har bir (qurilma, kanal) uchun ffmpeg jarayonini yoqib, xom H.264'ni
@@ -30,27 +31,46 @@ log = logging.getLogger(__name__)
 
 # JT/T 1078 RTP-simon paket: har biri 0x30316364 flag bilan boshlanadi.
 FLAG = b"\x30\x31\x63\x64"
-# Real qurilma (CMSV6) sarlavhasi 30 bayt — raw dump orqali tasdiqlangan:
+# Sarlavha tuzilishi (JT/T 1078-2016 — real CMSV6 dump + standart bilan
+# tasdiqlangan). MUHIM: sarlavha uzunligi paket TURIGA qarab FARQ qiladi:
 #   [0:4]   flag 30316364
-#   [4:8]   vendor/seq (qurilmaga xos, doimiy 0x8162 + 2 bayt seriya)
+#   [4:8]   V/P/X/CC (1) + M/PT (1)   (PT 7 bit; PT=98 -> H.264)
 #   [8:14]  SIM (6 bayt BCD)
-#   [14]    kanal
-#   [15]    data_type bayti
-#   [16:24] timestamp (ms, 8 bayt)
-#   [24:26] oxirgi I-kadr oralig'i
-#   [26:28] oxirgi kadr oralig'i
-#   [28:30] body uzunligi (2 bayt, big-endian)
-#   [30:]   body (H.264 Annex-B payload)
-HEADER_LEN = 30
-# data_type bayti: bits5-4 = kadr turi, bits1-0 = subpaket belgisi.
-DT_VIDEO_I = 0        # (dt>>4)&3 == 0 — I-kadr
-DT_VIDEO_P = 1        # == 1 — P-kadr
-DT_AUDIO = 2          # == 2 — audio (hozircha tashlanadi)
-DT_TRANSPARENT = 3    # == 3 — shaffof/xizmat ma'lumoti (tashlanadi)
+#   [14]    kanal (logical channel)
+#   [15]    data_type: yuqori 4 bit = tur, past 4 bit = subpaket
+#   [16:24] timestamp (ms, 8 bayt)      — shaffof (0100) turida YO'Q
+#   [24:26] oxirgi I-kadr oralig'i       — faqat video (I/P/B)
+#   [26:28] oxirgi kadr oralig'i         — faqat video (I/P/B)
+#   [last2] body uzunligi (2 bayt, big-endian, HAR DOIM oxirida)
+#   [..]    body (H.264 Annex-B yoki boshqa data)
+# Demak sarlavha uzunligi (flag bilan): video 30, audio 26, shaffof 18 bayt.
+HEADER_LEN = 30           # video sarlavha (moslik uchun)
+AUDIO_HEADER_LEN = 26
+TRANSPARENT_HEADER_LEN = 18
+# data_type bayti: yuqori 4 bit = kadr/ma'lumot turi, past 4 bit = subpaket.
+DT_VIDEO_I = 0        # 0000 — I-kadr
+DT_VIDEO_P = 1        # 0001 — P-kadr
+DT_VIDEO_B = 2        # 0010 — B-kadr
+DT_AUDIO = 3          # 0011 — audio (hozircha tashlanadi)
+DT_TRANSPARENT = 4    # 0100 — shaffof/xizmat ma'lumoti (tashlanadi)
 SUB_ATOMIC = 0        # bo'linmagan (butun kadr bitta paketda)
 SUB_FIRST = 1         # birinchi subpaket
 SUB_LAST = 2          # oxirgi subpaket
 SUB_MIDDLE = 3        # oraliq subpaket
+_VIDEO_TYPES = (DT_VIDEO_I, DT_VIDEO_P, DT_VIDEO_B)
+
+
+def _header_len(data_type: int) -> int:
+    """data_type bo'yicha sarlavha uzunligi (flag bilan).
+
+    video (I/P/B) = 30, audio = 26, shaffof (0100) = 18 bayt.
+    Noto'g'ri/notanish tur uchun video (eng katta) qaytariladi.
+    """
+    if data_type == DT_TRANSPARENT:
+        return TRANSPARENT_HEADER_LEN
+    if data_type == DT_AUDIO:
+        return AUDIO_HEADER_LEN
+    return HEADER_LEN
 
 _STATS = {"packets": 0, "access_units": 0, "errors": 0, "started": None}
 _STREAMS: dict = {}   # "key" -> {"bytes", "since", "sim", "channel", "kind"}
@@ -124,32 +144,43 @@ def stats() -> dict:
 
 # ---------------------------------------------------------------- parse
 
+def _bcd_sim(raw: bytes) -> str:
+    """6 baytli BCD SIM -> matn. Yetakchi nollar SAQLANADI (protokol
+    terminal identifikatori 6 bayt BCD, to'liq 12 xona). Oxiridagi 0xF
+    to'ldirgich ('f') olib tashlanadi."""
+    s = raw.hex()
+    return s.rstrip("f") or "0"
+
+
 def parse_packet(data: bytes) -> tuple:
-    """data[0:] FLAG bilan boshlanishi kerak.
+    """JT/T 1078 media paketini parse qilish.
 
-    Qaytaradi: (paket_dict, iste'mol_qilingan_uzunlik) yoki (None, 0) agar
-    paket hali to'liq emas (ko'proq bayt kutish kerak).
-
-    Sarlavha 30 bayt (yuqoridagi HEADER_LEN izohiga qarang). data_type
-    baytida: bits5-4 = kadr turi (0=I,1=P,2=audio,3=shaffof), bits1-0 =
-    subpaket belgisi (0=atomic,1=birinchi,2=oxirgi,3=oraliq).
+    Sarlavha uzunligi data_type'ga bog'liq: video (I/P/B) 30, audio 26,
+    shaffof (0100) 18 bayt (_header_len). data_type: yuqori 4 bit = tur
+    (I=0,P=1,B=2,audio=3,shaffof=4), past 4 bit = subpaket belgisi.
+    Qaytaradi: (dict, iste'mol_qilingan_bayt) yoki (None, 0) — paket hali
+    to'liq emas yoki flag mos emas.
     """
-    if len(data) < HEADER_LEN or data[0:4] != FLAG:
+    if data[0:4] != FLAG or len(data) < 16:
         return None, 0
     dt = data[15]
-    body_len = int.from_bytes(data[28:30], "big")
-    total = HEADER_LEN + body_len
+    data_type = (dt >> 4) & 0x0F
+    hdr = _header_len(data_type)
+    if len(data) < hdr:
+        return None, 0
+    body_len = int.from_bytes(data[hdr - 2:hdr], "big")
+    total = hdr + body_len
     if len(data) < total:
         return None, 0
-    sim = data[8:14].hex().lstrip("0") or "0"
-    ts = int.from_bytes(data[16:24], "big")
+    sim = _bcd_sim(data[8:14])
+    ts = int.from_bytes(data[16:24], "big") if data_type != DT_TRANSPARENT else 0
     return {
         "sim": sim,
         "channel": data[14],
-        "data_type": (dt >> 4) & 0x03,
-        "subpacket": dt & 0x03,
+        "data_type": data_type,
+        "subpacket": dt & 0x0F,
         "ts": ts,
-        "payload": data[HEADER_LEN:total],
+        "payload": data[hdr:total],
     }, total
 
 
@@ -388,7 +419,7 @@ class _Session:
         typ = p["data_type"]
         sub = p["subpacket"]
         key = (p["sim"], p["channel"])
-        if typ not in (DT_VIDEO_I, DT_VIDEO_P):
+        if typ not in _VIDEO_TYPES:
             return                      # audio / shaffof — video emas
         payload = p["payload"]
         if not payload:

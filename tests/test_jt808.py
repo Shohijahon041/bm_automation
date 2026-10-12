@@ -152,7 +152,7 @@ def _resource_body(items=None):
     body = struct.pack(">HI", 5, len(items))
     for ch, start, end, size in items:
         body += (bytes([ch]) + bytes.fromhex(start) + bytes.fromhex(end)
-                 + struct.pack(">I", 0) + bytes([0, 0, 0])
+                 + struct.pack(">Q", 0) + bytes([0, 0, 0])
                  + struct.pack(">I", size))
     return body
 
@@ -175,6 +175,59 @@ def test_parse_resource_list():
     assert items[0]["start"] == "2026-10-11T10:00:00"
     assert items[0]["end"] == "2026-10-11T13:00:00"
     assert items[0]["size"] == 12345
+
+
+def test_parse_resource_list_record_is_28_bytes():
+    """0x1205 resurs elementi 28 bayt: alarm 64-bit (8), hajm 32-bit (4)."""
+    body = _resource_body()
+    assert len(body) == 6 + 28
+    items = jt808.parse_resource_list(body)
+    assert len(items) == 1
+
+
+def test_parse_resource_list_64bit_alarm():
+    """Alarm 64-bit bo'lishi kerak (4-bayt format eski xato edi)."""
+    alarm = 0xABCDEF0123456789
+    body = (struct.pack(">HI", 5, 1)
+            + bytes([2]) + bytes.fromhex("261011100000")
+            + bytes.fromhex("261011130000")
+            + struct.pack(">Q", alarm) + bytes([1, 2, 1])
+            + struct.pack(">I", 999))
+    items = jt808.parse_resource_list(body)
+    assert len(items) == 1
+    assert items[0]["channel"] == 2
+    assert items[0]["alarm"] == alarm
+    assert items[0]["resource_type"] == 1
+    assert items[0]["stream_type"] == 2
+    assert items[0]["memory_type"] == 1
+    assert items[0]["size"] == 999
+
+
+def test_request_av_resource_list_body_24_bytes(monkeypatch):
+    """0x9205 tanasi: kanal(1)+start(6)+end(6)+alarm(8)+3*1 = 24 bayt."""
+    import asyncio
+
+    captured = {}
+
+    async def _fake_send(phone, msg_id, body):
+        captured["phone"] = phone
+        captured["msg_id"] = msg_id
+        captured["body"] = body
+        return True
+
+    monkeypatch.setattr(jt808, "_send", _fake_send)
+    start = bytes.fromhex("261011100000")
+    end = bytes.fromhex("261011130000")
+    ok = asyncio.run(jt808.request_av_resource_list("221080344988", 3, start, end))
+    assert ok
+    body = captured["body"]
+    assert captured["msg_id"] == 0x9205
+    assert len(body) == 24
+    assert body[0] == 3
+    assert body[1:7] == start
+    assert body[7:13] == end
+    assert body[13:21] == b"\x00" * 8     # 64-bit alarm
+    assert body[21:24] == bytes([0, 0, 0])
 
 
 def test_parse_resource_list_short():
@@ -237,3 +290,63 @@ def test_dispatch_location_stores(gps_storage):
     assert args[0] == "123456"
     assert abs(args[2] - 41.31) < 1e-5   # lat
     assert abs(args[3] - 69.25) < 1e-5   # lng
+
+
+# ------------------------------------------------- qurilma imkoniyatlari
+
+def test_dispatch_terminal_attrs(gps_storage):
+    jt808._EXTRA.clear()
+    w = _dispatch("123456", 0x0107, b"\x01\x02\x03\x04")
+    resp = _sent_msg(w)
+    assert resp["msg_id"] == 0x8001
+    extras = jt808.av_info("123456")
+    assert extras["attrs_hex"] == "01020304"
+    assert extras["attrs_hex_len"] == 4
+
+
+def test_dispatch_av_attrs(gps_storage):
+    jt808._EXTRA.clear()
+    w = _dispatch("123456", 0x1003, b"\x0a\x0b")
+    resp = _sent_msg(w)
+    assert resp["msg_id"] == 0x8001
+    assert jt808.av_info("123456")["av_hex"] == "0a0b"
+
+
+def _query_frame(monkeypatch, coro, phone="123456"):
+    import asyncio
+    w = _FakeWriter()
+    monkeypatch.setattr(jt808, "_writer_for", lambda p: w)
+    monkeypatch.setattr(jt808, "_ver", lambda p: 0)
+    assert asyncio.run(coro(phone)) is True
+    frames, _ = jt808.extract_frames(bytes(w.buf))
+    return jt808.parse_frame(frames[-1])
+
+
+def test_query_params_frame(monkeypatch):
+    m = _query_frame(monkeypatch, jt808.query_params)
+    assert m["msg_id"] == 0x8104
+
+
+def test_query_attrs_frame(monkeypatch):
+    m = _query_frame(monkeypatch, jt808.query_attrs)
+    assert m["msg_id"] == 0x8107
+
+
+def test_query_av_attrs_frame(monkeypatch):
+    m = _query_frame(monkeypatch, jt808.query_av_attrs)
+    assert m["msg_id"] == 0x9003
+
+
+def test_query_specific_frame(monkeypatch):
+    m = _query_frame(monkeypatch, lambda p: jt808.query_specific(p, [0x01, 0x02]))
+    assert m["msg_id"] == 0x8106
+    assert m["body"][0] == 2                       # param soni
+    assert m["body"][1:5] == struct.pack(">I", 1)
+    assert m["body"][5:9] == struct.pack(">I", 2)
+
+
+def test_raw_log_records_out(monkeypatch):
+    jt808._RAW.clear()
+    _query_frame(monkeypatch, jt808.query_attrs)
+    entries = jt808.raw_log(limit=10, phone="123456")
+    assert any(e["dir"] == "out" and e["msg_id"] == 0x8107 for e in entries)

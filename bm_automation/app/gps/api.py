@@ -417,6 +417,25 @@ class GpsHandler(BaseHTTPRequestHandler):
                 res = jt808.resources(phone)
                 self._json({"ok": True, "phone": phone,
                             "at": res["at"], "items": res["items"]})
+            elif path == "/api/video/jt-device":
+                # Qurilma imkoniyatlari (0x0100/0x0104/0x0107/0x1003 keshi)
+                # + oxirgi xom kadrlar — diagnostika.
+                phone = (qs.get("phone") or [""])[0].strip()
+                if phone:
+                    self._json({
+                        "ok": True, "phone": phone,
+                        "info": jt808.device_info(phone),
+                        "extras": jt808.av_info(phone),
+                        "raw": jt808.raw_log(
+                            int((qs.get("raw") or ["40"])[0] or 40), phone),
+                    })
+                    return
+                self._json({
+                    "ok": True,
+                    "devices": jt808.connected_phones(),
+                    "info": jt808.device_info(),
+                    "extras": jt808.av_info(),
+                })
             elif path == "/api/gps/geofences":
                 fences = self._only_vehicles(storage.list_geofences(), vehicles)
                 self._json({"ok": True, "count": len(fences), "geofences": fences})
@@ -662,6 +681,24 @@ class GpsHandler(BaseHTTPRequestHandler):
                 jt1078.clear_playback(phone, channel)
                 self._json({"ok": bool(ok), "phone": phone,
                             "channel": channel})
+            elif path == "/api/video/jt-query":
+                # Qurilma imkoniyatlarini so'rash: params|attrs|av|specific.
+                phone = str(payload.get("phone") or "").strip()
+                if not phone:
+                    self._json({"ok": False, "error": "phone kerak"}, 400)
+                    return
+                what = str(payload.get("what") or "attrs").strip().lower()
+                if what == "params":
+                    ok = jt808.send_query_params(phone)
+                elif what == "av":
+                    ok = jt808.send_query_av_attrs(phone)
+                elif what == "specific":
+                    ids = payload.get("ids") or []
+                    ok = jt808.send_query_specific(phone, ids)
+                else:
+                    ok = jt808.send_query_attrs(phone)
+                self._json({"ok": bool(ok), "phone": phone, "what": what,
+                            "sent": bool(ok)})
             elif path == "/api/video/jt-files":
                 # 0x9205: qurilma xotirasidagi yozuvlar ro'yxatini so'rash.
                 phone = str(payload.get("phone") or "").strip()
