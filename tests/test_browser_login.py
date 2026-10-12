@@ -20,6 +20,11 @@ def test_direct_sso_url_has_expected_params():
     assert "redirect_uri=https%3A%2F%2Fbm.dtransport.uz%2Flogin%2Foneid" in bl.DIRECT_SSO_URL
 
 
+def test_launch_timeout_is_bounded():
+    """Brauzer ishga tushish kutish vaqti cheklangan bo'lishi kerak (180s emas)."""
+    assert 0 < bl.LAUNCH_TIMEOUT_MS <= 120000
+
+
 def test_exchange_code_saves_tokens_and_profiles(monkeypatch):
     saved = {}
     discovered = {}

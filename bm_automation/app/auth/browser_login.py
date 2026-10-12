@@ -15,11 +15,16 @@ Foydalanish:
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 
 from playwright.sync_api import TimeoutError as PWTimeout
 from playwright.sync_api import sync_playwright
+
+# Brauzer ishga tushish kutish vaqti. Sukut bo'yicha Playwright 180s kutadi;
+# xotira tangis serverlarda bu uzoq thrash'ga olib keladi — qisqartiramiz.
+LAUNCH_TIMEOUT_MS = int(os.getenv("BM_BROWSER_LAUNCH_TIMEOUT_MS", "60000"))
 
 from ..config.settings import get_config
 from ..core.tokens import save_tokens
@@ -155,7 +160,7 @@ def _direct_sso_code(username: str, password: str, headless: bool, timeout: int)
                 pass
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
+        browser = p.chromium.launch(headless=headless, timeout=LAUNCH_TIMEOUT_MS)
         context = browser.new_context(ignore_https_errors=True, locale="uz")
         page = context.new_page()
         page.on("request", on_request)
@@ -231,7 +236,7 @@ def browser_login(
             print(f"  to'g'ridan-to'g'ri SSO ishlamadi ({exc}); /sign-in oqimiga o'tilmoqda")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
+        browser = p.chromium.launch(headless=headless, timeout=LAUNCH_TIMEOUT_MS)
         context = browser.new_context(ignore_https_errors=True, locale="uz")
         page = context.new_page()
         captured = _capture_profiles(page)

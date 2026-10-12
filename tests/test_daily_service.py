@@ -145,6 +145,80 @@ def test_auth_error_detection():
     assert _auth_error([{"error": "boshqa xato"}]) is False
 
 
+def test_fresh_login_skips_browser_when_token_valid(monkeypatch):
+    """Amaldagi token bo'lsa brauzer umuman ochilmaydi (server xotirasi)."""
+    import importlib
+
+    from bm_automation.app.core import tokens as tok
+    from bm_automation.app.services import daily_service as ds
+    bl = importlib.import_module("bm_automation.app.auth.browser_login")
+
+    called = {"browser": 0}
+    monkeypatch.setattr(tok, "has_valid_access_token", lambda *a, **k: True)
+    monkeypatch.setattr(bl, "browser_login",
+                        lambda **k: called.__setitem__("browser", called["browser"] + 1))
+
+    assert ds._fresh_login() is True
+    assert called["browser"] == 0
+
+
+def test_fresh_login_uses_browser_when_no_token(monkeypatch):
+    import importlib
+
+    from bm_automation.app.core import tokens as tok
+    from bm_automation.app.services import daily_service as ds
+    bl = importlib.import_module("bm_automation.app.auth.browser_login")
+
+    called = {"browser": 0}
+
+    def _bl(**_k):
+        called["browser"] += 1
+        return {"access_token": "A"}
+
+    monkeypatch.setattr(tok, "has_valid_access_token", lambda *a, **k: False)
+    monkeypatch.setattr(bl, "browser_login", _bl)
+    monkeypatch.setattr(ds.time, "sleep", lambda *a, **k: None)
+
+    assert ds._fresh_login(retries=2) is True
+    assert called["browser"] == 1
+
+
+def test_run_daily_fresh_login_called_once(monkeypatch):
+    """Retry siklida brauzer login faqat bir marta chaqirilsin."""
+    from bm_automation.app.services import daily_service as ds
+
+    calls = {"fresh": 0, "once": 0}
+
+    class _Log:
+        def start(self, **k):
+            return 1
+
+        def finish(self, *a, **k):
+            pass
+
+        def error(self, *a, **k):
+            pass
+
+    monkeypatch.setattr(ds, "AutomationLogger", lambda: _Log())
+    monkeypatch.setattr(ds, "_fresh_login",
+                        lambda *a, **k: calls.__setitem__("fresh", calls["fresh"] + 1) or True)
+
+    def _once(**k):
+        calls["once"] += 1
+        return [{"error": "boom"}]
+
+    monkeypatch.setattr(ds, "run_daily_once", _once)
+    monkeypatch.setattr(ds, "_has_failures", lambda r: True)
+    monkeypatch.setattr(ds.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(ds, "record_run", lambda *a, **k: None)
+    monkeypatch.setattr(ds, "_notify_summary", lambda *a, **k: None)
+
+    ds.run_daily(send=True, max_attempts=4, attempt_delay=0)
+
+    assert calls["fresh"] == 1
+    assert calls["once"] == 4
+
+
 def _daily_env(monkeypatch, calls, profile, raise_token=False):
     """run_daily_once token oqimi testlari uchun izolyatsiya."""
     from types import SimpleNamespace

@@ -6,8 +6,9 @@ uchun:
   - haydovchilar ertangi kun chiqish jadvali (rasm) -> Telegram
   - oy boshidan bugungacha oylik yig'ma Excel -> Telegram
 
-Hammasi yuborilmaguncha qayta-qayta uriniladi (default 10 marta, oralig'i 10
-daqiqa). Xatolik bo'lsa Telegram'ga xabar ham yuboriladi.
+    Hammasi yuborilmaguncha qayta-qayta uriniladi (default 10 marta, oralig'i 10
+    daqiqa). Yangi login faqat bir marta olinadi. Xatolik bo'lsa Telegram'ga
+    xabar ham yuboriladi.
 
 Windows Task Scheduler orqali ishga tushiriladi:
     python -m bm_automation daily
@@ -108,8 +109,17 @@ def _has_failures(results: list) -> bool:
 
 
 def _fresh_login(retries: int = 3) -> bool:
-    """OneID orqali yangi login. Birinchi muvaffaqiyatda qaytadi."""
+    """OneID orqali yangi login. Birinchi muvaffaqiyatda qaytadi.
+
+    Amaldagi token bo'lsa brauzer umuman ochilmaydi: server (datacenter) IP'da
+    brauzer login ishlamaydi va har urinish xotirani tugatadi.
+    """
     from ..auth.browser_login import browser_login
+    from ..core.tokens import has_valid_access_token
+
+    if has_valid_access_token():
+        print("Amaldagi token bor — brauzer login o'tkazib yuborildi.")
+        return True
 
     for attempt in range(1, retries + 1):
         try:
@@ -202,8 +212,9 @@ def run_daily(send: bool = True, chat_id: str | None = None, month_offset: int =
               trigger: str = "auto") -> list:
     """Barcha profillar uchun kunlik vazifani bajaradi.
 
-    Hammasi yuborilmaguncha (max_attempts marta) qayta urinadi. Har urinishda
-    yangi OneID login olinadi. Yakunda Telegram'ga xulosa xabari yuboriladi.
+    Hammasi yuborilmaguncha (max_attempts marta) qayta urinadi. Yangi OneID
+    login faqat bir marta (sikl boshida) olinadi. Yakunda Telegram'ga xulosa
+    xabari yuboriladi.
     """
     today = date.today()
     sheet_date = today + timedelta(days=sheet_offset)
@@ -216,6 +227,11 @@ def run_daily(send: bool = True, chat_id: str | None = None, month_offset: int =
         month=f"{month_start:%Y-%m-%d}..{today:%Y-%m-%d}",
     )
 
+    # Yangi login FAQAT bir marta (retry siklidan tashqarida) olinadi —
+    # aks holda har urinishda brauzer qayta ochilib server xotirasini yeydi.
+    if fresh_login and not _fresh_login():
+        print("Yangi login olinmadi. Saqlangan tokenlar bilan uriniladi.")
+
     results = []
     for attempt in range(1, max_attempts + 1):
         if attempt > 1:
@@ -223,8 +239,6 @@ def run_daily(send: bool = True, chat_id: str | None = None, month_offset: int =
             print(f"\n[{time.strftime('%H:%M:%S')}] {wait//60} daqiqa kutib, "
                   f"qayta urinish {attempt}/{max_attempts}...")
             time.sleep(wait)
-        if fresh_login and not _fresh_login():
-            print("Yangi login olinmadi. Saqlangan tokenlar bilan uriniladi.")
         try:
             results = run_daily_once(send=send, chat_id=chat_id,
                                      month_offset=month_offset, sheet_offset=sheet_offset,
