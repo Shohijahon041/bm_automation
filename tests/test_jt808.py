@@ -203,6 +203,36 @@ def test_parse_resource_list_64bit_alarm():
     assert items[0]["size"] == 999
 
 
+def _device_record(ch=1, start="261012024000", end="261012025000", size=99993371):
+    return (bytes([ch]) + bytes.fromhex(start) + bytes.fromhex(end)
+            + struct.pack(">Q", 0) + bytes([0, 1, 1])
+            + struct.pack(">I", size))
+
+
+def test_parse_resource_list_device_4byte_prefix():
+    """T8008V2: har paketda 4 baytli sarlavha (00 08 00 0N) + N*28 yozuv.
+
+    Standart 6-baytli SN+total o'rniga 4 bayt keladi — maydonlar 2 baytga
+    siljib ketmasligi kerak (haqiqiy qurilma xatosi regressioni)."""
+    body = bytes.fromhex("00080002") + _device_record() * 16
+    assert len(body) == 4 + 16 * 28
+    items = jt808.parse_resource_list(body)
+    assert len(items) == 16
+    assert items[0]["channel"] == 1
+    assert items[0]["start"] == "2026-10-12T02:40:00"
+    assert items[0]["end"] == "2026-10-12T02:50:00"
+    assert items[0]["size"] == 99993371
+
+
+def test_parse_resource_list_device_first_packet_10_bytes():
+    """T8008V2 birinchi paketida qo'shimcha 6 baytli jami maydoni bo'ladi."""
+    prefix = bytes.fromhex("00080001") + struct.pack(">H", 15) + struct.pack(">I", 116)
+    body = prefix + _device_record() * 3
+    items = jt808.parse_resource_list(body)
+    assert len(items) == 3
+    assert items[0]["start"] == "2026-10-12T02:40:00"
+
+
 def test_request_av_resource_list_body_24_bytes(monkeypatch):
     """0x9205 tanasi: kanal(1)+start(6)+end(6)+alarm(8)+3*1 = 24 bayt."""
     import asyncio

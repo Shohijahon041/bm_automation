@@ -261,15 +261,22 @@ def parse_location(body: bytes) -> dict:
 # ---------------------------------------------------------------- javoblar
 
 def parse_resource_list(body: bytes) -> list:
-    """0x1205 tanasi (JT/T 1078-2016 Table 23): seq(2) + total(4) +
-    [kanal(1)+start[6]+end[6]+alarm(8)+resurs_turi(1)+oqim_turi(1)+
-    xotira_turi(1)+hajm(4)] * N.  Alarm belgisi 64-bit (8 bayt)."""
-    if len(body) < 6:
+    """0x1205 tanasi (JT/T 1078-2016 Table 23): [SN(2)+jami(4)] + N yozuv.
+
+    Yozuv (28 bayt): kanal(1)+start[6]+end[6]+alarm(8)+resurs_turi(1)+
+    oqim_turi(1)+xotira_turi(1)+hajm(4).  Alarm — 64-bit (8 bayt).
+
+    Diqqat: ba'zi qurilmalar (masalan T8008V2) har bir paketda standart
+    SN(2)+jami(4) sarlavhasini TO'LIQ yubormaydi — odatda 4 baytli
+    (00 08 00 0N) blok sarlavhasi, birinchi paketda esa 10 bayt bo'ladi.
+    Shu sababli yozuvlar boshlanishi qat'iy 6 emas, balki tana uzunligiga
+    qarab `len(body) % 28` bilan aniqlanadi (standart 6-baytli sarlavha
+    uchun ham to'g'ri natija beradi)."""
+    item_len = 28
+    if len(body) < item_len:
         raise Jt808Error("resurs ro'yxati qisqa")
-    total = struct.unpack(">I", body[2:6])[0]
+    i = len(body) % item_len
     items = []
-    i = 6
-    item_len = 1 + 6 + 6 + 8 + 1 + 1 + 1 + 4
     while i + item_len <= len(body):
         start = bcd6_to_iso(body[i + 1:i + 7])
         end = bcd6_to_iso(body[i + 7:i + 13])
@@ -287,7 +294,7 @@ def parse_resource_list(body: bytes) -> list:
             "size": struct.unpack(">I", body[i + 24:i + 28])[0],
         })
         i += item_len
-    return items[:total] if total else items
+    return items
 
 
 def resources(phone: str) -> dict:
