@@ -18,7 +18,8 @@ from urllib.parse import parse_qs, urlparse
 
 from pathlib import Path
 
-from . import compare, config, listener, relay, route_alert, stops, storage
+from . import (compare, config, jt1078, jt808, listener, relay, route_alert,
+               stops, storage)
 
 log = logging.getLogger(__name__)
 
@@ -309,6 +310,11 @@ class GpsHandler(BaseHTTPRequestHandler):
                 "checked_at": datetime.now(timezone.utc).isoformat(),
                 "listener": listener.stats(),
                 "tcp_port": config.GPS_TCP_PORT,
+                "jt808_enabled": config.JT808_ENABLED,
+                "jt808": jt808.stats() if config.JT808_ENABLED else None,
+                "jt1078": jt1078.stats() if config.JT808_ENABLED else None,
+                "jt1078_streams": (jt1078.streams()
+                                   if config.JT808_ENABLED else []),
             })
             return
 
@@ -350,6 +356,14 @@ class GpsHandler(BaseHTTPRequestHandler):
                     routes.append(a)
                 routes.sort(key=lambda x: x["name"])
                 self._json({"ok": True, "count": len(routes), "routes": routes})
+            elif path == "/api/gps/vehicles":
+                # Mavjud avtobuslar (vehicles jadvali) + bog'langan qurilma.
+                # Qurilmani avtobusga bog'lash uchun tanlov ro'yxati.
+                vs = storage.list_vehicles()
+                if vehicles is not None:
+                    vs = [v for v in vs
+                          if str(v.get("external_id") or "") in vehicles]
+                self._json({"ok": True, "count": len(vs), "vehicles": vs})
             elif path == "/api/gps/positions":
                 imes = self._allowed_imes(vehicles)
                 rows = storage.positions(
@@ -381,6 +395,28 @@ class GpsHandler(BaseHTTPRequestHandler):
                     "hls_dir": config.HLS_DIR,
                     "relays": relays,
                 })
+            elif path == "/api/video/jt-streams":
+                # JT1078 (CMSV6/4G) avtomatik aniqlangan jonli/yozuv oqimlari.
+                streams = jt1078.streams() if config.JT808_ENABLED else []
+                phones = jt808.connected_phones() if config.JT808_ENABLED else []
+                self._json({
+                    "ok": True,
+                    "enabled": config.JT808_ENABLED,
+                    "ffmpeg": jt1078.ffmpeg_available(),
+                    "media_host": config.JT1078_MEDIA_HOST,
+                    "devices": phones,
+                    "count": len(streams),
+                    "streams": streams,
+                })
+            elif path == "/api/video/jt-files":
+                # Qurilma xotirasidagi yozuvlar ro'yxati (oxirgi 0x1205 javobi).
+                phone = (qs.get("phone") or [""])[0].strip()
+                if not phone:
+                    self._json({"ok": False, "error": "phone kerak"}, 400)
+                    return
+                res = jt808.resources(phone)
+                self._json({"ok": True, "phone": phone,
+                            "at": res["at"], "items": res["items"]})
             elif path == "/api/gps/geofences":
                 fences = self._only_vehicles(storage.list_geofences(), vehicles)
                 self._json({"ok": True, "count": len(fences), "geofences": fences})
@@ -595,6 +631,94 @@ class GpsHandler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "route_id": route_id,
                             "points": len(points), "name": name,
                             "tolerance_m": tol})
+            elif path == "/api/video/jt-live":
+                # 4G kameraga 0x9101: videoni shu serverga yuborishni so'rash.
+                phone = str(payload.get("phone") or "").strip()
+                if not phone:
+                    self._json({"ok": False, "error": "phone kerak"}, 400)
+                    return
+                host = (str(payload.get("host") or "").strip()
+                        or config.JT1078_MEDIA_HOST)
+                if not host:
+                    self._json({"ok": False,
+                                "error": "media host belgilanmagan "
+                                         "(JT1078_MEDIA_HOST)"}, 400)
+                    return
+                channel = int(payload.get("channel") or 1)
+                stream_type = int(payload.get("stream_type") or 0)
+                ok = jt808.send_live_request(
+                    phone, host, config.JT1078_TCP_PORT, channel, stream_type)
+                self._json({"ok": bool(ok), "phone": phone, "channel": channel,
+                            "host": host, "port": config.JT1078_TCP_PORT,
+                            "sent": bool(ok)})
+            elif path == "/api/video/jt-stop":
+                # 0x9102: jonli oqimni to'xtatish (4G trafikni tejash).
+                phone = str(payload.get("phone") or "").strip()
+                if not phone:
+                    self._json({"ok": False, "error": "phone kerak"}, 400)
+                    return
+                channel = int(payload.get("channel") or 1)
+                ok = jt808.send_live_stop(phone, channel)
+                jt1078.clear_playback(phone, channel)
+                self._json({"ok": bool(ok), "phone": phone,
+                            "channel": channel})
+            elif path == "/api/video/jt-files":
+                # 0x9205: qurilma xotirasidagi yozuvlar ro'yxatini so'rash.
+                phone = str(payload.get("phone") or "").strip()
+                if not phone:
+                    self._json({"ok": False, "error": "phone kerak"}, 400)
+                    return
+                channel = int(payload.get("channel") or 1)
+                date = str(payload.get("date") or "").strip()
+                raw_start = str(payload.get("start") or "").strip()
+                raw_end = str(payload.get("end") or "").strip()
+                start = jt808.iso_to_bcd6(
+                    raw_start or (f"{date} 00:00:00" if date else ""))
+                end = jt808.iso_to_bcd6(
+                    raw_end or (f"{date} 23:59:59" if date else ""))
+                ok = jt808.send_resource_list(phone, channel, start, end)
+                self._json({"ok": bool(ok), "phone": phone,
+                            "channel": channel, "sent": bool(ok)})
+            elif path == "/api/video/jt-playback":
+                # 0x9201: yozuvni qurilma xotirasidan oqim sifatida so'rash.
+                phone = str(payload.get("phone") or "").strip()
+                if not phone:
+                    self._json({"ok": False, "error": "phone kerak"}, 400)
+                    return
+                host = (str(payload.get("host") or "").strip()
+                        or config.JT1078_MEDIA_HOST)
+                if not host:
+                    self._json({"ok": False,
+                                "error": "media host belgilanmagan "
+                                         "(JT1078_MEDIA_HOST)"}, 400)
+                    return
+                channel = int(payload.get("channel") or 1)
+                start = jt808.iso_to_bcd6(str(payload.get("start") or ""))
+                end = jt808.iso_to_bcd6(str(payload.get("end") or ""))
+                ok = jt808.send_playback(phone, host, config.JT1078_TCP_PORT,
+                                         start, end, channel)
+                if ok:
+                    jt1078.set_playback(phone, channel)
+                self._json({
+                    "ok": bool(ok), "phone": phone, "channel": channel,
+                    "hls": f"/hls/jtpb_{phone}_{channel}.m3u8",
+                    "start": str(payload.get("start") or ""),
+                    "end": str(payload.get("end") or ""),
+                })
+            elif path == "/api/video/jt-playback-control":
+                # 0x9202: yozuv ijrosini boshqarish (pauza/davom/to'xtat/…).
+                phone = str(payload.get("phone") or "").strip()
+                if not phone:
+                    self._json({"ok": False, "error": "phone kerak"}, 400)
+                    return
+                channel = int(payload.get("channel") or 1)
+                control = int(payload.get("control") or 0)
+                speed = int(payload.get("speed") or 0)
+                ok = jt808.send_playback_control(phone, channel, control, speed)
+                if control == jt808.PB_CTRL_STOP:
+                    jt1078.clear_playback(phone, channel)
+                self._json({"ok": bool(ok), "phone": phone,
+                            "channel": channel, "control": control})
             else:
                 self._json({"error": "topilmadi"}, 404)
         except Exception as exc:  # noqa: BLE001
@@ -624,11 +748,29 @@ class GpsHandler(BaseHTTPRequestHandler):
                     )
                 self._json({"ok": True})
                 return
-            if (len(parts) == 4 and parts[:3] == ["api", "gps", "geofences"]
-                    and "enabled" in payload):
-                storage.set_geofence_enabled(
-                    int(parts[3]), bool(payload["enabled"])
-                )
+            if len(parts) == 4 and parts[:3] == ["api", "gps", "geofences"]:
+                fid = int(parts[3])
+                if "enabled" in payload:
+                    storage.set_geofence_enabled(fid, bool(payload["enabled"]))
+                # tahrirlash: nom / koordinata / radius / avtobus
+                if any(k in payload for k in ("name", "lat", "lng", "radius_m")):
+                    cur = {f["id"]: f for f in storage.list_geofences()}.get(fid)
+                    if not cur:
+                        self._json({"error": "zona topilmadi"}, 404)
+                        return
+                    try:
+                        lat = float(payload.get("lat", cur.get("lat")))
+                        lng = float(payload.get("lng", cur.get("lng")))
+                    except (TypeError, ValueError):
+                        self._json({"ok": False, "error": "lat/lng noto'g'ri"}, 400)
+                        return
+                    storage.update_geofence(
+                        fid,
+                        name=str(payload.get("name") or cur.get("name") or "").strip(),
+                        lat=lat, lng=lng,
+                        radius_m=int(payload.get("radius_m") or cur.get("radius_m") or 500),
+                        vehicle_id=str(payload.get("vehicle_id", cur.get("vehicle_id")) or "").strip(),
+                    )
                 self._json({"ok": True})
                 return
             if (len(parts) == 4 and parts[:3] == ["api", "gps", "route-paths"]
@@ -654,6 +796,10 @@ class GpsHandler(BaseHTTPRequestHandler):
             if len(parts) == 4 and parts[:3] == ["api", "video", "cameras"]:
                 relay.stop_for_camera(int(parts[3]))
                 storage.delete_camera(int(parts[3]))
+                self._json({"ok": True})
+                return
+            if len(parts) == 4 and parts[:3] == ["api", "gps", "devices"]:
+                storage.delete_device(parts[3])
                 self._json({"ok": True})
                 return
             if len(parts) == 4 and parts[:3] == ["api", "gps", "geofences"]:

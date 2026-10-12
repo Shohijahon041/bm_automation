@@ -78,18 +78,62 @@
   .dev.active{background:rgba(63,182,168,.12);box-shadow:inset 3px 0 0 var(--teal)}
   .dot{width:9px;height:9px;border-radius:50%;background:#3a4558;flex:none}
   .dot.on{background:var(--green);box-shadow:0 0 10px rgba(52,211,153,.7)}
-  .dev-pin{display:block;width:14px;height:14px;border-radius:50%;border:2px solid rgba(255,255,255,.85);box-shadow:0 1px 6px rgba(0,0,0,.45)}
-  .dev-pin.on{background:var(--green);box-shadow:0 0 10px rgba(52,211,153,.8)}
-  .dev-pin.off{background:var(--red)}
-  .dev-pin.sel{background:var(--teal);box-shadow:0 0 12px rgba(63,182,168,.9);border-color:#fff}
+  /* avtobus raqami ko'rinadigan marker (nuqta o'rniga) */
+  .bus-pin{display:inline-flex;align-items:center;gap:4px;padding:3px 8px 3px 5px;border-radius:999px;
+    background:rgba(13,19,32,.94);border:2px solid var(--green);color:#fff;font-weight:800;font-size:10.5px;
+    letter-spacing:.2px;white-space:nowrap;line-height:1.15;transform:translate(-50%,-50%);
+    box-shadow:0 3px 10px rgba(0,0,0,.55);font-variant-numeric:tabular-nums}
+  .bus-pin .bus-ic{font-size:12px;line-height:1}
+  .bus-pin.mv{border-color:var(--green);box-shadow:0 0 0 3px rgba(52,211,153,.28),0 3px 10px rgba(0,0,0,.55)}
+  .bus-pin.off{border-color:var(--red);opacity:.9}
+  .bus-pin.off .bus-no{color:#fca5a5}
+  .bus-pin.sel{border-color:var(--teal);box-shadow:0 0 0 4px rgba(63,182,168,.4),0 3px 12px rgba(0,0,0,.6)}
+  .bus-pin .bus-no{max-width:86px;overflow:hidden;text-overflow:ellipsis}
+  /* traektoriya yo'nalish strelkalari */
+  .traj-arrow{position:absolute;color:rgba(255,255,255,.9);font-size:11px;line-height:1;
+    text-shadow:0 0 4px rgba(0,0,0,.9);pointer-events:none}
+  /* holat chip'lari (Barcha / Harakatda / Online / Offline) */
+  .fchips{display:flex;gap:5px;padding:8px 12px;border-bottom:1px solid var(--line);flex:none;flex-wrap:wrap}
+  .fchip{padding:4px 10px;border:1px solid var(--line);border-radius:99px;background:var(--panel2);
+    color:var(--muted);cursor:pointer;font-size:11px;font-weight:700;white-space:nowrap}
+  .fchip b{font-weight:800;margin-left:3px;color:var(--ink)}
+  .fchip:hover{border-color:rgba(148,163,184,.35)}
+  .fchip.on{background:linear-gradient(135deg,rgba(63,182,168,.22),rgba(52,211,153,.08));color:var(--ink);border-color:rgba(63,182,168,.45)}
+  .fchip.on.ok{border-color:rgba(52,211,153,.5)} .fchip.on.bad{border-color:rgba(229,72,77,.5)}
+  /* jonli soat + pauza */
+  .liveclk{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);white-space:nowrap}
+  .liveclk .rdot{width:7px;height:7px;border-radius:50%;background:var(--green);flex:none}
+  .liveclk.pulse .rdot{animation:rdpulse .8s ease-out}
+  .liveclk.paused .rdot{background:var(--amber)}
+  @keyframes rdpulse{0%{box-shadow:0 0 0 0 rgba(52,211,153,.6)}100%{box-shadow:0 0 0 9px rgba(52,211,153,0)}}
+  .iconbtn{width:28px;height:28px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);
+    color:var(--ink);cursor:pointer;font-size:13px;line-height:1;display:grid;place-items:center;flex:none}
+  .iconbtn:hover{border-color:rgba(148,163,184,.35)}
+  @media(max-width:1180px){.liveclk .ctxt{display:none}}
+  /* tanlangan avtobusning jonli kartasi */
+  #sel-card{position:absolute;left:12px;bottom:80px;z-index:1200;width:272px;display:none;
+    background:rgba(13,19,32,.95);backdrop-filter:blur(10px);border:1px solid rgba(63,182,168,.4);
+    border-radius:14px;box-shadow:0 14px 40px rgba(0,0,0,.55);overflow:hidden}
+  #sel-card .sc-head{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line)}
+  #sel-card .sc-head b{font-size:15px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #sel-card .sc-x{margin-left:auto;color:var(--muted);cursor:pointer;font-size:16px;line-height:1;flex:none}
+  #sel-card .sc-x:hover{color:var(--ink)}
+  #sel-card .sc-body{padding:10px 12px}
+  .sc-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px;margin:10px 0}
+  .sc-grid .k{color:var(--muted);font-size:9.5px;text-transform:uppercase;letter-spacing:.5px}
+  .sc-grid .v{font-size:13px;font-weight:800}
+  .sc-acts{display:flex;gap:7px}
+  .sc-acts .btn{flex:1;text-align:center}
+  @media(max-width:720px){#dev-panel{width:calc(100% - 24px)}#sel-card{left:12px;right:12px;width:auto;bottom:70px}}
   .dev-name{font-weight:600}
   .dev-sub{color:var(--muted);font-size:11px}
-  .dev-sub b{color:var(--teal)} .dev-sub .rt{color:var(--teal)}
+  .dev-sub b{color:var(--teal)} .dev-sub .rt{color:var(--teal)} .dev-sub .old{color:var(--red)}
   .dev .go{margin-left:auto;color:var(--muted);font-size:11px;white-space:nowrap}
   .empty{padding:20px;text-align:center;color:var(--muted);font-size:12px}
   .btn{padding:7px 13px;border:1px solid var(--line);border-radius:10px;background:var(--panel2);color:var(--ink);cursor:pointer;font-size:12.5px;font-weight:600}
   .btn:hover{border-color:rgba(148,163,184,.35)}
   .btn.primary{background:linear-gradient(135deg,var(--teal),#2f9d91);border-color:transparent;color:#04211e}
+  .btn.on{border-color:var(--teal);color:var(--teal);background:rgba(63,182,168,.12)}
   .btn.danger{color:var(--red)}
   .btn.sm{padding:5px 10px;font-size:11.5px}
   input,select{background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:7px 10px;font-size:13px}
@@ -162,6 +206,10 @@
   dialog .f{margin-bottom:10px}
   dialog input{width:100%}
   dialog .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+  .dlg-hint{margin-top:10px;padding:9px 11px;border-radius:10px;background:var(--panel2);
+    border:1px solid var(--line);color:var(--muted);font-size:11.5px;line-height:1.5}
+  .dlg-hint b{color:var(--ink)}
+  .dlg-hint .ok{color:var(--green)} .dlg-hint .warn{color:var(--amber)}
 
   /* ---------- video ---------- */
   #video{display:none}
@@ -170,6 +218,10 @@
     border-radius:13px;margin-bottom:14px;background:rgba(15,22,35,.5)}
   @media(max-width:920px){.player-form{grid-template-columns:1fr}}
   .cam-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px}
+  .jt-sec{margin-bottom:18px}
+  .jt-head{display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:14px}
+  .jt-head .grow{flex:1}
+  .jt-sec .cam-grid:not(:empty){margin-bottom:4px}
   .cam{background:var(--panel);border:1px solid var(--line);border-radius:15px;overflow:hidden}
   .cam .head{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line);font-weight:600;font-size:13px}
   .cam .body{aspect-ratio:16/9;background:#000;position:relative}
@@ -177,6 +229,13 @@
   .cam iframe{width:100%;height:100%;border:0;display:block}
   .cam .foot{display:flex;gap:6px;padding:8px 10px;border-top:1px solid var(--line);font-size:11px;color:var(--muted);align-items:center}
   .cam .foot .grow{margin-left:auto;display:flex;gap:6px}
+  .jt-rec{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:13px;background:rgba(15,22,35,.5)}
+  .jt-rec .rbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+  .jt-rec table.mini{width:100%;border-collapse:collapse;max-height:200px;display:block;overflow:auto}
+  .jt-rec .rrow{display:flex;align-items:center;gap:8px;padding:7px 8px;border-bottom:1px solid var(--line);font-size:12px}
+  .jt-rec .rrow .t{font-variant-numeric:tabular-nums}
+  .jt-rec .rrow .grow{margin-left:auto}
+  .jt-rec video{width:100%;max-height:420px;background:#000;border-radius:11px;margin-top:10px}
 
   /* ---------- mobil ---------- */
   @media(max-width:860px){
@@ -210,6 +269,8 @@
     </span>
   </div>
   <div class="tb-right">
+    <span class="liveclk" id="liveclk"><span class="rdot"></span><span class="ctxt" id="liveclk-txt">yangilanmoqda…</span></span>
+    <button class="iconbtn" id="pause-btn" onclick="togglePause()" title="Avtomatik yangilashni to'xtatish / davom ettirish">⏸</button>
     <div class="pills" id="stats"></div>
     <div class="tabs">
       <button class="tab on" id="tab-gps" onclick="showTab('gps')">Xarita</button>
@@ -230,6 +291,12 @@
     <div class="dev-filter">
       <span class="lbl">Yo'nalish</span>
       <select id="route-filter" onchange="onRouteFilter()"><option value="">Barcha</option></select>
+    </div>
+    <div class="fchips" id="fchips">
+      <button class="fchip on" data-st="" onclick="setStatusFilter('')">Barcha <b id="c-all">0</b></button>
+      <button class="fchip ok" data-st="moving" onclick="setStatusFilter('moving')">Harakatda <b id="c-mov">0</b></button>
+      <button class="fchip" data-st="online" onclick="setStatusFilter('online')">Online <b id="c-on">0</b></button>
+      <button class="fchip bad" data-st="offline" onclick="setStatusFilter('offline')">Offline <b id="c-off">0</b></button>
     </div>
     <div class="p-body dev-list" id="dev-list"></div>
     <div style="padding:9px 11px;border-top:1px solid var(--line);display:flex;gap:8px;flex:none">
@@ -296,7 +363,9 @@
         </div>
         <div class="row" style="margin-top:8px">
           <button class="btn" onclick="pickCenter()">Xarita markazi</button>
-          <button class="btn primary" onclick="addGf()">+ Zona qo'shish</button>
+          <button class="btn" id="gf-pick-btn" onclick="toggleGfPick()" title="Xaritani bosing — koordinata avtomatik qo'yiladi">📍 Xaritadan</button>
+          <button class="btn primary" id="gf-save-btn" onclick="saveGf()">+ Zona qo'shish</button>
+          <button class="btn" id="gf-cancel-btn" onclick="cancelGfEdit()" style="display:none">Bekor</button>
         </div>
         <div class="err" id="gf-err"></div>
         <div id="gf-list" style="margin-top:10px"></div>
@@ -372,11 +441,27 @@
   </div>
 
   <button class="mapbtn" onclick="recenterLive()" title="Jonli qurilmalarga qaytish">🎯</button>
+  <div id="sel-card"></div>
 </div>
 
 <!-- ================= VIDEO ================= -->
 <div id="video">
   <div class="vwrap">
+    <div class="jt-sec">
+      <div class="jt-head">
+        <b>JT1078 / CMSV6 — 4G kameralar</b>
+        <span class="badge rtsp" style="margin-left:6px">AVTO</span>
+        <span class="muted grow" id="jt-status"></span>
+        <button class="btn sm" onclick="loadJtStreams()">↻ Yangilash</button>
+      </div>
+      <div class="cam-grid" id="jt-grid"></div>
+      <div class="note" id="jt-empty" style="display:none">
+        Hozircha 4G kamera ulanmagan. Kamerani <b>JT808</b> serverga (port <code>6808</code>) va
+        <b>JT1078 media</b> serverga (port <code>6107</code>) sozlang — qurilma ulanishi bilan
+        jonli oqim shu yerda avtomatik paydo bo'ladi.
+      </div>
+      <div class="jt-rec" id="jt-rec" style="display:none"></div>
+    </div>
     <div class="player-form">
       <label class="f">Kamera nomi <input id="cam-name" placeholder="Avtobus 01 — old ko'rinish"></label>
       <label class="f">Manba (HLS .m3u8 yoki embed) <input id="cam-url" placeholder="http://server/live/stream.m3u8"></label>
@@ -404,11 +489,17 @@
 </div>
 
 <dialog id="dlg">
-  <h4>IMEI qo'shish / avtobusga bog'lash</h4>
-  <div class="f"><label class="f">IMEI <input id="dlg-imei" placeholder="15 xonali IMEI"></label></div>
-  <div class="f"><label class="f">Avtobus (external_id) <input id="dlg-vehicle" placeholder="masalan: 01.240-AAB"></label></div>
-  <div class="f"><label class="f">Ism (ixtiyoriy) <input id="dlg-name" placeholder="FMB920 #1"></label></div>
-  <div class="acts"><button class="btn" onclick="dlg.close()">Bekor</button><button class="btn primary" onclick="saveBind()">Saqlash</button></div>
+  <h4 id="dlg-title">Qurilmani avtobusga bog'lash</h4>
+  <div class="f"><label class="f">GPS qurilma (ro'yxatdan)
+    <select id="dlg-device" onchange="updateDlgHint()"><option value="">— qurilmani tanlang —</option></select></label></div>
+  <div class="f"><label class="f">yoki yangi IMEI (ro'yxatda bo'lmasa)
+    <input id="dlg-imei" placeholder="15 xonali IMEI" oninput="updateDlgHint()"></label></div>
+  <div class="f"><label class="f">Avtobus (mavjud)
+    <select id="dlg-vehicle" onchange="updateDlgHint()"><option value="">— avtobusni tanlang —</option></select></label></div>
+  <div class="f"><label class="f">Ism (ixtiyoriy — bo'sh qolsa avtobus raqami ishlatiladi)
+    <input id="dlg-name" placeholder="FMB920 #1 (shart emas)"></label></div>
+  <div class="dlg-hint" id="dlg-hint"></div>
+  <div class="acts"><button class="btn" onclick="dlg.close()">Bekor</button><button class="btn primary" onclick="saveBind()">Bog'lash</button></div>
   <div class="err" id="dlg-err"></div>
 </dialog>
 
@@ -443,6 +534,7 @@ function initMaps() {
   L.control.zoom({ position: 'bottomleft' }).addTo(map);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' }).addTo(map);
   trajLayer = L.layerGroup().addTo(map);   /* traektoriya + to'xtashlar + harakat markeri */
+  map.on('click', onMapClick);              /* 📍 zona koordinatasini xaritadan tanlash */
 }
 function initCluster() {
   if (cluster || !window.L || !L.MarkerClusterGroup) return;
@@ -461,6 +553,7 @@ function togglePanel(id) {
   var p = document.getElementById(id);
   if (!p) return;
   p.classList.toggle('collapsed');
+  try { localStorage.setItem(id === 'dev-panel' ? 'bm-gps-devcol' : 'bm-gps-ctrlcol', p.classList.contains('collapsed') ? '1' : '0'); } catch (e) {}
   setTimeout(function () { if (map) map.invalidateSize(); }, 60);
 }
 function ctrlTab(t) {
@@ -470,6 +563,7 @@ function ctrlTab(t) {
   });
   var bs = document.querySelectorAll('.ctab');
   for (var i = 0; i < bs.length; i++) bs[i].classList.toggle('on', bs[i].getAttribute('data-ct') === t);
+  try { localStorage.setItem('bm-gps-ctab', t); } catch (e) {}
 }
 function showTab(t) {
   document.getElementById('gps').style.display = (t === 'gps') ? 'block' : 'none';
@@ -478,6 +572,7 @@ function showTab(t) {
   document.getElementById('tab-video').classList.toggle('on', t === 'video');
   if (location.hash !== '#' + t) { try { history.replaceState(null, '', '#' + t); } catch (e) {} }
   if (t === 'gps') { initMaps(); setTimeout(function () { map.invalidateSize(); }, 60); }
+  if (t === 'video') { loadJtStreams(); }
 }
 function tabFromHash() {
   var h = (location.hash || '').replace('#', '').split('?')[0];
@@ -491,24 +586,82 @@ window.addEventListener('message', function (e) {
 
 /* ============ qurilmalar ============ */
 var devices = [], routes = [], routeFilter = '';
+var statusFilter = '', paused = false, lastRefresh = 0;
 function refresh() {
+  if (paused && lastRefresh) return;   /* pauza: faqat birinchi yuklash o'tadi */
   Promise.all([
     API.get('/api/gps/devices'),
     API.get('/api/gps/routes').catch(function () { return { routes: [] }; })
   ]).then(function (rs) {
     devices = rs[0].devices || [];
     routes = rs[1].routes || [];
+    lastRefresh = Date.now();
+    var lc = document.getElementById('liveclk');
+    if (lc) { lc.classList.remove('pulse'); void lc.offsetWidth; lc.classList.add('pulse'); }
     renderRouteFilter();
-    renderStats(); renderDevices(); renderMap();
+    renderStats(); renderChips(); renderDevices(); renderMap(); updateSelCard();
+    tickClock();
   }).catch(function (e) { setStatus('Xato: ' + e.message, true); });
 }
 function routeName(id) {
   for (var i = 0; i < routes.length; i++) if (routes[i].id === id) return routes[i].name;
   return id || '';
 }
+/* Qurilma identifikatori: AVTOBUS RAQAMI asosiy (nom/IMEI faqat zaxira). */
+function shortImei(i) { i = String(i || ''); return i ? '…' + i.slice(-4) : ''; }
+function devLabel(d) {
+  if (!d) return '';
+  return d.plate_number || d.name || shortImei(d.imei);
+}
+/* ikki nuqta orasidagi yo'nalish burchagi (gradus, 0=shimol) */
+function bearing(a, b) {
+  var r = Math.PI / 180;
+  var y = Math.sin((b[1] - a[1]) * r) * Math.cos(b[0] * r);
+  var x = Math.cos(a[0] * r) * Math.sin(b[0] * r) - Math.sin(a[0] * r) * Math.cos(b[0] * r) * Math.cos((b[1] - a[1]) * r);
+  return (Math.atan2(y, x) / r + 360) % 360;
+}
+/* ma'lumot yangiligi: oxirgi aloqadan necha vaqt o'tdi (real holat) */
+function ageStr(iso) {
+  if (!iso) return '';
+  var t = Date.parse(String(iso).replace(' ', 'T'));
+  if (isNaN(t)) return '';
+  var s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.round(s / 60) + 'daq';
+  if (s < 86400) return Math.round(s / 3600) + 'soat';
+  return Math.round(s / 86400) + 'kun';
+}
 function visibleDevices() {
   if (!routeFilter) return devices;
   return devices.filter(function (d) { return String(d.route_id || '') === routeFilter; });
+}
+function devMoving(d) { return d.online && (d.last_speed || 0) > 3; }
+/* ro'yxat: holat chip'i filtri + aqlli saralash (harakatda > online > offline, keyin raqam) */
+function listDevices() {
+  var l = visibleDevices();
+  if (statusFilter === 'moving') l = l.filter(devMoving);
+  else if (statusFilter === 'online') l = l.filter(function (d) { return d.online; });
+  else if (statusFilter === 'offline') l = l.filter(function (d) { return !d.online; });
+  var rank = function (d) { return devMoving(d) ? 0 : (d.online ? 1 : 2); };
+  return l.slice().sort(function (a, b) {
+    var r = rank(a) - rank(b);
+    if (r) return r;
+    return String(devLabel(a)).localeCompare(String(devLabel(b)), 'uz');
+  });
+}
+function renderChips() {
+  var l = visibleDevices();
+  var on = l.filter(function (d) { return d.online; }).length;
+  var mv = l.filter(devMoving).length;
+  var set = function (id, v) { var e = document.getElementById(id); if (e) e.textContent = v; };
+  set('c-all', l.length); set('c-mov', mv); set('c-on', on); set('c-off', l.length - on);
+  var bs = document.querySelectorAll('#fchips .fchip');
+  for (var i = 0; i < bs.length; i++) bs[i].classList.toggle('on', (bs[i].getAttribute('data-st') || '') === statusFilter);
+}
+function setStatusFilter(f) {
+  statusFilter = f || '';
+  try { localStorage.setItem('bm-gps-status', statusFilter); } catch (e) {}
+  renderChips(); renderDevices();
 }
 function renderRouteFilter() {
   var sel = document.getElementById('route-filter');
@@ -530,7 +683,8 @@ function renderRouteFilter() {
 function onRouteFilter() {
   var sel = document.getElementById('route-filter');
   routeFilter = sel ? sel.value : '';
-  renderStats(); renderDevices(); renderMap();
+  try { localStorage.setItem('bm-gps-route', routeFilter); } catch (e) {}
+  renderStats(); renderChips(); renderDevices(); renderMap();
 }
 function renderStats() {
   var list = visibleDevices();
@@ -543,18 +697,20 @@ function renderStats() {
 function pill(v, l, c) { return '<span class="pill ' + c + '"><b>' + v + '</b>' + l + '</span>'; }
 function renderDevices() {
   var el = document.getElementById('dev-list');
-  var list = visibleDevices();
+  var list = listDevices();
   el.innerHTML = list.length ? list.map(function (d) {
-    var nm = d.name || d.plate_number || d.imei;
+    var nm = devLabel(d);
     var rn = d.route_id ? routeName(d.route_id) : '';
-    var sub = (d.plate_number ? '<b>' + esc(d.plate_number) + '</b> · ' : '') + esc(d.imei);
+    var sub = esc(d.imei) + (d.plate_number ? '' : ' · <span class="rt">bog\'lanmagan</span>');
     if (rn) sub += ' · <span class="rt">' + esc(rn) + '</span>';
-    return '<div class="dev' + (d.imei === curImei ? ' active' : '') + '" data-imei="' + esc(d.imei) + '" onclick="openTraj(\'' + d.imei + '\')">' +
+    var ag = ageStr(d.last_seen_s);
+    if (ag) sub += ' · <span class="' + (d.online ? 'muted' : 'old') + '">' + ag + ' oldin</span>';
+    return '<div class="dev' + (d.imei === curImei ? ' active' : '') + '" data-imei="' + esc(d.imei) + '" onclick="selectBus(\'' + esc(d.imei) + '\')">' +
       '<span class="dot ' + (d.online ? 'on' : '') + '"></span>' +
-      '<div><div class="dev-name">' + esc(nm) + '</div>' +
+      '<div><div class="dev-name">🚌 ' + esc(nm) + '</div>' +
       '<div class="dev-sub">' + sub + '</div></div>' +
       '<span class="go">' + (d.online ? (d.last_speed || 0).toFixed(0) + ' km/h' : 'offline') + '</span></div>';
-  }).join('') : '<div class="empty">Qurilmalar yo\'q. FMB920 TCP 5027 ga ulanganda avtomatik paydo bo\'ladi.</div>';
+  }).join('') : '<div class="empty">Bu filtrda qurilma yo\'q.</div>';
   document.getElementById('dev-count').textContent = list.length ? list.length + ' ta' : '';
 }
 function renderMap() {
@@ -565,21 +721,82 @@ function renderMap() {
   var pts = [];
   visibleDevices().forEach(function (d) {
     if (d.last_lat == null || d.last_lng == null) return;
-    var nm = d.name || d.plate_number || d.imei;
     var rn = d.route_id ? routeName(d.route_id) : '';
     var sel = (d.imei === curImei);
+    var moving = d.online && (d.last_speed || 0) > 3;
+    var cls = sel ? 'sel' : (d.online ? (moving ? 'mv' : '') : 'off');
+    var lbl = d.plate_number ? esc(d.plate_number) : esc(shortImei(d.imei));
     var m = L.marker([d.last_lat, d.last_lng], {
-      icon: L.divIcon({ className: '', html: '<span class="dev-pin ' + (sel ? 'sel' : (d.online ? 'on' : 'off')) + '"></span>', iconSize: [14, 14], iconAnchor: [7, 7] })
+      icon: L.divIcon({
+        className: '',
+        html: '<span class="bus-pin ' + cls + '"><span class="bus-ic">🚌</span>' +
+              '<span class="bus-no">' + lbl + '</span></span>',
+        iconSize: [0, 0], iconAnchor: [0, 0]
+      })
     });
-    m.bindPopup('<b>' + esc(nm) + '</b><br>' +
-      (rn ? "Yo'nalish: " + esc(rn) + '<br>' : '') +
-      (d.plate_number ? 'Avtobus: ' + esc(d.plate_number) + '<br>' : '') +
-      'Tezlik: ' + (d.last_speed || 0).toFixed(0) + ' km/h<br>' +
-      '<a href="#" onclick="openTraj(\'' + d.imei + '\');return false">Tarix &#9656;</a>');
+    var ag2 = ageStr(d.last_seen_s);
+    m.bindTooltip('🚌 ' + devLabel(d) + (rn ? ' · ' + rn : '') + ' · ' + (d.last_speed || 0).toFixed(0) + ' km/h' +
+      (ag2 ? ' · ' + ag2 + ' oldin' : ''), { direction: 'top', offset: [0, -12] });
+    m.on('click', (function (im) { return function () { selectBus(im); }; })(d.imei));
     if (cluster) cluster.addLayer(m); else m.addTo(map);
     markers[d.imei] = m; pts.push([d.last_lat, d.last_lng]);
   });
   if (pts.length && !didFit) { map.fitBounds(L.latLngBounds(pts).pad(0.25)); didFit = true; }
+}
+
+/* ============ tanlangan avtobus (jonli karta) ============ */
+function findDev(imei) {
+  for (var i = 0; i < devices.length; i++) if (devices[i].imei === imei) return devices[i];
+  return null;
+}
+function selectBus(imei) {
+  curImei = imei;
+  renderDevices(); renderMap(); updateSelCard();
+  var d = findDev(imei);
+  if (d && d.last_lat != null && map) map.panTo([d.last_lat, d.last_lng]);
+}
+function clearSel() {
+  curImei = '';
+  var c = document.getElementById('sel-card'); if (c) c.style.display = 'none';
+  renderDevices(); renderMap();
+}
+function centerSel() {
+  var d = findDev(curImei);
+  if (d && d.last_lat != null && map) map.setView([d.last_lat, d.last_lng], Math.max(map.getZoom(), 15));
+}
+function updateSelCard() {
+  var card = document.getElementById('sel-card');
+  if (!card) return;
+  var d = curImei ? findDev(curImei) : null;
+  if (!d) { card.style.display = 'none'; return; }
+  var rn = d.route_id ? routeName(d.route_id) : '';
+  var mov = devMoving(d);
+  var stTxt = d.online ? (mov ? 'Harakatda' : 'Online') : 'Offline';
+  var stCol = d.online ? (mov ? 'var(--green)' : 'var(--teal)') : 'var(--red)';
+  var seen = String(d.last_seen_s || '').replace('T', ' ').slice(0, 16);
+  card.style.display = 'block';
+  card.innerHTML =
+    '<div class="sc-head"><span style="font-size:18px">🚌</span><b>' + esc(devLabel(d)) + '</b>' +
+      '<span class="sc-x" onclick="clearSel()" title="Yopish">✕</span></div>' +
+    '<div class="sc-body">' +
+      '<div><span class="badge" style="color:' + stCol + ';border-color:' + stCol + '">' + stTxt + '</span>' +
+        (rn ? ' <span class="badge">' + esc(rn) + '</span>' : '') + '</div>' +
+      '<div class="sc-grid">' +
+        '<div><div class="k">Tezlik</div><div class="v" style="color:' + (mov ? 'var(--green)' : 'var(--ink)') + '">' + (d.last_speed || 0).toFixed(0) + ' km/h</div></div>' +
+        '<div><div class="k">Kontakt (ACC)</div><div class="v">' + (d.last_ignition ? 'YOQIQ' : 'O\'CHIQ') + '</div></div>' +
+        '<div><div class="k">Sun\'iy yo\'ldosh</div><div class="v">' + (d.last_satellites || 0) + '</div></div>' +
+        '<div><div class="k">Oxirgi aloqa</div><div class="v" style="font-size:11px;font-weight:600">' + esc(seen || '—') + '</div></div>' +
+      '</div>' +
+      '<div class="dev-sub" style="margin-bottom:10px">IMEI: ' + esc(d.imei) + (d.plate_number ? '' : ' · <span class="rt">bog\'lanmagan</span>') + '</div>' +
+      '<div class="sc-acts">' +
+        '<button class="btn sm primary" onclick="openTraj(\'' + esc(d.imei) + '\')">📈 Tarix</button>' +
+        '<button class="btn sm" onclick="centerSel()">🎯 Markaz</button>' +
+      '</div>' +
+      '<div class="sc-acts" style="margin-top:7px">' +
+        '<button class="btn sm" onclick="openEdit(\'' + esc(d.imei) + '\')">✏️ Tahrirlash</button>' +
+        '<button class="btn sm danger" onclick="delDevice(\'' + esc(d.imei) + '\')">🗑 O\'chirish</button>' +
+      '</div>' +
+    '</div>';
 }
 
 /* ============ traektoriya + harakat (BITTA kartada) ============ */
@@ -596,11 +813,12 @@ function openTraj(imei) {
   document.getElementById('traj-to').value = dtToday(1);
   var dv = null;
   for (var i = 0; i < devices.length; i++) if (devices[i].imei === imei) dv = devices[i];
-  var title = dv ? (dv.name || dv.plate_number || imei) : imei;
+  var title = dv ? devLabel(dv) : imei;
   if (dv && dv.route_id) title += ' · ' + routeName(dv.route_id);
   var te = document.getElementById('traj-title');
   if (te) te.textContent = title;
   renderDevices(); renderMap();   /* tanlangan qurilmani ajratib ko'rsatish */
+  updateSelCard();
   loadTraj();
 }
 function presetDay(off) {
@@ -655,8 +873,22 @@ function drawTraj(pts, stops) {
     } else { cur.lls.push([pts[i].lat, pts[i].lng]); }
   }
   segs.forEach(function (s) {
-    trajSegs.push(L.polyline(s.lls, { color: SEG_COLORS[s.cls], weight: 4, opacity: .85 }).addTo(trajLayer));
+    trajSegs.push(L.polyline(s.lls, { color: SEG_COLORS[s.cls], weight: 4, opacity: .85, lineJoin: 'round', lineCap: 'round' }).addTo(trajLayer));
   });
+  /* yo'nalish strelkalari — harakat qaysi tomonga ketganini ko'rsatadi */
+  var astep = Math.max(2, Math.round(pts.length / 28));
+  for (var k = astep; k < pts.length; k += astep) {
+    var pa = pts[k - 1], pb = pts[k];
+    var br = bearing([pa.lat, pa.lng], [pb.lat, pb.lng]);
+    trajSegs.push(L.marker([pb.lat, pb.lng], {
+      interactive: false,
+      icon: L.divIcon({
+        className: '',
+        html: '<span class="traj-arrow" style="transform:translate(-50%,-50%) rotate(' + (br - 90).toFixed(0) + 'deg)">➤</span>',
+        iconSize: [0, 0], iconAnchor: [0, 0]
+      })
+    }).addTo(trajLayer));
+  }
   trajStart = L.circleMarker([pts[0].lat, pts[0].lng], { radius: 7, color: '#34d399', fillOpacity: 1 }).bindTooltip('Boshlanish').addTo(trajLayer);
   var last = pts[pts.length - 1];
   trajEnd = L.circleMarker([last.lat, last.lng], { radius: 7, color: '#e5484d', fillOpacity: 1 }).bindTooltip('Tugash').addTo(trajLayer);
@@ -872,21 +1104,391 @@ function addCam() {
 }
 function delCam(id) { if (!confirm("Kamerani o'chirish?")) return; API.del('/api/video/cameras/' + id).then(refreshCams); }
 
-/* ============ bind dialog ============ */
+/* ============ JT1078 / CMSV6 4G kameralar (avto-aniqlangan) ============ */
+var jtStreams = [], jtDevices = [], jtSig = '';
+function fmtBytes(n) {
+  n = n || 0;
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(0) + ' KB';
+  return (n / 1048576).toFixed(1) + ' MB';
+}
+function loadJtStreams() {
+  API.get('/api/video/jt-streams').then(function (d) {
+    jtStreams = d.streams || [];
+    jtDevices = d.devices || [];
+    var st = document.getElementById('jt-status');
+    if (st) {
+      st.textContent = d.enabled === false ? '· JT808 o\'chirilgan'
+        : (jtDevices.length ? '· ' + jtDevices.length + ' qurilma onlayn' : '· qurilma yo\'q');
+    }
+    renderJtStreams();
+  }).catch(function () {});
+}
+function _jtStreamFor(sim) {
+  return jtStreams.filter(function (s) { return String(s.sim) === String(sim); });
+}
+function renderJtStreams() {
+  var g = document.getElementById('jt-grid');
+  if (!g) return;
+  var sig = jtDevices.slice().sort().join(',') + '|' +
+    jtStreams.map(function (s) { return s.sim + '_' + s.channel; }).sort().join(',');
+  if (sig === jtSig) { updateJtBytes(); return; }  // o'yinni uzmaslik uchun
+  jtSig = sig;
+  var html = '';
+  jtStreams.forEach(function (s) { html += jtStreamCard(s); });
+  jtDevices.forEach(function (sim) {
+    if (_jtStreamFor(sim).length) return;  // allaqachon jonli oqim bor
+    html += jtDeviceCard(sim);
+  });
+  g.innerHTML = html;
+  var e = document.getElementById('jt-empty');
+  if (e) e.style.display = (jtStreams.length || jtDevices.length) ? 'none' : 'block';
+  jtStreams.forEach(function (s) { mountJtHls(s); });
+}
+function jtStreamCard(s) {
+  var vid = 'jt-' + s.sim + '-' + s.channel;
+  return '<div class="cam"><div class="head"><span class="dot"></span> Kamera ' + esc(s.sim) +
+    ' · kanal ' + s.channel + ' <span class="badge rtsp">LIVE</span></div>' +
+    '<div class="body"><video id="' + vid + '" controls muted playsinline></video></div>' +
+    '<div class="foot"><span class="muted" id="b-' + vid + '">' + fmtBytes(s.bytes) + '</span>' +
+    '<span class="grow"></span>' +
+    '<button class="btn sm" onclick="fullscreenVid(\'' + vid + '\')">⛶</button>' +
+    '<button class="btn sm" onclick="openRec(\'' + esc(s.sim) + '\',' + s.channel + ')">🗂 Xotira</button>' +
+    '<button class="btn danger sm" onclick="stopJtLive(\'' + esc(s.sim) + '\',' + s.channel + ')">⏹ To\'xtatish</button>' +
+    '</div></div>';
+}
+function jtDeviceCard(sim) {
+  var sel = 'ch-' + sim;
+  var opts = [1, 2, 3, 4, 5, 6, 7, 8].map(function (n) {
+    return '<option value="' + n + '">' + n + '</option>';
+  }).join('');
+  return '<div class="cam"><div class="head"><span class="dot"></span> Kamera ' + esc(sim) +
+    ' <span class="badge hls">JT808</span></div>' +
+    '<div class="body" style="display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px;text-align:center;padding:18px">' +
+    'Video hali boshlanmagan. Kanalni tanlab "Jonli video" ni bosing — kameraga buyruq (0x9101) yuboriladi va oqim shu yerda ochiladi.</div>' +
+    '<div class="foot"><label class="muted" style="display:flex;align-items:center;gap:4px">Kanal ' +
+    '<select id="' + sel + '">' + opts + '</select></label>' +
+    '<span class="grow"></span>' +
+    '<button class="btn sm" onclick="openRec(\'' + esc(sim) + '\',document.getElementById(\'' + sel + '\').value)">🗂 Xotira</button>' +
+    '<button class="btn primary sm" onclick="startJtLive(\'' + esc(sim) + '\', this)">▶ Jonli video</button>' +
+    '</div></div>';
+}
+function startJtLive(sim, btn) {
+  var sel = document.getElementById('ch-' + sim);
+  var ch = sel ? parseInt(sel.value, 10) : 1;
+  if (btn) { btn.disabled = true; btn.textContent = '… yuborilmoqda'; }
+  API.post('/api/video/jt-live', { phone: sim, channel: ch }).then(function (d) {
+    if (d && d.ok === false) alert('Buyruq yuborilmadi: ' + (d.error || 'qurilma ulanmagan'));
+    setTimeout(loadJtStreams, 2500);
+    setTimeout(loadJtStreams, 7000);
+  }).catch(function (e) { alert('Xato: ' + e.message); })
+    .then(function () { if (btn) { btn.disabled = false; btn.textContent = '▶ Jonli video'; } });
+}
+function stopJtLive(sim, ch) {
+  API.post('/api/video/jt-stop', { phone: sim, channel: ch }).then(function () {
+    jtSig = '';
+    setTimeout(loadJtStreams, 1500);
+  }).catch(function () {});
+}
+function updateJtBytes() {
+  jtStreams.forEach(function (s) {
+    var el = document.getElementById('b-jt-' + s.sim + '-' + s.channel);
+    if (el) el.textContent = fmtBytes(s.bytes);
+  });
+}
+function mountJtHls(s) {
+  var v = document.getElementById('jt-' + s.sim + '-' + s.channel);
+  if (!v) return;
+  if (v.canPlayType('application/vnd.apple.mpegurl')) { v.src = s.hls; v.play().catch(function () {}); return; }
+  if (!window.Hls || !Hls.isSupported()) return;
+  var hls = new Hls({ liveDurationInfinity: true });
+  hls.loadSource(s.hls);
+  hls.attachMedia(v);
+  hls.on(Hls.Events.ERROR, function (ev, data) {
+    if (!data || !data.fatal) return;
+    if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+    else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+  });
+}
+function fullscreenVid(id) {
+  var v = document.getElementById(id);
+  if (!v) return;
+  if (v.requestFullscreen) v.requestFullscreen();
+  else if (v.webkitEnterFullscreen) v.webkitEnterFullscreen();
+}
+
+/* ============ qurilma xotirasidagi yozuvlar (playback) ============ */
+var recSel = { sim: '', ch: 1 };
+var recItems = [];
+var recPoll = null;
+var recHls = null;
+function _recHls(sim, ch) { return '/hls/jtpb_' + sim + '_' + ch + '.m3u8'; }
+function openRec(sim, ch) {
+  recSel = { sim: String(sim), ch: ch || 1 };
+  var box = document.getElementById('jt-rec');
+  if (!box) return;
+  box.style.display = 'block';
+  var today = new Date().toISOString().slice(0, 10);
+  box.innerHTML =
+    '<div class="rbar"><b>🗂 Xotira — ' + esc(sim) + ' · kanal ' + (ch || 1) + '</b>' +
+    '<span class="grow"></span>' +
+    '<label class="muted">Sana <input type="date" id="rec-date" value="' + today + '"></label>' +
+    '<button class="btn primary sm" onclick="loadRecList()">🔎 Yozuvlarni so\'rash</button>' +
+    '<button class="btn sm" onclick="closeRec()">✕</button></div>' +
+    '<div class="muted" id="rec-status">Yozuvlar ro\'yxati qurilma xotirasidan so\'raladi (0x9205). ' +
+    'Serverga video saqlanmaydi — uzatish jonli oqim sifatida bo\'ladi.</div>' +
+    '<div id="rec-list"></div>' +
+    '<div id="rec-player" style="display:none">' +
+    '<video id="rec-video" controls muted playsinline></video>' +
+    '<div class="foot" style="margin-top:8px">' +
+    '<button class="btn sm" onclick="recCtrl(0)">⏸ Pauza</button>' +
+    '<button class="btn sm" onclick="recCtrl(1)">▶ Davom</button>' +
+    '<button class="btn sm" onclick="recCtrl(3)">⏩ Tez</button>' +
+    '<button class="btn sm" onclick="recCtrl(4)">⏪ Orqaga</button>' +
+    '<span class="grow"></span>' +
+    '<button class="btn danger sm" onclick="stopRec()">⏹ To\'xtatish</button>' +
+    '</div></div>';
+  loadRecList();
+}
+function closeRec() {
+  stopRec();
+  var box = document.getElementById('jt-rec');
+  if (box) { box.style.display = 'none'; box.innerHTML = ''; }
+  if (recPoll) { clearInterval(recPoll); recPoll = null; }
+}
+function loadRecList() {
+  var status = document.getElementById('rec-status');
+  var dEl = document.getElementById('rec-date');
+  var date = dEl ? dEl.value : '';
+  if (status) status.textContent = 'Yozuvlar ro\'yxati so\'ralmoqda (0x9205)…';
+  API.post('/api/video/jt-files', { phone: recSel.sim, channel: recSel.ch, date: date })
+    .then(function (d) {
+      if (d && d.ok === false) {
+        if (status) status.textContent = 'Buyruq yuborilmadi: ' + (d.error || 'qurilma ulanmagan');
+        return;
+      }
+      if (recPoll) { clearInterval(recPoll); }
+      var n = 0;
+      recPoll = setInterval(function () {
+        n += 1;
+        API.get('/api/video/jt-files?phone=' + encodeURIComponent(recSel.sim)).then(function (r) {
+          if (r && r.items && r.items.length) {
+            clearInterval(recPoll); recPoll = null; renderRecList(r);
+          } else if (n >= 6) {
+            clearInterval(recPoll); recPoll = null;
+            var s = document.getElementById('rec-status');
+            if (s) s.textContent = 'Yozuv topilmadi yoki qurilma javob bermadi.';
+          }
+        }).catch(function () {});
+      }, 2000);
+    }).catch(function (e) {
+      var s2 = document.getElementById('rec-status');
+      if (s2) s2.textContent = 'Xato: ' + e.message;
+    });
+}
+function renderRecList(r) {
+  var all = r.items || [];
+  var mine = all.filter(function (it) {
+    return parseInt(it.channel, 10) === parseInt(recSel.ch, 10);
+  });
+  recItems = mine.length ? mine : all;
+  var status = document.getElementById('rec-status');
+  if (status) status.textContent = recItems.length + ' ta yozuv topildi.';
+  var el = document.getElementById('rec-list');
+  if (!el) return;
+  el.innerHTML = recItems.map(function (it, i) {
+    return '<div class="rrow"><span class="badge">ch' + (it.channel || 1) + '</span>' +
+      '<span class="t">' + esc(it.start || '') + ' → ' +
+      esc(it.end || '') + '</span>' +
+      '<span class="badge">' + fmtBytes(it.size || 0) + '</span>' +
+      '<span class="grow"></span>' +
+      '<button class="btn primary sm" onclick="playRec(' + i + ')">▶ Ko\'rish</button></div>';
+  }).join('');
+}
+function playRec(i) {
+  var it = recItems[i];
+  if (!it) return;
+  var status = document.getElementById('rec-status');
+  if (status) status.textContent = 'Yozuv oqimi so\'ralmoqda (0x9201)…';
+  API.post('/api/video/jt-playback', {
+    phone: recSel.sim, channel: recSel.ch, start: it.start, end: it.end
+  }).then(function (d) {
+    if (d && d.ok === false) {
+      if (status) status.textContent = 'Buyruq yuborilmadi: ' + (d.error || 'qurilma ulanmagan');
+      return;
+    }
+    var p = document.getElementById('rec-player');
+    if (p) p.style.display = 'block';
+    mountRecHls(_recHls(recSel.sim, recSel.ch));
+    if (status) status.textContent = 'Yozuv ijro etilmoqda: ' + it.start + ' → ' + it.end;
+  }).catch(function (e) {
+    if (status) status.textContent = 'Xato: ' + e.message;
+  });
+}
+function mountRecHls(url) {
+  var v = document.getElementById('rec-video');
+  if (!v) return;
+  if (recHls) { try { recHls.destroy(); } catch (e) {} recHls = null; }
+  v.removeAttribute('src'); v.load();
+  if (v.canPlayType('application/vnd.apple.mpegurl')) {
+    v.src = url; v.play().catch(function () {}); return;
+  }
+  if (!window.Hls || !Hls.isSupported()) return;
+  recHls = new Hls({ liveDurationInfinity: false });
+  recHls.loadSource(url);
+  recHls.attachMedia(v);
+  recHls.on(Hls.Events.MANIFEST_PARSED, function () { v.play().catch(function () {}); });
+}
+function recCtrl(control) {
+  API.post('/api/video/jt-playback-control', {
+    phone: recSel.sim, channel: recSel.ch, control: control
+  }).catch(function () {});
+}
+function stopRec() {
+  API.post('/api/video/jt-playback-control', {
+    phone: recSel.sim, channel: recSel.ch, control: 2
+  }).catch(function () {});
+  if (recHls) { try { recHls.destroy(); } catch (e) {} recHls = null; }
+  var v = document.getElementById('rec-video');
+  if (v) { v.removeAttribute('src'); v.load(); }
+  var p = document.getElementById('rec-player');
+  if (p) p.style.display = 'none';
+}
+
+/* ============ bind dialog (mavjud avtobuslarga bog'lash) ============ */
+var busList = [], editImei = '';
+function loadVehicles() {
+  return API.get('/api/gps/vehicles').then(function (d) { busList = d.vehicles || []; })
+    .catch(function () { busList = []; });
+}
+function busById(vid) {
+  for (var i = 0; i < busList.length; i++) if (busList[i].external_id === vid) return busList[i];
+  return null;
+}
+function busLabel(vid) {
+  var b = busById(vid);
+  if (!b) return vid || '';
+  var rn = b.route_id ? routeName(b.route_id) : '';
+  return (b.plate_number || b.external_id) + (b.garage_number ? ' · ' + b.garage_number : '') + (rn ? ' · ' + rn : '');
+}
+function fillDeviceSelect(devs) {
+  var sel = document.getElementById('dlg-device');
+  var un = devs.filter(function (d) { return !d.vehicle_id; });
+  var bd = devs.filter(function (d) { return d.vehicle_id; });
+  var opts = ['<option value="">— qurilmani tanlang —</option>'];
+  if (un.length) opts.push('<optgroup label="Bog\'lanmagan qurilmalar (' + un.length + ')">');
+  un.forEach(function (d) {
+    opts.push('<option value="' + esc(d.imei) + '">🚌 ' + esc(devLabel(d)) + ' · ' + esc(d.imei) + '</option>');
+  });
+  if (un.length) opts.push('</optgroup>');
+  if (bd.length) opts.push('<optgroup label="Allaqachon bog\'langan (qayta bog\'lash)">');
+  bd.forEach(function (d) {
+    opts.push('<option value="' + esc(d.imei) + '">🚌 ' + esc(devLabel(d)) + ' · ' + esc(d.imei) + ' → ' + esc(busLabel(d.vehicle_id)) + '</option>');
+  });
+  if (bd.length) opts.push('</optgroup>');
+  sel.innerHTML = opts.join('');
+}
+function fillBusSelect() {
+  var sel = document.getElementById('dlg-vehicle');
+  var un = busList.filter(function (b) { return !b.device_imei; });
+  var bd = busList.filter(function (b) { return b.device_imei; });
+  var opts = ['<option value="">— avtobusni tanlang —</option>'];
+  if (un.length) opts.push('<optgroup label="GPS\'siz avtobuslar (' + un.length + ')">');
+  un.forEach(function (b) {
+    opts.push('<option value="' + esc(b.external_id) + '">' + esc(busLabel(b.external_id)) + '</option>');
+  });
+  if (un.length) opts.push('</optgroup>');
+  if (bd.length) opts.push('<optgroup label="GPS\'i bor avtobuslar (almashtirish)">');
+  bd.forEach(function (b) {
+    opts.push('<option value="' + esc(b.external_id) + '">' + esc(busLabel(b.external_id)) + ' → ' + esc(b.device_imei) + '</option>');
+  });
+  if (bd.length) opts.push('</optgroup>');
+  sel.innerHTML = opts.join('');
+}
+function updateDlgHint() {
+  var el = document.getElementById('dlg-hint');
+  if (!el) return;
+  var unDev = devices.filter(function (d) { return !d.vehicle_id; }).length;
+  var unBus = busList.filter(function (b) { return !b.device_imei; }).length;
+  var devSel = document.getElementById('dlg-device').value;
+  var busSel = document.getElementById('dlg-vehicle').value;
+  var lines = ['<b>' + unDev + '</b> ta qurilma bog\'lanmagan · <b>' + unBus + '</b> ta avtobusda GPS yo\'q'];
+  if (devSel && busSel) {
+    lines.push('<span class="ok">✓</span> ' + esc(devSel) + ' → <b>' + esc(busLabel(busSel)) + '</b>');
+    var b = busById(busSel);
+    if (b && b.device_imei && b.device_imei !== devSel) {
+      lines.push('<span class="warn">⚠</span> bu avtobusda hozir <b>' + esc(b.device_imei) + '</b> bor — almashtiriladi');
+    }
+  }
+  el.innerHTML = lines.join('<br>');
+}
 function openBind() {
+  editImei = '';
+  document.getElementById('dlg-title').textContent = "Qurilmani avtobusga bog'lash";
   document.getElementById('dlg-err').style.display = 'none';
+  document.getElementById('dlg-imei').value = '';
+  document.getElementById('dlg-imei').readOnly = false;
+  document.getElementById('dlg-device').disabled = false;
+  document.getElementById('dlg-name').value = '';
+  Promise.all([
+    API.get('/api/gps/devices').catch(function () { return { devices: [] }; }),
+    loadVehicles()
+  ]).then(function (rs) {
+    devices = rs[0].devices || devices;
+    fillDeviceSelect(devices);
+    fillBusSelect();
+    updateDlgHint();
+  });
   document.getElementById('dlg').showModal();
 }
+/* mavjud qurilmani tahrirlash / bog'lanishini o'zgartirish */
+function openEdit(imei) {
+  editImei = imei;
+  var d0 = findDev(imei);
+  document.getElementById('dlg-title').textContent = 'Qurilmani tahrirlash — ' + (d0 ? devLabel(d0) : imei);
+  document.getElementById('dlg-err').style.display = 'none';
+  Promise.all([
+    API.get('/api/gps/devices').catch(function () { return { devices: [] }; }),
+    loadVehicles()
+  ]).then(function (rs) {
+    devices = rs[0].devices || devices;
+    fillDeviceSelect(devices);
+    fillBusSelect();
+    var cur = findDev(imei);
+    document.getElementById('dlg-device').value = imei;
+    document.getElementById('dlg-device').disabled = true;
+    document.getElementById('dlg-imei').value = imei;
+    document.getElementById('dlg-imei').readOnly = true;
+    document.getElementById('dlg-vehicle').value = cur ? (cur.vehicle_id || '') : '';
+    document.getElementById('dlg-name').value = cur ? (cur.name || '') : '';
+    updateDlgHint();
+  });
+  document.getElementById('dlg').showModal();
+}
+function delDevice(imei) {
+  var d = findDev(imei);
+  if (!confirm("Qurilmani butunlay o'chirish?\n🚌 " + (d ? devLabel(d) : imei) + ' · ' + imei + "\nBog'lash ham yo'qoladi.")) return;
+  API.del('/api/gps/devices/' + encodeURIComponent(imei)).then(function () {
+    if (curImei === imei) clearSel();
+    refresh(); loadVehicles();
+  }).catch(function (e) { alert(e.message); });
+}
 function saveBind() {
-  var imei = document.getElementById('dlg-imei').value.trim();
-  var vid = document.getElementById('dlg-vehicle').value.trim();
+  var imei = editImei || document.getElementById('dlg-imei').value.trim() || document.getElementById('dlg-device').value;
+  var vid = document.getElementById('dlg-vehicle').value;
   var nm = document.getElementById('dlg-name').value.trim();
   var err = document.getElementById('dlg-err');
-  if (!/^\d{10,17}$/.test(imei)) { err.textContent = "IMEI 10-17 raqam bo'lishi kerak"; err.style.display = 'block'; return; }
+  if (!/^\d{10,17}$/.test(imei)) { err.textContent = "Qurilmani tanlang yoki to'g'ri IMEI kiriting (10-17 raqam)"; err.style.display = 'block'; return; }
+  if (!vid) { err.textContent = "Avtobusni tanlang"; err.style.display = 'block'; return; }
   err.style.display = 'none';
-  API.post('/api/gps/devices', { imei: imei, vehicle_id: vid, name: nm }).then(function () {
+  var req = editImei
+    ? API.patch('/api/gps/devices/' + encodeURIComponent(editImei), { vehicle_id: vid, name: nm })
+    : API.post('/api/gps/devices', { imei: imei, vehicle_id: vid, name: nm });
+  req.then(function () {
     document.getElementById('dlg').close();
+    editImei = '';
     refresh();
+    loadVehicles();
   }).catch(function (e) { err.textContent = e.message; err.style.display = 'block'; });
 }
 
@@ -903,8 +1505,8 @@ function initSearch() {
     setTimeout(function () {
       didFit = true;
       map.flyTo([d.last_lat, d.last_lng], 16, { duration: 0.8 });
-      var m = markers[imei];
-      if (m) { if (cluster) m = cluster.getVisibleParent(m) || m; setTimeout(function () { m.openPopup(); }, 850); }
+      curImei = imei;
+      renderDevices(); renderMap(); updateSelCard();
     }, 60);
     drop.style.display = 'none';
     inp.value = '';
@@ -919,10 +1521,10 @@ function initSearch() {
     }).slice(0, 8);
     if (!hits.length) { drop.style.display = 'none'; return; }
     drop.innerHTML = hits.map(function (d) {
-      var nm = d.name || d.plate_number || d.imei;
+      var nm = devLabel(d);
       return '<div class="sr" onclick="_srFly(\'' + d.imei + '\')">' +
-        '<span class="dot ' + (d.online ? 'on' : '') + '"></span><b>' + esc(nm) + '</b>' +
-        '<span class="muted">' + (d.plate_number ? esc(d.plate_number) + ' · ' : '') + esc(d.imei) + '</span></div>';
+        '<span class="dot ' + (d.online ? 'on' : '') + '"></span><b>🚌 ' + esc(nm) + '</b>' +
+        '<span class="muted">' + esc(d.imei) + '</span></div>';
     }).join('');
     drop.style.display = 'block';
   });
@@ -938,19 +1540,65 @@ function pickCenter() {
   document.getElementById('gf-lat').value = c.lat.toFixed(5);
   document.getElementById('gf-lng').value = c.lng.toFixed(5);
 }
-function addGf() {
+/* xaritadan bosib koordinata qo'yish rejimi */
+var gfPick = false, gfPickMarker = null, gfEditId = 0;
+function toggleGfPick() {
+  gfPick = !gfPick;
+  var b = document.getElementById('gf-pick-btn');
+  if (b) b.classList.toggle('on', gfPick);
+  if (gfPick && map) {
+    map.getContainer().style.cursor = 'crosshair';
+  } else if (map) {
+    map.getContainer().style.cursor = '';
+  }
+}
+function onMapClick(e) {
+  if (!gfPick) return;
+  document.getElementById('gf-lat').value = e.latlng.lat.toFixed(5);
+  document.getElementById('gf-lng').value = e.latlng.lng.toFixed(5);
+  if (!gfPickMarker) {
+    gfPickMarker = L.circleMarker(e.latlng, { radius: 7, color: '#f0a93e', fillColor: '#f0a93e', fillOpacity: 0.7 }).addTo(map);
+  } else {
+    gfPickMarker.setLatLng(e.latlng);
+  }
+}
+function saveGf() {
   var err = document.getElementById('gf-err');
   var name = document.getElementById('gf-name').value.trim();
   var lat = parseFloat(document.getElementById('gf-lat').value);
   var lng = parseFloat(document.getElementById('gf-lng').value);
   var radius = parseInt(document.getElementById('gf-radius').value, 10) || 500;
   var vehicle = document.getElementById('gf-vehicle').value.trim();
-  if (!name || isNaN(lat) || isNaN(lng)) { err.textContent = 'Nomi va lat/lng kerak'; err.style.display = 'block'; return; }
+  if (!name || isNaN(lat) || isNaN(lng)) { err.textContent = 'Nomi va lat/lng kerak (yoki 📍 Xaritadan bosing)'; err.style.display = 'block'; return; }
   err.style.display = 'none';
-  API.post('/api/gps/geofences', { name: name, lat: lat, lng: lng, radius_m: radius, vehicle_id: vehicle }).then(function () {
-    document.getElementById('gf-name').value = '';
+  var body = { name: name, lat: lat, lng: lng, radius_m: radius, vehicle_id: vehicle };
+  var req = gfEditId ? API.patch('/api/gps/geofences/' + gfEditId, body)
+    : API.post('/api/gps/geofences', body);
+  req.then(function () {
+    cancelGfEdit();
     loadFences();
   }).catch(function (e) { err.textContent = e.message; err.style.display = 'block'; });
+}
+function editGf(id) {
+  var f = null;
+  for (var i = 0; i < fences.length; i++) if (fences[i].id === id) f = fences[i];
+  if (!f) return;
+  gfEditId = id;
+  document.getElementById('gf-name').value = f.name || '';
+  document.getElementById('gf-lat').value = f.lat;
+  document.getElementById('gf-lng').value = f.lng;
+  document.getElementById('gf-radius').value = f.radius_m;
+  document.getElementById('gf-vehicle').value = f.vehicle_id || '';
+  document.getElementById('gf-save-btn').textContent = '💾 Saqlash';
+  document.getElementById('gf-cancel-btn').style.display = '';
+  if (map && f.lat != null) map.panTo([f.lat, f.lng]);
+}
+function cancelGfEdit() {
+  gfEditId = 0;
+  document.getElementById('gf-name').value = '';
+  document.getElementById('gf-save-btn').textContent = "+ Zona qo'shish";
+  document.getElementById('gf-cancel-btn').style.display = 'none';
+  if (gfPickMarker && map) { map.removeLayer(gfPickMarker); gfPickMarker = null; }
 }
 function loadFences() {
   API.get('/api/gps/geofences').then(function (d) { fences = d.geofences || []; renderFences(); }).catch(function () {});
@@ -963,7 +1611,8 @@ function renderFences() {
       return '<tr><td><b>' + esc(f.name) + '</b><div class="dev-sub">' + (f.vehicle_id ? esc(f.vehicle_id) : 'hammasi') + '</div></td>' +
         '<td>' + f.lat.toFixed(4) + ', ' + f.lng.toFixed(4) + '</td><td>' + f.radius_m + 'm</td>' +
         '<td>' + (f.enabled ? '<span class="badge hls">YOQ</span>' : '<span class="badge">O\'CH</span>') + '</td>' +
-        '<td style="text-align:right;white-space:nowrap"><button class="btn sm" onclick="toggleGf(' + f.id + ',' + (f.enabled ? 0 : 1) + ')">' + (f.enabled ? 'O\'chir' : 'Yoq') + '</button> ' +
+        '<td style="text-align:right;white-space:nowrap"><button class="btn sm" onclick="editGf(' + f.id + ')">✏️</button> ' +
+        '<button class="btn sm" onclick="toggleGf(' + f.id + ',' + (f.enabled ? 0 : 1) + ')">' + (f.enabled ? 'O\'chir' : 'Yoq') + '</button> ' +
         '<button class="btn danger sm" onclick="delGf(' + f.id + ')">✕</button></td></tr>';
     }).join('') + '</table>';
 }
@@ -1011,7 +1660,7 @@ function drawRoutePaths() {
     var pts = p.points || [];
     if (pts.length < 2) return;
     var ll = pts.map(function (q) { return [q[0], q[1]]; });
-    L.polyline(ll, { color: p.enabled ? '#8b5cf6' : '#6b7280', weight: 3, opacity: p.enabled ? 0.75 : 0.35, dashArray: '6 6' })
+    L.polyline(ll, { color: p.enabled ? '#8b5cf6' : '#6b7280', weight: 3, opacity: p.enabled ? 0.75 : 0.35, dashArray: '6 6', lineJoin: 'round', lineCap: 'round' })
       .bindTooltip("Yo'lak: " + (p.name || p.route_id), { sticky: true }).addTo(corridorLayer);
   });
 }
@@ -1127,6 +1776,38 @@ function checkHealth() {
   }).catch(function () { setStatus('API javob bermadi', true); });
 }
 
+/* ============ jonli soat / pauza / UI holatini eslab qolish ============ */
+function togglePause() {
+  paused = !paused;
+  var b = document.getElementById('pause-btn'); if (b) b.textContent = paused ? '▶' : '⏸';
+  var lc = document.getElementById('liveclk'); if (lc) lc.classList.toggle('paused', paused);
+  try { localStorage.setItem('bm-gps-paused', paused ? '1' : '0'); } catch (e) {}
+  if (!paused) refresh();
+  tickClock();
+}
+function tickClock() {
+  var t = document.getElementById('liveclk-txt'); if (!t) return;
+  if (paused) { t.textContent = "to'xtatildi"; return; }
+  if (!lastRefresh) { t.textContent = 'yangilanmoqda…'; return; }
+  var s = Math.max(0, Math.round((Date.now() - lastRefresh) / 1000));
+  t.textContent = s < 2 ? 'hozir yangilandi' : s + 's oldin yangilandi';
+}
+function restoreUI() {
+  try {
+    var rf = localStorage.getItem('bm-gps-route'); if (rf) routeFilter = rf;
+    var sf = localStorage.getItem('bm-gps-status'); if (sf) statusFilter = sf;
+    var ct = localStorage.getItem('bm-gps-ctab'); if (ct) ctrlTab(ct);
+    if (localStorage.getItem('bm-gps-devcol') === '1') document.getElementById('dev-panel').classList.add('collapsed');
+    if (localStorage.getItem('bm-gps-ctrlcol') === '1') document.getElementById('ctrl-panel').classList.add('collapsed');
+    if (localStorage.getItem('bm-gps-paused') === '1') {
+      paused = true;
+      var b = document.getElementById('pause-btn'); if (b) b.textContent = '▶';
+      var lc = document.getElementById('liveclk'); if (lc) lc.classList.add('paused');
+    }
+  } catch (e) {}
+}
+document.addEventListener('keydown', function (e) { if (e.key === 'Escape') clearSel(); });
+
 /* ============ init ============ */
 showTab(tabFromHash());
 checkHealth();
@@ -1138,16 +1819,21 @@ document.getElementById('daily-to').value = todayStr();
 document.getElementById('vm-from').value = ymd(-7);
 document.getElementById('vm-to').value = ymd(-1);
 ctrlTab('traj');
+restoreUI();
 refresh();
 refreshCams();
+loadJtStreams();
 loadFences();
 loadRoutePaths();
 loadAlerts();
 loadVsManual();
+loadVehicles();
 initSearch();
 setInterval(refresh, 10000);
 setInterval(refreshCams, 30000);
+setInterval(loadJtStreams, 15000);
 setInterval(loadAlerts, 20000);
+setInterval(tickClock, 1000);
 window.addEventListener('resize', function () { if (map) map.invalidateSize(); });
 </script>
 </body>

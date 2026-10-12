@@ -23,6 +23,37 @@ log = logging.getLogger(__name__)
 _state = {"started": False}
 
 
+async def _run_listeners(config, listener, jt808, jt1078) -> None:
+    """Teltonika + (ixtiyoriy) JT808/JT1078 TCP listener'lari birga.
+
+    Asosiy Teltonika listener'i hech qachon JT xatosi tufayli o'lmasligi uchun
+    JT listener'lari alohida himoyalangan (port band bo'lsa faqat log).
+    """
+    import asyncio
+
+    async def _guarded(name, coro):
+        try:
+            await coro
+        except OSError as exc:
+            log.warning("GPS autostart: %s listener ishga tushmadi (%s)",
+                        name, exc)
+        except Exception:  # noqa: BLE001
+            log.exception("GPS autostart: %s listener xatosi", name)
+
+    tasks = [asyncio.create_task(
+        listener.run_tcp(config.GPS_TCP_HOST, config.GPS_TCP_PORT))]
+    if getattr(config, "JT808_ENABLED", False):
+        tasks.append(asyncio.create_task(_guarded(
+            "JT808",
+            jt808.run_tcp(config.GPS_TCP_HOST, config.JT808_TCP_PORT))))
+        tasks.append(asyncio.create_task(_guarded(
+            "JT1078",
+            jt1078.run_tcp(config.GPS_TCP_HOST, config.JT1078_TCP_PORT))))
+        log.info("GPS autostart: JT808 %s / JT1078 media %s yoqildi",
+                 config.JT808_TCP_PORT, config.JT1078_TCP_PORT)
+    await asyncio.gather(*tasks)
+
+
 def enabled() -> bool:
     return (os.environ.get("GPS_AUTOSTART") or "1").strip().lower() not in (
         "0",
@@ -58,7 +89,7 @@ def start_background() -> bool:
         try:
             import asyncio
 
-            from . import config, listener, storage
+            from . import config, jt1078, jt808, listener, storage
             from .api import run_api
 
             if not storage.init_schema():
@@ -85,8 +116,9 @@ def start_background() -> bool:
                 config.GPS_API_PORT,
                 config.GPS_TCP_PORT,
             )
-            # TCP listener — shu thread'da bloklovchi ishlaydi (daemon).
-            asyncio.run(listener.run_tcp(config.GPS_TCP_HOST, config.GPS_TCP_PORT))
+            # TCP listener'lar — shu thread'da bloklovchi ishlaydi (daemon).
+            # Teltonika (5027) + JT808 signaling (6808) + JT1078 media (6107).
+            asyncio.run(_run_listeners(config, listener, jt808, jt1078))
         except OSError as exc:
             log.warning(
                 "GPS autostart: port band yoki tarmoq xatosi (%s) — "

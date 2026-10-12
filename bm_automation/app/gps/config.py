@@ -14,6 +14,14 @@ import tempfile
 GPS_TCP_HOST = os.environ.get("GPS_TCP_HOST", "0.0.0.0")
 GPS_TCP_PORT = int(os.environ.get("GPS_TCP_PORT", "5027"))
 
+# ---- JT808 / JT1078 (CMSV6) 4G kameralar ----
+# 4G kamera O'ZI shu portlarga ulanadi: signaling (JT808) + media (JT1078).
+JT808_ENABLED = os.environ.get("JT808_ENABLED", "1") in ("1", "true", "yes")
+JT808_TCP_PORT = int(os.environ.get("JT808_TCP_PORT", "6808"))
+JT1078_TCP_PORT = int(os.environ.get("JT1078_TCP_PORT", "6107"))
+# Qurilma media oqimini shu hostga yuboradi (VDS public IP bo'lishi kerak)
+JT1078_MEDIA_HOST = os.environ.get("JT1078_MEDIA_HOST", "")
+
 # ---- HTTP API + kuzatuv UI (frontend uchun) ----
 # 0.0.0.0 = tarmoqdan ham ochiq (telefon/planşetda video kuzatuv uchun).
 # Tokenda data himoyalangan — sahifa ?token=... bilan ochiladi.
@@ -66,6 +74,23 @@ ROUTE_DEVIATION_TELEGRAM = os.environ.get(
 ROUTE_LEARN_SIMPLIFY_M = int(os.environ.get("GPS_ROUTE_LEARN_SIMPLIFY_M", "40"))
 
 
+# ---- JT1078 xom oqim diagnostikasi ----
+# 0 (standart) = serverga video SAQLANMAYDI (faqat vaqtinchalik HLS segmentlar).
+# 1 = xom H.264 va raw dump diskka yoziladi (faqat diagnostika uchun).
+JT1078_RAW_DUMP = os.environ.get(
+    "GPS_JT1078_RAW_DUMP", "0"
+) in ("1", "true", "yes")
+# Yozuv (playback) so'ralganda oqim shu sekund davomida playback deb belgilanadi
+JT1078_PLAYBACK_WINDOW_S = int(
+    os.environ.get("GPS_JT1078_PLAYBACK_WINDOW_S", "180")
+)
+# Kamera JT1078 oqimida B-frame bo'lsa va aniq fps bo'lmasa, ffmpeg'ga kirish
+# fps'ni biz beramiz (aks holda u 25fps deb faraz qilib, past-fps oqimni bitta
+# segmentga siqib qo'yadi). Qiymatni real kamera fps'iga moslang: bu qurilma
+# ~1 fps yuboradi. OUT — chiqish HLS fps (past kirishni silliqlash uchun).
+JT1078_FPS_IN = os.environ.get("GPS_JT1078_FPS_IN", "1")
+JT1078_FPS_OUT = os.environ.get("GPS_JT1078_FPS_OUT", "5")
+
 # ---- RTSP → HLS relay (ffmpeg) ----
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN", "ffmpeg")
 HLS_DIR = os.environ.get(
@@ -74,6 +99,8 @@ HLS_DIR = os.environ.get(
 )
 HLS_RELAY_ENABLED = os.environ.get("GPS_HLS_RELAY", "1") in ("1", "true", "yes")
 HLS_RELAY_CHECK_S = int(os.environ.get("GPS_HLS_RELAY_CHECK_S", "30"))
+# HLS segmentlarni shu sekunddan eski bo'lsa tozalash (server to'lmasin)
+HLS_MAX_AGE_S = int(os.environ.get("GPS_HLS_MAX_AGE_S", "3600"))
 
 # ---- Kunlik rollup (gps_positions → gps_daily) ----
 ROLLUP_ENABLED = os.environ.get("GPS_ROLLUP_ENABLED", "1") in ("1", "true", "yes")

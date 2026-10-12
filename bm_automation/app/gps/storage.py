@@ -272,6 +272,39 @@ def list_devices() -> list:
     return rows
 
 
+def list_vehicles() -> list:
+    """Mavjud avtobuslar + bog'langan GPS qurilmasi (bitta qator = bitta avtobus).
+
+    `vehicles` jadvali BM saytidan sinxronlanadi; bog'lash `gps_devices.vehicle_id`
+    orqali `vehicles.external_id` ga ulanadi. Bog'lanmagan avtobusda
+    `device_imei` bo'sh qaytadi.
+    """
+    st = _st()
+    if not st.enabled:
+        return []
+    rows = st.db.query(
+        """
+        SELECT v.external_id, v.plate_number, v.garage_number, v.model,
+               v.route_id, d.imei AS device_imei, d.name AS device_name
+        FROM vehicles v
+        LEFT JOIN gps_devices d ON d.vehicle_id = v.external_id
+        ORDER BY v.plate_number, v.external_id
+        """
+    )
+    return [
+        {
+            "external_id": str(r.get("external_id") or ""),
+            "plate_number": str(r.get("plate_number") or ""),
+            "garage_number": str(r.get("garage_number") or ""),
+            "model": str(r.get("model") or ""),
+            "route_id": str(r.get("route_id") or ""),
+            "device_imei": str(r.get("device_imei") or ""),
+            "device_name": str(r.get("device_name") or ""),
+        }
+        for r in rows
+    ]
+
+
 def route_names(ids) -> dict:
     """route_id → nom (routes jadvalidan O'QISH). Topilmasa bo'sh."""
     clean = [str(i) for i in (ids or []) if str(i or "").strip()]
@@ -395,6 +428,15 @@ def set_device_enabled(imei: str, enabled: bool) -> bool:
     return True
 
 
+def delete_device(imei: str) -> bool:
+    """Qurilmani ro'yxatdan butunlay o'chirish (bog'lash ham yo'qoladi)."""
+    st = _st()
+    if not st.enabled:
+        return False
+    st.db.execute("DELETE FROM gps_devices WHERE imei = %s", (imei,))
+    return True
+
+
 # ---------------------------------------------------------------- geofence
 
 def list_geofences(only_enabled: bool = False) -> list:
@@ -437,6 +479,20 @@ def set_geofence_enabled(fence_id: int, enabled: bool) -> None:
         "UPDATE gps_geofences SET enabled = %s WHERE id = %s",
         (1 if enabled else 0, fence_id),
     )
+
+
+def update_geofence(fence_id: int, name: str, lat: float, lng: float,
+                    radius_m: int, vehicle_id: str = "") -> bool:
+    """Zona markazi / radiusi / nomini / avtobusini tahrirlash (koordinata bilan)."""
+    st = _st()
+    if not st.enabled:
+        return False
+    st.db.execute(
+        "UPDATE gps_geofences SET name = %s, lat = %s, lng = %s, "
+        "radius_m = %s, vehicle_id = %s WHERE id = %s",
+        (name, lat, lng, radius_m, vehicle_id, fence_id),
+    )
+    return True
 
 
 def insert_alert(imei: str, vehicle_id: str, kind: str, fence_id: int,

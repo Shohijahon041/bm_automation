@@ -69,6 +69,13 @@ ro'yxatga olinadi. So'ng frontend'da avtobusga bog'lanadi.
 | `GPS_OFFLINE_CHECK_S` | `300` | offline tekshiruv intervali (sekund) |
 | `GPS_OFFLINE_MAX_AGE_S` | `86400` | shundan uzoq o'chiq turganlar ogohlantirilmaydi |
 | `GPS_OFFLINE_TELEGRAM` | `1` | offline alertini Telegram'ga yuborish |
+| `JT808_ENABLED` | `1` | JT808/JT1078 4G kamera listenerlarini yoqish |
+| `JT808_TCP_PORT` | `6808` | JT808 signaling porti |
+| `JT1078_TCP_PORT` | `6107` | JT1078 media porti |
+| `JT1078_MEDIA_HOST` | (bo'sh) | qurilma oqim yuboradigan public IP/host |
+| `GPS_JT1078_RAW_DUMP` | `0` | `1` = xom video diskka yoziladi (faqat diagnostika) |
+| `GPS_JT1078_PLAYBACK_WINDOW_S` | `180` | playback rejimi oqimi shu sekund davomida belgilanadi |
+| `GPS_HLS_MAX_AGE_S` | `3600` | shu sekunddan eski HLS segmentlar tozalanadi |
 
 Token: dashboard bilan bir xil `DASHBOARD_TOKEN` ishlatiladi.
 
@@ -108,6 +115,32 @@ ffmpeg -rtsp_transport tcp -i "rtsp://user:pass@CAMERA_IP/stream" \
 
 So'ng `http://SERVER/hls/camera1.m3u8` ni `hls` turidagi kamera sifatida
 qo'shing.
+
+## JT808 / JT1078 — 4G (CMSV6) kameralar
+
+4G avtosko'zgular/simlar **JT/T 808** (signaling) va **JT1078** (media)
+protokollarida ishlaydi. Ular to'g'ridan-to'g'ri serverga ulanadi — ochiq
+portlar:
+
+- **TCP 6808** — JT808 signaling (ro'yxat, heartbeat, buyruqlar)
+- **TCP 6107** — JT1078 media (video paketlari)
+
+**Jonli (live):** UI'da qurilma kartasidagi kanalni tanlab "▶ Jonli video"
+bosilsa server qurilmaga `0x9101` yuboradi; qurilma oqimni 6107-portga uzatadi,
+ffmpeg uni HLS'ga aylantiradi (`/hls/jt_<sim>_<kanal>.m3u8`). "⏹ To'xtatish"
+`0x9102` yuboradi (4G trafikni tejash).
+
+**Yozuvlar (playback, qurilma xotirasidan):** "🗂 Xotira" tugmasi
+qurilma xotirasidagi yozuvlar ro'yxatini `0x9205` orqali so'raydi
+(`GET /api/video/jt-files`), tanlangan yozuv `0x9201` bilan oqim sifatida
+so'raladi va `/hls/jtpb_<sim>_<kanal>.m3u8` orqali ko'rsatiladi; pauza/davom/
+tezlik/ortga `0x9202` bilan boshqariladi. **Video serverga saqlanmaydi** —
+qurilmaning o'z xotirasida qoladi, server faqat jonli uzatish (HLS) qiladi.
+
+`JT1078_MEDIA_HOST` — qurilma oqimni yuboradigan public IP/host (bo'sh bo'lsa
+UI'dagi host ishlatiladi). `GPS_JT1078_RAW_DUMP=1` faqat diagnostika uchun
+xom oqimni diskka yozadi (standart `0` = saqlanmaydi). Bo'sh/eskirgan HLS
+segmentlar `GPS_HLS_MAX_AGE_S` bo'yicha avtomatik tozalanadi.
 
 ## Geofence (zona nazorati)
 
@@ -220,6 +253,13 @@ Himoya: `Authorization: Bearer <DASHBOARD_TOKEN>`
 | GET | `/api/gps/daily?from=&to=&imei=` | kunlik yig'ama (rollup) |
 | GET | `/api/video/cameras` | kameralar |
 | GET | `/api/video/relay` | relay holati (ffmpeg, jarayonlar) |
+| GET | `/api/video/jt-streams` | JT1078 faol oqimlar (live/playback) + qurilmalar |
+| POST | `/api/video/jt-live` | `{phone, channel}` — `0x9101` jonli oqim |
+| POST | `/api/video/jt-stop` | `{phone, channel}` — `0x9102` to'xtatish |
+| GET | `/api/video/jt-files?phone=` | qurilma xotirasidagi yozuvlar (kesh) |
+| POST | `/api/video/jt-files` | `{phone, channel, date?}` — `0x9205` ro'yxat so'rash |
+| POST | `/api/video/jt-playback` | `{phone, channel, start, end}` — `0x9201` yozuv oqimi |
+| POST | `/api/video/jt-playback-control` | `{phone, channel, control, speed?}` — `0x9202` |
 | POST | `/api/video/cameras` | `{name, url, source_type, vehicle_id?}` |
 | DELETE | `/api/video/cameras/{id}` | o'chirish |
 | GET | `/api/gps/health` | servis holati (token'siz) |

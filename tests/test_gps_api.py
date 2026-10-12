@@ -147,6 +147,68 @@ def test_devices_scoped_to_company(env, monkeypatch):
     assert [d["imei"] for d in data["devices"]] == ["111", "222", "333"]
 
 
+def test_vehicles_list_bound_and_scope(env, monkeypatch):
+    """/api/gps/vehicles: mavjud avtobuslar + bog'langan qurilma + qamrov."""
+    fake = [
+        {"external_id": "v1", "plate_number": "01 A", "garage_number": "1",
+         "model": "", "route_id": "r1", "device_imei": "111",
+         "device_name": "A"},
+        {"external_id": "v2", "plate_number": "02 B", "garage_number": "2",
+         "model": "", "route_id": "r2", "device_imei": "", "device_name": ""},
+    ]
+    monkeypatch.setattr(gstorage, "list_vehicles", lambda: list(fake))
+
+    # ADMIN: barcha avtobuslar, bog'langan qurilma bilan.
+    status, data = _request(monkeypatch, "/api/gps/vehicles",
+                            headers=_auth(), scope=None)
+    assert status == 200
+    assert [v["external_id"] for v in data["vehicles"]] == ["v1", "v2"]
+    assert data["vehicles"][0]["device_imei"] == "111"
+    assert data["vehicles"][1]["device_imei"] == ""
+
+    # Kompaniya qamrovi (faqat r1 yo'nalishi) -> faqat v1 qaytadi.
+    status, data = _request(monkeypatch, "/api/gps/vehicles",
+                            headers=_auth(), scope=_SCOPE)
+    assert status == 200
+    assert [v["external_id"] for v in data["vehicles"]] == ["v1"]
+
+
+def test_delete_device_admin(env, monkeypatch):
+    """DELETE /api/gps/devices/<imei>: qurilmani ro'yxatdan o'chirish."""
+    seen = {}
+    monkeypatch.setattr(gstorage, "delete_device",
+                        lambda imei: seen.setdefault("imei", imei) or True)
+    status, data = _request(monkeypatch, "/api/gps/devices/111",
+                            method="DELETE", headers=_auth(), scope=None)
+    assert status == 200
+    assert data.get("ok") is True
+    assert seen.get("imei") == "111"
+
+
+def test_geofence_edit_updates_fields(env, monkeypatch):
+    """PATCH /api/gps/geofences/<id>: nom/koordinata/radius tahrirlanadi."""
+    seen = {}
+
+    def _upd(fid, name, lat, lng, radius_m, vehicle_id=""):
+        seen.update(fid=fid, name=name, lat=lat, lng=lng,
+                    radius_m=radius_m, vehicle_id=vehicle_id)
+        return True
+
+    monkeypatch.setattr(gstorage, "update_geofence", _upd)
+    body = json.dumps({"name": "Depo", "lat": 41.31, "lng": 69.24,
+                       "radius_m": 700, "vehicle_id": "v1"}).encode()
+    status, data = _request(monkeypatch, "/api/gps/geofences/1",
+                            method="PATCH", headers=_auth(), body=body,
+                            scope=None)
+    assert status == 200
+    assert data.get("ok") is True
+    assert seen["fid"] == 1
+    assert seen["name"] == "Depo"
+    assert seen["lat"] == 41.31 and seen["lng"] == 69.24
+    assert seen["radius_m"] == 700
+    assert seen["vehicle_id"] == "v1"
+
+
 def test_positions_scoped_to_company(env, monkeypatch):
     status, data = _request(monkeypatch, "/api/gps/positions",
                             headers=_auth(), scope=_SCOPE)
@@ -489,3 +551,72 @@ def test_daily_send_admin_only(env, monkeypatch):
                             headers=_auth(), scope=None,
                             body=b'{"day":"xx"}')
     assert status == 400 and calls == [_date(2026, 10, 6)]
+
+
+# ------------------------------------------------- JT1078 jonli oqimlar
+
+def test_jt_streams_endpoint(env, monkeypatch):
+    """/api/video/jt-streams: avto-aniqlangan 4G kamera oqimlari."""
+    monkeypatch.setattr(gps_api.config, "JT808_ENABLED", True)
+    monkeypatch.setattr(gps_api.jt1078, "ffmpeg_available", lambda: True)
+    monkeypatch.setattr(gps_api.jt1078, "streams",
+                        lambda: [{"sim": "123", "channel": 1, "bytes": 2048,
+                                  "hls": "/hls/jt_123_1.m3u8"}])
+    monkeypatch.setattr(gps_api.jt808, "connected_phones", lambda: ["123"])
+    status, data = _request(monkeypatch, "/api/video/jt-streams",
+                            headers=_auth(), scope=None)
+    assert status == 200
+    assert data["ok"] is True and data["enabled"] is True
+    assert data["ffmpeg"] is True
+    assert data["count"] == 1
+    assert data["streams"][0]["hls"] == "/hls/jt_123_1.m3u8"
+    assert data["devices"] == ["123"]
+
+
+def test_jt_streams_disabled(env, monkeypatch):
+    """JT808 o'chirilgan bo'lsa bo'sh ro'yxat (xatosiz)."""
+    monkeypatch.setattr(gps_api.config, "JT808_ENABLED", False)
+    status, data = _request(monkeypatch, "/api/video/jt-streams",
+                            headers=_auth(), scope=None)
+    assert status == 200
+    assert data["enabled"] is False
+    assert data["streams"] == [] and data["devices"] == []
+
+
+def test_jt_live_start_and_stop(env, monkeypatch):
+    """POST /api/video/jt-live|jt-stop: 0x9101/0x9102 buyrug'i yuboriladi."""
+    calls = []
+    monkeypatch.setattr(gps_api.config, "JT1078_MEDIA_HOST", "1.2.3.4")
+    monkeypatch.setattr(gps_api.config, "JT1078_TCP_PORT", 6107)
+    monkeypatch.setattr(gps_api.jt808, "send_live_request",
+                        lambda *a, **k: calls.append(("start", a, k)) or True)
+    monkeypatch.setattr(gps_api.jt808, "send_live_stop",
+                        lambda *a, **k: calls.append(("stop", a, k)) or True)
+    body = json.dumps({"phone": "123", "channel": 2}).encode()
+    status, data = _request(monkeypatch, "/api/video/jt-live", method="POST",
+                            headers=_auth(), scope=None, body=body)
+    assert status == 200 and data["ok"] is True
+    assert data["host"] == "1.2.3.4" and data["port"] == 6107
+    assert calls[-1][0] == "start" and calls[-1][1][0] == "123"
+    status, data = _request(monkeypatch, "/api/video/jt-stop", method="POST",
+                            headers=_auth(), scope=None, body=body)
+    assert status == 200 and data["ok"] is True
+    assert calls[-1][0] == "stop" and calls[-1][1] == ("123", 2)
+
+
+def test_jt_live_requires_admin_and_phone(env, monkeypatch):
+    # Non-admin -> 403.
+    status, _ = _request(monkeypatch, "/api/video/jt-live", method="POST",
+                         headers=_auth(), scope=_SCOPE,
+                         body=b'{"phone":"123"}')
+    assert status == 403
+    # phone yo'q -> 400.
+    status, data = _request(monkeypatch, "/api/video/jt-live", method="POST",
+                            headers=_auth(), scope=None, body=b'{}')
+    assert status == 400
+    # media host belgilanmagan -> 400.
+    monkeypatch.setattr(gps_api.config, "JT1078_MEDIA_HOST", "")
+    status, data = _request(monkeypatch, "/api/video/jt-live", method="POST",
+                            headers=_auth(), scope=None,
+                            body=b'{"phone":"123"}')
+    assert status == 400 and "host" in data["error"]
