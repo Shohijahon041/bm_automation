@@ -143,6 +143,75 @@ def _handle_sms_if_needed(page, interactive: bool) -> None:
             pass
 
 
+# OneID login/paroldan keyin "Qanday rolda davom etmoqchisiz?" dialogi
+# chiqadi (Jismoniy shaxs / Yuridik shaxs ... + "Davom etish" tugmasi). Rol
+# tanlanmasa oqim shu yerda to'xtaydi va `code` olinmaydi. Tanlanadigan rol
+# matni `BM_ONEID_ROLE` bilan beriladi (default "Jismoniy shaxs"); topilmasa
+# birinchi karta bosiladi.
+ROLE_DIALOG_TIMEOUT_MS = int(os.getenv("BM_ONEID_ROLE_TIMEOUT_MS", "15000"))
+
+
+def _role_want() -> str:
+    return os.getenv("BM_ONEID_ROLE", "Jismoniy shaxs").strip()
+
+
+def _click_role_text(page, want: str) -> bool:
+    """Rol kartasini matn bo'yicha (topilmasa birinchisini) bosadi."""
+    if want:
+        try:
+            loc = page.get_by_text(want, exact=False)
+            if loc.count():
+                loc.first.click(timeout=5000)
+                return True
+        except Exception:  # noqa: BLE001 - matn topilmasa birinchi kartaga tushamiz
+            pass
+    for sel in ('.MuiDialog-root [role="dialog"] .MuiDialogContent-root p',
+                '.MuiDialog-root [role="dialog"] h6'):
+        try:
+            el = page.query_selector(sel)
+            if el:
+                el.click(timeout=5000)
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+    return False
+
+
+def _handle_role_dialog(page, want: str) -> bool:
+    """OneID rol tanlash dialogini bosib o'tadi (bo'lmasa darhol qaytadi).
+
+    Dialog paydo bo'lsa: matn bo'yicha rol kartasi (default "Jismoniy shaxs")
+    bosiladi, so'ng "Davom etish" tugmasi bosiladi. Qaytaradi: dialog
+    topildimi.
+    """
+    try:
+        page.wait_for_selector('.MuiDialog-root [role="dialog"]',
+                               timeout=ROLE_DIALOG_TIMEOUT_MS)
+    except PWTimeout:
+        return False
+    if not _click_role_text(page, want):
+        return False
+    page.wait_for_timeout(700)
+    btn = page.query_selector('.MuiDialog-root [role="dialog"] button[type="submit"]')
+    if btn is not None and not btn.is_disabled():
+        try:
+            btn.click(timeout=5000)
+        except Exception:  # noqa: BLE001
+            pass
+    else:
+        try:
+            page.click('.MuiDialog-root [role="dialog"] button:has-text("Davom etish")',
+                       timeout=5000)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        page.wait_for_selector('.MuiDialog-root [role="dialog"]', state="hidden",
+                               timeout=10000)
+    except PWTimeout:
+        pass
+    return True
+
+
 def _select_organization(page, want: str):
     """Kompaniya tanlash sahifasida kerakli tashkilotni tanlaydi."""
     try:
@@ -208,6 +277,11 @@ def _direct_sso_code(username: str, password: str, headless: bool, timeout: int)
             browser.close()
             raise RuntimeError("OneID login formasi topilmadi")
         _handle_sms_if_needed(page, interactive=not headless)
+        if not headless:
+            # Ko'rinadigan rejimda rol tanlashni foydalanuvchi bajaradi.
+            pass
+        else:
+            _handle_role_dialog(page, _role_want())
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline and not code_box["code"]:
             page.wait_for_timeout(500)
@@ -350,6 +424,7 @@ def _browser_login_impl(
         print(f"OneID sahifasi: {page.url}")
         if username and password:
             _fill_oneid(page, username, password)
+            _handle_role_dialog(page, _role_want())
         else:
             interactive = True
 
