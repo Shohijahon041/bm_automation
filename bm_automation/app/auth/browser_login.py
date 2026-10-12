@@ -15,9 +15,11 @@ Foydalanish:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
+from pathlib import Path
 
 from playwright.sync_api import TimeoutError as PWTimeout
 from playwright.sync_api import sync_playwright
@@ -25,6 +27,42 @@ from playwright.sync_api import sync_playwright
 # Brauzer ishga tushish kutish vaqti. Sukut bo'yicha Playwright 180s kutadi;
 # xotira tangis serverlarda bu uzoq thrash'ga olib keladi — qisqartiramiz.
 LAUNCH_TIMEOUT_MS = int(os.getenv("BM_BROWSER_LAUNCH_TIMEOUT_MS", "60000"))
+
+# Muvaffaqiyatsiz brauzer login'dan keyin qayta urinishni bloklash oynasi
+# (sekund). Server IP'da brauzer login umuman ishlamaydi — takror urinishlar
+# har safar Chromium ochib xotirani yeydi. Shu sababli cooldown qo'llanadi.
+COOLDOWN_S = float(os.getenv("BM_BROWSER_LOGIN_COOLDOWN_S", "600"))
+
+
+def _cooldown_path() -> Path:
+    default = Path("state") / "browser_login_cooldown.json"
+    return Path(os.getenv("BM_BROWSER_LOGIN_STATE", str(default)))
+
+
+def _cooldown_remaining() -> float:
+    """Cooldown qolgan sekundlar (0 bo'lsa bloklanmagan)."""
+    try:
+        data = json.loads(_cooldown_path().read_text(encoding="utf-8"))
+        last = float(data.get("failed_at", 0.0))
+    except Exception:  # noqa: BLE001 - fayl yo'q/buzilgan bo'lsa blok yo'q
+        return 0.0
+    return max(0.0, COOLDOWN_S - (time.time() - last))
+
+
+def _mark_failed() -> None:
+    try:
+        path = _cooldown_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"failed_at": time.time()}), encoding="utf-8")
+    except Exception:  # noqa: BLE001 - holat yozilmasa ham davom etamiz
+        pass
+
+
+def _clear_failed() -> None:
+    try:
+        _cooldown_path().unlink()
+    except Exception:  # noqa: BLE001
+        pass
 
 from ..config.settings import get_config
 from ..core.tokens import save_tokens
@@ -218,6 +256,37 @@ def browser_login(
     interactive: bool = False,
     headless: bool = False,
     timeout: int = 240,
+    force: bool = False,
+) -> dict:
+    """Brauzer orqali OneID login bajarib tokenlarni qaytaradi.
+
+    Oldingi urinish muvaffaqiyatsiz bo'lsa, cooldown davomida brauzer
+    ochilmaydi (`force=True` bilan chetlab o'tiladi).
+    """
+    if not force:
+        remaining = _cooldown_remaining()
+        if remaining > 0:
+            raise RuntimeError(
+                f"brauzer login vaqtincha bloklangan ({int(remaining)}s qoldi)"
+            )
+    try:
+        result = _browser_login_impl(
+            username, password, organization, interactive, headless, timeout
+        )
+    except Exception:
+        _mark_failed()
+        raise
+    _clear_failed()
+    return result
+
+
+def _browser_login_impl(
+    username: str = "",
+    password: str = "",
+    organization: str = "",
+    interactive: bool = False,
+    headless: bool = False,
+    timeout: int = 240,
 ) -> dict:
     """Brauzer orqali OneID login bajarib tokenlarni qaytaradi."""
     cfg = get_config()
@@ -346,6 +415,7 @@ def run(argv: list | None = None) -> int:
             organization=args.org,
             interactive=args.interactive,
             headless=not args.visible,
+            force=args.interactive or args.visible,
         )
         print("Bajarildi.")
         return 0

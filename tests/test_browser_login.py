@@ -14,6 +14,12 @@ client_mod = importlib.import_module("bm_automation.app.api.client")
 prof_mod = importlib.import_module("bm_automation.app.core.profiles")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_cooldown(monkeypatch, tmp_path):
+    """Har bir test o'z cooldown holati fayli bilan ishlasin."""
+    monkeypatch.setenv("BM_BROWSER_LOGIN_STATE", str(tmp_path / "cooldown.json"))
+
+
 def test_direct_sso_url_has_expected_params():
     assert "sso.egov.uz" in bl.DIRECT_SSO_URL
     assert "client_id=bm_dtransport_uz" in bl.DIRECT_SSO_URL
@@ -106,3 +112,33 @@ def test_browser_login_skips_direct_for_test_site(monkeypatch):
     with pytest.raises(RuntimeError):
         bl.browser_login()
     assert called["direct"] == 0
+
+
+def test_browser_login_cooldown_blocks_repeat(monkeypatch, tmp_path):
+    """Muvaffaqiyatsiz login'dan keyin cooldown davomida brauzer ochilmaydi."""
+    monkeypatch.setenv("BM_BROWSER_LOGIN_STATE", str(tmp_path / "cd.json"))
+    monkeypatch.setattr(bl, "_browser_login_impl",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    with pytest.raises(RuntimeError):
+        bl.browser_login()
+    with pytest.raises(RuntimeError) as ei:
+        bl.browser_login()
+    assert "bloklangan" in str(ei.value)
+
+
+def test_browser_login_force_bypasses_cooldown(monkeypatch, tmp_path):
+    monkeypatch.setenv("BM_BROWSER_LOGIN_STATE", str(tmp_path / "cd2.json"))
+    bl._mark_failed()
+    monkeypatch.setattr(bl, "_browser_login_impl", lambda *a, **k: {"access_token": "A"})
+
+    assert bl.browser_login(force=True)["access_token"] == "A"
+
+
+def test_browser_login_success_clears_cooldown(monkeypatch, tmp_path):
+    monkeypatch.setenv("BM_BROWSER_LOGIN_STATE", str(tmp_path / "cd3.json"))
+    bl._mark_failed()
+    monkeypatch.setattr(bl, "_browser_login_impl", lambda *a, **k: {"access_token": "A"})
+
+    assert bl.browser_login(force=True)["access_token"] == "A"
+    assert bl._cooldown_remaining() == 0.0
