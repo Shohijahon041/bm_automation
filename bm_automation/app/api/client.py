@@ -211,9 +211,8 @@ class BMClient:
             if self.auto_relogin:
                 # Password ham ishlamasa (o'zgargan/lock) — OneID brauzer
                 # oqimi oxirgi chora sifatida ishlatiladi.
-                self.logger.warning("password login ishlamadi (%s); OneID qilinmoqda", exc)
-                from ..auth.browser_login import browser_login
-                browser_login(headless=True, timeout=300)
+                self.logger.warning("password login ishlamadi (%s); OneID brauzer login uriniladi", exc)
+                self._browser_relogin()
                 if not self.load_tokens_from_file():
                     raise BMAuthError(401, message="OneID login access token bermadi")
                 return
@@ -221,6 +220,23 @@ class BMClient:
         if not isinstance(data, dict):
             raise BMAuthError(200, message="login javobi noto'g'ri format")
         self.set_tokens(data.get("access_token"), data.get("refresh_token"))
+
+    def _browser_relogin(self) -> None:
+        """OneID brauzer login (oxirgi chora).
+
+        `BM_BROWSER_LOGIN=off` bo'lsa brauzer umuman ochilmaydi — buning
+        o'rniga tokenlarni qo'lda yangilash haqida aniq xato beriladi.
+        """
+        from ..config.settings import browser_login_enabled
+
+        if not browser_login_enabled():
+            raise BMAuthError(401, message=(
+                "avtorizatsiya talab qilinadi: tokenlar yangilanmadi "
+                "(refresh/password 401). `python -m bm_automation login-browser` "
+                "ni ruxsat etilgan IP'da ishga tushiring"))
+        from ..auth.browser_login import browser_login
+
+        browser_login(headless=True, timeout=300)
 
     @staticmethod
     def _token_remaining(token: str) -> int:
@@ -407,9 +423,8 @@ class BMClient:
                 # oxirgi chora.
                 self.login(force=True)
             except Exception:
-                self.logger.warning("password login ham ishlamadi; OneID qilinmoqda")
-                from ..auth.browser_login import browser_login
-                browser_login(headless=True, timeout=300)
+                self.logger.warning("password login ham ishlamadi; OneID brauzer login uriniladi")
+                self._browser_relogin()
                 self.load_tokens_from_file()
                 if not self.access_token:
                     raise BMAuthError(401, message="OneID login access token bermadi")

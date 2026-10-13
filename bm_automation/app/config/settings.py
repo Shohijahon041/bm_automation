@@ -110,6 +110,19 @@ def is_test_env() -> bool:
     return os.getenv("BM_ENV", "test").strip().lower() == "test"
 
 
+def browser_login_enabled() -> bool:
+    """Avtomatik OneID brauzer (Playwright) login yoqilganmi.
+
+    Server kabi datacenter IP'larda brauzer login ishlamaydi (oneid.egov.uz
+    `403` qaytaradi) — u holda `BM_BROWSER_LOGIN=off` bilan o'chirib, aniq va
+    tez xato berish (foydasiz Chromium urinishlarining oldini olish) foydali.
+    O'chirilganda tokenlar `python -m bm_automation login-browser` orqali
+    ruxsat etilgan IP'da olinishi kerak.
+    """
+    return os.getenv("BM_BROWSER_LOGIN", "on").strip().lower() not in (
+        "off", "0", "no", "false")
+
+
 def km_rate_for(route_id: str = "", default: float = 0.0) -> float:
     """1 km narxi (so'm) — yo'nalish/birinlik bo'yicha, global EMSAS.
 

@@ -298,6 +298,30 @@ def test_login_falls_back_to_oneid_when_password_fails(client, monkeypatch):
     assert client.access_token == "oneid-access"
 
 
+def test_browser_login_disabled_raises_clear_error(client, monkeypatch):
+    """BM_BROWSER_LOGIN=off bo'lsa brauzer umuman ochilmaydi — aniq xato beriladi."""
+    called = {}
+
+    def fake_browser_login(**kwargs):
+        called["browser"] = True
+
+    import importlib
+    browser_login_module = importlib.import_module("bm_automation.app.auth.browser_login")
+    monkeypatch.setattr(browser_login_module, "browser_login", fake_browser_login)
+    monkeypatch.setenv("BM_BROWSER_LOGIN", "off")
+    monkeypatch.setattr(client, "_token_remaining", lambda t: -1)
+
+    client.session = FakeSession([
+        _err(401, {"message": "refresh eskirgan"}),
+        _err(401, {"message": "password xato"}),
+    ])
+    client.auto_relogin = True
+    with pytest.raises(BMAuthError) as ei:
+        client.login()
+    assert "login-browser" in str(ei.value)
+    assert called.get("browser") is None
+
+
 def test_refresh_race_retries_with_rotated_token(client, tmp_path):
     """Boshqa jarayon refresh aylantirgan bo'lsa, yangi token bilan qayta uriniladi."""
     import json
