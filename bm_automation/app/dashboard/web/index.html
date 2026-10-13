@@ -857,6 +857,15 @@ body:before { background-image: linear-gradient(var(--grid-overlay) 1px, transpa
 .nav-section .nav-label { font: 9px "JetBrains Mono", monospace; letter-spacing: 1.2px; text-transform: uppercase; color: var(--muted-3); padding: 10px 12px 4px; opacity: 0.7; }
 .nav-section .nav-label:before { content: none; }
 .side-nav { display: flex; flex-direction: column; gap: 2px; }
+/* ---- akkordeon nav guruhlari ---- */
+.nav-group { border-radius: 11px; overflow: hidden; }
+.nav-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 10px 12px; background: transparent; border: 1px solid transparent; border-radius: 11px; cursor: pointer; color: var(--muted-2); font: 700 10px "IBM Plex Mono", monospace; letter-spacing: 1.2px; text-transform: uppercase; transition: all .16s var(--ease); }
+.nav-group-head:hover { background: var(--bg-raised); color: var(--ink); border-color: var(--line); }
+.nav-chev { font-size: 9px; color: var(--muted-3); transition: transform .2s var(--ease); font-style: normal; }
+.nav-group.open > .nav-group-head { color: var(--ink); }
+.nav-group.open > .nav-group-head .nav-chev { transform: rotate(90deg); color: var(--accent); }
+.nav-group-items { display: none; flex-direction: column; gap: 2px; padding: 3px 0 6px 6px; }
+.nav-group.open > .nav-group-items { display: flex; }
 .live-box { border-color: var(--line); background: linear-gradient(145deg, var(--bg-raised), var(--bg-panel)); }
 .live { color: var(--teal-text); }
 .live i { background: var(--teal); box-shadow: 0 0 9px var(--teal); }
@@ -904,7 +913,10 @@ body:before { background-image: linear-gradient(var(--grid-overlay) 1px, transpa
 .top-actions .icon-button { width: 34px; height: 34px; border-radius: 10px; font-size: 15px; line-height: 1; }
 @keyframes pulse2 { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 @media(max-width:1200px){ .side-nav a.active::after { display: none; } }
+@media(max-width:1200px){ .nav-group-head { display: none; } .nav-group-items { display: flex !important; padding-left: 0; } }
 @media(max-width:620px){ .sidebar .orn-divider { display: none; } }
+@media(max-width:620px){ .nav-group { display: flex; flex: 1 1 auto; } .nav-group-items { flex-direction: row !important; width: 100%; gap: 0; padding: 0; } }
+@media(max-width:620px){ body.nav-open .nav-group { display: block; flex: 0 0 auto; } body.nav-open .nav-group-head { display: flex; } body.nav-open .nav-group-items { flex-direction: column !important; padding: 3px 0 6px 6px; } body.nav-open .nav-group:not(.open) > .nav-group-items { display: none !important; } }
 
 /* ============================================================
    QO'SHIMCHA SAYQAL — klaviatura fokus + tema o'tishi (a11y)
@@ -994,35 +1006,67 @@ body.auth-locked .auth-overlay { display: flex; }
   <aside class="sidebar">
     <div class="side-brand"><div class="brand-mark">BM</div><div><span class="brand-name">BM COMMAND</span><span class="brand-sub">FLEET OPERATIONS</span></div></div>
     <div class="orn-divider"><span class="orn"></span></div>
-    <div class="nav-label">OVERVIEW</div>
     <nav class="side-nav" id="main-nav">
-      <a class="active" href="#overview" data-page="overview"><i class="nav-ic" data-ic="activity"></i><span>Overview</span></a>
-      <a href="#dispatch" data-page="dispatch"><i class="nav-ic" data-ic="zap"></i><span>Dispatch</span></a>
-      <a href="#routes" data-page="routes"><i class="nav-ic" data-ic="route"></i><span>Routes</span></a>
-      <a href="#vehicles" data-page="vehicles"><i class="nav-ic" data-ic="truck"></i><span>Buses</span></a>
-      <a href="#drivers" data-page="drivers"><i class="nav-ic" data-ic="users"></i><span>Drivers</span></a>
-      <a href="#appeals" data-page="appeals"><i class="nav-ic" data-ic="message-square"></i><span>Murojaatlar</span></a>
-      <a href="#alerts" data-page="alerts"><i class="nav-ic" data-ic="alert-triangle"></i><span>Alerts</span></a>
-      <a href="#performance" data-page="performance"><i class="nav-ic" data-ic="calendar"></i><span>Performance</span></a>
-      <a href="#top-performance" data-page="top-performance"><i class="nav-ic" data-ic="shield"></i><span>Top Performers</span></a>
-      <a href="#electricity" data-page="electricity"><i class="nav-ic" data-ic="zap"></i><span>Energy</span></a>
-      <a href="#rejects" data-page="rejects"><i class="nav-ic" data-ic="alert-triangle"></i><span>Qabul Qilinmagan</span></a>
-      <a href="#brutto" data-page="brutto"><i class="nav-ic" data-ic="briefcase"></i><span>Brutto</span></a>
-      <a href="#tariffs" data-page="tariffs"><i class="nav-ic" data-ic="route"></i><span>Tariflar</span></a>
-      <a href="#insights" data-page="insights"><i class="nav-ic" data-ic="activity"></i><span>AI Tahlil</span></a>
-      <a href="#audit" data-page="audit"><i class="nav-ic" data-ic="clipboard"></i><span>Audit</span></a>
-      <a href="#myai" data-page="myai"><i class="nav-ic" data-ic="bot"></i><span>MyAI Agent</span></a>
-      <a href="#gps" data-page="gps"><i class="nav-ic" data-ic="map-pin"></i><span>GPS Kuzatuv</span></a>
-      <a href="#video" data-page="video"><i class="nav-ic" data-ic="video"></i><span>Video Kuzatuv</span></a>
-      <a href="#sms" data-page="sms"><i class="nav-ic" data-ic="message-square"></i><span>SMS</span></a>
-      <a href="#admin" data-page="admin"><i class="nav-ic" data-ic="briefcase"></i><span>Ma'muriy</span></a>
+      <div class="nav-group open" data-group="asosiy">
+        <button type="button" class="nav-group-head"><span class="nav-group-title">Asosiy</span><i class="nav-chev">▸</i></button>
+        <div class="nav-group-items">
+          <a class="active" href="#overview" data-page="overview"><i class="nav-ic" data-ic="activity"></i><span>Overview</span></a>
+          <a href="#dispatch" data-page="dispatch"><i class="nav-ic" data-ic="zap"></i><span>Dispatch</span></a>
+          <a href="#routes" data-page="routes"><i class="nav-ic" data-ic="route"></i><span>Routes</span></a>
+          <a href="#vehicles" data-page="vehicles"><i class="nav-ic" data-ic="truck"></i><span>Buses</span></a>
+          <a href="#drivers" data-page="drivers"><i class="nav-ic" data-ic="users"></i><span>Drivers</span></a>
+        </div>
+      </div>
 
-      <a href="#logs" data-page="logs"><i class="nav-ic" data-ic="terminal"></i><span>Logs</span></a>
-      <a href="#disk" data-page="disk"><i class="nav-ic" data-ic="database"></i><span>Disk</span></a>
-      <a href="#documents" data-page="documents"><i class="nav-ic" data-ic="file-text"></i><span>Documents</span></a>
-      <a href="#users" data-page="users"><i class="nav-ic" data-ic="user-plus"></i><span>Users</span></a>
-      <a href="#dusers" data-page="dusers"><i class="nav-ic" data-ic="user-plus"></i><span>Dashboard Users</span></a>
-      <a href="#settings" data-page="settings"><i class="nav-ic" data-ic="settings"></i><span>Settings</span></a>
+      <div class="nav-group" data-group="nazorat">
+        <button type="button" class="nav-group-head"><span class="nav-group-title">Nazorat</span><i class="nav-chev">▸</i></button>
+        <div class="nav-group-items">
+          <a href="#gps" data-page="gps"><i class="nav-ic" data-ic="map-pin"></i><span>Kuzatuv</span></a>
+          <a href="#alerts" data-page="alerts"><i class="nav-ic" data-ic="alert-triangle"></i><span>Alerts</span></a>
+          <a href="#appeals" data-page="appeals"><i class="nav-ic" data-ic="message-square"></i><span>Murojaatlar</span></a>
+        </div>
+      </div>
+
+      <div class="nav-group" data-group="hisobot">
+        <button type="button" class="nav-group-head"><span class="nav-group-title">Hisobot</span><i class="nav-chev">▸</i></button>
+        <div class="nav-group-items">
+          <a href="#performance" data-page="performance"><i class="nav-ic" data-ic="calendar"></i><span>Ishgra chiqish</span></a>
+          <a href="#top-performance" data-page="top-performance"><i class="nav-ic" data-ic="shield"></i><span>Top Performers</span></a>
+          <a href="#rejects" data-page="rejects"><i class="nav-ic" data-ic="alert-triangle"></i><span>Qabul Qilinmagan</span></a>
+        </div>
+      </div>
+
+      <div class="nav-group" data-group="moliya">
+        <button type="button" class="nav-group-head"><span class="nav-group-title">Moliya</span><i class="nav-chev">▸</i></button>
+        <div class="nav-group-items">
+          <a href="#brutto" data-page="brutto"><i class="nav-ic" data-ic="briefcase"></i><span>Brutto</span></a>
+          <a href="#tariffs" data-page="tariffs"><i class="nav-ic" data-ic="route"></i><span>Tariflar</span></a>
+          <a href="#electricity" data-page="electricity"><i class="nav-ic" data-ic="zap"></i><span>Energy</span></a>
+        </div>
+      </div>
+
+      <div class="nav-group" data-group="ai">
+        <button type="button" class="nav-group-head"><span class="nav-group-title">AI</span><i class="nav-chev">▸</i></button>
+        <div class="nav-group-items">
+          <a href="#insights" data-page="insights"><i class="nav-ic" data-ic="activity"></i><span>AI Tahlil</span></a>
+          <a href="#myai" data-page="myai"><i class="nav-ic" data-ic="bot"></i><span>MyAI Agent</span></a>
+        </div>
+      </div>
+
+      <div class="nav-group" data-group="tizim">
+        <button type="button" class="nav-group-head"><span class="nav-group-title">Tizim</span><i class="nav-chev">▸</i></button>
+        <div class="nav-group-items">
+          <a href="#audit" data-page="audit"><i class="nav-ic" data-ic="clipboard"></i><span>Audit</span></a>
+          <a href="#sms" data-page="sms"><i class="nav-ic" data-ic="message-square"></i><span>SMS</span></a>
+          <a href="#admin" data-page="admin"><i class="nav-ic" data-ic="briefcase"></i><span>Ma'muriy</span></a>
+          <a href="#documents" data-page="documents"><i class="nav-ic" data-ic="file-text"></i><span>Documents</span></a>
+          <a href="#users" data-page="users"><i class="nav-ic" data-ic="user-plus"></i><span>Users</span></a>
+          <a href="#dusers" data-page="dusers"><i class="nav-ic" data-ic="user-plus"></i><span>Dashboard Users</span></a>
+          <a href="#logs" data-page="logs"><i class="nav-ic" data-ic="terminal"></i><span>Logs</span></a>
+          <a href="#disk" data-page="disk"><i class="nav-ic" data-ic="database"></i><span>Disk</span></a>
+          <a href="#settings" data-page="settings"><i class="nav-ic" data-ic="settings"></i><span>Settings</span></a>
+        </div>
+      </div>
     </nav>
     <div class="side-bottom"><div class="live-box"><div class="live"><i></i> SYSTEM LIVE</div><small>BM monitoring markazi real vaqt rejimida.</small></div></div>
   </aside>
@@ -1423,12 +1467,24 @@ body.auth-locked .auth-overlay { display: flex; }
 </section>
 
 <section class="page" id="page-gps" data-page-view="gps">
-  <div class="page-hero"><div><div class="eyebrow">GPS TRACKING</div><h2>GPS Kuzatuv — Teltonika FMB920</h2><p>Qurilmalar TCP 5027 portidan AVL ma'lumot yuboradi. Jonli xarita, traektoriya, IMEI → avtobus bog'lash. To'liq ekran uchun panel ichidagi tugmani bosing.</p></div><div class="page-kicker" id="gps-kicker">—</div></div>
+  <div class="page-hero"><div><div class="eyebrow">KUZATUV</div><h2>Kuzatuv — GPS + Video</h2><p>Teltonika FMB920 trackerlari (TCP 5027) va 4G kameralar (JT808/JT1078) bitta oynada: jonli xarita, traektoriya, IMEI → avtobus bog'lash hamda jonli/yozuv video. Quyidagi tugmalar yoki panel ichidagi "Xarita"/"Video" tab'lari bilan almashtiring.</p></div><div class="page-kicker" id="gps-kicker">—</div></div>
+  <div class="section" style="display:flex;gap:8px;margin:6px 0 12px">
+    <button class="btn" id="gps-tab-map" onclick="gpsFrameTab('gps')">🗺 Xarita</button>
+    <button class="btn" id="gps-tab-vid" onclick="gpsFrameTab('video')">🎥 Video</button>
+  </div>
   <div class="side-card" style="padding:0;overflow:hidden;border-radius:16px">
-    <iframe id="gps-frame" data-src="" title="GPS Kuzatuv" style="width:100%;height:calc(100vh - 210px);min-height:560px;border:0;display:block;background:#0b0f19"></iframe>
+    <iframe id="gps-frame" data-src="" title="Kuzatuv" style="width:100%;height:calc(100vh - 250px);min-height:560px;border:0;display:block;background:#0b0f19"></iframe>
   </div>
   <script>
   var _gpsFrameInit = false;
+  function gpsFrameTab(t){
+    var f = document.getElementById('gps-frame');
+    if(!f || !f.dataset.src) return;
+    try { f.contentWindow.postMessage('tab:' + t, '*'); } catch(e) {}
+    var m = document.getElementById('gps-tab-map'), v = document.getElementById('gps-tab-vid');
+    if(m) m.classList.toggle('primary', t === 'gps');
+    if(v) v.classList.toggle('primary', t === 'video');
+  }
   function initGpsFrame(){
     var f = document.getElementById('gps-frame');
     if(!f) return;
@@ -1441,6 +1497,7 @@ body.auth-locked .auth-overlay { display: flex; }
     var url = uiBase + '/' + (tok ? '?token=' + encodeURIComponent(tok) : '');
     f.dataset.src = url;
     f.src = url;
+    var m = document.getElementById('gps-tab-map'); if(m) m.classList.add('primary');
     var k = document.getElementById('gps-kicker');
     fetch(apiBase + '/api/gps/health').then(function(r){ return r.json(); }).then(function(h){
       if (k && h && h.ok) k.textContent = 'GPS servis: online — TCP ' + h.tcp_port;
@@ -1902,7 +1959,11 @@ body.auth-locked .auth-overlay { display: flex; }
 
       <!-- DISK PAGE -->
       <section class="page" id="page-disk" data-page-view="disk">
-        <div class="page-hero"><div><div class="eyebrow">STORAGE</div><h2>Disk holati</h2><p>Papkalar, baza hajmi va 30 kunlik o'sish tendensiyasi — qo'lda tekshirib o'tirish shart emas.</p></div></div>
+        <div class="page-hero"><div><div class="eyebrow">STORAGE</div><h2>Disk holati</h2><p>Server diski, xotira va yuklama, papkalar hamda baza hajmi — qo'lda tekshirib o'tirish shart emas.</p></div></div>
+        <section class="panel" style="margin-bottom:14px">
+          <div class="section-head"><div><div class="eyebrow">SERVER</div><h2>Server holati</h2></div><span class="hint" id="disk-host"></span></div>
+          <div style="padding:0 18px 18px" id="disk-server"><div class="hint">Yuklanmoqda…</div></div>
+        </section>
         <section class="panel" style="margin-bottom:14px">
           <div class="section-head"><div><div class="eyebrow">STORAGE</div><h2>Papkalar</h2></div><span class="hint" id="disk-updated"></span></div>
           <div style="padding:0 18px 18px" id="disk-folders"></div>
@@ -1960,6 +2021,19 @@ const state = { routes: [], names: {}, plates: {}, dnames: {}, lastData: null,
 
 function esc(x) {
   return String(x ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+/* onclick ichidagi JS satr (`'...'`) uchun xavfsiz qiymat (stored XSS dan himoya).
+   Backslash/qo'shtirnoq JS uchun escaped, qolgan belgilar HTML-entity —
+   double-quoted atributda foydalaniladi: onclick="f(' + escAttr(x) + ')". */
+function escAttr(x) {
+  return String(x ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/[\r\n]+/g, " ");
 }
 function qs() {
   const p = new URLSearchParams();
@@ -3132,7 +3206,7 @@ function renderVehicleDialog(d) {
     html += '<section class="form-panel"><h3>OXIRGI HAYDOVCHILAR (' + recentDrivers.length + ' ta)</h3>';
     html += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
     for (const dr of recentDrivers) {
-      html += '<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-deep);border-radius:8px;border:1px solid var(--line);cursor:pointer" onclick="showDriver(\'' + esc(dr.driver_id) + '\')">';
+      html += '<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-deep);border-radius:8px;border:1px solid var(--line);cursor:pointer" onclick="showDriver(\'' + escAttr(dr.driver_id) + '\')">';
       html += '<span style="font-size:16px">🚗</span>';
       html += '<div><div style="font-weight:700;font-size:13px">' + esc(dr.name) + '</div>';
       html += '<div style="font-size:10px;color:var(--muted)">ID: ' + esc(dr.driver_id) + '</div></div>';
@@ -3772,7 +3846,7 @@ const PAGE_META = {
   insights:{title:'AI tahlil',subtitle:'Haydovchilar va tizim tahlili',crumb:'AI TAHHLIL'},
   audit:{title:'Sayt ↔ Baza auditi',subtitle:'Tashqi sayt va lokal baza ma’lumotlarini taqqoslash',crumb:'DATA QUALITY'},
   myai:{title:'MyAI Agent',subtitle:'Multi-agent AI tizimi',crumb:'MYAI AGENT'},
-  gps:{title:'GPS Kuzatuv',subtitle:'Teltonika FMB920 qurilmalar — jonli xarita, traektoriya va qurilmalar boshqaruvi',crumb:'GPS TRACKING'},
+  gps:{title:'Kuzatuv',subtitle:'GPS xarita va video — Teltonika trackerlar (TCP 5027) hamda 4G kameralar (JT808/JT1078). Ichki "Xarita"/"Video" tab\'laridan almashtiring.',crumb:'KUZATUV'},
   video:{title:'Video Kuzatuv',subtitle:'HLS/RTSP kameralar — avtobus va obyekt kameralarini real vaqtda kuzatish',crumb:'CCTV'},
   sms:{title:'Haydovchi SMS',subtitle:'Haydovchilarga yuborilgan SMSlar jurnali',crumb:'SMS'},
   admin:{title:'Ma\'muriy bo\'lim',subtitle:'Oylik ish haqi hisobi, avans to\'lovlari va yuklab olish',crumb:'ADMIN'},
@@ -3788,6 +3862,7 @@ function showPage(name, updateHash=true){
   if (!hasPage(name)) name='overview';
   document.querySelectorAll('[data-page-view]').forEach(p=>p.classList.toggle('active-page',p.dataset.pageView===name));
   document.querySelectorAll('#main-nav a[data-page]').forEach(a=>a.classList.toggle('active',a.dataset.page===name));
+  if(window.openActiveNavGroup) try{ openActiveNavGroup(); }catch(e){}
   const m=PAGE_META[name];
   document.getElementById('page-title').textContent=m.title;
   document.getElementById('page-subtitle').textContent=m.subtitle;
@@ -3819,10 +3894,40 @@ function showPage(name, updateHash=true){
 /* ---- Disk holati (storage panel) ---- */
 function _fmtGB(b){ return b >= 1073741824 ? (b/1073741824).toFixed(2)+" GB" : (b/1048576).toFixed(1)+" MB"; }
 function _diskColor(bytes){ return bytes > 524288000 ? "var(--danger,#e5484d)" : (bytes > 104857600 ? "var(--warn)" : "var(--teal)"); }
+function _gaugeColor(pct){ pct = Number(pct)||0; return pct >= 90 ? "var(--danger,#e5484d)" : (pct >= 75 ? "var(--warn)" : "var(--teal)"); }
+function _fmtUptime(sec){
+  sec = Math.floor(Number(sec)||0);
+  const d = Math.floor(sec/86400), h = Math.floor((sec%86400)/3600), m = Math.floor((sec%3600)/60);
+  return (d ? d+" kun " : "") + h + " soat " + m + " daq";
+}
+function _barRow(label, val, pct, color){
+  const p = Math.max(0, Math.min(100, Number(pct)||0));
+  return `<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px"><span>${label}</span><span style="font-family:'IBM Plex Mono',monospace">${val}</span></div><div style="height:8px;background:var(--bg-deep);border-radius:4px;overflow:hidden"><div style="width:${p}%;height:100%;background:${color}"></div></div></div>`;
+}
+function _renderServer(srv){
+  const el = document.getElementById("disk-server");
+  if (!el) return;
+  srv = srv || {};
+  const disk = srv.disk || {}, mem = srv.memory || {}, cpu = srv.cpu || {};
+  const hostEl = document.getElementById("disk-host");
+  if (hostEl) hostEl.textContent = srv.host ? srv.host : "";
+  const diskVal = disk.total ? `${_fmtGB(disk.used)} / ${_fmtGB(disk.total)}  (${_fmtGB(disk.free)} bo'sh)` : "—";
+  const ramVal = mem.total ? `${_fmtGB(mem.used)} / ${_fmtGB(mem.total)}` : "—";
+  const loadVal = (cpu.load1 != null) ? `${cpu.load1} · ${cpu.load5} · ${cpu.load15}` : "—";
+  el.innerHTML =
+    _barRow("Disk (server)", diskVal, disk.percent, _gaugeColor(disk.percent)) +
+    _barRow("Xotira (RAM)", ramVal, mem.percent, _gaugeColor(mem.percent)) +
+    `<div style="display:flex;flex-wrap:wrap;gap:22px;font-size:12px;color:var(--muted)">`+
+      `<span>CPU yadro: <b style="color:var(--ink)">${cpu.cores || "—"}</b></span>`+
+      `<span>Yuklama (1/5/15 daq): <b style="color:var(--ink);font-family:'IBM Plex Mono',monospace">${loadVal}</b></span>`+
+      `<span>Ishlash vaqti: <b style="color:var(--ink)">${_fmtUptime(srv.uptime_s)}</b></span>`+
+    `</div>`;
+}
 async function loadDisk(){
   try {
     const d = await api("/api/disk");
     if (!d.ok) throw new Error(d.error || "Xatolik");
+    _renderServer(d.server);
     const rows = d.folders.map(f => {
       const pct = d.total_bytes ? Math.round(f.bytes*100/d.total_bytes) : 0;
       return `<tr><td>${f.name}</td><td style="font-family:'IBM Plex Mono',monospace">${f.files}</td>`+
@@ -4067,8 +4172,8 @@ async function loadCompanies() {
         + '<div style="display:flex;gap:6px;align-items:center">'
         + '<input class="input" id="cu-' + esc(c.name) + '" style="width:140px;padding:5px 8px;font-size:11px" placeholder="Username" value="' + esc(c.username || '') + '">'
         + '<input class="input" id="cp-' + esc(c.name) + '" style="width:140px;padding:5px 8px;font-size:11px" placeholder="Password" type="password" value="">'
-        + '<button class="button ghost" style="font-size:11px;padding:5px 10px" onclick="saveCompanyCreds(\'' + esc(c.name) + '\')">SAQLASH</button>'
-        + '<button class="button ghost" style="font-size:11px;padding:5px 10px;border-color:rgba(239,68,68,.4);color:#ef4444" onclick=\'deleteCompany("' + esc(c.name).replace(/'/g, "&#39;") + '")\'>O\'CHIRISH</button>'
+        + '<button class="button ghost" style="font-size:11px;padding:5px 10px" onclick="saveCompanyCreds(\'' + escAttr(c.name) + '\')">SAQLASH</button>'
+        + '<button class="button ghost" style="font-size:11px;padding:5px 10px;border-color:rgba(239,68,68,.4);color:#ef4444" onclick="deleteCompany(\'' + escAttr(c.name) + '\')">O\'CHIRISH</button>'
         + '</div></div>';
     }
     h += '</div>';
@@ -5336,7 +5441,7 @@ function renderBotUsers() {
       + '<td class="mono" style="text-align:center">' + (u.message_count || 0) + '</td>'
       + '<td style="text-align:center;white-space:nowrap">'
       + '<button class="button ghost" style="font-size:11px;padding:4px 8px;margin:0 2px" onclick="openUserDetail(' + u.chat_id + ')">Batafsil</button>'
-      + '<button class="button ghost" style="font-size:11px;padding:4px 8px;margin:0 2px;color:var(--red)" onclick="deleteBotUser(' + u.chat_id + ',\'' + esc(u.first_name||'') + '\')">O\'chirish</button>'
+      + '<button class="button ghost" style="font-size:11px;padding:4px 8px;margin:0 2px;color:var(--red)" onclick="deleteBotUser(' + u.chat_id + ',\'' + escAttr(u.first_name||'') + '\')">O\'chirish</button>'
       + '</td></tr>';
   }
   h += '</tbody></table>';
@@ -6172,7 +6277,7 @@ async function loadDispatcherRoutes(chatId) {
       const ph = r.phone || '';
       return '<div style="display:flex;align-items:center;gap:8px;padding:4px 8px;background:var(--bg);border:1px solid var(--line);border-radius:6px;margin-bottom:4px;font-size:12px">'
         + '<span style="flex:1">' + esc(nm) + (ph ? ' <span style="color:var(--muted)">· ' + esc(ph) + '</span>' : '') + '</span>'
-        + '<button class="button ghost" style="font-size:10px;padding:2px 8px;color:var(--red)" onclick="removeDispatcherRoute(' + chatId + ',\'' + esc(r.route_id || '') + '\')">Olib tashlash</button>'
+        + '<button class="button ghost" style="font-size:10px;padding:2px 8px;color:var(--red)" onclick="removeDispatcherRoute(' + chatId + ',\'' + escAttr(r.route_id || '') + '\')">Olib tashlash</button>'
         + '</div>';
     }).join('');
   } catch(e) {
@@ -6280,6 +6385,19 @@ async function deleteBotUser(chatId, name) {
 }
 
 document.querySelectorAll('#main-nav a[data-page]').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();showPage(a.dataset.page)}));
+/* ---- nav akkordeon: bo'limga bosilsa ochiladi/yopiladi, holat saqlanadi ---- */
+function _navGroupState(){ try{ return JSON.parse(localStorage.getItem('bm-nav-groups')||'{}'); }catch(e){ return {}; } }
+function _saveNavGroup(key,open){ try{ var st=_navGroupState(); st[key]=open; localStorage.setItem('bm-nav-groups',JSON.stringify(st)); }catch(e){} }
+function restoreNavGroups(){ var st=_navGroupState(); document.querySelectorAll('#main-nav .nav-group').forEach(function(g){ if(st[g.dataset.group]) g.classList.add('open'); }); }
+function openActiveNavGroup(){ var a=document.querySelector('#main-nav a.active'); if(a){ var g=a.closest('.nav-group'); if(g) g.classList.add('open'); } }
+document.querySelectorAll('#main-nav .nav-group-head').forEach(function(h){
+  h.addEventListener('click',function(){
+    var g=h.closest('.nav-group'); if(!g) return;
+    var open=g.classList.toggle('open');
+    _saveNavGroup(g.dataset.group,open);
+  });
+});
+restoreNavGroups();
 document.addEventListener('click',e=>{const j=e.target.closest('[data-jump]');if(j)showPage(j.dataset.jump)});
 window.addEventListener('hashchange',()=>showPage(getPageFromHash(),false));
 showPage(getPageFromHash(),false);
@@ -6401,6 +6519,11 @@ function applyAccessUI() {
   if (badge) badge.style.display = me ? "flex" : "none";
   document.querySelectorAll("#main-nav a[data-page]").forEach(a => {
     a.classList.toggle("nav-hidden", !hasPage(a.dataset.page));
+  });
+  // Guruh: ichidagi barcha havolalar yashirin bo'lsa, guruhni ham yashir.
+  document.querySelectorAll("#main-nav .nav-group").forEach(function (g) {
+    var vis = g.querySelectorAll("a[data-page]:not(.nav-hidden)").length;
+    g.classList.toggle("nav-hidden", vis === 0);
   });
   document.querySelectorAll(".fin-block").forEach(el => {
     el.classList.toggle("nav-hidden", myRank() < 2);

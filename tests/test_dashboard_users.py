@@ -1406,7 +1406,7 @@ def test_export_settings_tariffs_admin_only(env, monkeypatch):
     """Global sozlamalar/barcha firma tariflari eksporti - faqat ADMIN."""
     calls = []
 
-    def fake_export(params):
+    def fake_export(params, allow_financial=True):
         calls.append(params)
         return None
 

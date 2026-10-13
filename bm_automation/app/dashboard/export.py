@@ -548,7 +548,7 @@ def export_csv(filters: dict, scope: str = "trips") -> bytes:
     return buf.getvalue().encode("utf-8-sig")
 
 
-def export_xlsx(filters: dict, scope: str = "trips") -> bytes:
+def export_xlsx(filters: dict, scope: str = "trips", allow_financial: bool = True) -> bytes:
     from openpyxl import Workbook
 
     met = m.Metrics()
@@ -561,9 +561,10 @@ def export_xlsx(filters: dict, scope: str = "trips") -> bytes:
         ws.append([k, v])
 
     if scope == "all":
-        scopes = ["today", "routes", "vehicles", "drivers", "trips",
-                  "distance", "schedule", "attendance", "rating",
-                  "electricity", "rejects", "tabel"]
+        scopes = _filter_financial(
+            ["today", "routes", "vehicles", "drivers", "trips", "distance",
+             "schedule", "attendance", "rating", "electricity", "rejects",
+             "tabel"], allow_financial)
     else:
         scopes = [scope]
 
@@ -579,7 +580,7 @@ def export_xlsx(filters: dict, scope: str = "trips") -> bytes:
     return buf.getvalue()
 
 
-def export_xls(filters: dict, scope: str = "trips") -> bytes:
+def export_xls(filters: dict, scope: str = "trips", allow_financial: bool = True) -> bytes:
     """Excel 97-2003 (.xls) — xlwt orqali."""
     import xlwt
 
@@ -595,9 +596,10 @@ def export_xls(filters: dict, scope: str = "trips") -> bytes:
         row += 1
 
     if scope == "all":
-        scopes = ["today", "routes", "vehicles", "drivers", "trips",
-                  "distance", "schedule", "attendance", "rating",
-                  "electricity", "rejects", "tabel"]
+        scopes = _filter_financial(
+            ["today", "routes", "vehicles", "drivers", "trips", "distance",
+             "schedule", "attendance", "rating", "electricity", "rejects",
+             "tabel"], allow_financial)
     else:
         scopes = [scope]
 
@@ -615,7 +617,7 @@ def export_xls(filters: dict, scope: str = "trips") -> bytes:
     return buf.getvalue()
 
 
-def export_pdf(filters: dict, scope: str = "trips") -> bytes:
+def export_pdf(filters: dict, scope: str = "trips", allow_financial: bool = True) -> bytes:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -625,8 +627,9 @@ def export_pdf(filters: dict, scope: str = "trips") -> bytes:
     f = _expand_period(met, m.parse_filters(filters))
 
     if scope == "all":
-        scopes = ["today", "routes", "vehicles", "drivers", "trips",
-                  "distance", "schedule", "attendance", "rating"]
+        scopes = _filter_financial(
+            ["today", "routes", "vehicles", "drivers", "trips", "distance",
+             "schedule", "attendance", "rating"], allow_financial)
     else:
         scopes = [scope]
 
@@ -665,17 +668,20 @@ def export_pdf(filters: dict, scope: str = "trips") -> bytes:
     return buf.getvalue()
 
 
-def build_export(filters: dict, format: str, scope: str = "trips") -> bytes:
+def build_export(filters: dict, format: str, scope: str = "trips",
+                 allow_financial: bool = True) -> bytes:
     """Umumiy eksport: csv | xls | xlsx | pdf."""
     fmt = (format or "csv").lower()
+    if not allow_financial and scope in _FINANCIAL_SCOPES:
+        raise ValueError("Sizda bu bo'limga ruxsat yo'q")
     if fmt == "csv":
         return export_csv(filters, scope)
     if fmt == "xls":
-        return export_xls(filters, scope)
+        return export_xls(filters, scope, allow_financial)
     if fmt == "xlsx":
-        return export_xlsx(filters, scope)
+        return export_xlsx(filters, scope, allow_financial)
     if fmt == "pdf":
-        return export_pdf(filters, scope)
+        return export_pdf(filters, scope, allow_financial)
     raise ValueError(f"format: csv | xls | xlsx | pdf (berildi: {format})")
 
 
@@ -702,12 +708,25 @@ _VALID_SCOPES = {"trips", "today", "routes", "vehicles", "drivers", "all",
                  "distance", "schedule", "attendance", "rating", "electricity",
                  "rejects", "tabel", "settings", "tariffs", "brutto"}
 
+# Moliyaviy/cheklangan bo'limlar — DISPATCHER (rank < 2) ko'ra olmaydi.
+_FINANCIAL_SCOPES = {"drivers", "brutto", "tariffs", "settings",
+                     "electricity", "rejects"}
 
-def run_export(params: dict) -> dict:
+
+def _filter_financial(scopes: list[str], allow_financial: bool) -> list[str]:
+    """`all` eksportidagi moliyaviy sahifalarni ruxsatsizga olib tashlaydi."""
+    if allow_financial:
+        return scopes
+    return [s for s in scopes if s not in _FINANCIAL_SCOPES]
+
+
+def run_export(params: dict, allow_financial: bool = True) -> dict:
     """So'rov parametrlaridan eksport faylini quradi.
 
     Qaytaradi: `{"data", "content_type", "filename"}` yoki xato holatida
     `{"error", "status"}`. Router bu lug'atni HTTP javobiga aylantiradi.
+    `allow_financial=False` bo'lsa moliyaviy bo'limlar (drivers/brutto/...)
+    va `all` ichidagi moliyaviy sahifalar chiqarilmaydi.
     """
     p = params or {}
     fmt = (p.get("format") or "csv").lower()
@@ -716,10 +735,12 @@ def run_export(params: dict) -> dict:
         return {"error": "format noto'g'ri", "status": 400}
     if scope not in _VALID_SCOPES:
         return {"error": "scope noto'g'ri", "status": 400}
+    if not allow_financial and scope in _FINANCIAL_SCOPES:
+        return {"error": "Sizda bu bo'limga ruxsat yo'q", "status": 403}
     try:
         filters = {k: p[k] for k in ("date", "from", "to", "month", "route",
                                      "vehicle", "driver", "status") if p.get(k)}
-        data = build_export(filters, fmt, scope)
+        data = build_export(filters, fmt, scope, allow_financial=allow_financial)
     except Exception as exc:  # noqa: BLE001
         return {"error": str(exc), "status": 400}
     fname = filename(fmt, scope, p.get("date", "") or p.get("month", ""))

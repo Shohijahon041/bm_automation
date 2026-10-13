@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..utils.logger import get_logger
-from .deps import ensure_bootstrap_admin, _load_sessions, _SESSION_LOCK, _dashboard_token
+from .deps import ensure_bootstrap_admin, _load_sessions, _SESSION_LOCK, _dashboard_token, request_is_https
 
 log = get_logger("bm_automation.dashboard")
 
@@ -153,7 +153,8 @@ def create_app() -> FastAPI:
                 body = script + body
         resp = HTMLResponse(body)
         if dt and is_local:
-            resp.set_cookie("bm_token", dt, path="/", samesite="lax")
+            resp.set_cookie("bm_token", dt, path="/", samesite="lax",
+                            secure=request_is_https(request))
         return resp
 
     if WEB_DIR.exists():

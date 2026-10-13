@@ -13,6 +13,7 @@ from ..deps import (
     is_super_username, login_allowed, login_fail, login_success,
     resolve_scope, session_user, super_admin_names, verify_password,
     _ROLE_RANK, _session_token_from_request, _dashboard_token,
+    request_is_https,
 )
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -55,7 +56,8 @@ async def login(body: LoginRequest, request: Request, response: Response):
     from fastapi.responses import JSONResponse as _JR
     result = _JR({"ok": True, "username": username, "role": role, "company": company})
     result.set_cookie("bm_session", token, path="/", httponly=True,
-                      samesite="lax", max_age=12 * 3600)
+                      samesite="lax", secure=request_is_https(request),
+                      max_age=12 * 3600)
     return result
 
 

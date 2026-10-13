@@ -773,6 +773,74 @@ def _db_disk_info() -> dict:
             "history": history, "history_path": hist_path, "today": today}
 
 
+def _proc_meminfo() -> dict:
+    """Linux ``/proc/meminfo`` dan qiymatlarni baytda qaytaradi."""
+    info: dict = {}
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as fh:
+            for line in fh:
+                key, _, rest = line.partition(":")
+                parts = rest.strip().split()
+                if parts and parts[0].isdigit():
+                    info[key.strip()] = int(parts[0]) * 1024
+    except OSError:
+        return {}
+    return info
+
+
+def _proc_uptime_s() -> int:
+    """Linux ``/proc/uptime`` dan ishlash vaqtini (sekund) qaytaradi."""
+    try:
+        with open("/proc/uptime", "r", encoding="utf-8") as fh:
+            return int(float(fh.read().split()[0]))
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def _server_status() -> dict:
+    """Server (OS) holati: disk, xotira, yuklama va ishlash vaqti.
+
+    Dashboard serverning o'zida ishlaydi, shuning uchun bu yerda ko'rsatilgan
+    qiymatlar aynan serverning haqiqiy holati (root fayl tizimi, RAM, load).
+    """
+    import shutil
+    import socket
+
+    out: dict = {"host": "", "disk": {}, "memory": {}, "cpu": {},
+                 "uptime_s": 0}
+    try:
+        out["host"] = socket.gethostname()
+    except OSError:
+        pass
+    try:
+        du = shutil.disk_usage(os.getcwd())
+        out["disk"] = {
+            "total": du.total, "used": du.used, "free": du.free,
+            "percent": round(du.used * 100 / du.total, 1) if du.total else 0.0,
+        }
+    except OSError:
+        pass
+    mem = _proc_meminfo()
+    if mem.get("MemTotal"):
+        total = mem["MemTotal"]
+        avail = mem.get("MemAvailable", mem.get("MemFree", 0))
+        used = max(total - avail, 0)
+        out["memory"] = {
+            "total": total, "used": used, "free": avail,
+            "percent": (round(used * 100 / total, 1) if total else 0.0),
+        }
+    cpu: dict = {"cores": os.cpu_count() or 0}
+    try:
+        load = os.getloadavg()
+        cpu.update({"load1": round(load[0], 2), "load5": round(load[1], 2),
+                    "load15": round(load[2], 2)})
+    except (OSError, AttributeError):
+        pass
+    out["cpu"] = cpu
+    out["uptime_s"] = _proc_uptime_s()
+    return out
+
+
 def _disk_usage() -> dict:
     folders = [
         ("reports/", "Generatsiya chiqishlari (30 kun TTL bilan tozalanadi)"),
@@ -806,5 +874,5 @@ def _disk_usage() -> dict:
         "ok": True, "folders": items, "total_bytes": total,
         "total_note": f"+ DB {db.get('size_pretty', '?')} alohida (Docker volume)",
         "daily_growth_bytes": db.get("daily_growth_bytes") or 0,
-        "db": db, "db_trend": trend,
+        "db": db, "db_trend": trend, "server": _server_status(),
     }

@@ -368,6 +368,21 @@ def _is_loopback(request: Request) -> bool:
     return host in ("127.0.0.1", "::1", "localhost") or host.startswith("127.") or "::ffff:127." in host
 
 
+def request_is_https(request: Request) -> bool:
+    """So'rov HTTPS orqali kelganmi (reverse-proxy `X-Forwarded-Proto`ni ham hisobga oladi).
+
+    Cookie'ga `Secure` bayrog'ini faqat TLS bo'lganda qo'yish uchun ishlatiladi
+    (plain HTTP'da qo'yilsa login buziladi).
+    """
+    try:
+        if request.url.scheme == "https":
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    return proto == "https"
+
+
 async def resolve_scope(
     request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),

@@ -212,14 +212,18 @@ def api_check(request: Request, scope: dict = Depends(Scope())):
 def api_export(request: Request, scope: dict = Depends(Scope())):
     # SYNC endpoint: run_export BM API (requests) ni bloklovchi chaqiradi.
     from .. import export as ex
+    from ..deps import _ROLE_RANK
     params = _parse_qs(request)
     params = force_route(scope, "/api/export", params)
-    if not scope.get("is_admin"):
+    is_admin = bool(scope.get("is_admin"))
+    rank = _ROLE_RANK.get(scope.get("role") or "VIEWER", 0)
+    allow_financial = is_admin or rank >= 2
+    if not is_admin:
         escope = (params.get("scope") or "trips").lower()
         if escope in ("settings", "tariffs"):
             raise HTTPException(403, "Sizda bu bo'limga ruxsat yo'q")
     try:
-        result = ex.run_export(params)
+        result = ex.run_export(params, allow_financial=allow_financial)
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(
             {"ok": False, "error": f"Eksport bajarilmadi: {exc}"},
