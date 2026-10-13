@@ -1386,7 +1386,7 @@ def settings_text(chat_id: int | None) -> str:
         f"  ADMIN: {admins} ta",
         f"  DISPATCHER: {dispatchers} ta",
         f"  FIRMA BOSHQARUVCHI: {managers} ta",
-        f"  Boshqalar: VIEWER (standart)" if not open_mode else "  Ochiq rejim (hamma ADMIN)",
+        f"  Boshqalar: VIEWER (standart)" if not open_mode else "  Ochiq rejim (VIEWER standart)",
         "",
         "Sizga ochiq kompaniyalar:",
         f"  {owned_txt}",

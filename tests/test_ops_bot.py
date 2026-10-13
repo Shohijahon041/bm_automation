@@ -81,10 +81,10 @@ def met(storage):
 
 # ------------------------------------------------------------------- roles
 
-def test_no_config_everyone_admin(monkeypatch):
+def test_no_config_defaults_viewer(monkeypatch):
     monkeypatch.setattr(roles, "telegram_settings", lambda: _tg())
-    assert resolve_role(123) is Role.ADMIN
-    assert resolve_role(None) is Role.ADMIN
+    assert resolve_role(123) is Role.VIEWER
+    assert resolve_role(None) is Role.VIEWER
 
 
 def test_legacy_chat_id_is_admin(monkeypatch):

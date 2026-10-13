@@ -10,10 +10,12 @@ Manba: joriy kun ``schedules`` (BM duty grafikalar — data'dagi
   - LUNCH            -> obed (tanaffus): arriveTime (yetib kelish) asos.
 
 Yuborish vaqti: reys chiqishidan (yoki obed yetib kelishidan) ~40
-SONIYA KEYIN. 40 soniyalik tekshiruv siklida o'tib ketmaslik uchun oyna
-kengligi 45 s. Kun rejasi kuniga bir marta (silent refresh token bilan)
-API'dan yuklanib ``state/group_departures.json`` ga saqlanadi; har bir
-eslatma holat faylida belgilanadi — restart'da takroriy spam bo'lmaydi.
+SONIYA KEYIN. Tekshiruv sikli 40s, lekin getUpdates long-poll (50s) uni
+kechiktirishi mumkin — shuning uchun oyna 5 daqiqa (o'tib ketgan hodisalar
+ham `sent` belgisi tufayli bir marta yuboriladi). Kun rejasi kuniga bir
+marta (silent refresh token bilan) API'dan yuklanib
+`state/group_departures.json` ga saqlanadi; har bir eslatma holat faylida
+belgilanadi — restart'da takroriy spam bo'lmaydi.
 
 Holat `state/group_departures.json`:
   {"date": "YYYY-MM-DD", "build_at": "HH:MM",
@@ -47,6 +49,10 @@ STATE_FILE = Path("state") / "group_departures.json"
 
 # "barchasi 40 sekund keyin jo'natilsin, soatga qarab" — 40 soniyalik sikl.
 _CHECK_INTERVAL_S = 40.0
+# O'tkazib yuborilgan hodisalarni qamrab oluvchi oyna: getUpdates long-poll
+# (50s) tufayli tekshiruv kechiksa ham eslatma yo'qolmasin (sent belgisi
+# orqali takroriy yuborishdan saqlanadi).
+_DUE_WINDOW_S = 300.0
 # Kunlik reja yuklashdagi parallel so'rovlar (grafik soniga qarab).
 _FETCH_WORKERS = 8
 
@@ -450,16 +456,17 @@ def _plan_for(storage) -> dict:
 def _due_items(plan: dict, now_sec: int) -> dict[str, list[dict]]:
     """Chiqish (reys) yoki yetib kelish (obed) vaqtidan ~40 SONIYA KEYIN.
 
-    Haydovchilar ketish vaqtidan 40 soniya keyin ogohlantiriladi — xabar
-    ketish bo'lgandan so'ng guruhga boradi. 40 soniyalik tekshiruv siklida
-    o'tib ketmaslik uchun oyna kengligi 45 s.
+    Haydovchilar ketish vaqtidan 40 soniya keyin ogohlantiriladi. Tekshiruv
+    siklidan (40s) tashqari getUpdates long-poll (50s) kechiktirishi mumkin,
+    shuning uchun oyna `_DUE_WINDOW_S` (5 daqiqa) — o'tib ketgan, lekin hali
+    `sent`da yo'q hodisalar ham qamrab olinadi (takror yuborilmaydi).
 
     Qaytish: chiqish daqiqasi (HH:MM) -> o'sha daqiqadagi elementlar.
     """
     by_hhmm: dict[str, list[dict]] = {}
     for it in plan.get("items", []):
         trigger = (it.get("sec") or 0) + 40  # asosiydan 40 soniya keyin
-        if 0 <= now_sec - trigger <= 45:
+        if 0 <= now_sec - trigger <= _DUE_WINDOW_S:
             by_hhmm.setdefault(it.get("hhmm") or "", []).append(it)
     return by_hhmm
 
@@ -501,8 +508,10 @@ def _send_once() -> None:
 
     state = plan
     already = set(state.get("sent", []))
-    sent_keys = []
-    send_plan: list[tuple[str, str]] = []  # (chat_id, text)
+    sent_keys: list[str] = []
+    # (chat_id'lar, matn, kalitlar) — kalitlar faqat kamida bitta chat'ga
+    # muvaffaqiyatli yuborilgandan keyin `sent`ga qo'shiladi.
+    send_plan: list[tuple[list[str], str, list[str]]] = []
     for dep_hhmm, items in due.items():
         # Chiqish daqiqasi ichida reys/obed bo'yicha ajratamiz.
         by_kind: dict[str, list[dict]] = {}
@@ -529,19 +538,22 @@ def _send_once() -> None:
                 if not fresh:
                     continue
                 text = _build_message(kind, dep_hhmm, fresh)
-                for cid in chat_ids:
-                    send_plan.append((str(cid), text))
-                sent_keys.extend(
-                    f"{state['date']}|{it['key']}|{it['hhmm']}|{it['kind']}"
-                    for it in fresh)
+                keys = [f"{state['date']}|{it['key']}|{it['hhmm']}|{it['kind']}"
+                        for it in fresh]
+                send_plan.append(([str(c) for c in chat_ids], text, keys))
     if not send_plan:
         return
 
-    for cid, text in send_plan:
-        try:
-            send_message(text, chat_id=cid)
-        except Exception as exc:  # noqa: BLE001 - qolgan guruhlar yuboriladi
-            print(f"Chiqish vaqti eslatmasi yuborilmadi [{cid}]: {exc}")
+    for chat_ids, text, keys in send_plan:
+        ok = False
+        for cid in chat_ids:
+            try:
+                send_message(text, chat_id=cid)
+                ok = True
+            except Exception as exc:  # noqa: BLE001 - qolgan guruhlar yuboriladi
+                print(f"Chiqish vaqti eslatmasi yuborilmadi [{cid}]: {exc}")
+        if ok:
+            sent_keys.extend(keys)
 
     # Eng yangi faylni ochib yuborilganlarni qo'shamiz — fon thread'dagi
     # /chiqish_on|off yozuvlari (on/off) o'chmaydi.

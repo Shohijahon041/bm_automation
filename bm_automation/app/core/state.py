@@ -84,6 +84,33 @@ def _pid_alive(pid: int) -> bool:
         kernel32.CloseHandle(h)
 
 
+def _pid_is_bot(pid: int) -> bool:
+    """PID haqiqatan bot jarayoniga tegishlimi?
+
+    Windowsda eskirgan PID boshqa dasturga (masalan wsl.exe) qayta
+    berilishi mumkin — shunda `_pid_alive` True bo'lib, bot o'z-o'zidan
+    ishga tushmasligi mumkin. Shuning uchun command line'da bot izi
+    qidiramiz; topilmasa eskirgan lock deb hisoblaymiz.
+    """
+    if os.name != "nt":
+        return _pid_alive(pid)
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"(Get-CimInstance Win32_Process -Filter \"ProcessId={int(pid)}\" "
+             f"-ErrorAction SilentlyContinue).CommandLine"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout or ""
+    except Exception:
+        # Tekshiruv imkonsiz bo'lsa — eskirgan deb hisoblamaymiz (lock
+        # yopilib qolmasligi kerak), lekin tirik jarayonni ham o'tkazib
+        # yubormaymiz: _pid_alive bilan qo'shimcha tekshiriladi.
+        return _pid_alive(pid)
+    low = out.lower()
+    return ("bm_automation" in low) and ("bot" in low or "watchdog" in low)
+
+
 def acquire_lock() -> bool:
     """Boshqa bot nusxasi ishlayotgan bo'lsa False qaytaradi."""
     try:
@@ -92,9 +119,9 @@ def acquire_lock() -> bool:
             try:
                 raw = PID_FILE.read_text().strip()
                 pid = int(raw.split("|")[0])
-                if _pid_alive(pid):
+                if _pid_alive(pid) and _pid_is_bot(pid):
                     return False     # jonli nusxa bor — egallab olinmaydi
-                return _write_lock()  # vafot etgan — qayta egallash
+                return _write_lock()  # vafot etgan/PID qayta berilgan
             except (ValueError, OSError):
                 return _write_lock()
             except Exception:

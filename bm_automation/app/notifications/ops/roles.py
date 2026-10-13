@@ -212,14 +212,16 @@ def resolve_role(chat_id: int | None) -> Role:
     chat_id = int(chat_id) if chat_id is not None else 0
     roles = configured_roles()
     if not roles:
-        # Env sozlanmagan bo'lsa ham tayinlangan rol / haydovchi hurmat qilinadi
+        # Env sozlanmagan bo'lsa ham tayinlangan rol / haydovchi hurmat qilinadi.
+        # Aks holda xavfsiz default (odatda VIEWER) — hamma ADMIN bo'lib qolmasin.
         assigned = stored_role(chat_id)
         if assigned:
             return assigned
         driver_role = _resolve_driver_role(chat_id)
         if driver_role:
             return driver_role
-        return Role.ADMIN
+        default = (telegram_settings().get("default_role") or "viewer").upper()
+        return Role(default) if default in Role.__members__ else Role.VIEWER
     if chat_id in roles:
         return roles[chat_id]
     # Admin tayinlagan rol (only if chat_id not in env) — runtime override
