@@ -46,14 +46,14 @@ MSG_PLAT_PLAYBACK_REQUEST = 0x9201  # yozuv (playback) oqimini so'rash
 MSG_PLAT_PLAYBACK_CONTROL = 0x9202
 MSG_PLAT_AV_RESOURCE_REQUEST = 0x9205  # xotiradagi yozuvlar ro'yxatini so'rash
 
-# 0x9202 boshqaruv bayti qiymatlari
-PB_CTRL_PAUSE = 0     # pauza
-PB_CTRL_RESUME = 1    # davom ettirish
-PB_CTRL_STOP = 2      # to'xtatish
-PB_CTRL_FAST_FWD = 3  # oldinga
-PB_CTRL_REWIND = 4    # orqaga
-PB_CTRL_KEY_FWD = 5   # kalit kadr oldinga
-PB_CTRL_KEY_REW = 6   # kalit kadr orqaga
+# 0x9202 boshqaruv bayti qiymatlari (JT/T 1078-2016 Table 25)
+PB_CTRL_PLAY = 0      # ijroni boshlash / pauzadan davom ettirish
+PB_CTRL_PAUSE = 1     # pauza
+PB_CTRL_STOP = 2      # ijroni tugatish
+PB_CTRL_FAST_FWD = 3  # tez oldinga
+PB_CTRL_REWIND = 4    # kalit kadr orqaga
+PB_CTRL_DRAG = 5      # belgilangan nuqtaga o'tish (drag)
+PB_CTRL_KEY_FWD = 6   # kalit kadr oldinga
 
 _HDR_2013 = 12   # msg_id(2)+attr(2)+phone(6)+seq(2)
 _HDR_2019 = 17   # msg_id(2)+attr(2)+ver(1)+phone(10)+seq(2)
@@ -64,6 +64,9 @@ _LOOP = None            # listener asyncio loop'i (HTTP API shu orqali buyruq yu
 _STATS = {"frames": 0, "locations": 0, "errors": 0, "started": None}
 # phone -> {"at": epoch, "items": [resurs, ...]} — oxirgi 0x1205 javobi
 _RESOURCES: dict = {}
+_RESOURCES_TTL = 3600.0        # sekund — eski ro'yxatni tashlab yuborish
+_RESOURCES_MAX_ITEMS = 5000    # telefon uchun maksimal yozuv (xotira chegarasi)
+_RESOURCES_MAX_PHONES = 200    # bir vaqtda keshlanadigan qurilmalar (FIFO)
 # phone -> qurilma identifikatsiyasi/parametrlari (0x0100 ro'yxat + 0x0104 javob):
 #   manufacturer, model, terminal_id, plate, imei, hw_version, fw_version,
 #   term_type, gnss, comm, reg_hex, at
@@ -300,7 +303,11 @@ def parse_resource_list(body: bytes) -> list:
 def resources(phone: str) -> dict:
     """Oxirgi 0x1205 javobi: {"at": epoch|0, "items": [...]}."""
     r = _RESOURCES.get(phone) or {}
-    return {"at": r.get("at", 0), "items": list(r.get("items") or [])}
+    at = r.get("at", 0)
+    if at and (datetime.now(timezone.utc).timestamp() - at) > _RESOURCES_TTL:
+        _RESOURCES.pop(phone, None)
+        return {"at": 0, "items": []}
+    return {"at": at, "items": list(r.get("items") or [])}
 
 
 def clear_resources(phone: str) -> None:
@@ -446,40 +453,119 @@ def connected_phones() -> list:
     return sorted(_CONNECTED.keys())
 
 
+# JT1078 media paketining boshlanish baytlari (protokol aniqlash uchun).
+_JT1078_FLAG = b"\x30\x31\x63\x64"
+# IP -> IMEI. Kamera qayta ulanganda log qatorida darhol qaysi qurilma
+# ekani ko'rinishi uchun (qurilma ro'yxatdan o'tish paketini darhol yubormaydi).
+_PEER_IMEI: dict = {}
+_PEER_IMEI_MAX = 500
+
+
+async def _peek(reader: asyncio.StreamReader, timeout: float = 60.0) -> bytes:
+    """Birinchi baytlarni kutib oladi — protokolni aniqlash uchun."""
+    try:
+        return await asyncio.wait_for(reader.read(4096), timeout=timeout)
+    except (asyncio.TimeoutError, ConnectionError, OSError):
+        return b""
+
+
 async def _handle(reader: asyncio.StreamReader,
                   writer: asyncio.StreamWriter) -> None:
+    """Yangi ulanish — birinchi paketga qarab protokolni aniqlab yo'naltiradi.
+
+    O'rnatishda qurilmada ba'zan FAQAT bitta "server port" maydoni bo'ladi va
+    u media port (6107) qilib qo'yiladi; bunda JT808 signaling paketlari
+    media listener'ga kelib e'tiborsiz qoladi (qurilma "oflayn" ko'rinadi).
+    Shu sababli ikkala listener ham to'g'ri protokolga o'zi o'tkazadi.
+    """
+    peer = writer.get_extra_info("peername")
+    # Diagnostika: ulanish qabul qilishning o'zidayoq yoziladi (qurilma jim
+    # tursa ham "urinish bo'ldimi?" shu qatordan ko'rinadi). Shu IP avval
+    # IMEI'ini ko'rsatgan bo'lsa, yorliqqa o'sha qo'shiladi.
+    log.info("JT808: yangi ulanish %s", _peer_label(peer, _known_imei(peer)))
+    first = await _peek(reader)
+    # Birinchi baytlar: protokol aniqlanmasa "qurilma nega oflayn?" savoliga
+    # javob shu yerda.
+    log.info("JT808: %s — birinchi %d bayt: %s",
+             _peer_label(peer, _known_imei(peer)), len(first), first[:16].hex())
+    if first[:4] == _JT1078_FLAG:
+        log.warning("JT808 portiga media (JT1078) paketi keldi %s — "
+                    "media listener'ga o'tkazildi",
+                    _peer_label(peer, _known_imei(peer)))
+        from . import jt1078  # aylanma importdan qochish uchun (lazy)
+        await jt1078.handle_session(reader, writer, first)
+        return
+    await handle_session(reader, writer, first)
+
+
+def _peer_label(peer, phone: str = "") -> str:
+    """Log yorlig'i: "ip:port IMEI=..." — qaysi qurilma ekani ko'rinsin."""
+    label = f"{peer[0]}:{peer[1]}" if peer else "?"
+    return f"{label} IMEI={phone}" if phone else label
+
+
+def _remember_peer(peer, phone: str) -> None:
+    """Ulanish manzilini (IP) IMEI bilan bog'lab qo'yish.
+
+    Qurilma qisqa-qisqa qayta ulanadi; birinchi ulanishda aniqlangan IMEI
+    keyingi "yangi ulanish" qatorida ham ko'rinsin (manzil porti o'zgaradi).
+    """
+    if not (peer and phone):
+        return
+    if len(_PEER_IMEI) >= _PEER_IMEI_MAX and peer[0] not in _PEER_IMEI:
+        # Uzoq ishlaydigan jarayonda cheksiz o'smasin (FIFO — eng eskisi chiqadi).
+        _PEER_IMEI.pop(next(iter(_PEER_IMEI)), None)
+    _PEER_IMEI[peer[0]] = phone
+
+
+def _known_imei(peer) -> str:
+    return _PEER_IMEI.get(peer[0], "") if peer else ""
+
+
+async def handle_session(reader: asyncio.StreamReader,
+                         writer: asyncio.StreamWriter,
+                         first: bytes = b"") -> None:
+    """JT808 sessiyasi. `first` — allaqachon o'qilgan boshlang'ich baytlar."""
     peer = writer.get_extra_info("peername")
     phone = ""
     version = 0
-    buf = b""
+    buf = first
     try:
         while True:
-            try:
-                chunk = await asyncio.wait_for(reader.read(4096), timeout=120)
-            except asyncio.TimeoutError:
-                break
-            if not chunk:
-                break
-            buf += chunk
+            # Avval buferdagi to'liq frame'lar ishlanadi (jumladan `first` —
+            # protokol o'tkazilganda birinchi paket kutib qolmasligi uchun).
             frames, buf = extract_frames(buf)
             for fr in frames:
                 _STATS["frames"] += 1
                 try:
                     m = parse_frame(fr)
                 except Jt808Error as exc:
-                    log.warning("JT808: yaroqsiz frame (%s): %s", peer, exc)
+                    log.warning("JT808: yaroqsiz frame (%s): %s",
+                                _peer_label(peer, phone), exc)
                     _STATS["errors"] += 1
                     continue
                 phone = m["phone"]
                 version = m["version"]
+                _remember_peer(peer, phone)
                 _CONNECTED[phone] = writer
                 _VERSION[phone] = version
                 _remember("in", phone, m["msg_id"], fr)
                 await _dispatch(writer, m)
+            try:
+                chunk = await asyncio.wait_for(reader.read(4096), timeout=120)
+            except asyncio.TimeoutError:
+                # Qurilma 120s jim turdi (heartbeat yo'q) yoki tarmoq uzildi —
+                # sabab logda ko'rinsin ("qurilma uzildi" ning sababi).
+                log.info("JT808: 120s data kelmadi (%s) — sessiya yopiladi",
+                         _peer_label(peer, phone))
+                break
+            if not chunk:
+                break
+            buf += chunk
     except (asyncio.IncompleteReadError, ConnectionResetError):
         pass
     except Exception:  # noqa: BLE001
-        log.exception("JT808: ulanishda xato (%s)", phone or peer)
+        log.exception("JT808: ulanishda xato (%s)", _peer_label(peer, phone))
     finally:
         if phone and _CONNECTED.get(phone) is writer:
             _CONNECTED.pop(phone, None)
@@ -489,8 +575,9 @@ async def _handle(reader: asyncio.StreamReader,
             await writer.wait_closed()
         except Exception:  # noqa: BLE001
             pass
-        if phone:
-            log.info("JT808: qurilma uzildi phone=%s", phone)
+        # Log har doim manba IP:port bilan — "qaysi qurilma uzildi?" savoliga
+        # phone yo'q bo'lsa ham javob bo'lsin.
+        log.info("JT808: qurilma uzildi %s", _peer_label(peer, phone))
 
 
 async def _dispatch(writer: asyncio.StreamWriter, m: dict) -> None:
@@ -563,6 +650,10 @@ async def _dispatch(writer: asyncio.StreamWriter, m: dict) -> None:
                 seen.add(k)
                 merged.append(it)
             merged.sort(key=lambda x: (x.get("start") or "", x.get("channel") or 0))
+            if len(merged) > _RESOURCES_MAX_ITEMS:
+                merged = merged[-_RESOURCES_MAX_ITEMS:]
+            if len(_RESOURCES) >= _RESOURCES_MAX_PHONES and phone not in _RESOURCES:
+                _RESOURCES.pop(next(iter(_RESOURCES)), None)
             _RESOURCES[phone] = {
                 "at": datetime.now(timezone.utc).timestamp(),
                 "items": merged,
@@ -650,15 +741,32 @@ async def stop_live_av(phone: str, channel: int = 1) -> bool:
 
 async def request_playback(phone: str, host: str, tcp_port: int,
                            start_bcd: bytes, end_bcd: bytes,
-                           channel: int = 1) -> bool:
+                           channel: int = 1, media_type: int = 0,
+                           stream_type: int = 0, memory_type: int = 0,
+                           method: int = 0, multiples: int = 0) -> bool:
     """0x9201: yozuv (playback) oqimini so'rash.
 
     Qurilma yozuvni O'Z xotirasidan shu serverga oqim sifatida yuboradi —
     serverga saqlanmaydi (faqat HLS segmentlar orqali jonli uzatiladi).
+
+    Tana (JT/T 1078-2016 Table 24): IP uzunligi(1) + IP(n) + TCP port(2,
+    ishlatilmasa 0) + UDP port(2) + kanal(1) + media turi(1: 0=audio+video)
+    + oqim turi(1: 0=asosiy/yordamchi) + xotira turi(1: 0=asosiy) +
+    ijro usuli(1: 0=normal) + tezlik ko'paytmasi(1: usul 1/2 bo'lsa
+    ahamiyatli, aks holda 0) + start BCD[6] + end BCD[6].
+
+    MUHIM: "fast forward/rewind multiples" bayti (10+n) MAJBURIY — usiz
+    qurilma start/end vaqtini bir baytga siljigan holda o'qib, hech qanday
+    yozuv topmaydi (0x1205 total=0 qaytaradi).
+
+    Ba'zi qurilmalar media/oqim/xotira turiga qat'iy qarab qo'yadi — shuning
+    uchun bu maydonlar sozlanadigan qilib qo'yilgan.
     """
     hb = (host or "").encode()
     body = (bytes([len(hb)]) + hb + struct.pack(">HH", tcp_port, 0)
-            + bytes([channel, 0, 0, 0, 1]) + start_bcd + end_bcd)
+            + bytes([channel & 0xFF, media_type & 0xFF, stream_type & 0xFF,
+                     memory_type & 0xFF, method & 0xFF, multiples & 0xFF])
+            + start_bcd + end_bcd)
     ok = await _send(phone, MSG_PLAT_PLAYBACK_REQUEST, body)
     if ok:
         log.info("JT808: 0x9201 yozuv so'rildi phone=%s ch=%s -> %s:%s",
@@ -759,9 +867,14 @@ def send_live_stop(phone: str, channel: int = 1) -> bool:
 
 
 def send_playback(phone: str, host: str, tcp_port: int,
-                  start_bcd: bytes, end_bcd: bytes, channel: int = 1) -> bool:
+                  start_bcd: bytes, end_bcd: bytes, channel: int = 1,
+                  media_type: int = 0, stream_type: int = 0,
+                  memory_type: int = 0, method: int = 0,
+                  multiples: int = 0) -> bool:
     return bool(_run_coro(
-        request_playback(phone, host, tcp_port, start_bcd, end_bcd, channel)))
+        request_playback(phone, host, tcp_port, start_bcd, end_bcd, channel,
+                         media_type, stream_type, memory_type, method,
+                         multiples)))
 
 
 def send_resource_list(phone: str, channel: int, start_bcd: bytes,

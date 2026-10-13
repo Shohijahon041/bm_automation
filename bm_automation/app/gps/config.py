@@ -90,6 +90,16 @@ JT1078_PLAYBACK_WINDOW_S = int(
 # ~1 fps yuboradi. OUT — chiqish HLS fps (past kirishni silliqlash uchun).
 JT1078_FPS_IN = os.environ.get("GPS_JT1078_FPS_IN", "1")
 JT1078_FPS_OUT = os.environ.get("GPS_JT1078_FPS_OUT", "5")
+# Audio: qurilma audio paketlarini (G.711A/U) HLS'ga AAC sifatida mux qilish.
+# 0 (standart) = o'chirilgan (faqat video) — kamera audio yuborsa ham tashlanadi.
+# 1 = audio ham qo'shiladi (ffmpeg'ga ikkinchi kirish quvuri orqali).
+JT1078_AUDIO = os.environ.get("GPS_JT1078_AUDIO", "0") in ("1", "true", "yes")
+# Qabul qilinadigan audio namuna chastotasi (G.711 odatda 8 kHz, mono).
+JT1078_AUDIO_RATE = int(os.environ.get("GPS_JT1078_AUDIO_RATE", "8000"))
+# ffmpeg stdin'iga yozuvchi navbat hajmi (access-unit soni). ffmpeg ulgurmasa
+# (kuchsiz VPS) navbat to'ladi va eng eski kadr tashlanadi — event loop
+# bloklanmaydi (ilgari bloklovchi yozuv butun serverni muzlatardi).
+JT1078_QUEUE_MAX = int(os.environ.get("GPS_JT1078_QUEUE_MAX", "24"))
 
 # ---- RTSP → HLS relay (ffmpeg) ----
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN", "ffmpeg")

@@ -27,6 +27,7 @@ class _Proc:
 def _reset():
     relay._procs.clear()
     relay._last_seen.clear()
+    relay._starts.clear()
     relay._cam_provider = None
 
 
@@ -108,3 +109,73 @@ def test_resolve_camera_uses_provider(monkeypatch):
     assert relay.resolve_camera(99) is None
     relay._cam_provider = None
     assert relay.resolve_camera(9) is None
+
+
+# ------------------------------------------- diagnostika (dashboard uchun)
+
+def test_status_reports_error_and_restarts(monkeypatch, tmp_path):
+    """Relay holati: ishlayaptimi, qayta ishga tushish soni, oxirgi xato."""
+    _reset()
+    monkeypatch.setattr(config, "HLS_DIR", str(tmp_path))
+    log = relay.relay_log_path(7)
+    log.write_bytes(b"[rtsp @ 0x1] method DESCRIBE failed: 401 Unauthorized\n")
+    relay._procs[7] = {"proc": _Proc(), "cam": {"id": 7}, "log": log,
+                       "since": time.time() - 30}
+    relay._starts[7] = 3
+    st = relay.status()["7"]
+    assert st["running"] is True and st["exit_code"] is None
+    assert st["restarts"] == 2
+    assert st["uptime_s"] >= 29
+    assert st["error"] == "[rtsp @ 0x1] method DESCRIBE failed: 401 Unauthorized"
+    assert st["hls"] == "/hls/cam7.m3u8"
+
+
+def test_status_reports_dead_relay(monkeypatch, tmp_path):
+    """O'lgan ffmpeg chiqish kodi bilan ko'rinadi (jimgina qolmaydi)."""
+    _reset()
+    monkeypatch.setattr(config, "HLS_DIR", str(tmp_path))
+    proc = _Proc()
+    proc.wait(timeout=1)
+    relay._procs[3] = {"proc": proc, "cam": {"id": 3}, "log": None,
+                       "since": time.time()}
+    st = relay.status()["3"]
+    assert st["running"] is False and st["exit_code"] == 0
+    assert st["error"] is None and st["restarts"] == 0
+
+
+def test_start_writes_ffmpeg_stderr_to_log(monkeypatch, tmp_path):
+    """Relay ffmpeg'i stderr'ni logga yozadi (aks holda xato yo'qoladi)."""
+    _reset()
+    monkeypatch.setattr(config, "HLS_DIR", str(tmp_path))
+    monkeypatch.setattr(relay, "ffmpeg_available", lambda: True)
+    captured = {}
+
+    def _popen(cmd, **kw):
+        captured.update(kw)
+        captured["cmd"] = cmd
+        return _Proc()
+
+    monkeypatch.setattr(relay.subprocess, "Popen", _popen)
+    relay._start({"id": 5, "url": "rtsp://cam/1", "name": "Test"})
+    log = relay.relay_log_path(5)
+    assert log.exists()                       # "wb" bilan yaratilgan
+    assert captured["stderr"] is not None
+    assert captured["stderr"] is not relay.subprocess.DEVNULL
+    assert relay._starts[5] == 1
+    st = relay.status()["5"]
+    assert st["running"] is True and st["restarts"] == 0
+
+
+def test_start_restarts_counted(monkeypatch, tmp_path):
+    """Relay o'lib qayta ko'tarilsa restart soni oshadi (beqarorlik belgisi)."""
+    _reset()
+    monkeypatch.setattr(config, "HLS_DIR", str(tmp_path))
+    monkeypatch.setattr(relay, "ffmpeg_available", lambda: True)
+    monkeypatch.setattr(config, "HLS_RELAY_ENABLED", True)
+    monkeypatch.setattr(config, "HLS_RELAY_MAX", 4)
+    monkeypatch.setattr(relay.subprocess, "Popen", lambda cmd, **kw: _Proc())
+    cam = {"id": 2, "url": "rtsp://cam/2", "source_type": "rtsp", "enabled": 1}
+    assert relay.ensure_for_camera(cam) is True
+    relay._procs[2]["proc"].wait(timeout=1)     # ffmpeg o'ldi
+    assert relay.ensure_for_camera(cam) is True  # qayta ko'tarildi
+    assert relay.status()["2"]["restarts"] == 1

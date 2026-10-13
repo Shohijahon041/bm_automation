@@ -415,16 +415,22 @@ class GpsHandler(BaseHTTPRequestHandler):
                 })
             elif path == "/api/video/jt-streams":
                 # JT1078 (CMSV6/4G) avtomatik aniqlangan jonli/yozuv oqimlari.
-                streams = jt1078.streams() if config.JT808_ENABLED else []
-                phones = jt808.connected_phones() if config.JT808_ENABLED else []
+                # Har bir oqim diagnostikasi bilan: kodek, audio, kadr/kalit kadr
+                # va oxirgi kalit kadr vaqti, restart soni, oxirgi xato.
+                enabled = config.JT808_ENABLED
+                streams = jt1078.streams() if enabled else []
+                phones = jt808.connected_phones() if enabled else []
                 self._json({
                     "ok": True,
-                    "enabled": config.JT808_ENABLED,
+                    "enabled": enabled,
                     "ffmpeg": jt1078.ffmpeg_available(),
+                    "audio_enabled": config.JT1078_AUDIO,
+                    "audio_rate": config.JT1078_AUDIO_RATE,
                     "media_host": config.JT1078_MEDIA_HOST,
                     "devices": phones,
                     "count": len(streams),
                     "streams": streams,
+                    "recent": jt1078.recent_streams() if enabled else [],
                 })
             elif path == "/api/video/jt-files":
                 # Qurilma xotirasidagi yozuvlar ro'yxati (oxirgi 0x1205 javobi).
@@ -682,8 +688,10 @@ class GpsHandler(BaseHTTPRequestHandler):
                         or config.JT1078_MEDIA_HOST)
                 if not host:
                     self._json({"ok": False,
-                                "error": "media host belgilanmagan "
-                                         "(JT1078_MEDIA_HOST)"}, 400)
+                                "error": "media host belgilanmagan: "
+                                         ".env ga JT1078_MEDIA_HOST=qurilma "
+                                         "internetdan yetadigan public IP "
+                                         "qo'shing (masalan 1.2.3.4)"}, 400)
                     return
                 channel = int(payload.get("channel") or 1)
                 stream_type = int(payload.get("stream_type") or 0)
@@ -748,14 +756,21 @@ class GpsHandler(BaseHTTPRequestHandler):
                         or config.JT1078_MEDIA_HOST)
                 if not host:
                     self._json({"ok": False,
-                                "error": "media host belgilanmagan "
-                                         "(JT1078_MEDIA_HOST)"}, 400)
+                                "error": "media host belgilanmagan: "
+                                         ".env ga JT1078_MEDIA_HOST=qurilma "
+                                         "internetdan yetadigan public IP "
+                                         "qo'shing (masalan 1.2.3.4)"}, 400)
                     return
                 channel = int(payload.get("channel") or 1)
                 start = jt808.iso_to_bcd6(str(payload.get("start") or ""))
                 end = jt808.iso_to_bcd6(str(payload.get("end") or ""))
                 ok = jt808.send_playback(phone, host, config.JT1078_TCP_PORT,
-                                         start, end, channel)
+                                         start, end, channel,
+                                         media_type=int(payload.get("media") or 0),
+                                         stream_type=int(payload.get("stream") or 0),
+                                         memory_type=int(payload.get("memory") or 0),
+                                         method=int(payload.get("method") or 0),
+                                         multiples=int(payload.get("multiples") or 0))
                 if ok:
                     jt1078.set_playback(phone, channel)
                 self._json({

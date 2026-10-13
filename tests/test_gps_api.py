@@ -563,14 +563,22 @@ def test_jt_streams_endpoint(env, monkeypatch):
                         lambda: [{"sim": "123", "channel": 1, "bytes": 2048,
                                   "hls": "/hls/jt_123_1.m3u8"}])
     monkeypatch.setattr(gps_api.jt808, "connected_phones", lambda: ["123"])
+    monkeypatch.setattr(gps_api.jt1078, "recent_streams",
+                        lambda: [{"sim": "123", "channel": 1, "active": False,
+                                  "last_error": "kamera uzildi"}])
+    monkeypatch.setattr(gps_api.config, "JT1078_AUDIO", True)
     status, data = _request(monkeypatch, "/api/video/jt-streams",
                             headers=_auth(), scope=None)
     assert status == 200
     assert data["ok"] is True and data["enabled"] is True
     assert data["ffmpeg"] is True
+    assert data["audio_enabled"] is True
     assert data["count"] == 1
     assert data["streams"][0]["hls"] == "/hls/jt_123_1.m3u8"
     assert data["devices"] == ["123"]
+    # Diagnostika: faol oqimlar + yaqinda yopilganlar (oxirgi xatosi bilan)
+    assert data["recent"][0]["last_error"] == "kamera uzildi"
+    assert "audio_rate" in data
 
 
 def test_jt_streams_disabled(env, monkeypatch):
@@ -581,6 +589,7 @@ def test_jt_streams_disabled(env, monkeypatch):
     assert status == 200
     assert data["enabled"] is False
     assert data["streams"] == [] and data["devices"] == []
+    assert data["recent"] == []
 
 
 def test_jt_live_start_and_stop(env, monkeypatch):

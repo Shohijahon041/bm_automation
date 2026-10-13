@@ -380,3 +380,80 @@ def test_raw_log_records_out(monkeypatch):
     _query_frame(monkeypatch, jt808.query_attrs)
     entries = jt808.raw_log(limit=10, phone="123456")
     assert any(e["dir"] == "out" and e["msg_id"] == 0x8107 for e in entries)
+
+
+def test_peer_label_includes_imei_and_source():
+    """Sessiya loglarida manba ip:port va IMEI ko'rinadi."""
+    assert jt808._peer_label(("10.2.3.4", 5555)) == "10.2.3.4:5555"
+    assert jt808._peer_label(("10.2.3.4", 5555), "221080344988") == \
+        "10.2.3.4:5555 IMEI=221080344988"
+    assert jt808._peer_label(None, "123") == "? IMEI=123"
+
+
+def test_peer_imei_registry_capped():
+    """Manba reyestri chegaralangan (uzoq jarayonda xotira o'smasin)."""
+    jt808._PEER_IMEI.clear()
+    jt808._PEER_IMEI_MAX = 3
+    for i in range(5):
+        jt808._remember_peer((f"10.0.0.{i}", 1), f"imei{i}")
+    assert len(jt808._PEER_IMEI) == 3
+    assert jt808._known_imei(("10.0.0.4", 1)) == "imei4"
+    assert jt808._known_imei(("10.0.0.0", 1)) == ""
+
+
+# ---------------------------------------------------------------- playback so'rov
+
+def test_request_playback_body_normal_method(monkeypatch):
+    """0x9201 tanasi JT/T 1078-2016 Table 24 bo'yicha.
+
+    Tanadagi 9-bayt (ijro usuli) 0 = NORMAL bo'lishi shart; ilgari 1
+    (tez oldinga) yuborilib, qurilma yozuvni oqizmasdi.
+    """
+    import asyncio
+    captured = {}
+
+    async def fake_send(phone, msg_id, body):
+        captured.update(phone=phone, msg_id=msg_id, body=body)
+        return True
+
+    monkeypatch.setattr(jt808, "_send", fake_send)
+    host = "189.74.100.25"
+    start = jt808.iso_to_bcd6("2026-10-13T15:20:00")
+    end = jt808.iso_to_bcd6("2026-10-13T15:30:00")
+    ok = asyncio.run(jt808.request_playback("221080328726", host, 6107,
+                                            start, end, channel=1))
+    assert ok
+    body = captured["body"]
+    n = len(host)
+    assert captured["msg_id"] == 0x9201
+    assert captured["phone"] == "221080328726"
+    assert body[0] == n
+    assert body[1:1 + n] == host.encode()
+    assert struct.unpack(">HH", body[1 + n:5 + n]) == (6107, 0)
+    ch, media, stream, mem, method, mult = body[5 + n:11 + n]
+    assert ch == 1
+    assert (media, stream, mem) == (0, 0, 0)
+    assert method == 0                       # normal ijro (fast-forward EMAS)
+    assert mult == 0                         # tez oldinga/orqaga koeffitsiyenti
+    assert body[11 + n:17 + n] == start
+    assert body[17 + n:23 + n] == end
+    assert len(body) == 23 + n
+
+
+def test_resources_expire_by_ttl(monkeypatch):
+    """Muddati o'tgan 0x1205 ro'yxati qaytarilmaydi (eski/xotira himoyasi)."""
+    monkeypatch.setattr(jt808, "_RESOURCES_TTL", 3600.0)
+    jt808._RESOURCES["777"] = {"at": 1.0, "items": [{"x": 1}]}
+    assert jt808.resources("777")["items"] == []
+    assert "777" not in jt808._RESOURCES
+
+
+def test_resource_merge_caps_items(monkeypatch):
+    """Merge natijasi _RESOURCES_MAX_ITEMS bilan cheklanadi (xotira chegarasi)."""
+    monkeypatch.setattr(jt808, "_RESOURCES_MAX_ITEMS", 2)
+    jt808.clear_resources("777")
+    _dispatch("777", 0x1205, _resource_body([
+        (1, "261011100000", "261011130000", 1),
+        (1, "261011130000", "261011140000", 2),
+        (1, "261011140000", "261011150000", 3)]))
+    assert len(jt808.resources("777")["items"]) == 2

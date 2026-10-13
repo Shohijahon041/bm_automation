@@ -25,12 +25,15 @@ import threading
 import time
 from pathlib import Path
 
-from . import config
+from . import config, diag
 
 log = logging.getLogger(__name__)
 
 _lock = threading.Lock()
-_procs: dict[int, dict] = {}  # camera_id -> {"proc": Popen, "cam": dict}
+_procs: dict[int, dict] = {}  # camera_id -> {"proc": Popen, "cam": dict, ...}
+# camera_id -> ishga tushirishlar soni (diagnostika: relay tez-tez o'lsa
+# ko'rinadi). `status()`"restarts" = starts - 1.
+_starts: dict[int, int] = {}
 # On-demand: kamera HLS'iga oxirgi so'rov vaqti. Viewer yo'q bo'lsa
 # HLS_RELAY_IDLE_S sekunddan keyin relay to'xtatiladi (100+ kamera uchun).
 _last_seen: dict[int, float] = {}
@@ -87,6 +90,11 @@ def public_url(cam_id: int) -> str:
     return f"/hls/cam{cam_id}.m3u8"
 
 
+def relay_log_path(cam_id: int) -> Path:
+    """Relay ffmpeg'ining stderr logi (diagnostika: oxirgi xato shu yerdan)."""
+    return Path(config.HLS_DIR) / f"relay{cam_id}.log"
+
+
 def _start(cam: dict) -> None:
     cam_id = int(cam["id"])
     out = hls_path(cam_id)
@@ -103,17 +111,44 @@ def _start(cam: dict) -> None:
         "-hls_flags", "delete_segments+independent_segments",
         str(out),
     ]
+    # stderr'ni faylga yozamiz: dashboard "oxirgi xato"ni shundan ko'rsatadi
+    # (`-loglevel error` — log kichik qoladi). "wb": har relay yangi ffmpeg
+    # bilan boshlanadi, eski jarayonning xatosi qolib ketmaydi.
+    log_path = relay_log_path(cam_id)
+    errlog = None
+    try:
+        errlog = open(log_path, "wb", buffering=0)
+    except OSError:
+        log_path = None
     try:
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=(errlog if errlog is not None else subprocess.DEVNULL),
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except OSError as exc:
         log.warning("relay: ffmpeg ishga tushmadi (kamera %s): %s", cam_id, exc)
+        if errlog is not None:
+            try:
+                errlog.write(f"ffmpeg ishga tushmadi: {exc}\n".encode())
+            except OSError:
+                pass
+            try:
+                errlog.close()
+            except OSError:
+                pass
         return
-    _procs[cam_id] = {"proc": proc, "cam": cam}
+    if errlog is not None:
+        # Bola o'z nusxasini ushlab turadi — ota-jarayondagisini yopamiz
+        # (aks holda har qayta ishga tushishda fd qolib ketadi).
+        try:
+            errlog.close()
+        except OSError:
+            pass
+    _starts[cam_id] = _starts.get(cam_id, 0) + 1
+    _procs[cam_id] = {"proc": proc, "cam": cam, "log": log_path,
+                      "since": _now()}
     log.info("relay: kamera %s (%s) → %s", cam_id, cam.get("name"), out)
 
 
@@ -198,13 +233,26 @@ def sync(cameras: list) -> None:
 
 
 def status() -> dict:
+    """Har bir relay holati + diagnostika (kodek/oxirgi xato) — dashboard uchun.
+
+    `error` — ffmpeg stderr logining oxirgi ma'noli qatori (bo'lmasa None).
+    """
     with _lock:
         out = {}
+        now = _now()
         for cam_id, entry in _procs.items():
+            proc = entry["proc"]
+            code = proc.poll()
+            since = entry.get("since") or now
             out[str(cam_id)] = {
-                "running": entry["proc"].poll() is None,
-                "pid": entry["proc"].pid,
+                "running": code is None,
+                "exit_code": code,
+                "pid": proc.pid,
                 "hls": public_url(cam_id),
+                "uptime_s": int(now - since),
+                "restarts": max(0, _starts.get(cam_id, 1) - 1),
+                "log": str(entry.get("log") or ""),
+                "error": diag.tail_note(entry.get("log")),
             }
         return out
 

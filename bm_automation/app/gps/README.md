@@ -75,6 +75,8 @@ ro'yxatga olinadi. So'ng frontend'da avtobusga bog'lanadi.
 | `JT1078_MEDIA_HOST` | (bo'sh) | qurilma oqim yuboradigan public IP/host |
 | `GPS_JT1078_RAW_DUMP` | `0` | `1` = xom video diskka yoziladi (faqat diagnostika) |
 | `GPS_JT1078_PLAYBACK_WINDOW_S` | `180` | playback rejimi oqimi shu sekund davomida belgilanadi |
+| `GPS_JT1078_AUDIO` | `0` | `1` = kameradagi ovoz (G.711A/U) HLS'ga AAC sifatida qo'shiladi (faqat Linux) |
+| `GPS_JT1078_AUDIO_RATE` | `8000` | audio namuna chastotasi (G.711 uchun 8 kHz) |
 | `GPS_HLS_MAX_AGE_S` | `3600` | shu sekunddan eski HLS segmentlar tozalanadi |
 
 Token: dashboard bilan bir xil `DASHBOARD_TOKEN` ishlatiladi.
@@ -125,22 +127,95 @@ portlar:
 - **TCP 6808** — JT808 signaling (ro'yxat, heartbeat, buyruqlar)
 - **TCP 6107** — JT1078 media (video paketlari)
 
+**Portni adashtirish muhim emas:** ikkala listener birinchi paketga qarab
+protokolni O'ZI aniqlaydi (JT808 — `0x7e…`, media — `30316364`), ya'ni
+qurilmada faqat bitta "server port" maydoni bo'lib u 6107 (yoki aksincha,
+6808) qilib qo'yilgan bo'lsa ham signaling va video to'g'ri ishlanadi.
+Baribir standart sozlama tavsiya etiladi: platforma (JT808) **6808**, media
+**6107**. Har bir yangi ulanishning birinchi baytlari logga yoziladi
+(`... ulanish <peer> — birinchi N bayt: <hex>`) — qurilma qaysi protokolda
+gapiryapti yoki umuman javob bermayaptimi, shu qatordan ko'rinadi.
+
+**Qaysi kamera/kanal?** IMEI/kanal faqat birinchi paketdan ma'lum bo'ladi,
+shuning uchun har bir log qatoriga manba `ip:port` bilan birga
+`<IMEI>_<kanal>` qo'shiladi (bir ulanish bir necha kanal yuborsa `/` bilan):
+
+```
+JT1078: yangi ulanish 185.163.26.9:52763 221080344988_1/221080344988_3
+JT1078: media ulanishi 185.163.26.9:52763 221080344988_1/221080344988_3
+JT1078: live oqim boshlandi 221080344988_7 kodek=h264 ... manba=185.163.26.9
+JT1078: media uzildi 185.163.26.9:52763 221080344988_1/221080344988_3
+JT808:  yangi ulanish 185.163.26.9:52763 IMEI=221080344988
+JT808:  qurilma uzildi 185.163.26.9:52763 IMEI=221080344988
+```
+
+Qurilma qisqa-qisqa qayta ulanadi va har safar **boshqa port**dan keladi —
+shuning uchun IMEI **manba IP bo'yicha** eslab qolinadi: birinchi ulanishda
+IMEI hali o'qilmagan bo'lsa yorliq faqat `ip:port` bo'ladi, keyingi
+ulanishlarda esa darhol `IMEI`/`kanal` ko'rinadi (reyestr chegaralangan —
+uzoq jarayonda xotira o'smaydi). `qurilma uzildi` sababi (masalan
+`120s data kelmadi`) ham alohida qator bo'lib tushadi.
+
 **Jonli (live):** UI'da qurilma kartasidagi kanalni tanlab "▶ Jonli video"
 bosilsa server qurilmaga `0x9101` yuboradi; qurilma oqimni 6107-portga uzatadi,
 ffmpeg uni HLS'ga aylantiradi (`/hls/jt_<sim>_<kanal>.m3u8`). "⏹ To'xtatish"
 `0x9102` yuboradi (4G trafikni tejash).
 
-**Yozuvlar (playback, qurilma xotirasidan):** "🗂 Xotira" tugmasi
-qurilma xotirasidagi yozuvlar ro'yxatini `0x9205` orqali so'raydi
+**Yozuvlar (playback, qurilma xotirasidan):** UI'da "🗂 Xotira" → sana va
+vaqt oralig'i (Dan/Gacha) tanlanadi → `0x9205` bilan ro'yxat so'raladi
 (`GET /api/video/jt-files`), tanlangan yozuv `0x9201` bilan oqim sifatida
 so'raladi va `/hls/jtpb_<sim>_<kanal>.m3u8` orqali ko'rsatiladi; pauza/davom/
-tezlik/ortga `0x9202` bilan boshqariladi. **Video serverga saqlanmaydi** —
-qurilmaning o'z xotirasida qoladi, server faqat jonli uzatish (HLS) qiladi.
+tez/orqaga `0x9202` bilan boshqariladi. Pleyer oqim tayyor bo'lguncha kutadi
+(retry/status) va joriy pozitsiya/davomiylikni ko'rsatadi. **Video serverga
+saqlanmaydi** — qurilmaning o'z xotirasida qoladi, server faqat jonli uzatish
+(HLS) qiladi.
+
+> 0x9201 tanasi (JT/T 1078-2016 Table 24) da `10+n` "tez oldinga/orqaga
+> koeffitsiyenti" bayti MAJBURIY (0) — usiz qurilma start/end vaqtni bir
+> baytga siljigan holda o'qib, `0x1205 total=0` qaytaradi.
+
+**Ovoz:** qurilma audio (G.711A/U) paketlarini yuborsa, `GPS_JT1078_AUDIO=1`
+bilan ovoz ham HLS'ga AAC sifatida qo'shiladi (ffmpeg'ga ikkinchi kirish
+quvuri orqali). Bu faqat POSIX/Linux'da ishlaydi — Windows'da faqat video
+oqadi. Boshqa audio kodeklar (G.726/AAC/MP3) hozircha qo'llanmaydi.
+Audio yoqilmagan bo'lsa paketlar faqat sanaladi (`audio_packets`) va
+tashlanadi.
 
 `JT1078_MEDIA_HOST` — qurilma oqimni yuboradigan public IP/host (bo'sh bo'lsa
 UI'dagi host ishlatiladi). `GPS_JT1078_RAW_DUMP=1` faqat diagnostika uchun
 xom oqimni diskka yozadi (standart `0` = saqlanmaydi). Bo'sh/eskirgan HLS
 segmentlar `GPS_HLS_MAX_AGE_S` bo'yicha avtomatik tozalanadi.
+
+### Oqim diagnostikasi (dashboard)
+
+Har bir kanal kartasi ostida alomatlar qatori ko'rinadi va u 5 sekundda
+bir yangilanadi (`GET /api/video/jt-streams`):
+
+- **kodek** — `H.264` / `H.265` (PT 98/99 bo'yicha; sarlavhadagi `H.265`
+  badge ham shu qiymatdan olinadi)
+- **audio** — `🔊 G.711A/G.711U` (PT ma'lum) yoki `🔇 audio yo'q`;
+  `GPS_JT1078_AUDIO=0` bo'lsa `🔇 audio o'chirilgan` deb ogohlantiradi
+- **⏱ kalit kadr** — oxirgi I-kadr muxer'ga qancha vaqt oldin yozilgani
+  (20 sekunddan oshsa sariq ogohlantirish). Kalit kadr umuman bo'lmasa
+  `kalit kadr yo'q` — odatda qurilma P-kadr yuboryapti yoki oqim uzilgan
+- **kadr / kalit** — muxer'ga yozilgan access-unit va I-kadrlar soni
+- **↻ N marta qayta** — muxer qayta ishga tushirilgan holatlar: kodek
+  almashishi, audio paydo bo'lishi, ffmpeg o'lishi
+- **⚠ oxirgi xato** — ilova xatosi (masalan `ffmpeg yozish xatosi — qayta
+  ishga tushiriladi`) va/yoki ffmpeg'ning oxirgi ma'noli stderr qatori
+  (`ffmpeg: [h264 @ ...] no frame!` kabi). Doimiy, ahamiyatsiz
+  ogohlantirishlar (`non monotonically increasing dts`, `-vsync is
+  deprecated`) filtrlanadi (`app/gps/diag.py`)
+
+Oqim yopilganda (kamera uzildi / muxer qayta yaratildi / ffmpeg xatosi)
+yozuvi darhol yo'qolmaydi: UI'da **"Yaqinda yopilgan oqimlar"** panelida
+sababi va oxirgi xatosi bilan ko'rinadi (`recent` maydoni, 24 soat saqlanadi,
+`app/gps/jt1078.py:_DIAG`). Bu "video nega o'chdi?" savoliga javob beradi.
+
+RTSP kameralar uchun ham xuddi shunday: relay kartasi ostida
+`▶ ffmpeg ishlayapti` / `⏹ ffmpeg to'xtagan (kod N)`, qayta ishga tushish
+soni va ffmpeg'ning oxirgi xatosi (stderr → `<HLS_DIR>/relay<id>.log`)
+ko'rinadi.
 
 ## Geofence (zona nazorati)
 
@@ -252,13 +327,13 @@ Himoya: `Authorization: Bearer <DASHBOARD_TOKEN>`
 | GET | `/api/gps/alerts?limit=&imei=` | oxirgi ogohlantirishlar |
 | GET | `/api/gps/daily?from=&to=&imei=` | kunlik yig'ama (rollup) |
 | GET | `/api/video/cameras` | kameralar |
-| GET | `/api/video/relay` | relay holati (ffmpeg, jarayonlar) |
-| GET | `/api/video/jt-streams` | JT1078 faol oqimlar (live/playback) + qurilmalar |
+| GET | `/api/video/relay` | relay holati (ffmpeg, jarayonlar, oxirgi xato) |
+| GET | `/api/video/jt-streams` | JT1078 faol oqimlar (live/playback) + qurilmalar + diagnostika (`streams`, `recent`, `audio_enabled`) |
 | POST | `/api/video/jt-live` | `{phone, channel}` — `0x9101` jonli oqim |
 | POST | `/api/video/jt-stop` | `{phone, channel}` — `0x9102` to'xtatish |
 | GET | `/api/video/jt-files?phone=` | qurilma xotirasidagi yozuvlar (kesh) |
-| POST | `/api/video/jt-files` | `{phone, channel, date?}` — `0x9205` ro'yxat so'rash |
-| POST | `/api/video/jt-playback` | `{phone, channel, start, end}` — `0x9201` yozuv oqimi |
+| POST | `/api/video/jt-files` | `{phone, channel, date? \| start?, end?}` — `0x9205` ro'yxat so'rash |
+| POST | `/api/video/jt-playback` | `{phone, channel, start, end, host?, media?, stream?, memory?, method?, multiples?}` — `0x9201` yozuv oqimi |
 | POST | `/api/video/jt-playback-control` | `{phone, channel, control, speed?}` — `0x9202` |
 | POST | `/api/video/cameras` | `{name, url, source_type, vehicle_id?}` |
 | DELETE | `/api/video/cameras/{id}` | o'chirish |

@@ -6,11 +6,21 @@ video oqimini shu TCP portga (JT1078 RTP-simon paketlar) yuboradi. Bu modul:
     birlashtirgan/bo'laklagan holatlarda ham to'g'ri)
   * sarlavhadan (video 30 / audio 26 / shaffof 18 bayt) SIM, kanal, data
     type, timestamp, payload oladi
-  * subpaketlarni (birinchi/oraliq/oxirgi) yig'ib to'liq H.264 kadrini
-    hosil qiladi; audio/shaffof paketlar tashlanadi
+  * RTP payload type (PT) bo'yicha video kodekni aniqlaydi (98=H.264,
+    99=H.265) va ffmpeg'ga mos kirish formatini beradi
+  * subpaketlarni (birinchi/oraliq/oxirgi) yig'ib to'liq video kadrini
+    hosil qiladi; shaffof/xizmat paketlari tashlanadi
+  * audio (G.711A/U) paketlarni ham yig'adi va `GPS_JT1078_AUDIO=1` bo'lsa
+    ffmpeg'ning ikkinchi kirish quvuri orqali HLS'ga AAC sifatida qo'shadi
   * har bir (qurilma, kanal) uchun ffmpeg jarayonini yoqib, xom H.264'ni
     HLS segmentlariga aylantiradi: <HLS_DIR>/jt_<sim>_<ch>.m3u8
   * diagnostika uchun xom oqimni diskka ham yozadi (.h264 va raw_*.bin)
+
+Dashboard ko'rsatadigan diagnostika (har bir oqim uchun): kodek, audio (PT),
+kadr/kalit-kadr soni va oxirgi kalit kadr vaqti, muxer qayta ishga tushish
+soni, oxirgi ilova xatosi hamda ffmpeg'ning oxirgi xato qatori. Yopilgan
+oqimlar ham bir muddat saqlanadi (`recent_streams()`) — "video nega o'chdi?"
+savoliga javob berish uchun.
 
 Sarlavha tartibi real CMSV6 qurilmasi raw dump'i orqali tasdiqlangan
 (pastdagi HEADER_LEN izohiga qarang).
@@ -20,12 +30,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import queue
 import shutil
 import subprocess
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config
+from . import config, diag
 
 log = logging.getLogger(__name__)
 
@@ -51,8 +64,49 @@ TRANSPARENT_HEADER_LEN = 18
 DT_VIDEO_I = 0        # 0000 — I-kadr
 DT_VIDEO_P = 1        # 0001 — P-kadr
 DT_VIDEO_B = 2        # 0010 — B-kadr
-DT_AUDIO = 3          # 0011 — audio (hozircha tashlanadi)
+DT_AUDIO = 3          # 0011 — audio (G.711A/U — HLS'ga qo'shiladi)
 DT_TRANSPARENT = 4    # 0100 — shaffof/xizmat ma'lumoti (tashlanadi)
+# RTP payload type (M/PT baytining past 7 biti) — video kodekni aniqlaydi.
+# lkmio/lkm (jt_packet.go) va JT/T 1078-2016 standartiga mos: 98=H.264,
+# 99=H.265(HEVC), 100=AVS, 101=SVAC. Biz faqat ffmpeg qo'llay oladigan
+# H.264/H.265'ni qabul qilamiz; AVS/SVAC uchun H.264 deb qaraladi.
+PT_VIDEO_H264 = 98
+PT_VIDEO_H265 = 99
+PT_VIDEO_AVS = 100
+PT_VIDEO_SVAC = 101
+_PT_VIDEO_CODEC = {
+    PT_VIDEO_H264: "h264",
+    PT_VIDEO_H265: "hevc",
+}
+DEFAULT_VIDEO_CODEC = "h264"
+# RTP payload type — audio kodek (JT/T 1078 / lkmio). Faqat G.711A/U'ni
+# to'g'ridan-to'g'ri xom PCM sifatida ffmpeg'ga bera olamiz (qolganlari
+# hozircha qo'llanmaydi va tashlanadi).
+PT_AUDIO_G711A = 6
+PT_AUDIO_G711U = 7
+PT_AUDIO_G726 = 8
+PT_AUDIO_G729A = 9
+PT_AUDIO_AAC = 19
+PT_AUDIO_MP3 = 25
+PT_AUDIO_ADPCMA = 26
+# PT -> ffmpeg xom audio kirish formati (demuxer nomi).
+_PT_AUDIO_FFMPEG = {
+    PT_AUDIO_G711A: "alaw",
+    PT_AUDIO_G711U: "mulaw",
+}
+# PT -> odam o'qiydigan audio kodek nomi (dashboard diagnostikasi uchun).
+_PT_AUDIO_NAME = {
+    PT_AUDIO_G711A: "G.711A",
+    PT_AUDIO_G711U: "G.711U",
+    PT_AUDIO_G726: "G.726",
+    PT_AUDIO_G729A: "G.729A",
+    PT_AUDIO_AAC: "AAC",
+    PT_AUDIO_MP3: "MP3",
+    PT_AUDIO_ADPCMA: "ADPCM",
+}
+# PT -> odam o'qiydigan video kodek nomi (dashboard diagnostikasi uchun).
+_CODEC_NAME = {"h264": "H.264", "hevc": "H.265"}
+DIAG_LOG_TAIL = 4096   # ffmpeg logidan o'qiladigan oxirgi baytlar
 SUB_ATOMIC = 0        # bo'linmagan (butun kadr bitta paketda)
 SUB_FIRST = 1         # birinchi subpaket
 SUB_LAST = 2          # oxirgi subpaket
@@ -72,17 +126,47 @@ def _header_len(data_type: int) -> int:
         return AUDIO_HEADER_LEN
     return HEADER_LEN
 
-_STATS = {"packets": 0, "access_units": 0, "errors": 0, "started": None}
-_STREAMS: dict = {}   # "key" -> {"bytes", "since", "sim", "channel", "kind"}
+_STATS = {"packets": 0, "access_units": 0, "audio_packets": 0,
+          "audio_units": 0, "errors": 0, "started": None}
+_STREAMS: dict = {}   # "key" -> {"bytes", "since", "sim", "channel", "kind",
+                      #           "codec", "audio", "audio_pt", "frames",
+                      #           "keyframes", "last_keyframe_at", "restarts",
+                      #           "last_error", "last_error_at"}
+# Yopilgan oqimlarning OXIRGI holati (diagnostika): muxer qayta ishga tushganda
+# yoki idle sababli yopilganda shu yerga ko'chiriladi. `streams()` faqat faol
+# oqimlarni beradi — yopilganlar `recent_streams()` orqali ko'rinadi.
+_DIAG: dict = {}      # "key" -> _STREAMS yozuvi + "closed_at", "close_reason"
+DIAG_TTL = 24 * 3600.0   # yopilgan oqim diagnostikasi shu muddat saqlanadi
+DIAG_KEEP = 50           # eng ko'p saqlanadigan yopilgan oqim yozuvi
 # Kamera media ulanishini qisqa-qisqa ochib yopadi (~20s). Har bir uzilishda
 # ffmpeg'yopilib HLS playlist'ini ENDLIST bilan yakunlamasligi uchun muxerlar
 # (sim,kanal,mode) bo'yicha DOIMIY saqlanadi; qayta ulanishda o'sha muxer davom
 # etadi.
 _MUXERS: dict = {}    # "key" -> _Muxer
+# "key" -> oxirgi ulanish manzili (ip, port). Log qatorlarida "qaysi kamera
+# (IMEI) qaysi kanalni yubordi" ko'rinishi uchun muxer bilan birga saqlanadi.
+_MUXER_SRC: dict = {}
+# peer -> _Session. Media ulanishining IMEI/kanali FAQAT birinchi paketdan
+# ma'lum bo'ladi; shu registry tufayli "media ulanishi/uzildi" qatorlariga ham
+# (qayta ulanishda) avval aniqlangan "IMEI_kanal" qo'shiladi.
+_SESSIONS: dict = {}
+# IP -> [(sim, kanal), ...]. Kamera qisqa-qisqa qayta ulanadi va har safar
+# BOSHQA portdan keladi — shu registry tufayli "yangi ulanish"/"birinchi N
+# bayt" qatorlarida ham IMEI/kanal darhol ko'rinadi.
+_PEER_KEYS: dict = {}
+_PEER_KEYS_MAX = 500
 # "{sim}_{ch}" -> expiry epoch. Yozuv (playback) so'ralganda shu (sim,kanal)
 # uchun kelayotgan oqim "playback" deb belgilanadi (jonli bilan aralashmasin).
 _PLAYBACK: dict = {}
+# muxer kaliti -> audio PT (G.711A/U). Audio ko'rilgandan keyin muxer shu PT
+# bilan (audio kirish quvuri bilan) ochiladi/qayta ochiladi.
+_AUDIO_PT: dict = {}
 MUXER_IDLE_TIMEOUT = 120.0   # sekund data kelmasa muxer yopiladi
+# Bitta kadr (access-unit) buferining eng katta hajmi. Qurilma timestamp'ni
+# yangilamasa yoki subMark'ni butunlay noto'g'ri belgilasa, bufer cheksiz
+# o'smasligi uchun chegaraga yetganda kadr majburan chiqariladi.
+FRAME_MAX_BYTES = 4 * 1024 * 1024
+AUDIO_FRAME_MAX_BYTES = 512 * 1024
 
 
 def set_playback(sim: str, channel: int, seconds: int | None = None) -> None:
@@ -100,6 +184,17 @@ def clear_playback(sim: str | None = None, channel: int | None = None) -> None:
         _PLAYBACK.pop(f"{sim}_{channel}", None)
 
 
+def _touch_playback(sim: str, channel: int) -> None:
+    """Playback oqimi kelayotganda oynani uzaytiradi (uzun yozuv uzilmasin).
+
+    Oyna FAQAT so'rov paytida hisoblansa, uzoq yozuv davom etayotib "jonli"ga
+    o'tib ketardi. Oqim kelguncha har kadrda yangilanadi.
+    """
+    k = f"{sim}_{channel}"
+    if k in _PLAYBACK:
+        _PLAYBACK[k] = _now() + max(1, int(config.JT1078_PLAYBACK_WINDOW_S))
+
+
 def _playback_active(sim: str, channel: int) -> bool:
     exp = _PLAYBACK.get(f"{sim}_{channel}")
     return bool(exp and _now() < exp)
@@ -109,31 +204,153 @@ def _now() -> float:
     return datetime.now(timezone.utc).timestamp()
 
 
+def _remember_peer(peer, keys) -> None:
+    """Shu IP ostida ko'rilgan (sim, kanal)larni eslab qolish.
+
+    Qurilma qayta ulanganda port o'zgaradi, shuning uchun IP bo'yicha
+    saqlanadi — "yangi ulanish" qatorida IMEI darhol ko'rinsin.
+    """
+    if not (peer and keys):
+        return
+    ip = peer[0]
+    if len(_PEER_KEYS) >= _PEER_KEYS_MAX and ip not in _PEER_KEYS:
+        # Uzoq jarayonda cheksiz o'smasin (FIFO — eng eskisi chiqadi).
+        _PEER_KEYS.pop(next(iter(_PEER_KEYS)), None)
+    seen = _PEER_KEYS.setdefault(ip, [])
+    for k in keys:
+        if k not in seen:
+            seen.append(k)
+
+
+def _known_peers(peer) -> tuple:
+    """Shu peer uchun aniqlangan (sim, kanal) juftliklari (IP bo'yicha)."""
+    if not peer:
+        return ()
+    return tuple(_PEER_KEYS.get(peer[0], ()))
+
+
+def _src(peer, *keys) -> str:
+    """Log yorlig'i: "ip:port" + aniqlangan "sim_kanal" (bo'lsa).
+
+    Kamera o'z IP'sidan keladi va bir necha kanal yuboradi — log qatorida
+    ikkalasi ham ko'rinmasa "qaysi kamera/kanal?" savoliga javob bo'lmaydi.
+    """
+    label = f"{peer[0]}:{peer[1]}" if peer else "?"
+    seen: list[str] = []
+    for k in keys:
+        if not k:
+            continue
+        s = f"{k[0]}_{k[1]}" if isinstance(k, tuple) else str(k)
+        if s not in seen:
+            seen.append(s)
+    return f"{label} {'/'.join(seen)}" if seen else label
+
+
 def ffmpeg_available() -> bool:
     return bool(config.FFMPEG_BIN) and bool(shutil.which(config.FFMPEG_BIN))
 
 
-def streams() -> list:
-    out = []
-    for key, st in _STREAMS.items():
-        sim = st.get("sim")
-        ch = st.get("channel")
-        kind = st.get("kind") or "live"
-        if sim is None or ch is None:
-            sim, ch = key.rsplit("_", 1)
-        prefix = "jt_" if kind == "live" else "jtpb_"
-        out.append({
-            "sim": str(sim), "channel": int(ch),
-            "bytes": st["bytes"],
-            "kind": kind,
-            "hls": f"/hls/{prefix}{sim}_{ch}.m3u8",
-        })
+def _audio_pipe_supported() -> bool:
+    """Audio kirish quvuri (ffmpeg'ga fd orqali) faqat POSIX'da ishlaydi.
+
+    Windows'da `subprocess` `pass_fds`ni qo'llamaydi — u yerda audio HLS'ga
+    qo'shilmaydi (faqat video). Ishlab chiqarish serveri Linux.
+    """
+    return os.name == "posix"
+
+
+def _ffmpeg_log(key: str) -> Path:
+    """Muxer kaliti bo'yicha ffmpeg logi (xato matni shu fayldan o'qiladi)."""
+    return Path(config.HLS_DIR) / "jt1078" / f"ffmpeg_{key.replace(':', '_')}.log"
+
+
+def codec_name(codec: str | None) -> str:
+    """"h264"/"hevc" -> "H.264"/"H.265" (UI uchun)."""
+    return _CODEC_NAME.get(codec or "", codec or "?")
+
+
+def audio_name(pt) -> str | None:
+    """Audio PT -> kodek nomi (masalan "G.711A")."""
+    return _PT_AUDIO_NAME.get(pt)
+
+
+def _stream_view(key: str, st: dict, active: bool) -> dict:
+    """Bitta oqim diagnostikasi (dashboard API/UI uchun yagona ko'rinish)."""
+    now = _now()
+    sim, ch = st.get("sim"), st.get("channel")
+    if sim is None or ch is None:
+        sim, ch = key.rsplit("_", 1)
+    kind = st.get("kind") or "live"
+    prefix = "jt_" if kind == "live" else "jtpb_"
+    lk = st.get("last_keyframe_at")
+    err_at = st.get("last_error_at")
+    since = st.get("since")
+    out = {
+        "sim": str(sim), "channel": int(ch),
+        "bytes": int(st.get("bytes") or 0),
+        "kind": kind,
+        "active": bool(active),
+        "codec": st.get("codec") or DEFAULT_VIDEO_CODEC,
+        "codec_name": codec_name(st.get("codec")),
+        "audio": bool(st.get("audio")),
+        "audio_pt": st.get("audio_pt"),
+        "audio_codec": audio_name(st.get("audio_pt")),
+        "hls": f"/hls/{prefix}{sim}_{ch}.m3u8",
+        # Diagnostika: kadrlar va oxirgi kalit kadr
+        "frames": int(st.get("frames") or 0),
+        "keyframes": int(st.get("keyframes") or 0),
+        "keyframe_age_s": round(now - lk, 1) if lk else None,
+        "uptime_s": int(now - since) if since else None,
+        # Diagnostika: muxer qayta ishga tushishi va oxirgi xato
+        "restarts": int(st.get("restarts") or 0),
+        "dropped": int(st.get("dropped") or 0),
+        "last_error": st.get("last_error"),
+        "error_age_s": round(now - err_at) if err_at else None,
+        "ffmpeg_note": (diag.tail_note(_ffmpeg_log(key), DIAG_LOG_TAIL)
+                        if active else st.get("ffmpeg_note")),
+    }
+    if not active:
+        closed = st.get("closed_at")
+        out["closed_s"] = round(now - closed) if closed else None
+        out["close_reason"] = st.get("close_reason")
     return out
+
+
+def streams() -> list:
+    """FAOL oqimlar (diagnostika maydonlari bilan) — sim/kanal bo'yicha tartibda."""
+    out = [_stream_view(key, st, True) for key, st in _STREAMS.items()]
+    out.sort(key=lambda s: (s["sim"], s["channel"]))
+    return out
+
+
+def recent_streams(limit: int = 8) -> list:
+    """Yaqinda yopilgan oqimlar (eng yangisi birinchi) — oxirgi xatosi bilan.
+
+    Kamera uzilib qolsa yoki muxer qayta ishga tushsa, faol ro'yxatdan
+    yo'qoladi; sababni ko'rish uchun shu ro'yxat dashboard'da ko'rsatiladi.
+    """
+    items = [v for v in _DIAG.values() if v.get("closed_at")]
+    items.sort(key=lambda v: v.get("closed_at") or 0, reverse=True)
+    return [_stream_view(str(v.get("key") or ""), v, False)
+            for v in items[:max(1, limit)]]
+
+
+def _prune_diag(ttl: float = DIAG_TTL, keep: int = DIAG_KEEP) -> None:
+    """Yopilgan oqim diagnostikasini chegaralab turish (xotira o'smasin)."""
+    now = _now()
+    for key in [k for k, v in _DIAG.items()
+                if not v.get("closed_at") or now - v["closed_at"] > ttl]:
+        _DIAG.pop(key, None)
+    if len(_DIAG) > keep:
+        old = sorted(_DIAG.items(), key=lambda kv: kv[1].get("closed_at") or 0)
+        for key, _ in old[:len(_DIAG) - keep]:
+            _DIAG.pop(key, None)
 
 
 def stats() -> dict:
     return {
         "streams": len(_STREAMS),
+        "closed_streams": len(_DIAG),
         **_STATS,
         "uptime_s": (
             int(datetime.now(timezone.utc).timestamp() - _STATS["started"])
@@ -179,6 +396,7 @@ def parse_packet(data: bytes) -> tuple:
         "channel": data[14],
         "data_type": data_type,
         "subpacket": dt & 0x0F,
+        "pt": data[5] & 0x7F,
         "ts": ts,
         "payload": data[hdr:total],
     }, total
@@ -210,21 +428,51 @@ def extract_packets(buf: bytes) -> tuple:
 
 # ---------------------------------------------------------------- ffmpeg mux
 
-class _Muxer:
-    """Xom H.264 access-unit'larni ffmpeg stdin'iga yozib HLS chiqaradi."""
+def _codec_for_pt(pt) -> str:
+    """PT (payload type) -> ffmpeg kirish kodeki nomi.
 
-    def __init__(self, sim: str, channel: int, mode: str = "live"):
+    Noma'lum/NULL PT (eski drayverlar uni bermaydi) uchun standart H.264.
+    """
+    return _PT_VIDEO_CODEC.get(pt, DEFAULT_VIDEO_CODEC)
+
+
+def _muxer_key(sim: str, channel: int, mode: str = "live") -> str:
+    """Muxer/stream registry kaliti (yozuv jonli bilan to'qnashmasin)."""
+    return f"{sim}_{channel}" if mode == "live" else f"pb:{sim}_{channel}"
+
+
+class _Muxer:
+    """Xom video access-unit'larni ffmpeg stdin'iga yozib HLS chiqaradi.
+
+    `codec` — ffmpeg kirish formati (PT'dan aniqlanadi): H.264 uchun "h264",
+    H.265/HEVC uchun "hevc". Chiqish har doim H.264 (brauzer mosligi uchun)."""
+
+    def __init__(self, sim: str, channel: int, mode: str = "live",
+                 codec: str = DEFAULT_VIDEO_CODEC, audio_pt=None):
         self.sim = sim
         self.channel = channel
         self.mode = mode
+        self.codec = codec or DEFAULT_VIDEO_CODEC
+        self.audio_pt = audio_pt
         # key: jonli "sim_ch", yozuv "pb:sim_ch" (bir xil kanalda to'qnashmasin)
-        self.key = f"{sim}_{channel}" if mode == "live" else f"pb:{sim}_{channel}"
+        self.key = _muxer_key(sim, channel, mode)
         self.prefix = "jt_" if mode == "live" else "jtpb_"
         self.bytes = 0
         self.since = _now()
         self.last_active = self.since
         self.closed = False
         self._dir = Path(config.HLS_DIR) / "jt1078"
+        # --- Diagnostika (dashboard): oxirgi xato + muxer/qayta ishga tushish ---
+        self.log_path = _ffmpeg_log(self.key)
+        self.restarts = 0
+        self.last_error: str | None = None
+        self.last_error_at: float | None = None
+        self.ffmpeg_note: str | None = None
+        self.close_reason: str | None = None
+        # Kadrlar soni `_Session._emit`da sanaladi; bu yerda faqat tayyorlaymiz.
+        self.frames = 0
+        self.keyframes = 0
+        self.last_keyframe_at: float | None = None
         # Serverga video SAQLANMAYDI — xom H.264 faqat diagnostika uchun
         # (GPS_JT1078_RAW_DUMP=1).
         self._raw = None
@@ -237,6 +485,35 @@ class _Muxer:
                 self._raw = None
         self._proc = None
         self._errlog = None
+        # Yozuvchi thread (bounded navbat): ffmpeg stdin'iga yozish alohida
+        # thread'da bajariladi. Ilgari bloklovchi write+flush butun event
+        # loop'ni muzlatib, qurilma soketi o'qilmay qolardi (TCP "win 0" ->
+        # "buyruq yuborishda xato" timeout). Endi navbat to'lsa kadr tashlanadi.
+        self._in_q = None
+        self._pump_thread = None
+        self.dropped = 0
+        # Audio kirish quvuri: G.711A/U bo'lsa ffmpeg'ga ikkinchi kirish
+        # (xom PCM) beriladi. Faqat POSIX'da (Linux) ishlaydi.
+        self._audio_w = None
+        self._audio_r = None
+        audio_args: list = []
+        pass_fds: tuple = ()
+        if (config.JT1078_AUDIO and audio_pt in _PT_AUDIO_FFMPEG
+                and _audio_pipe_supported()):
+            try:
+                r, w = os.pipe()
+                os.set_blocking(w, False)   # event loop'ni bloklamaslik uchun
+                self._audio_r, self._audio_w = r, w
+                audio_args = ["-f", _PT_AUDIO_FFMPEG[audio_pt],
+                              "-ar", str(config.JT1078_AUDIO_RATE),
+                              "-ac", "1", "-i", f"/dev/fd/{r}"]
+                pass_fds = (r,)
+            except Exception:  # noqa: BLE001
+                log.exception("JT1078: audio quvurini ochishda xato (%s)",
+                              _src(_MUXER_SRC.get(self.key), self.key))
+                self._audio_r = self._audio_w = None
+                audio_args, pass_fds = [], ()
+                self.note("audio quvuri ochilmadi (xato)")
         if ffmpeg_available():
             out = Path(config.HLS_DIR) / f"{self.prefix}{sim}_{channel}.m3u8"
             # Kamera oqimida B-frame bor va aniq fps yo'q. `-use_wallclock`
@@ -249,11 +526,19 @@ class _Muxer:
                 "-hide_banner", "-loglevel", "warning",
                 "-fflags", "+genpts+discardcorrupt",
                 "-framerate", str(config.JT1078_FPS_IN),
-                "-f", "h264", "-i", "pipe:0",
+                "-f", self.codec, "-i", "pipe:0",
+            ]
+            if audio_args:
+                cmd += audio_args
+            cmd += [
                 "-c:v", "libx264", "-preset", "ultrafast",
                 "-tune", "zerolatency", "-pix_fmt", "yuv420p",
                 "-vsync", "cfr", "-r", str(config.JT1078_FPS_OUT),
                 "-force_key_frames", "expr:gte(t,n_forced*2)",
+            ]
+            if audio_args:
+                cmd += ["-c:a", "aac", "-b:a", "32k"]
+            cmd += [
                 "-f", "hls",
                 "-hls_time", "2",
                 "-hls_list_size", "6",
@@ -262,8 +547,10 @@ class _Muxer:
             ]
             try:
                 self._dir.mkdir(parents=True, exist_ok=True)
-                self._errlog = open(self._dir / f"ffmpeg_{self.key.replace(':', '_')}.log",
-                                    "ab", buffering=0)
+                # "wb": log har yangi muxer bilan boshlanadi — shunda
+                # diagnostikadagi "oxirgi xato" joriy ffmpeg'ga tegishli
+                # bo'ladi (eski jarayonning xatosi qolib ketmaydi).
+                self._errlog = open(self.log_path, "wb", buffering=0)
             except Exception:  # noqa: BLE001
                 self._errlog = None
             try:
@@ -271,10 +558,94 @@ class _Muxer:
                     cmd, stdin=subprocess.PIPE,
                     stdout=subprocess.DEVNULL,
                     stderr=(self._errlog if self._errlog else subprocess.DEVNULL),
+                    pass_fds=pass_fds,
                 )
-            except Exception:  # noqa: BLE001
-                log.exception("JT1078: ffmpeg ishga tushmadi (%s)", self.key)
+                # Ota-jarayonda o'qish uchchi kerak emas — faqat yozamiz.
+                if self._audio_r is not None:
+                    os.close(self._audio_r)
+                    self._audio_r = None
+                self._start_pump()
+            except Exception as exc:  # noqa: BLE001
+                log.exception("JT1078: ffmpeg ishga tushmadi (%s)",
+                              _src(_MUXER_SRC.get(self.key), self.key))
                 self._proc = None
+                self._close_audio()
+                self.note(f"ffmpeg ishga tushmadi: {exc}")
+
+    def note(self, msg: str) -> None:
+        """Diagnostika: oxirgi xato/ogohlantirishni yozib qo'yish.
+
+        Xato muxer yaratilishida ham (registry hali yo'q) chaqirilishi mumkin —
+        shuning uchun faqat mavjud bo'lsa oqim yozuviga ham ko'chiriladi.
+        """
+        self.last_error = msg
+        self.last_error_at = _now()
+        st = _STREAMS.get(self.key)
+        if st is not None:
+            st["last_error"] = msg
+            st["last_error_at"] = self.last_error_at
+
+    def write_audio(self, pcm: bytes) -> None:
+        """Xom G.711 PCM audio baytlarini ffmpeg audio quvuriga yozish.
+
+        Bloklamaydi: quvur to'la bo'lsa (ffmpeg orqada qolsa) shu bo'lak
+        tashlanadi — video oqim ustuvor.
+        """
+        if self._audio_w is None or not pcm:
+            return
+        try:
+            os.write(self._audio_w, pcm)
+        except (BlockingIOError, InterruptedError):
+            pass
+        except OSError:
+            # quvur yopilgan (ffmpeg o'lgan) — keyingi kadrda qayta ochiladi
+            self._close_audio()
+            self.note("audio quvuri yopildi (ffmpeg o'lgan)")
+
+    def _close_audio(self) -> None:
+        for fd in (self._audio_r, self._audio_w):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        self._audio_r = self._audio_w = None
+
+    def _start_pump(self) -> None:
+        """ffmpeg stdin'iga yozuvchi thread'ni ishga tushirish (bounded navbat)."""
+        if self._proc is None or self._proc.stdin is None:
+            return
+        self._in_q = queue.Queue(maxsize=max(1, config.JT1078_QUEUE_MAX))
+        self._pump_thread = threading.Thread(
+            target=self._pump, name=f"jt1078-{self.key}", daemon=True)
+        self._pump_thread.start()
+
+    def _pump(self) -> None:
+        """Navbatdan access-unit'larni olib ffmpeg stdin'iga yozadi.
+
+        Bloklovchi write/flush SHU thread'da bajariladi — event loop hech qachon
+        bloklanmaydi. ffmpeg o'lsa thread to'xtaydi va muxer "closed" belgilanadi
+        (keyingi kadrda yangi ffmpeg ochiladi)."""
+        proc = self._proc
+        stdin = proc.stdin if proc is not None else None
+        q = self._in_q
+        if stdin is None or q is None:
+            return
+        while True:
+            au = q.get()
+            if au is None:
+                break
+            try:
+                stdin.write(au)
+                stdin.flush()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("JT1078: ffmpeg yozish xatosi (%s) — qayta ishga "
+                            "tushiriladi",
+                            _src(_MUXER_SRC.get(self.key), self.key))
+                self.note(f"ffmpeg yozish xatosi — qayta ishga tushiriladi: {exc}")
+                self.close_reason = self.close_reason or "ffmpeg xatosi"
+                self.closed = True
+                break
 
     def write(self, au: bytes) -> None:
         self.bytes += len(au)
@@ -284,19 +655,45 @@ class _Muxer:
                 self._raw.write(au)
             except Exception:  # noqa: BLE001
                 pass
-        if self._proc and self._proc.stdin:
+        q = self._in_q
+        if q is None:
+            return
+        try:
+            q.put_nowait(au)
+        except queue.Full:
+            # ffmpeg ulgurmayapti — eng eski kadrni tashlab, eng yangisini
+            # qoldiramiz (jonli oqimda kechikish o'smasin). Event loop
+            # HECH QACHON bloklanmaydi.
+            self.dropped += 1
             try:
-                self._proc.stdin.write(au)
-                self._proc.stdin.flush()
+                q.get_nowait()
+                q.put_nowait(au)
             except Exception:  # noqa: BLE001
-                # ffmpeg o'lgan — muxer'ni yopamiz; keyingi kadrda yangi
-                # ffmpeg ishga tushadi (doimiy registry qayta yaratadi).
-                log.warning("JT1078: ffmpeg yozish xatosi (%s) — qayta ishga "
-                            "tushiriladi", self.key)
-                self.close()
+                pass
+            if self.dropped % 100 == 1:
+                log.warning("JT1078: ffmpeg ulgurmayapti — kadr tashlandi "
+                            "(%s, jami %d)",
+                            _src(_MUXER_SRC.get(self.key), self.key),
+                            self.dropped)
 
     def close(self) -> None:
         self.closed = True
+        # Yozuvchi thread'ni to'xtatamiz: sentinel qo'yib, qisqa kutamiz. Agar
+        # ffmpeg'ga yozishda qolib ketgan bo'lsa — jarayonni o'ldiramiz (aks
+        # holda stdin.close() event loop'ni bloklashi mumkin).
+        if self._in_q is not None:
+            try:
+                self._in_q.put_nowait(None)
+            except Exception:  # noqa: BLE001
+                pass
+        if self._pump_thread is not None:
+            self._pump_thread.join(timeout=2.0)
+            if self._pump_thread.is_alive() and self._proc is not None:
+                try:
+                    self._proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+        self._close_audio()
         if self._raw is not None:
             try:
                 self._raw.close()
@@ -319,13 +716,38 @@ class _Muxer:
             except Exception:  # noqa: BLE001
                 pass
             self._errlog = None
-        _STREAMS.pop(self.key, None)
+        # Diagnostika: yopilgan oqimning oxirgi holatini saqlab qolamiz
+        # (dashboard "oxirgi xato"ni shundan ko'rsatadi) va keyingi muxer
+        # shu yozuvdan qayta ishga tushish sonini meros oladi.
+        self.ffmpeg_note = diag.tail_note(self.log_path, DIAG_LOG_TAIL)
+        st = _STREAMS.pop(self.key, None)
+        if st is not None:
+            st.update({
+                "bytes": self.bytes,
+                "frames": st.get("frames") or self.frames,
+                "keyframes": st.get("keyframes") or self.keyframes,
+                "last_keyframe_at": st.get("last_keyframe_at") or self.last_keyframe_at,
+                "restarts": self.restarts,
+                "dropped": self.dropped,
+                "last_error": self.last_error or st.get("last_error"),
+                "last_error_at": self.last_error_at or st.get("last_error_at"),
+                "ffmpeg_note": self.ffmpeg_note,
+                "closed_at": _now(),
+                "close_reason": self.close_reason or "oqim yakunlandi",
+                "key": self.key,
+                "active": False,
+            })
+            _DIAG[self.key] = st
+            _prune_diag()
         _MUXERS.pop(self.key, None)
+        _MUXER_SRC.pop(self.key, None)
 
 
 # ---------------------------------------------------------------- server
 
-def _get_muxer(sim: str, channel: int, mode: str = "live") -> "_Muxer":
+def _get_muxer(sim: str, channel: int, mode: str = "live",
+               codec: str = DEFAULT_VIDEO_CODEC,
+               audio_pt=None, peer=None) -> "_Muxer":
     """(sim,kanal,mode) uchun DOIMIY muxer: mavjudini qaytaradi yoki yangi ochadi.
 
     Kamera qisqa-qisqa ulanib/uzilib turgani uchun muxer bir marta yaratiladi
@@ -333,15 +755,68 @@ def _get_muxer(sim: str, channel: int, mode: str = "live") -> "_Muxer":
     bo'lib qolmaydi). Faqat uzoq vaqt data kelmasa reaper yopadi.
 
     mode: "live" (jonli) yoki "playback" (qurilma xotirasidagi yozuv).
+    codec: ffmpeg kirish formati ("h264"/"hevc"). Oqim o'rtasida o'zgarsa
+    (masalan kanal kodeki almashsa) muxer qayta ochiladi — aks holda eski
+    format bilan yangi oqim buziladi.
+    audio_pt: audio PT (G.711A/U). ffmpeg kirishlari jarayon ishga tushganda
+    qat'iy belgilanadi — shuning uchun audio keyin paydo bo'lsa ham muxer
+    qayta ochiladi (kod kodeki o'zgargani kabi).
+    peer: ulanish manzili (ip, port) — logda qaysi kamera ekanini ko'rsatish
+    uchun muxer bilan birga saqlanadi.
     """
-    key = f"{sim}_{channel}" if mode == "live" else f"pb:{sim}_{channel}"
+    key = _muxer_key(sim, channel, mode)
+    codec = codec or DEFAULT_VIDEO_CODEC
+    audio_pt = audio_pt if audio_pt in _PT_AUDIO_FFMPEG else None
     m = _MUXERS.get(key)
+    if peer:
+        # Doimiy muxer qayta ulanishda davom etadi — manba manzilini yangilab
+        # turamiz (logda oxirgi ulanish IP'si ko'rinadi).
+        _MUXER_SRC[key] = peer
+    if m is not None and not m.closed and getattr(m, "codec", None) != codec:
+        # Kodek o'zgardi (yoki muxer mos emas) — eskisini yopib qayta ochamiz.
+        log.info("JT1078: kodek o'zgardi %s: %s -> %s — muxer qayta yaratiladi",
+                 _src(peer, key), getattr(m, "codec", "?"), codec)
+        m.close_reason = "kodek o'zgardi"
+        m.close()
+        m = None
+    if (m is not None and not m.closed
+            and getattr(m, "audio_pt", None) != audio_pt):
+        # Audio paydo bo'ldi yoki uning kodeki o'zgardi — audio kirish quvuri
+        # faqat jarayon boshida ochiladi, shuning uchun qayta ochamiz.
+        log.info("JT1078: audio PT %s -> %s (%s) — muxer qayta yaratiladi",
+                 getattr(m, "audio_pt", None), audio_pt, _src(peer, key))
+        m.close_reason = "audio paydo bo'ldi"
+        m.close()
+        m = None
+    if m is not None and m.closed:
+        # Yozuvchi thread ffmpeg xatosi bilan to'xtagan — resurslarni
+        # bo'shatamiz; pastda yangi muxer ochiladi.
+        m.close()
+        m = None
     if m is None or m.closed:
-        m = _MUXERS[key] = _Muxer(sim, channel, mode=mode)
-        _STREAMS[key] = {"bytes": 0, "since": m.since,
-                         "sim": sim, "channel": channel, "kind": mode}
-        log.info("JT1078: %s oqim boshlandi %s_%s (HLS /hls/%s%s_%s.m3u8)",
-                 mode, sim, channel, m.prefix, sim, channel)
+        prev = _DIAG.get(key) or {}
+        m = _MUXERS[key] = _Muxer(sim, channel, mode=mode, codec=codec,
+                                  audio_pt=audio_pt)
+        # Diagnostika: avvalgi holatdan meros (qayta ishga tushish soni, xato)
+        m.restarts = int(prev.get("restarts") or 0) + (1 if prev else 0)
+        _STREAMS[key] = {
+            "bytes": 0, "since": m.since,
+            "sim": sim, "channel": channel, "kind": mode,
+            "codec": m.codec,
+            "audio": m.audio_pt is not None,
+            "audio_pt": getattr(m, "audio_pt", None),
+            "frames": 0, "keyframes": 0, "last_keyframe_at": None,
+            "restarts": m.restarts,
+            "dropped": 0,
+            "last_error": getattr(m, "last_error", None),
+            "last_error_at": getattr(m, "last_error_at", None),
+            "active": True,
+        }
+        log.info("JT1078: %s oqim boshlandi %s_%s kodek=%s audio=%s "
+                 "(HLS /hls/%s%s_%s.m3u8) manba=%s",
+                 mode, sim, channel, m.codec, m.audio_pt or "-",
+                 m.prefix, sim, channel,
+                 (_MUXER_SRC.get(key) or (None,))[0] or "?")
     return m
 
 
@@ -385,7 +860,10 @@ def _reap_idle_muxers(now: float | None = None) -> int:
         if m is None:
             continue
         if now - m.last_active > MUXER_IDLE_TIMEOUT:
-            log.info("JT1078: oqim yopildi (idle) %s", key)
+            log.info("JT1078: oqim yopildi (idle) %s",
+                     _src(_MUXER_SRC.get(key), key))
+            m.close_reason = (f"data kelmadi ({int(MUXER_IDLE_TIMEOUT)}s)"
+                              if m.bytes == 0 else "kamera uzildi")
             m.close()
             closed += 1
     return closed
@@ -399,6 +877,10 @@ async def _reaper_loop(interval: float = 30.0) -> None:
             _reap_idle_muxers()
         except Exception:  # noqa: BLE001
             log.exception("JT1078: reaper xatosi")
+        try:
+            _prune_diag()  # yopilgan oqim diagnostikasi cheksiz o'smasin
+        except Exception:  # noqa: BLE001
+            log.exception("JT1078: diagnostika tozalash xatosi")
         # Server to'lmasin: har ~10 daqiqada eski/bo'sh HLS fayllarni tozalash
         ticks += 1
         if ticks % 20 == 0:
@@ -408,40 +890,133 @@ async def _reaper_loop(interval: float = 30.0) -> None:
                 log.exception("JT1078: HLS tozalash xatosi")
 
 
-class _Session:
-    """Bitta TCP ulanishdagi oqim(lar)ni access-unit'larga yig'adi."""
+class _AudioSink:
+    """Audio (G.711A/U) paketlarini kadrga yig'ib muxerning audio quvuriga
+    yozadi. Kadr chegarasi video bilan bir xil: timestamp o'zgarishi yoki
+    subMark FIRST/LAST; bufer chegaraga yetsa ham kadr chiqariladi.
 
-    def __init__(self):
-        self.pending: dict = {}   # (sim,ch) -> bytearray (subpackage yig'indi)
-        self.primed: set = set()  # I-kadr ko'rilgan (sim,ch) — shundagina yozamiz
+    Faqat ffmpeg xom PCM sifatida o'qiy oladigan G.711A/U (`_PT_AUDIO_FFMPEG`)
+    qo'llanadi — G.726/AAC/MP3 hozircha tashlanadi. `GPS_JT1078_AUDIO=0`
+    (standart) bo'lsa paketlar faqat sanaladi (HLS'ga audio qo'shilmaydi).
+    """
 
-    def on_packet(self, p: dict) -> None:
-        typ = p["data_type"]
-        sub = p["subpacket"]
-        key = (p["sim"], p["channel"])
-        if typ not in _VIDEO_TYPES:
-            return                      # audio / shaffof — video emas
+    def __init__(self, peer=None):
+        # muxer kaliti -> {"buf", "ts", "pt", "sim", "ch", "mode", "codec"}
+        self.peer = peer
+        self.frames: dict = {}
+
+    def on_packet(self, p: dict, codec: str = DEFAULT_VIDEO_CODEC) -> None:
+        _STATS["audio_packets"] += 1
+        pt = p.get("pt")
+        if not config.JT1078_AUDIO or pt not in _PT_AUDIO_FFMPEG:
+            return
         payload = p["payload"]
         if not payload:
             return
-        if sub == SUB_FIRST:
-            # yangi kadr boshi — tugallanmagan avvalgi yig'indi tashlanadi
-            self.pending[key] = bytearray(payload)
-        elif sub == SUB_MIDDLE:
-            buf = self.pending.get(key)
-            if buf is not None:
-                buf.extend(payload)
-        elif sub == SUB_LAST:
-            buf = self.pending.pop(key, None)
-            if buf is None:
-                buf = bytearray()
-            buf.extend(payload)
-            self._emit(key, typ, bytes(buf))
-        else:  # SUB_ATOMIC — butun kadr bitta paketda
-            self.pending.pop(key, None)
-            self._emit(key, typ, payload)
+        mode = "playback" if _playback_active(p["sim"], p["channel"]) else "live"
+        key = _muxer_key(p["sim"], p["channel"], mode)
+        ts = p.get("ts")
+        sub = p["subpacket"]
+        st = self.frames.get(key)
+        if st is None:
+            st = self.frames[key] = {"buf": bytearray(), "ts": ts, "pt": pt,
+                                     "sim": p["sim"], "ch": p["channel"],
+                                     "mode": mode, "codec": codec}
+        elif st["buf"] and (ts != st["ts"] or sub == SUB_FIRST):
+            # timestamp o'zgardi yoki yangi bo'lak boshi -> avvalgisini yozamiz
+            self._emit(st, bytes(st["buf"]))
+            st["buf"] = bytearray()
+        if not st["buf"]:
+            st["ts"], st["pt"], st["codec"] = ts, pt, codec
+        st["buf"].extend(payload)
+        if sub == SUB_LAST or len(st["buf"]) >= AUDIO_FRAME_MAX_BYTES:
+            self._emit(st, bytes(st["buf"]))
+            st["buf"] = bytearray()
 
-    def _emit(self, key, typ: int, au: bytes) -> None:
+    def _emit(self, st: dict, pcm: bytes) -> None:
+        if not pcm:
+            return
+        mode = st["mode"]
+        key = _muxer_key(st["sim"], st["ch"], mode)
+        _STATS["audio_units"] += 1
+        # Audio PT'ni eslab qolamiz — video kadri muxer ochganda/qurayotganda
+        # shu PT bilan audio kirish quvuri ham qo'shiladi.
+        _AUDIO_PT[key] = st["pt"]
+        m = _get_muxer(st["sim"], st["ch"], mode, codec=st["codec"],
+                       audio_pt=st["pt"], peer=self.peer)
+        m.write_audio(pcm)
+        m.last_active = _now()   # audio ham oqim faolligi hisoblanadi
+
+    def close(self) -> None:
+        # Ulanish yopildi — kutayotgan audio bo'laklarini bo'shatamiz.
+        for st in list(self.frames.values()):
+            if st["buf"]:
+                self._emit(st, bytes(st["buf"]))
+        self.frames.clear()
+
+
+class _Session:
+    """Bitta TCP ulanishdagi video oqim(lar)ni kadrlarga (access-unit) yig'adi.
+
+    Kadr chegarasi IKKI belgi bo'yicha aniqlanadi (lkmio/lkm kabi): bir xil
+    (sim, kanal) uchun *timestamp o'zgarishi* yoki subMark `FIRST`. Sabab:
+    ba'zi qurilmalar subMark'ni noto'g'ri (hammasini atomic) belgilaydi, bunda
+    faqat timestamp ishonchli; boshqalari esa timestamp'ni yangilamaydi —
+    shunda subMark (FIRST/LAST) yordam beradi. Shu tariqa ikkala nosozlik
+    holatida ham kadr to'g'ri yig'iladi."""
+
+    def __init__(self, peer=None):
+        # (sim,ch) -> {"buf": bytearray, "ts", "dt", "codec"} — joriy kadr
+        self.peer = peer
+        # Shu ulanishda ko'rilgan (sim, kanal) juftliklari — log yorlig'i uchun.
+        self.keys: set = set()
+        self.frames: dict = {}
+        self.primed: set = set()  # I-kadr ko'rilgan (sim,ch) — shundagina yozamiz
+        self.codec: dict = {}     # (sim,ch) -> ffmpeg kirish kodeki (h264/hevc)
+        self.audio = _AudioSink(peer)  # audio (G.711A/U) paketlari yig'uvchisi
+
+    def on_packet(self, p: dict) -> None:
+        typ = p["data_type"]
+        key = (p["sim"], p["channel"])
+        # Log yorlig'i uchun: qaysi kamera (IMEI) qaysi kanalni yuboryapti.
+        self.keys.add(key)
+        _remember_peer(self.peer, (key,))
+        # Audio alohida yo'l bilan; shaffof/xizmat paketlari tashlanadi.
+        if typ == DT_AUDIO:
+            self.audio.on_packet(
+                p, codec=self.codec.get(key, DEFAULT_VIDEO_CODEC))
+            return
+        if typ not in _VIDEO_TYPES:
+            return
+        sub = p["subpacket"]
+        # PT'dan video kodekni aniqlaymiz (98=H.264, 99=H.265) — H.265 kameralar
+        # uchun ffmpeg kirish formati `hevc` bo'lishi kerak.
+        codec = _codec_for_pt(p.get("pt"))
+        self.codec[key] = codec
+        payload = p["payload"]
+        if not payload:
+            return
+        ts = p.get("ts")
+        st = self.frames.get(key)
+        if st is None:
+            st = self.frames[key] = {"buf": bytearray(), "ts": ts,
+                                     "dt": typ, "codec": codec}
+        elif st["buf"] and (ts != st["ts"] or sub == SUB_FIRST):
+            # timestamp o'zgardi yoki yangi kadr boshi -> avvalgisini chiqaramiz
+            self._emit(key, st["dt"], st["codec"], bytes(st["buf"]))
+            st["buf"] = bytearray()
+        if not st["buf"]:
+            # Yangi kadr — tur/kodek joriy paketdan olinadi. Aks holda
+            # SUB_LAST yo'lida eski (oldingi kadrning) tur qolib, birinchi
+            # I-kadr "P" deb hisoblanib, oqim umuman boshlanmasdi.
+            st["ts"], st["dt"], st["codec"] = ts, typ, codec
+        st["buf"].extend(payload)
+        if sub == SUB_LAST or len(st["buf"]) >= FRAME_MAX_BYTES:
+            # oxirgi subpaket (yoki bufer chegarasi) — kadrni darhol chiqaramiz
+            self._emit(key, st["dt"], st["codec"], bytes(st["buf"]))
+            st["buf"] = bytearray()
+
+    def _emit(self, key, typ: int, codec: str, au: bytes) -> None:
         if not au:
             return
         # ffmpeg SPS/PPS'siz P-kadrlarni dekodlay olmaydi — birinchi I-kadr
@@ -451,25 +1026,96 @@ class _Session:
             if typ != DT_VIDEO_I:
                 return
             self.primed.add(key)
-        _STATS["access_units"] += 1
         mode = "playback" if _playback_active(key[0], key[1]) else "live"
-        m = _get_muxer(key[0], key[1], mode)
+        if mode == "playback":
+            _touch_playback(key[0], key[1])
+        m = _get_muxer(key[0], key[1], mode, codec=codec, peer=self.peer,
+                       audio_pt=_AUDIO_PT.get(_muxer_key(key[0], key[1], mode)))
+        if m.bytes == 0 and typ != DT_VIDEO_I:
+            # Muxer ENDIGINA ochildi (audio paydo bo'ldi yoki kodek o'zgardi).
+            # Yangi ffmpeg SPS/PPS'siz P-kadrni dekodlay olmaydi va HLS'ga
+            # umuman yozmaydi — keyingi I-kadrgacha kutamiz.
+            return
+        _STATS["access_units"] += 1
         m.write(au)
+        # Diagnostika: muxer'ga haqiqatan yozilgan kadrlar shu yerda sanaladi
+        # (kalit kadr vaqti — "nega video qora?" savolining asosiy belgisi).
         st = _STREAMS.get(m.key)
         if st is not None:
             st["bytes"] = m.bytes
+            st["dropped"] = getattr(m, "dropped", 0)
+            st["frames"] = int(st.get("frames") or 0) + 1
+            if typ == DT_VIDEO_I:
+                st["keyframes"] = int(st.get("keyframes") or 0) + 1
+                st["last_keyframe_at"] = _now()
+
+    def note(self, msg: str) -> None:
+        """Diagnostika: ulanish darajasidagi xatoni shu sessiya oqimlariga yozish."""
+        for sim, ch in list(self.frames.keys()):
+            mode = "playback" if _playback_active(sim, ch) else "live"
+            m = _MUXERS.get(_muxer_key(sim, ch, mode))
+            fn = getattr(m, "note", None)
+            if fn is not None:
+                fn(msg)
 
     def close(self) -> None:
         # Ulanish yopildi — muxerlarni YOPMAYMIZ (doimiy, qayta ulanishda
-        # davom etadi). Faqat tugallanmagan subpaket yig'indilari tashlanadi.
-        self.pending.clear()
+        # davom etadi). Kutayotgan (chiqarilmagan) kadrlarni bo'shatamiz, chunki
+        # keyingi paket kelmaydi — aks holda oxirgi kadr yo'qoladi.
+        for key, st in list(self.frames.items()):
+            if st["buf"]:
+                self._emit(key, st["dt"], st["codec"], bytes(st["buf"]))
+            st["buf"] = bytearray()
+        self.audio.close()
+        self.frames.clear()
         self.primed.clear()
+        self.codec.clear()
+
+
+async def _peek(reader: asyncio.StreamReader, timeout: float = 60.0) -> bytes:
+    """Birinchi baytlarni kutib oladi — protokolni aniqlash uchun."""
+    try:
+        return await asyncio.wait_for(reader.read(4096), timeout=timeout)
+    except (asyncio.TimeoutError, ConnectionError, OSError):
+        return b""
 
 
 async def _handle(reader: asyncio.StreamReader,
                   writer: asyncio.StreamWriter) -> None:
+    """Yangi ulanish — birinchi paketga qarab protokolni aniqlab yo'naltiradi.
+
+    Qurilmada bitta "server port" maydoni bo'lsa (yoki o'rnatuvchi 6107'ni
+    platforma porti qilib qo'ysa), JT808 signaling paketlari media portga
+    keladi va ilgari jimgina tashlanardi — qurilma "oflayn" ko'rinardi.
+    Endi bunday paket JT808 listener'iga o'tkaziladi.
+    """
     peer = writer.get_extra_info("peername")
-    sess = _Session()
+    # Diagnostika: ulanish qabul qilishning o'zidayoq yoziladi (qurilma jim
+    # tursa ham "urinish bo'ldimi?" shu qatordan ko'rinadi).
+    log.info("JT1078: yangi ulanish %s", _src(peer, *_known_peers(peer)))
+    first = await _peek(reader)
+    # Birinchi baytlar: protokol aniqlanmasa "qurilma nega oflayn?" savoliga
+    # javob shu yerda.
+    log.info("JT1078: %s — birinchi %d bayt: %s",
+             _src(peer, *_known_peers(peer)), len(first), first[:16].hex())
+    if first[:1] == b"\x7e":
+        log.warning("JT1078 media portiga JT808 signaling keldi %s — "
+                    "JT808 listener'ga o'tkazildi",
+                    _src(peer, *_known_peers(peer)))
+        from . import jt808  # aylanma importdan qochish uchun (lazy)
+        await jt808.handle_session(reader, writer, first)
+        return
+    await handle_session(reader, writer, first)
+
+
+async def handle_session(reader: asyncio.StreamReader,
+                         writer: asyncio.StreamWriter,
+                         first: bytes = b"") -> None:
+    """JT1078 media sessiyasi. `first` — allaqachon o'qilgan baytlar."""
+    peer = writer.get_extra_info("peername")
+    sess = _Session(peer)
+    if peer:
+        _SESSIONS[peer] = sess
     # Serverga video saqlanmaydi — xom dump faqat diagnostika uchun yoqiladi.
     raw_dump = None
     if config.JT1078_RAW_DUMP:
@@ -481,10 +1127,34 @@ async def _handle(reader: asyncio.StreamReader,
             raw_dump = open(raw_path, "ab", buffering=0)
         except Exception:  # noqa: BLE001
             raw_dump = None
-    log.info("JT1078: media ulanishi %s", peer)
-    buf = b""
+    # "media ulanishi" qatori IMEI/kanal bilan chiqishi uchun birinchi paket
+    # ishlanishini kutamiz (har bir qatorda qaysi kamera ekani ko'rinishi kerak).
+    announced = False
+    buf = first
     try:
         while True:
+            # TCP paketlarni birlashtirishi/bo'laklashi mumkin — FLAG+body_len
+            # bilan aniq freymleymiz. To'liq paketlar olinadi, qoldiq kutadi.
+            # Bufer avval ishlanadi (jumladan `first` — protokol o'tkazilganda
+            # birinchi paket kutib qolmasligi uchun).
+            pkts, buf = extract_packets(buf)
+            for p in pkts:
+                _STATS["packets"] += 1
+                sess.on_packet(p)
+            if not announced:
+                # Paket kelmagan/tanish bo'lmasa IMEI aniqlanmaydi — baribir
+                # ulanish fakti ko'rinsin ("qurilma urindimi?" savoliga javob).
+                announced = True
+                log.info("JT1078: media ulanishi %s",
+                         _src(peer, *sess.keys) if sess.keys
+                         else f"{peer} (IMEI aniqlanmadi)")
+            # Desinxronizatsiyada bufer cheksiz o'smasligi uchun himoya.
+            if len(buf) > 8 * 1024 * 1024:
+                log.warning("JT1078: bufer juda katta (%s) — tozalandi",
+                            _src(peer, *sess.keys))
+                _STATS["errors"] += 1
+                sess.note("bufer to'ldi — paketlar sinxronizatsiyasi buzildi")
+                buf = b""
             try:
                 chunk = await asyncio.wait_for(reader.read(65536), timeout=60)
             except asyncio.TimeoutError:
@@ -497,21 +1167,11 @@ async def _handle(reader: asyncio.StreamReader,
                 except Exception:  # noqa: BLE001
                     pass
             buf += chunk
-            # TCP paketlarni birlashtirishi/bo'laklashi mumkin — FLAG+body_len
-            # bilan aniq freymleymiz. To'liq paketlar olinadi, qoldiq kutadi.
-            pkts, buf = extract_packets(buf)
-            for p in pkts:
-                _STATS["packets"] += 1
-                sess.on_packet(p)
-            # Desinxronizatsiyada bufer cheksiz o'smasligi uchun himoya.
-            if len(buf) > 8 * 1024 * 1024:
-                log.warning("JT1078: bufer juda katta (%s) — tozalandi", peer)
-                _STATS["errors"] += 1
-                buf = b""
     except (asyncio.IncompleteReadError, ConnectionResetError):
         pass
-    except Exception:  # noqa: BLE001
-        log.exception("JT1078: ulanishda xato (%s)", peer)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("JT1078: ulanishda xato (%s)", _src(peer, *sess.keys))
+        sess.note(f"ulanishda xato: {exc}")
     finally:
         sess.close()
         if raw_dump is not None:
@@ -524,7 +1184,9 @@ async def _handle(reader: asyncio.StreamReader,
             await writer.wait_closed()
         except Exception:  # noqa: BLE001
             pass
-        log.info("JT1078: media uzildi %s", peer)
+        if peer:
+            _SESSIONS.pop(peer, None)
+        log.info("JT1078: media uzildi %s", _src(peer, *sess.keys))
 
 
 async def run_tcp(host: str, port: int) -> None:

@@ -14,14 +14,15 @@ from bm_automation.app.gps.jt1078 import (AUDIO_HEADER_LEN, DT_AUDIO,
                                           SUB_MIDDLE, TRANSPARENT_HEADER_LEN)
 
 
-def _pkt(typ, payload, sub=SUB_ATOMIC, sim="000000000123", ch=1,
+def _pkt(typ, payload, sub=SUB_ATOMIC, pt=98, sim="000000000123", ch=1,
          ts=1700000000, seq=0):
     """Real qurilma sarlavhasiga mos JT1078 paketini qurish.
 
-    Sarlavha uzunligi turiga bog'liq: video 30, audio 26, shaffof 18 bayt.
+    pt — RTP payload type (98=H.264, 99=H.265). Sarlavha uzunligi turiga
+    bog'liq: video 30, audio 26, shaffof 18 bayt.
     """
     dtb = ((typ & 0x0F) << 4) | (sub & 0x0F)
-    head = (FLAG + b"\x81\x62" + seq.to_bytes(2, "big")
+    head = (FLAG + bytes([0x81, 0x80 | (pt & 0x7F)]) + seq.to_bytes(2, "big")
             + bytes.fromhex(sim) + bytes([ch, dtb]))
     if typ != DT_TRANSPARENT:
         head += ts.to_bytes(8, "big")
@@ -34,10 +35,12 @@ def _pkt(typ, payload, sub=SUB_ATOMIC, sim="000000000123", ch=1,
 class _FakeMuxer:
     instances = []
 
-    def __init__(self, sim, channel, mode="live"):
+    def __init__(self, sim, channel, mode="live", codec="h264", audio_pt=None):
         self.sim = sim
         self.channel = channel
         self.mode = mode
+        self.codec = codec
+        self.audio_pt = audio_pt
         self.key = f"{sim}_{channel}" if mode == "live" else f"pb:{sim}_{channel}"
         self.prefix = "jt_" if mode == "live" else "jtpb_"
         self.bytes = 0
@@ -45,11 +48,15 @@ class _FakeMuxer:
         self.last_active = 0.0
         self.closed = False
         self.aus = []
+        self.audio = []
         _FakeMuxer.instances.append(self)
 
     def write(self, au):
         self.bytes += len(au)
         self.aus.append(au)
+
+    def write_audio(self, pcm):
+        self.audio.append(pcm)
 
     def close(self):
         self.closed = True
@@ -57,18 +64,45 @@ class _FakeMuxer:
         jt1078._STREAMS.pop(self.key, None)
 
 
+def _registries_clear():
+    jt1078._MUXERS.clear()
+    jt1078._STREAMS.clear()
+    jt1078._DIAG.clear()
+    jt1078._AUDIO_PT.clear()
+    jt1078._STATS.update({"audio_packets": 0, "audio_units": 0,
+                          "access_units": 0})
+    jt1078.clear_playback()
+
+
 def _reset(monkeypatch):
     """Monkeypatch muxer + toza registry (testlar orasi izolyatsiya)."""
     monkeypatch.setattr(jt1078, "_Muxer", _FakeMuxer)
     _FakeMuxer.instances.clear()
-    jt1078._MUXERS.clear()
-    jt1078._STREAMS.clear()
-    jt1078.clear_playback()
+    _registries_clear()
 
 
-def _feed(sess, typ, sub, payload, sim="123", ch=1):
+def _reset_real(monkeypatch, tmp_path):
+    """Haqiqiy `_Muxer` bilan sinash: ffmpeg jarayoni yo'q, HLS tmp'da.
+
+    Shu tariqa muxerning diagnostikasi (restart soni, oxirgi xato, log)
+    ffmpeg o'rnatilgan-o'rnatilmaganiga bog'liq bo'lmaydi.
+    """
+    _registries_clear()
+    monkeypatch.setattr(jt1078.config, "HLS_DIR", str(tmp_path))
+    monkeypatch.setattr(jt1078.config, "JT1078_RAW_DUMP", False)
+    monkeypatch.setattr(jt1078, "ffmpeg_available", lambda: False)
+
+
+def _feed(sess, typ, sub, payload, sim="123", ch=1, pt=None, ts=0):
+    """Bitta JT1078 paketini session'ga beradi.
+
+    `ts` — real qurilma har kadrda timestamp'ni oshiradi va kadr chegarasi
+    shu maydon bo'yicha ham aniqlanadi: shuning uchun ATOMIC kadrlarni
+    sinaganda ts'ni ham oshirib berish kerak (bitta kadrning bo'laklari esa
+    bir xil ts bilan keladi).
+    """
     sess.on_packet({"sim": sim, "channel": ch, "data_type": typ,
-                    "subpacket": sub, "ts": 0, "payload": payload})
+                    "subpacket": sub, "pt": pt, "ts": ts, "payload": payload})
 
 
 # ---------------------------------------------------------------- parse
@@ -120,6 +154,26 @@ def test_parse_video_b_frame():
     assert consumed == len(raw)
     assert p["data_type"] == DT_VIDEO_B
     assert p["payload"] == b"BFRAME"
+
+
+def test_parse_extracts_pt_h265():
+    """RTP payload type ajratiladi (99 -> H.265)."""
+    raw = _pkt(DT_VIDEO_I, b"x", pt=99)
+    p, _ = jt1078.parse_packet(raw)
+    assert p["pt"] == 99
+
+
+def test_parse_default_pt_h264():
+    raw = _pkt(DT_VIDEO_I, b"x")            # standart pt=98
+    p, _ = jt1078.parse_packet(raw)
+    assert p["pt"] == 98
+
+
+def test_codec_for_pt_mapping():
+    assert jt1078._codec_for_pt(98) == "h264"
+    assert jt1078._codec_for_pt(99) == "hevc"
+    assert jt1078._codec_for_pt(None) == "h264"   # noma'lum -> standart
+    assert jt1078._codec_for_pt(100) == "h264"    # AVS qo'llanmaydi -> fallback
 
 
 def test_sim_keeps_leading_zeros():
@@ -223,22 +277,26 @@ def test_session_waits_for_keyframe(monkeypatch):
 
 
 def test_session_ignores_audio_and_transparent(monkeypatch):
+    """Audio o'chirilgan bo'lsa paket faqat sanaladi (video muxer
+    ochilmaydi); shaffof/xizmat paketlari butunlay tashlanadi."""
     _reset(monkeypatch)
+    monkeypatch.setattr(jt1078.config, "JT1078_AUDIO", False)
     sess = jt1078._Session()
-    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"audio")
+    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"audio", pt=jt1078.PT_AUDIO_G711A)
     _feed(sess, DT_TRANSPARENT, SUB_ATOMIC, b"priv")
     _feed(sess, DT_TRANSPARENT, SUB_FIRST, b"priv2")
     sess.close()
     assert _FakeMuxer.instances == []
+    assert jt1078._STATS["audio_packets"] == 1
 
 
 def test_session_accepts_b_frames(monkeypatch):
     """B-kadrlar ham I/P kabi muxerga uzatilishi kerak."""
     _reset(monkeypatch)
     sess = jt1078._Session()
-    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I")
-    _feed(sess, DT_VIDEO_B, SUB_ATOMIC, b"B")
-    sess.close()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I", ts=1)
+    _feed(sess, DT_VIDEO_B, SUB_ATOMIC, b"B", ts=2)   # I-kadr chiqadi
+    sess.close()                                        # B-kadr chiqadi
     assert _FakeMuxer.instances[0].aus == [b"I", b"B"]
 
 
@@ -246,14 +304,190 @@ def test_session_separates_channels(monkeypatch):
     _reset(monkeypatch)
     sess = jt1078._Session()
 
-    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"1a", ch=1)
-    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"2a", ch=2)
-    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"1b", ch=1)
-    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"2b", ch=2)
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"1a", ch=1, ts=1)
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"2a", ch=2, ts=1)
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"1b", ch=1, ts=2)
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"2b", ch=2, ts=2)
+    sess.close()
     assert sorted(m.key for m in _FakeMuxer.instances) == ["123_1", "123_2"]
     by = {m.key: m.aus for m in _FakeMuxer.instances}
     assert by["123_1"] == [b"1a", b"1b"]
     assert by["123_2"] == [b"2a", b"2b"]
+
+
+def test_session_h265_codec(monkeypatch):
+    """PT=99 (H.265) — muxer hevc kirish formati bilan ochiladi."""
+    _reset(monkeypatch)
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I", pt=99)
+    sess.close()
+    assert _FakeMuxer.instances[0].codec == "hevc"
+
+
+def test_session_h264_codec_default(monkeypatch):
+    """PT yo'q bo'lsa ham H.264 deb qaraladi (eski qurilmalar)."""
+    _reset(monkeypatch)
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I")      # pt=None
+    sess.close()
+    assert _FakeMuxer.instances[0].codec == "h264"
+
+
+def test_session_codec_change_recreates_muxer(monkeypatch):
+    """Bir kanalda kodek o'zgarsa muxer qayta ochiladi (h264 -> hevc)."""
+    _reset(monkeypatch)
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I", pt=98, ts=1)
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I2", pt=99, ts=2)
+    sess.close()
+    assert [m.codec for m in _FakeMuxer.instances] == ["h264", "hevc"]
+
+
+def test_frame_buffer_cap_forces_emit(monkeypatch):
+    """Timestamp o'zgarmasa ham bufer chegaraga yetsa kadr chiqariladi —
+    bufer cheksiz o'sib xotirani yemasligi kerak."""
+    _reset(monkeypatch)
+    monkeypatch.setattr(jt1078, "FRAME_MAX_BYTES", 10)
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"x" * 8, ts=0)
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"y" * 8, ts=0)
+    assert _FakeMuxer.instances[0].aus == [b"x" * 8 + b"y" * 8]
+    assert bytes(sess.frames[("123", 1)]["buf"]) == b""
+
+
+# ------------------------------------------------------------------ audio
+
+def test_audio_muxed_into_stream(monkeypatch):
+    """Audio paket kelganda muxer audio kirish quvuri bilan qayta ochiladi
+    va PCM muxerga yoziladi (HLS'da ovoz bo'lishi uchun)."""
+    _reset(monkeypatch)
+    monkeypatch.setattr(jt1078.config, "JT1078_AUDIO", True)
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I", ts=1)
+    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"P", ts=2)      # video muxer
+    assert _FakeMuxer.instances[0].audio_pt is None
+
+    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"pcm1",
+          pt=jt1078.PT_AUDIO_G711A, ts=3)
+    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"pcm2",
+          pt=jt1078.PT_AUDIO_G711A, ts=4)                 # pcm1 chiqadi
+    sess.close()                                          # pcm2 chiqadi
+
+    m = _FakeMuxer.instances[-1]
+    assert m.audio_pt == jt1078.PT_AUDIO_G711A
+    assert m.audio == [b"pcm1", b"pcm2"]
+    assert jt1078._STATS["audio_units"] == 2
+
+
+def test_audio_subpackets_assembled(monkeypatch):
+    """first+middle+last bitta PCM bo'lagiga yig'iladi."""
+    _reset(monkeypatch)
+    monkeypatch.setattr(jt1078.config, "JT1078_AUDIO", True)
+    pt = jt1078.PT_AUDIO_G711A
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I", ts=1)
+    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"P", ts=2)
+    _feed(sess, DT_AUDIO, SUB_FIRST, b"a", pt=pt, ts=3)
+    _feed(sess, DT_AUDIO, SUB_MIDDLE, b"b", pt=pt, ts=3)
+    _feed(sess, DT_AUDIO, SUB_LAST, b"c", pt=pt, ts=3)
+    assert _FakeMuxer.instances[-1].audio == [b"abc"]
+
+
+def test_audio_unsupported_pt_dropped(monkeypatch):
+    """G.726/AAC kabi qo'llanmaydigan kodeklar tashlanadi."""
+    _reset(monkeypatch)
+    monkeypatch.setattr(jt1078.config, "JT1078_AUDIO", True)
+    sess = jt1078._Session()
+    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"aac", pt=jt1078.PT_AUDIO_AAC, ts=1)
+    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"g726", pt=jt1078.PT_AUDIO_G726, ts=2)
+    sess.close()
+    assert _FakeMuxer.instances == []
+    assert jt1078._STATS["audio_units"] == 0
+
+
+def test_audio_pt_change_recreates_muxer(monkeypatch):
+    """Audio kodeki o'zgarsa (alaw -> mulaw) muxer qayta ochiladi."""
+    _reset(monkeypatch)
+    monkeypatch.setattr(jt1078.config, "JT1078_AUDIO", True)
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I", ts=1)
+    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"P", ts=2)
+    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"u1", pt=jt1078.PT_AUDIO_G711A, ts=3)
+    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"u2", pt=jt1078.PT_AUDIO_G711A, ts=4)
+    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"m1", pt=jt1078.PT_AUDIO_G711U, ts=5)
+    sess.close()
+    assert [m.audio_pt for m in _FakeMuxer.instances if m.audio_pt] == [
+        jt1078.PT_AUDIO_G711A, jt1078.PT_AUDIO_G711U]
+
+
+def test_streams_report_audio_flag(monkeypatch):
+    """Oqim ro'yxatida audio borligi ko'rinadi (UI diagnostikasi uchun)."""
+    _reset(monkeypatch)
+    monkeypatch.setattr(jt1078.config, "JT1078_AUDIO", True)
+    pt = jt1078.PT_AUDIO_G711A
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I", ts=1)
+    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"P", ts=2)
+    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"p1", pt=pt, ts=3)
+    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"p2", pt=pt, ts=4)
+    out = jt1078.streams()
+    assert out and out[0]["audio"] is True
+
+
+def test_audio_recreate_waits_for_keyframe(monkeypatch):
+    """Audio paydo bo'lib muxer qayta ochilsa — yangi ffmpeg keyingi I-kadrni
+    kutadi. Aks holda (SPS/PPS'siz P-kadr) ffmpeg HLS'ga hech narsa yozmaydi
+    va oqim butunlay yo'qoladi."""
+    _reset(monkeypatch)
+    monkeypatch.setattr(jt1078.config, "JT1078_AUDIO", True)
+    pt = jt1078.PT_AUDIO_G711A
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I", ts=1)
+    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"P1", ts=2)      # muxer #1: I yozildi
+    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"a1", pt=pt, ts=3)
+    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"a2", pt=pt, ts=4)  # -> muxer #2
+    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"P2", ts=5)       # P1 tashlanadi
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I2", ts=6)       # P2 tashlanadi
+    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"P3", ts=7)       # I2 yoziladi
+    sess.close()                                            # P3 yoziladi
+    assert _FakeMuxer.instances[0].aus == [b"I"]
+    assert _FakeMuxer.instances[1].aus == [b"I2", b"P3"]
+
+
+def test_muxer_audio_pipe_args(monkeypatch, tmp_path):
+    """POSIX'da audio ffmpeg'ga ikkinchi kirish (xom PCM quvuri) sifatida
+    beriladi va AAC'ga kodlanadi (Windows'da bu yo'l o'chirilgan).
+
+    Bu test HAQIQIY `_Muxer`ni sinaydi — `_reset`dagi fake'ni qo'llamaymiz.
+    """
+    jt1078._MUXERS.clear()
+    jt1078._STREAMS.clear()
+    jt1078._AUDIO_PT.clear()
+    monkeypatch.setattr(jt1078.config, "HLS_DIR", str(tmp_path))
+    monkeypatch.setattr(jt1078.config, "JT1078_AUDIO", True)
+    monkeypatch.setattr(jt1078, "ffmpeg_available", lambda: True)
+    monkeypatch.setattr(jt1078, "_audio_pipe_supported", lambda: True)
+    captured = {}
+
+    class _Proc:
+        stdin = None
+
+        def __init__(self, cmd, **kw):
+            captured["cmd"] = cmd
+            captured["kw"] = kw
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(jt1078.subprocess, "Popen", _Proc)
+    m = jt1078._Muxer("123", 1, codec="h264", audio_pt=jt1078.PT_AUDIO_G711A)
+    cmd = captured["cmd"]
+    assert "alaw" in cmd
+    assert any(str(a).startswith("/dev/fd/") for a in cmd)
+    assert "-c:a" in cmd and "aac" in cmd
+    assert captured["kw"]["pass_fds"]          # fd ffmpeg'ga uzatilgan
+    m.write_audio(b"\xd5\xaa")                 # quvurga yozish xato bermaydi
+    m.close()
 
 
 # ---------------------------------------------------------------- persistence
@@ -267,15 +501,15 @@ def test_muxer_persists_across_reconnects(monkeypatch):
     _reset(monkeypatch)
 
     s1 = jt1078._Session()
-    _feed(s1, DT_VIDEO_I, SUB_ATOMIC, b"A")
+    _feed(s1, DT_VIDEO_I, SUB_ATOMIC, b"A", ts=1)
     s1.close()                       # kamera uzildi — muxer yopilmaydi
     assert len(_FakeMuxer.instances) == 1
     assert not _FakeMuxer.instances[0].closed
     assert "123_1" in jt1078._MUXERS
 
     s2 = jt1078._Session()           # qayta ulanish
-    _feed(s2, DT_VIDEO_I, SUB_ATOMIC, b"B")   # yangi ulanishda I-kadr kutamiz
-    _feed(s2, DT_VIDEO_P, SUB_ATOMIC, b"C")
+    _feed(s2, DT_VIDEO_I, SUB_ATOMIC, b"B", ts=1)  # yangi ulanishda I-kadr
+    _feed(s2, DT_VIDEO_P, SUB_ATOMIC, b"C", ts=2)
     s2.close()
     assert len(_FakeMuxer.instances) == 1     # YANGI muxer yaratilmadi
     assert _FakeMuxer.instances[0].aus == [b"A", b"B", b"C"]
@@ -285,12 +519,13 @@ def test_reconnect_still_waits_for_keyframe(monkeypatch):
     """Qayta ulanishda eski P-kadr yozilmaydi — I-kadr kutiladi."""
     _reset(monkeypatch)
     s1 = jt1078._Session()
-    _feed(s1, DT_VIDEO_I, SUB_ATOMIC, b"A")
+    _feed(s1, DT_VIDEO_I, SUB_ATOMIC, b"A", ts=1)
     s1.close()
     s2 = jt1078._Session()
-    _feed(s2, DT_VIDEO_P, SUB_ATOMIC, b"orphan")   # prime yo'q -> tashlanadi
+    _feed(s2, DT_VIDEO_P, SUB_ATOMIC, b"orphan", ts=1)   # prime yo'q -> tashlanadi
     assert _FakeMuxer.instances[0].aus == [b"A"]
-    _feed(s2, DT_VIDEO_I, SUB_ATOMIC, b"I2")
+    _feed(s2, DT_VIDEO_I, SUB_ATOMIC, b"I2", ts=2)
+    s2.close()
     assert _FakeMuxer.instances[0].aus == [b"A", b"I2"]
 
 
@@ -300,6 +535,7 @@ def test_playback_mode_routes_to_separate_muxer(monkeypatch):
     jt1078.set_playback("123", 1, seconds=60)
     sess = jt1078._Session()
     _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I")
+    sess.close()
     assert [m.key for m in _FakeMuxer.instances] == ["pb:123_1"]
     assert _FakeMuxer.instances[0].mode == "playback"
 
@@ -311,13 +547,29 @@ def test_playback_expiry_returns_to_live(monkeypatch):
     jt1078._PLAYBACK["123_1"] = 0  # muddat o'tib ketdi
     sess = jt1078._Session()
     _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I")
+    sess.close()
     assert [m.key for m in _FakeMuxer.instances] == ["123_1"]
+
+
+def test_playback_window_extends_while_streaming(monkeypatch):
+    """Oqim kelganda playback oynasi uzayadi (uzun yozuv 'jonli'ga o'tmasin)."""
+    _reset(monkeypatch)
+    monkeypatch.setattr(jt1078, "_now", lambda: 1000.0)
+    jt1078.set_playback("123", 1, seconds=60)
+    assert jt1078._PLAYBACK["123_1"] == 1060.0
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I")
+    sess.close()
+    want = 1000.0 + jt1078.config.JT1078_PLAYBACK_WINDOW_S
+    assert jt1078._PLAYBACK["123_1"] == want
+    assert _FakeMuxer.instances[0].mode == "playback"
 
 
 def test_streams_report_kind_and_hls(monkeypatch):
     _reset(monkeypatch)
     sess = jt1078._Session()
     _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I", sim="123", ch=4)
+    sess.close()
     out = jt1078.streams()
     assert out and out[0]["kind"] == "live"
     assert out[0]["hls"] == "/hls/jt_123_4.m3u8"
@@ -347,6 +599,7 @@ def test_reap_idle_muxers_closes_idle(monkeypatch):
     _reset(monkeypatch)
     sess = jt1078._Session()
     _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"A")
+    sess.close()
     m = jt1078._MUXERS["123_1"]
     m.last_active = 1000.0
 
@@ -364,9 +617,221 @@ def test_broken_ffmpeg_recreated(monkeypatch):
     """Muxer yopilgach (closed) keyingi kadrda yangi muxer yaratiladi."""
     _reset(monkeypatch)
     sess = jt1078._Session()
-    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"A")
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"A", ts=1)
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"B", ts=2)   # A chiqadi -> muxer #1
     jt1078._MUXERS["123_1"].close()      # ffmpeg o'lganini simulyatsiya
-    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"B")
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"C", ts=3)   # B chiqadi -> muxer #2
     assert len(_FakeMuxer.instances) == 2
     assert _FakeMuxer.instances[1].aus == [b"B"]
+
+
+# --------------------------------------------- oqim diagnostikasi (dashboard)
+
+def test_streams_report_diagnostics(monkeypatch):
+    """Har bir oqim uchun kodek nomi, kadr/kalit kadr soni va kalit kadr yoshi."""
+    _reset(monkeypatch)
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I1", ts=1)
+    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"P1", ts=2)   # I1 yoziladi
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I2", ts=3)   # P1 yoziladi
+    sess.close()                                       # I2 yoziladi
+    out = jt1078.streams()
+    assert len(out) == 1
+    s = out[0]
+    assert s["active"] is True
+    assert s["codec"] == "h264" and s["codec_name"] == "H.264"
+    assert s["frames"] == 3 and s["keyframes"] == 2
+    assert s["restarts"] == 0
+    assert s["last_error"] is None
+    assert s["keyframe_age_s"] is not None and s["keyframe_age_s"] >= 0
+
+
+def test_hevc_stream_reports_h265_name(monkeypatch):
+    """H.265 (PT=99) oqim diagnostikasida "H.265" ko'rinadi."""
+    _reset(monkeypatch)
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I", pt=jt1078.PT_VIDEO_H265)
+    sess.close()
+    s = jt1078.streams()[0]
+    assert s["codec"] == "hevc" and s["codec_name"] == "H.265"
+
+
+def test_note_records_last_error_on_active_stream(monkeypatch, tmp_path):
+    """Ulanish xatosi oqim diagnostikasiga yoziladi (dashboard'da ko'rinadi)."""
+    _reset_real(monkeypatch, tmp_path)
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I", ts=1)
+    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"P", ts=2)
+    sess.note("bufer to'ldi — paketlar sinxronizatsiyasi buzildi")
+    s = jt1078.streams()[0]
+    assert s["last_error"].startswith("bufer to'ldi")
+    assert s["error_age_s"] is not None
+
+
+def test_ffmpeg_log_tail_reported(monkeypatch, tmp_path):
+    """Oqim diagnostikasi ffmpeg'ning oxirgi MA'NOLI xato qatorini beradi."""
+    _reset_real(monkeypatch, tmp_path)
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I", ts=1)
+    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"P", ts=2)
+    log = jt1078._ffmpeg_log("123_1")
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_bytes(
+        b"[h264 @ 0x1] non monotonically increasing dts to muxer\n"
+        b"[hls @ 0x2] Invalid NAL unit size (300 > 4)\n"
+        b"[libx264 @ 0x3] using cpu capabilities: MMX2 SSE2Fast\n")
+    assert jt1078.streams()[0]["ffmpeg_note"] == \
+        "[libx264 @ 0x3] using cpu capabilities: MMX2 SSE2Fast"
+
+
+def test_recent_streams_keep_last_error(monkeypatch, tmp_path):
+    """Yopilgan oqim sababi va oxirgi xatosi bilan `recent_streams()`da qoladi."""
+    _reset_real(monkeypatch, tmp_path)
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I", ts=1)
+    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"P", ts=2)
+    m = jt1078._MUXERS["123_1"]
+    m.note("ffmpeg yozish xatosi — qayta ishga tushiriladi")
+    m.last_active = 0.0
+    assert jt1078._reap_idle_muxers(now=jt1078.MUXER_IDLE_TIMEOUT + 1) == 1
+    assert jt1078.streams() == []          # faol oqim yo'q
+    rec = jt1078.recent_streams()
+    assert len(rec) == 1
+    r = rec[0]
+    assert r["active"] is False
+    assert r["last_error"].startswith("ffmpeg yozish xatosi")
+    assert r["close_reason"] == "kamera uzildi"
+    assert r["closed_s"] is not None and r["closed_s"] >= 0
+    assert r["uptime_s"] is not None and r["uptime_s"] >= 0
+    assert r["keyframes"] == 1 and r["frames"] == 1
+
+
+def test_restart_increments_counter(monkeypatch, tmp_path):
+    """Muxer qayta yaratilsa (kodek o'zgardi) restart soni oshadi."""
+    _reset_real(monkeypatch, tmp_path)
+    jt1078._get_muxer("123", 1, codec="h264")
+    assert jt1078.streams()[0]["restarts"] == 0
+    jt1078._get_muxer("123", 1, codec="hevc")   # kodek o'zgardi -> restart
+    s = jt1078.streams()[0]
+    assert s["restarts"] == 1 and s["codec"] == "hevc"
+    assert s["uptime_s"] is not None and s["uptime_s"] >= 0
+    assert jt1078.recent_streams()[0]["close_reason"] == "kodek o'zgardi"
+
+
+# ------------------------------------------------ log yorlig'i (IMEI/kanal)
+
+def test_media_logs_include_imei_and_channel(monkeypatch, caplog):
+    """Haqiqiy media sessiyasi loglarida IMEI va kanal ko'rinadi.
+
+    Haqiqiy TCP listener + haqiqiy `_handle`/`handle_session` ishlatiladi —
+    "qaysi kamera, qaysi kanal?" savoliga log javob berishini tasdiqlash.
+    """
+    import asyncio
+    import logging
+
+    _reset(monkeypatch)
+    jt1078._SESSIONS.clear()
+    caplog.set_level(logging.INFO, logger=jt1078.log.name)
+
+    async def _run():
+        server = await asyncio.start_server(jt1078._handle, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(_pkt(DT_VIDEO_I, b"I" * 20, sim="221080344988", ch=7))
+        writer.write(_pkt(DT_VIDEO_I, b"I" * 20, sim="221080344988", ch=2,
+                          ts=1700000001))
+        await writer.drain()
+        await asyncio.sleep(0.3)
+        writer.close()
+        await writer.wait_closed()
+        await asyncio.sleep(0.3)
+        server.close()
+        await server.wait_closed()
+
+    asyncio.run(_run())
+    out = [r.getMessage() for r in caplog.records]
+    # "media ulanishi" va "media uzildi" — ikkalasi ham IMEI_kanal bilan
+    assert any("media ulanishi" in l and "221080344988_7" in l for l in out)
+    assert any("media ulanishi" in l and "221080344988_2" in l for l in out)
+    assert any("media uzildi" in l and "221080344988_" in l for l in out)
+    # Oqim boshlandi qatorida IMEI, kanal va manba IP
+    assert any("oqim boshlandi" in l and "221080344988_7" in l
+               and "manba=127.0.0.1" in l for l in out)
+    # Ulanish qatori ham manba ip:port bilan
+    assert any("yangi ulanish" in l and "127.0.0.1:" in l for l in out)
+
+
+def test_known_peers_remembers_imei_across_reconnect(monkeypatch):
+    """Qayta ulanishda (BOSHQA port) IMEI manba IP bo'yicha eslab qolinadi."""
+    _reset(monkeypatch)
+    jt1078._PEER_KEYS.clear()
+    first = jt1078._Session(("10.2.3.4", 5555))
+    _feed(first, DT_VIDEO_I, SUB_ATOMIC, b"I", sim="221080344988", ch=3)
+    first.close()
+
+    # Qurilma boshqa portdan qayta ulanadi — IMEI/kanal baribir ko'rinadi
+    again = ("10.2.3.4", 6001)
+    assert jt1078._known_peers(again) == (("221080344988", 3),)
+    assert jt1078._src(again, *jt1078._known_peers(again)) == \
+        "10.2.3.4:6001 221080344988_3"
+
+
+def test_peer_keys_registry_capped(monkeypatch):
+    """Manba reyestri chegaralangan (uzoq jarayonda xotira o'smasin)."""
+    _reset(monkeypatch)
+    jt1078._PEER_KEYS.clear()
+    monkeypatch.setattr(jt1078, "_PEER_KEYS_MAX", 3)
+    for i in range(5):
+        jt1078._remember_peer((f"10.0.0.{i}", 1), (("123", i),))
+    assert len(jt1078._PEER_KEYS) == 3
+    assert jt1078._known_peers(("10.0.0.4", 9)) == (("123", 4),)
+    assert jt1078._known_peers(("10.0.0.0", 9)) == ()
+
+
+def test_src_label_falls_back_to_peer():
+    """IMEI/kanal noma'lum bo'lsa faqat ip:port qoladi."""
+    assert jt1078._src(("1.2.3.4", 9)) == "1.2.3.4:9"
+    assert jt1078._src(("1.2.3.4", 9), ("123", 2), ("123", 2)) == \
+        "1.2.3.4:9 123_2"
+    assert jt1078._src(None) == "?"
+
+
+def test_reconnect_connection_log_shows_imei(monkeypatch, caplog):
+    """Qayta ulanishning "yangi ulanish" qatorida ham IMEI/kanal bo'ladi."""
+    import asyncio
+    import logging
+
+    _reset(monkeypatch)
+    jt1078._SESSIONS.clear()
+    jt1078._PEER_KEYS.clear()
+    caplog.set_level(logging.INFO, logger=jt1078.log.name)
+
+    async def _run():
+        server = await asyncio.start_server(jt1078._handle, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        for ch, ts in ((5, 1700000000), (6, 1700000100)):
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(_pkt(DT_VIDEO_I, b"I" * 20, sim="221080344988",
+                              ch=ch, ts=ts))
+            await writer.drain()
+            await asyncio.sleep(0.3)
+            writer.close()
+            await writer.wait_closed()
+            await asyncio.sleep(0.2)
+        server.close()
+        await server.wait_closed()
+
+    asyncio.run(_run())
+    joins = [r.getMessage() for r in caplog.records if "yangi ulanish" in r.getMessage()]
+    assert len(joins) >= 2, joins
+    # 1-ulanishda paket hali o'qilmagan — IMEI ob'ektiv noma'lum.
+    assert "221080344988" not in joins[0], joins[0]
+    # 2-ulanish boshqa portdan, lekin IP bo'yicha IMEI/kanal darhol ko'rinadi.
+    assert "221080344988_5" in joins[1], joins[1]
+    # "birinchi N bayt" qatorida ham yorliq bor. Yorliq " — birinchi"
+    # gacha bo'lgan qism (hex'da IMEI raqamlari bo'lishi mumkin).
+    firsts = [r.getMessage().split(" — birinchi")[0]
+              for r in caplog.records if "birinchi" in r.getMessage()]
+    assert "221080344988" not in firsts[0], firsts[0]
+    assert "221080344988_5" in firsts[1], firsts[1]
 

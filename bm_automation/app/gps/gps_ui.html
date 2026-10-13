@@ -238,6 +238,19 @@
   .jt-rec .rrow .grow{margin-left:auto}
   .jt-rec video{width:100%;max-height:420px;background:#000;border-radius:11px;margin-top:10px}
 
+  /* ---------- oqim diagnostikasi (kodek / audio / kalit kadr / oxirgi xato) ---------- */
+  .jt-diag{margin:0 12px 9px;font-size:11px;line-height:1.6;color:var(--muted);word-break:break-word}
+  .jt-diag-line{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+  .jt-diag b{color:var(--ink);font-weight:600}
+  .jt-diag .ok{color:var(--green)}
+  .jt-diag .warn{color:var(--amber)}
+  .jt-diag .bad{color:var(--red)}
+  .jt-diag .errline{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;margin-top:2px}
+  .jt-closed{margin-top:12px;padding:11px 13px;border:1px solid var(--line);border-radius:13px;background:rgba(15,22,35,.5)}
+  .jt-closed .crow{padding:6px 0;border-bottom:1px dashed var(--line);font-size:11.5px;color:var(--muted)}
+  .jt-closed .crow:last-child{border-bottom:0}
+  .jt-closed .bad{color:var(--red)}
+
   /* ---------- mobil ---------- */
   @media(max-width:860px){
     .tb-mid{display:none}
@@ -462,6 +475,7 @@
         jonli oqim shu yerda avtomatik paydo bo'ladi.
       </div>
       <div class="jt-rec" id="jt-rec" style="display:none"></div>
+      <div class="jt-closed" id="jt-closed" style="display:none"></div>
     </div>
     <div class="player-form">
       <label class="f">Kamera nomi <input id="cam-name" placeholder="Avtobus 01 — old ko'rinish"></label>
@@ -1064,6 +1078,36 @@ var CAM_MAX_LIVE = 12;       /* bir vaqtda ochiq oqimlar chegarasi (100+ kamera 
 function refreshCams() {
   API.get('/api/video/cameras').then(function (d) { cams = d.cameras || []; renderCams(); })
     .catch(function (e) { console.warn('kamera xato', e); });
+  refreshRelays();
+}
+
+/* RTSP relay (ffmpeg) diagnostikasi: ishlayaptimi, oxirgi xatosi nima. */
+var relayInfo = {};
+function refreshRelays() {
+  var hasRtsp = cams.some(function (c) { return c.source_type === 'rtsp'; });
+  if (!hasRtsp) return;
+  API.get('/api/video/relay').then(function (d) {
+    relayInfo = (d && d.relays) || {};
+    updateRelayDiag();
+  }).catch(function () {});
+}
+function updateRelayDiag() {
+  cams.forEach(function (c) {
+    if (c.source_type !== 'rtsp') return;
+    var el = document.getElementById('rd-' + c.id);
+    if (!el) return;
+    var r = relayInfo[String(c.id)];
+    if (!r) { el.style.display = 'none'; el.innerHTML = ''; return; }
+    var parts = [];
+    if (r.running) parts.push('<span class="ok">▶ ffmpeg ishlayapti</span>');
+    else parts.push('<span class="bad">⏹ ffmpeg to\'xtagan' +
+      (r.exit_code === null || r.exit_code === undefined ? '' : ' (kod ' + r.exit_code + ')') + '</span>');
+    if (r.uptime_s) parts.push('<span>' + fmtAge(r.uptime_s) + ' ishlayapti</span>');
+    if (r.restarts) parts.push('<span class="warn">↻ ' + r.restarts + ' marta qayta</span>');
+    if (r.error) parts.push('<span class="bad" title="' + esc(r.error) + '">⚠ ' + esc(r.error) + '</span>');
+    el.innerHTML = '<div class="jt-diag-line">' + parts.join(' · ') + '</div>';
+    el.style.display = 'block';
+  });
 }
 function _camSignature() {
   return cams.map(function (c) {
@@ -1079,12 +1123,14 @@ function _camStatus() {
 function renderCams() {
   var grid = document.getElementById('cam-grid');
   if (!grid) return;
+  /* Diag satrlari innerHTML bilan qayta yaratiladi — keyin qayta to'ldiramiz. */
   var sig = _camSignature();
   if (sig === camSig) { _camStatus(); return; }   /* o'zgarish yo'q — oqimlarni uzmaymiz */
   camSig = sig;
   stopAllCams();
   grid.innerHTML = cams.map(camCard).join('');
   document.getElementById('cam-empty').style.display = cams.length ? 'none' : 'block';
+  updateRelayDiag();
   _camStatus();
   /* Avtomatik ochmaymiz: 100+ kamera bo'lsa ham brauzer qotmaydi —
      oqim faqat foydalanuvchi bosganda boshlanadi. */
@@ -1100,8 +1146,10 @@ function camCard(c) {
       '<div class="ph" id="ph-' + c.id + '" onclick="playCam(' + c.id + ')">▶ Ochish uchun bosing</div>';
     act = '<button class="btn primary sm" id="tg-' + c.id + '" onclick="toggleCam(' + c.id + ')">▶ Ochish</button>';
   }
+  var diag = c.source_type === 'rtsp' ? ('<div class="jt-diag" id="rd-' + c.id +
+    '" style="display:none"></div>') : '';
   return '<div class="cam"><div class="head"><span class="dot"></span>' + esc(c.name) + ' ' + badge + '</div>' +
-    '<div class="body">' + body + '</div>' +
+    '<div class="body">' + body + '</div>' + diag +
     '<div class="foot"><span class="muted">' + esc(c.url) + '</span><span class="grow">' +
     act +
     '<button class="btn danger sm" onclick="delCam(' + c.id + ')">O\'chirish</button></span></div></div>';
@@ -1229,6 +1277,7 @@ function delCam(id) { if (!confirm("Kamerani o'chirish?")) return; API.del('/api
 
 /* ============ JT1078 / CMSV6 4G kameralar (avto-aniqlangan) ============ */
 var jtStreams = [], jtDevices = [], jtSig = '', jtHlsMap = {};
+var jtAudioOn = null, jtAudioRate = null, jtRecent = [];
 function fmtBytes(n) {
   n = n || 0;
   if (n < 1024) return n + ' B';
@@ -1237,15 +1286,94 @@ function fmtBytes(n) {
 }
 function loadJtStreams() {
   API.get('/api/video/jt-streams').then(function (d) {
-    jtStreams = d.streams || [];
+    var now = Date.now();
+    jtStreams = (d.streams || []).map(function (s) { s._at = now; return s; });
     jtDevices = d.devices || [];
+    jtAudioOn = (d.audio_enabled === undefined ? null : !!d.audio_enabled);
+    jtAudioRate = d.audio_rate || null;
+    jtRecent = (d.recent || []).map(function (s) { s._at = now; return s; });
     var st = document.getElementById('jt-status');
     if (st) {
-      st.textContent = d.enabled === false ? '· JT808 o\'chirilgan'
-        : (jtDevices.length ? '· ' + jtDevices.length + ' qurilma onlayn' : '· qurilma yo\'q');
+      var bits = [];
+      if (d.enabled === false) bits.push('JT808 o\'chirilgan');
+      else bits.push(jtDevices.length ? jtDevices.length + ' qurilma onlayn' : 'qurilma yo\'q');
+      if (d.ffmpeg === false) bits.push('⚠ ffmpeg topilmadi');
+      if (jtAudioOn === false) bits.push('🔇 audio o\'chirilgan (GPS_JT1078_AUDIO=0)');
+      else if (jtAudioOn === true) bits.push('🔊 audio yoqilgan' + (jtAudioRate ? ' ' + (jtAudioRate / 1000) + ' kHz' : ''));
+      st.textContent = '· ' + bits.join(' · ');
     }
     renderJtStreams();
+    renderJtClosed();
   }).catch(function () {});
+}
+function fmtAge(sec) {
+  if (sec === null || sec === undefined) return '—';
+  sec = Math.max(0, Math.round(sec));
+  if (sec < 60) return sec + 's';
+  if (sec < 3600) return Math.round(sec / 60) + ' daq';
+  if (sec < 86400) return Math.round(sec / 3600) + ' soat';
+  return Math.round(sec / 86400) + ' kun';
+}
+function _ageAt(s, field) {
+  /* Server "yosh"ni javob vaqtida hisoblaydi; so'rovdan keyin o'tgan vaqtni
+     qo'shib qo'yamiz — satr 5 sekundlik so'rov orasida ham "tirik" ko'rinadi. */
+  var v = s[field];
+  if (v === null || v === undefined) return null;
+  return v + (s._at ? (Date.now() - s._at) / 1000 : 0);
+}
+function jtDiagHtml(s) {
+  var parts = ['<b>' + esc(s.codec_name || s.codec || '?') + '</b>'];
+  if (s.audio) {
+    var an = s.audio_codec || (s.audio_pt === null || s.audio_pt === undefined ? '?' : 'PT ' + s.audio_pt);
+    parts.push('<span class="ok">🔊 ' + esc(an) + '</span>');
+  } else if (jtAudioOn === false) {
+    parts.push('<span class="warn">🔇 audio o\'chirilgan</span>');
+  } else {
+    parts.push('<span>🔇 audio yo\'q</span>');
+  }
+  var kf = _ageAt(s, 'keyframe_age_s');
+  if (kf === null) {
+    parts.push('<span class="warn">⏱ kalit kadr yo\'q</span>');
+  } else {
+    parts.push('<span' + (kf > 20 ? ' class="warn"' : '') + '>⏱ kalit kadr ' + fmtAge(kf) +
+      ' oldin</span>');
+  }
+  parts.push('<span>' + (s.frames || 0) + ' kadr · ' + (s.keyframes || 0) + ' kalit</span>');
+  if (s.uptime_s) parts.push('<span>' + fmtAge(s.uptime_s) + ' efirda</span>');
+  if (s.restarts) parts.push('<span class="warn">↻ ' + s.restarts + ' marta qayta</span>');
+  var html = '<div class="jt-diag-line">' + parts.join(' · ') + '</div>';
+  if (s.last_error) {
+    html += '<div class="errline bad" title="' + esc(s.last_error) + '">⚠ ' + esc(s.last_error) + '</div>';
+  }
+  if (s.ffmpeg_note) {
+    html += '<div class="errline bad" title="' + esc(s.ffmpeg_note) + '">ffmpeg: ' + esc(s.ffmpeg_note) + '</div>';
+  }
+  return html;
+}
+function renderJtClosed() {
+  var box = document.getElementById('jt-closed');
+  if (!box) return;
+  if (!jtRecent.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  var rows = jtRecent.map(function (s) {
+    var bits = ['<b>' + esc(s.sim) + ' · kanal ' + s.channel + '</b>',
+      (s.kind === 'playback' ? '🗂 xotira' : 'jonli'),
+      esc(s.codec_name || s.codec || '?'),
+      (s.audio ? '🔊 ' + esc(s.audio_codec || '') : '🔇')];
+    var kf = _ageAt(s, 'keyframe_age_s');
+    bits.push('oxirgi kalit kadr: ' + (kf === null ? 'yo\'q' : fmtAge(kf) + ' oldin'));
+    bits.push((s.keyframes || 0) + ' kalit / ' + (s.frames || 0) + ' kadr');
+    var closed = _ageAt(s, 'closed_s');
+    if (closed !== null) bits.push(fmtAge(closed) + ' oldin yopildi');
+    if (s.close_reason) bits.push('sabab: ' + esc(s.close_reason));
+    if (s.restarts) bits.push('↻ ' + s.restarts + ' marta qayta');
+    var err = s.last_error || s.ffmpeg_note || '';
+    return '<div class="crow">' + bits.join(' · ') +
+      (err ? '<div class="errline bad" title="' + esc(err) + '">⚠ ' + esc(err) + '</div>' : '') +
+      '</div>';
+  }).join('');
+  box.innerHTML = '<div class="jt-diag-line"><b>Yaqinda yopilgan oqimlar</b> ' +
+    '<span>(' + jtRecent.length + ')</span></div>' + rows;
+  box.style.display = 'block';
 }
 function _jtStreamFor(sim) {
   return jtStreams.filter(function (s) { return String(s.sim) === String(sim); });
@@ -1255,7 +1383,7 @@ function renderJtStreams() {
   if (!g) return;
   var sig = jtDevices.slice().sort().join(',') + '|' +
     jtStreams.map(function (s) { return s.sim + '_' + s.channel; }).sort().join(',');
-  if (sig === jtSig) { updateJtBytes(); return; }  // o'yinni uzmaslik uchun
+  if (sig === jtSig) { updateJtDiag(); return; }  // o'yinni uzmaslik uchun
   jtSig = sig;
   destroyJtPlayers();
   var html = '';
@@ -1268,12 +1396,17 @@ function renderJtStreams() {
   var e = document.getElementById('jt-empty');
   if (e) e.style.display = (jtStreams.length || jtDevices.length) ? 'none' : 'block';
   jtStreams.forEach(function (s) { mountJtHls(s); });
+  updateJtDiag();
 }
 function jtStreamCard(s) {
   var vid = 'jt-' + s.sim + '-' + s.channel;
+  var badges = '<span class="badge rtsp">LIVE</span>' +
+    '<span class="badge hls">' + esc(s.codec_name || s.codec || '?') + '</span>' +
+    (s.audio ? '<span class="badge hls">🔊 ' + esc(s.audio_codec || 'audio') + '</span>' : '');
   return '<div class="cam"><div class="head"><span class="dot"></span> Kamera ' + esc(s.sim) +
-    ' · kanal ' + s.channel + ' <span class="badge rtsp">LIVE</span></div>' +
+    ' · kanal ' + s.channel + ' ' + badges + '</div>' +
     '<div class="body"><video id="' + vid + '" controls muted playsinline></video></div>' +
+    '<div class="jt-diag" id="d-' + vid + '"></div>' +
     '<div class="foot"><span class="muted" id="b-' + vid + '">' + fmtBytes(s.bytes) + '</span>' +
     '<span class="grow"></span>' +
     '<button class="btn sm" onclick="fullscreenVid(\'' + vid + '\')">⛶</button>' +
@@ -1297,11 +1430,22 @@ function jtDeviceCard(sim) {
     '<button class="btn primary sm" onclick="startJtLive(\'' + esc(sim) + '\', this)">▶ Jonli video</button>' +
     '</div></div>';
 }
+function jtMediaHost() {
+  // Qurilma oqimni shu hostga yuboradi — bu serverga tashqaridan (internetdan)
+  // yetib boradigan manzil bo'lishi kerak. localhost/ichki IP bo'lsa, qurilma
+  // ulana olmaydi; shu sabab bunday holda bo'sh qaytaramiz (server
+  // JT1078_MEDIA_HOST dan foydalanadi).
+  var h = (window.location.hostname || '').toLowerCase();
+  if (!h || h === 'localhost' || h === '127.0.0.1' || h === '::1'
+      || h.indexOf('192.168.') === 0 || h.indexOf('10.') === 0
+      || h.indexOf('172.') === 0 || h.indexOf('169.254.') === 0) return '';
+  return h;
+}
 function startJtLive(sim, btn) {
   var sel = document.getElementById('ch-' + sim);
   var ch = sel ? parseInt(sel.value, 10) : 1;
   if (btn) { btn.disabled = true; btn.textContent = '… yuborilmoqda'; }
-  API.post('/api/video/jt-live', { phone: sim, channel: ch }).then(function (d) {
+  API.post('/api/video/jt-live', { phone: sim, channel: ch, host: jtMediaHost() }).then(function (d) {
     if (d && d.ok === false) alert('Buyruq yuborilmadi: ' + (d.error || 'qurilma ulanmagan'));
     setTimeout(loadJtStreams, 2500);
     setTimeout(loadJtStreams, 7000);
@@ -1314,10 +1458,13 @@ function stopJtLive(sim, ch) {
     setTimeout(loadJtStreams, 1500);
   }).catch(function () {});
 }
-function updateJtBytes() {
+function updateJtDiag() {
   jtStreams.forEach(function (s) {
-    var el = document.getElementById('b-jt-' + s.sim + '-' + s.channel);
+    var vid = 'jt-' + s.sim + '-' + s.channel;
+    var el = document.getElementById('b-' + vid);
     if (el) el.textContent = fmtBytes(s.bytes);
+    var d = document.getElementById('d-' + vid);
+    if (d) d.innerHTML = jtDiagHtml(s);
   });
 }
 function destroyJtPlayers() {
@@ -1354,6 +1501,9 @@ var recSel = { sim: '', ch: 1 };
 var recItems = [];
 var recPoll = null;
 var recHls = null;
+var recCurrent = null, recWait = null, recWaitN = 0, recVideoBound = false;
+var REC_CTRL = { play: 0, pause: 1, stop: 2, fwd: 3, rew: 4, drag: 5, keyfwd: 6 };
+function _val(id) { var e = document.getElementById(id); return e ? String(e.value || '').trim() : ''; }
 function _recHls(sim, ch) { return '/hls/jtpb_' + sim + '_' + ch + '.m3u8'; }
 function openRec(sim, ch) {
   recSel = { sim: String(sim), ch: ch || 1 };
@@ -1365,6 +1515,8 @@ function openRec(sim, ch) {
     '<div class="rbar"><b>🗂 Xotira — ' + esc(sim) + ' · kanal ' + (ch || 1) + '</b>' +
     '<span class="grow"></span>' +
     '<label class="muted">Sana <input type="date" id="rec-date" value="' + today + '"></label>' +
+    '<label class="muted">Dan <input type="time" id="rec-t0" value="00:00" step="1"></label>' +
+    '<label class="muted">Gacha <input type="time" id="rec-t1" value="23:59" step="1"></label>' +
     '<button class="btn primary sm" onclick="loadRecList()">🔎 Yozuvlarni so\'rash</button>' +
     '<button class="btn sm" onclick="closeRec()">✕</button></div>' +
     '<div class="muted" id="rec-status">Yozuvlar ro\'yxati qurilma xotirasidan so\'raladi (0x9205). ' +
@@ -1372,11 +1524,12 @@ function openRec(sim, ch) {
     '<div id="rec-list"></div>' +
     '<div id="rec-player" style="display:none">' +
     '<video id="rec-video" controls muted playsinline></video>' +
+    '<div class="muted" id="rec-pos" style="margin-top:6px;font-variant-numeric:tabular-nums"></div>' +
     '<div class="foot" style="margin-top:8px">' +
-    '<button class="btn sm" onclick="recCtrl(0)">⏸ Pauza</button>' +
-    '<button class="btn sm" onclick="recCtrl(1)">▶ Davom</button>' +
-    '<button class="btn sm" onclick="recCtrl(3)">⏩ Tez</button>' +
-    '<button class="btn sm" onclick="recCtrl(4)">⏪ Orqaga</button>' +
+    '<button class="btn sm" onclick="recCtrl(\'play\')">▶ Davom</button>' +
+    '<button class="btn sm" onclick="recCtrl(\'pause\')">⏸ Pauza</button>' +
+    '<button class="btn sm" onclick="recCtrl(\'fwd\')">⏩ Tez</button>' +
+    '<button class="btn sm" onclick="recCtrl(\'rew\')">⏪ Orqaga</button>' +
     '<span class="grow"></span>' +
     '<button class="btn danger sm" onclick="stopRec()">⏹ To\'xtatish</button>' +
     '</div></div>';
@@ -1390,10 +1543,15 @@ function closeRec() {
 }
 function loadRecList() {
   var status = document.getElementById('rec-status');
-  var dEl = document.getElementById('rec-date');
-  var date = dEl ? dEl.value : '';
+  var date = _val('rec-date');
+  var t0 = _val('rec-t0') || '00:00';
+  var t1 = _val('rec-t1') || '23:59';
+  if (!date) { if (status) status.textContent = 'Sanani tanlang.'; return; }
   if (status) status.textContent = 'Yozuvlar ro\'yxati so\'ralmoqda (0x9205)…';
-  API.post('/api/video/jt-files', { phone: recSel.sim, channel: recSel.ch, date: date })
+  API.post('/api/video/jt-files', {
+    phone: recSel.sim, channel: recSel.ch,
+    start: date + ' ' + t0 + ':00', end: date + ' ' + t1 + ':59'
+  })
     .then(function (d) {
       if (d && d.ok === false) {
         if (status) status.textContent = 'Buyruq yuborilmadi: ' + (d.error || 'qurilma ulanmagan');
@@ -1442,19 +1600,59 @@ function playRec(i) {
   if (!it) return;
   var status = document.getElementById('rec-status');
   if (status) status.textContent = 'Yozuv oqimi so\'ralmoqda (0x9201)…';
+  var p = document.getElementById('rec-player');
+  if (p) p.style.display = 'block';
+  var v = document.getElementById('rec-video');
+  if (v) { v.removeAttribute('src'); v.load(); }
+  var posEl = document.getElementById('rec-pos');
+  if (posEl) posEl.textContent = '';
+  recCurrent = it;
   API.post('/api/video/jt-playback', {
-    phone: recSel.sim, channel: recSel.ch, start: it.start, end: it.end
+    phone: recSel.sim, channel: recSel.ch, start: it.start, end: it.end,
+    host: jtMediaHost()
   }).then(function (d) {
     if (d && d.ok === false) {
       if (status) status.textContent = 'Buyruq yuborilmadi: ' + (d.error || 'qurilma ulanmagan');
       return;
     }
-    var p = document.getElementById('rec-player');
-    if (p) p.style.display = 'block';
-    mountRecHls(_recHls(recSel.sim, recSel.ch));
-    if (status) status.textContent = 'Yozuv ijro etilmoqda: ' + it.start + ' → ' + it.end;
+    if (status) status.textContent = 'Qurilma ulanmoqda… oqim tayyorlanmoqda';
+    recWaitN = 0;
+    waitRecStream();
   }).catch(function (e) {
     if (status) status.textContent = 'Xato: ' + e.message;
+  });
+}
+function _recFmtClock(s) {
+  s = Math.max(0, Math.floor(s || 0));
+  var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+  function p(n) { return (n < 10 ? '0' : '') + n; }
+  return (h ? p(h) + ':' : '') + p(m) + ':' + p(ss);
+}
+function waitRecStream() {
+  if (recWait) { clearTimeout(recWait); recWait = null; }
+  recWaitN += 1;
+  var status = document.getElementById('rec-status');
+  API.get('/api/video/jt-streams').then(function (d) {
+    var list = (d && d.streams) || [], hit = null;
+    for (var i = 0; i < list.length; i++) {
+      if (String(list[i].sim) === recSel.sim && list[i].kind === 'playback' &&
+          parseInt(list[i].channel, 10) === parseInt(recSel.ch, 10)) { hit = list[i]; break; }
+    }
+    if (hit && hit.active) {
+      if (status) status.textContent = 'Ijro etilmoqda: ' +
+        (recCurrent ? recCurrent.start + ' → ' + recCurrent.end : '');
+      mountRecHls(_recHls(recSel.sim, recSel.ch));
+      return;
+    }
+    if (recWaitN >= 15) {
+      if (status) status.textContent = 'Oqim kelmadi — qurilma ulanmagan yoki yozuv mavjud emas.';
+      return;
+    }
+    if (status) status.textContent = 'Qurilma ulanmoqda… oqim tayyorlanmoqda (' + recWaitN + ')';
+    recWait = setTimeout(waitRecStream, 1500);
+  }).catch(function () {
+    if (recWaitN >= 15) { if (status) status.textContent = 'Oqim holati aniqlanmadi.'; return; }
+    recWait = setTimeout(waitRecStream, 1500);
   });
 }
 function mountRecHls(url) {
@@ -1462,29 +1660,72 @@ function mountRecHls(url) {
   if (!v) return;
   if (recHls) { try { recHls.destroy(); } catch (e) {} recHls = null; }
   v.removeAttribute('src'); v.load();
+  bindRecVideo(v);
   if (v.canPlayType('application/vnd.apple.mpegurl')) {
     v.src = url; v.play().catch(function () {}); return;
   }
   if (!window.Hls || !Hls.isSupported()) return;
-  recHls = new Hls({ liveDurationInfinity: false });
+  recHls = new Hls({ liveDurationInfinity: false, manifestLoadingMaxRetry: 8,
+                     levelLoadingMaxRetry: 8, fragLoadingMaxRetry: 8 });
   recHls.loadSource(url);
   recHls.attachMedia(v);
   recHls.on(Hls.Events.MANIFEST_PARSED, function () { v.play().catch(function () {}); });
+  recHls.on(Hls.Events.ERROR, function (evt, data) {
+    if (data && data.fatal) {
+      var s = document.getElementById('rec-status');
+      if (s) s.textContent = 'Oqim uzildi — qayta yuklanmoqda…';
+      try { recHls.startLoad(); } catch (e) {}
+    }
+  });
 }
-function recCtrl(control) {
+function bindRecVideo(v) {
+  if (recVideoBound) return;
+  recVideoBound = true;
+  var pos = function () {
+    var el = document.getElementById('rec-pos');
+    if (!el) return;
+    var cur = v.currentTime || 0, dur = v.duration;
+    el.textContent = _recFmtClock(cur) +
+      (isFinite(dur) && dur > 0 ? ' / ' + _recFmtClock(dur) : '');
+  };
+  v.addEventListener('timeupdate', pos);
+  v.addEventListener('loadedmetadata', pos);
+  v.addEventListener('durationchange', pos);
+  v.addEventListener('waiting', function () {
+    var s = document.getElementById('rec-status');
+    if (s) s.textContent = 'Yuklanmoqda…';
+    pos();
+  });
+  v.addEventListener('playing', function () {
+    var s = document.getElementById('rec-status');
+    if (s && recCurrent) s.textContent = 'Ijro etilmoqda: ' + recCurrent.start + ' → ' + recCurrent.end;
+    pos();
+  });
+  v.addEventListener('ended', function () {
+    var s = document.getElementById('rec-status');
+    if (s) s.textContent = 'Yozuv tugadi.';
+  });
+  v.addEventListener('error', function () {
+    var s = document.getElementById('rec-status');
+    if (s) s.textContent = 'Oqim xatosi (yozuv mavjud bo\'lmasligi mumkin).';
+  });
+}
+function recCtrl(name) {
+  var control = (typeof name === 'number') ? name : (REC_CTRL[name] || 0);
   API.post('/api/video/jt-playback-control', {
     phone: recSel.sim, channel: recSel.ch, control: control
   }).catch(function () {});
 }
 function stopRec() {
-  API.post('/api/video/jt-playback-control', {
-    phone: recSel.sim, channel: recSel.ch, control: 2
-  }).catch(function () {});
+  if (recWait) { clearTimeout(recWait); recWait = null; }
+  recCtrl(2);
   if (recHls) { try { recHls.destroy(); } catch (e) {} recHls = null; }
   var v = document.getElementById('rec-video');
   if (v) { v.removeAttribute('src'); v.load(); }
   var p = document.getElementById('rec-player');
   if (p) p.style.display = 'none';
+  var posEl = document.getElementById('rec-pos');
+  if (posEl) posEl.textContent = '';
 }
 
 /* ============ bind dialog (mavjud avtobuslarga bog'lash) ============ */
@@ -1963,7 +2204,7 @@ loadVehicles();
 initSearch();
 setInterval(refresh, 10000);
 setInterval(refreshCams, 30000);
-setInterval(loadJtStreams, 15000);
+setInterval(loadJtStreams, 5000);
 setInterval(loadAlerts, 20000);
 setInterval(tickClock, 1000);
 window.addEventListener('resize', function () { if (map) map.invalidateSize(); });
