@@ -1546,7 +1546,9 @@ function renderJtClosed() {
   box.style.display = 'block';
 }
 function _jtStreamFor(sim) {
-  return jtStreams.filter(function (s) { return String(s.sim) === String(sim); });
+  return jtStreams.filter(function (s) {
+    return String(s.sim) === String(sim) && s.kind !== 'playback';
+  });
 }
 /* Tanlangan avtobuslardagi kameralar (bo'sh tanlov = hammasi) */
 function _jtCamOn(sim) {
@@ -1554,7 +1556,12 @@ function _jtCamOn(sim) {
   return vidBusSelected(b.vehicle_id);
 }
 function _jtShownStreams() {
-  return jtStreams.filter(function (s) { return _jtCamOn(s.sim); });
+  /* JONLI kartalar FAQAT 'live' oqimlarni ko'rsatadi. 'playback' (Xotira)
+     oqimlari asosiy panjarada ikkinchi video pleyer ochib qo'ymasligi uchun
+     elanadi — ular faqat Xotira oynasidagi rec-video pleyerda ko'rinadi. */
+  return jtStreams.filter(function (s) {
+    return s.kind !== 'playback' && _jtCamOn(s.sim);
+  });
 }
 /* Barcha ma'lum kameralar: hozir ulangan (jtDevices) ∪ doimiy ro'yxatdagi
    (jtBindings + jtAssist — oflaynlarni ham saqlaydi) ∪ jonli oqimli simlar.
@@ -1577,7 +1584,8 @@ function renderJtStreams() {
   var g = document.getElementById('jt-grid');
   if (!g) return;
   var sig = jtDevices.slice().sort().join(',') + '|' +
-    jtStreams.map(function (s) { return s.sim + '_' + s.channel; }).sort().join(',') +
+    jtStreams.filter(function (s) { return s.kind !== 'playback'; })
+      .map(function (s) { return s.sim + '_' + s.channel; }).sort().join(',') +
     '#' + _vidBusSig() + '|' + Object.keys(jtBindings).length + '|' + Object.keys(jtAssist).length;
   if (sig === jtSig) { updateJtDiag(); return; }  // o'yinni uzmaslik uchun
   jtSig = sig;
@@ -1616,13 +1624,35 @@ function jtStreamCard(s) {
     '<span class="grow"></span>' +
     '<button class="btn sm" onclick="fullscreenVid(\'' + vid + '\')">⛶</button>' +
     '<button class="btn sm" onclick="openRec(\'' + esc(s.sim) + '\',' + s.channel + ')">🗂 Xotira</button>' +
+    (_jtSimLiveChCount(s.sim) > 1
+      ? '<button class="btn danger sm" title="Shu kameraning barcha ochiq jonli kanallarini to\'xtatish" onclick="stopJtAll(\'' + esc(s.sim) + '\')">⏹ Barcha kanallar</button>'
+      : '') +
     '<button class="btn danger sm" onclick="stopJtLive(\'' + esc(s.sim) + '\',' + s.channel + ')">⏹ To\'xtatish</button>' +
     '</div></div>';
 }
 function jtChCount() { return Math.max(1, Math.min(16, parseInt(jtChannels, 10) || 4)); }
-function jtChLive(sim, ch) {
+/* Shu kameraning HOCHHONDA jonli oqimi bormi (playback sanalmaydi). */
+function _jtSimLive(sim) {
   return jtStreams.some(function (s) {
-    return String(s.sim) === String(sim) && Number(s.channel) === Number(ch);
+    return s.kind !== 'playback' && String(s.sim) === String(sim);
+  });
+}
+/* Shu kameraning hozirgi ochiq JONLI kanallari soni (playback sanalmaydi). */
+function _jtSimLiveChCount(sim) {
+  var m = {};
+  jtStreams.forEach(function (s) {
+    if (s.kind === 'playback') return;
+    if (String(s.sim) === String(sim)) m[Number(s.channel)] = 1;
+  });
+  return Object.keys(m).length;
+}
+function jtChLive(sim, ch) {
+  /* FAQAT jonli oqim — Xotira (playback) oqimi kanal tugmasini "⏹" qilib
+    qo'ymasligi va "Barcha kanallar"ni sun'iy ravishda o'tkazib yubormasligi
+    uchun kind filtrlanadi. */
+  return jtStreams.some(function (s) {
+    return s.kind !== 'playback' &&
+      String(s.sim) === String(sim) && Number(s.channel) === Number(ch);
   });
 }
 /* Kanal tugmalari: har bir kanal alohida boshlanadi/to'xtatiladi — shu tarzda
@@ -1669,11 +1699,14 @@ function jtDeviceCard(sim) {
   }
   var body, foot;
   if (online) {
+    var allOn = _jtSimLive(sim);
     body = '<div class="body" style="display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px;text-align:center;padding:18px">' +
       'Video hali boshlanmagan. Kanal tugmasini (yoki "Barcha kanallar") bosing — kameraga 0x9101 buyrug\'i yuboriladi.</div>';
     foot = '<div class="foot" style="flex-wrap:wrap;gap:5px">' +
       jtChannelBtns(sim) +
-      '<button class="btn primary sm" onclick="startJtAll(\'' + esc(sim) + '\')">▶ Barcha kanallar</button>' +
+      (allOn
+        ? '<button class="btn danger sm" onclick="stopJtAll(\'' + esc(sim) + '\')">⏹ Barcha kanallar</button>'
+        : '<button class="btn primary sm" onclick="startJtAll(\'' + esc(sim) + '\')">▶ Barcha kanallar</button>') +
       '<span class="grow"></span>' + act +
       '<button class="btn sm" onclick="openRec(\'' + esc(sim) + '\',1)">🗂 Xotira</button>' +
       '</div>';
@@ -1769,15 +1802,40 @@ function stopJtLive(sim, ch) {
     /* Server muxer'ni darhol yopdi — kartani kutmasdan yo'qotamiz. */
     jtSig = '';
     jtStreams = jtStreams.filter(function (s) {
-      return !(String(s.sim) === String(sim) && Number(s.channel) === Number(ch));
+      return !(s.kind !== 'playback' &&
+        String(s.sim) === String(sim) && Number(s.channel) === Number(ch));
     });
     renderJtStreams();
     loadJtStreams();
     setTimeout(loadJtStreams, 1500);
   }).catch(function () {});
 }
+/* Barcha ochiq jonli kanallarni birdan yopish: har kanalga 0x9102 + muxer
+   darhol yopiladi (server tomonidagi suppression kech kelgan paketlardan
+   ham himoya qiladi). */
+function stopJtAll(sim) {
+  var chans = {};
+  jtStreams.forEach(function (s) {
+    if (s.kind === 'playback') return;
+    if (String(s.sim) === String(sim)) chans[Number(s.channel)] = 1;
+  });
+  var ks = Object.keys(chans);
+  if (!ks.length) { loadJtStreams(); return; }
+  /* Kartani kutmasdan shu kamera kanallarini darhol tushiramiz — aks holda
+     birinchi javobga qadar tugmalar "qotib" turadi. */
+  jtSig = '';
+  jtStreams = jtStreams.filter(function (s) {
+    return !(s.kind !== 'playback' && String(s.sim) === String(sim));
+  });
+  renderJtStreams();
+  Promise.all(ks.map(function (c) {
+    return API.post('/api/video/jt-stop', { phone: sim, channel: Number(c) })
+      .catch(function () {});
+  })).then(function () { loadJtStreams(); setTimeout(loadJtStreams, 1500); });
+}
 function updateJtDiag() {
   jtStreams.forEach(function (s) {
+    if (s.kind === 'playback') return;  /* Xotira oqimi panjarada kartasi yo'q */
     var vid = 'jt-' + s.sim + '-' + s.channel;
     var el = document.getElementById('b-' + vid);
     if (el) el.textContent = fmtBytes(s.bytes);
@@ -1843,7 +1901,9 @@ function fullscreenVid(id) {
 /* 0x9202 boshqaruv (JT/T 1078-2016 Table 25):
    play=0, pause=1, stop=2, tez=3, orqaga=4, drag=5(vaqtga o'tish), kalit=6. */
 var REC_CTRL = { play: 0, pause: 1, stop: 2, fwd: 3, rew: 4, drag: 5, keyfwd: 6 };
-var REC_MAX_CH = 4;            /* qurilma kanallari (ch1..chN) */
+var REC_MAX_CH = 8;            /* Xotira kanal tanlagichi: BDxT8008V2 8 kanalli MDVR —
+   qurilma barcha kanallarda yozuv beradi (jonli tekshiruvda ch1..ch8 da 62 tadan
+   yozuv). jtChannels sozlamasidan qat'i n kamida 8 ko'rsatiladi. */
 var recSel = { sim: '', ch: 1 };
 var recItems = [], recIndex = -1, recCurrent = null;
 var recPoll = null, recHls = null, recWait = null, recWaitN = 0;
@@ -1854,7 +1914,6 @@ var recAnchor = { t: 0, at: 0, rate: 1, len: 0 };
 var recRec = null, recChunks = [];   /* MediaRecorder (yuklab olish) */
 
 function _val(id) { var e = document.getElementById(id); return e ? String(e.value || '').trim() : ''; }
-function _recHls(sim, ch) { return '/hls/jtpb_' + sim + '_' + ch + '.m3u8'; }
 function _recBtn(id, on) { var b = document.getElementById(id); if (b) b.disabled = !on; }
 function _recSetStatus(text) { var s = document.getElementById('rec-status'); if (s) s.textContent = text; }
 function _recShowWait(on, text) {
@@ -2078,7 +2137,7 @@ function waitRecStream() {
       _recShowWait(false);
       _recSetStatus('Ijro etilmoqda: ' +
         (recCurrent ? recCurrent.start + ' → ' + recCurrent.end : ''));
-      mountRecHls(_recHls(recSel.sim, recSel.ch));
+      mountRecStream(hit);
       return;
     }
     if (recWaitN >= 15) {
@@ -2130,6 +2189,45 @@ function mountRecHls(url) {
       try { recHls.startLoad(); } catch (e) {}
     }
   });
+}
+function mountRecStream(s) {
+  /* Yozuv (playback) oqimini ulash — jonli montaj bilan bir xil ustunlik:
+     PILOT yoqilganda s.flv (HTTP-FLV, ~1s) avval sinalsa, xato/yo'q bo'lsa
+     s.hls (ZLMediaKit HLS yoki mahalliy /hls) ga qaytamiz. `hit.hls`/`hit.flv`
+     jt-streams'dan keladi, ya'ni pilot ON HOLDA mahalliy fayl HLS'iga
+     tayanmaymiz (muxer RTMP'ga uzatadi, fayl HLS YO'Q — eski _recHls shu
+     sabab qora ekran berardi). */
+  var v = document.getElementById('rec-video');
+  if (!v) return;
+  _recStopTick();
+  recPlaying = false;
+  if (recHls) { try { recHls.destroy(); } catch (e) {} recHls = null; }
+  v.removeAttribute('src'); v.load();
+  bindRecVideo(v);
+  var go = function () {
+    recAnchor.t = 0; recAnchor.at = Date.now(); recAnchor.rate = _recRate();
+    recPlaying = true;
+    _recStartTick();
+    try { v.playbackRate = _recRate(); } catch (e) {}
+  };
+  if (s.flv && window.flvjs && flvjs.isSupported && flvjs.isSupported()) {
+    try {
+      var p = flvjs.createPlayer(
+        { type: 'flv', isLive: true, url: s.flv, cors: true },
+        { enableWorker: false, enableStashBuffer: false, stashInitialSize: 128,
+          autoCleanupSourceBuffer: true, lazyLoad: false });
+      p.attachMediaElement(v);
+      p.on(flvjs.Events.ERROR, function () {
+        try { p.destroy(); } catch (e) {}
+        if (recHls === p) { recHls = null; mountRecHls(s.hls); }
+      });
+      recHls = p;
+      p.load();
+      v.play().then(go).catch(function () { go(); });
+      return;
+    } catch (e) { /* flv.js xatosi → HLS fallback */ }
+  }
+  mountRecHls(s.hls);
 }
 function bindRecVideo(v) {
   if (recVideoBound) return;

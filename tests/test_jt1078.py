@@ -65,6 +65,7 @@ def _registries_clear():
     jt1078._MUXERS.clear()
     jt1078._STREAMS.clear()
     jt1078._DIAG.clear()
+    jt1078._SUPPRESS.clear()
     jt1078._STATS.update({"access_units": 0})
     jt1078.clear_playback()
 
@@ -813,4 +814,76 @@ def test_one_muxer_per_channel_even_with_codec_change(monkeypatch):
     live = [x for x in jt1078._MUXERS.values() if not x.closed]
     assert len(live) == 1
     assert live[0] is m2
+
+
+# ------------------------------------------------------ to'xtatish suppression
+
+def test_live_stop_suppresses_muxer_respawn(monkeypatch):
+    """'To'xtatish' = 0x9102 + muxer yopish. Qurilma buyruqni KECH bajaradi:
+    yopilgandan keyin ham media paketlari keladi — shunda ffmpeg qayta
+    ochilib karta 'tirilib qolardi'. Endi suppression oynasida ochilmaydi."""
+    _reset(monkeypatch)
+    monkeypatch.setattr(jt1078, "_LOOP", None)
+    sess = jt1078._Session()
+    # Kadr AGARIDI: birinchi I-kadr bufarda turadi, ikkinchisi kelganda
+    # chiqariladi (timestamp o'zgarishi bilan) — shunda muxer ochiladi.
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"A", ts=1)
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"B", ts=2)
+    assert "123_1" in jt1078._MUXERS          # oqim ochildi
+    assert jt1078.close_stream("123", 1, "live") is True
+    before = len(_FakeMuxer.instances)
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"C", ts=3)
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"D", ts=4)
+    assert "123_1" not in jt1078._MUXERS      # qayta ochilmadi
+    assert len(_FakeMuxer.instances) == before
+
+
+def test_suppression_expires_after_ttl(monkeypatch):
+    """Oyna TTL'ni yengib o'tgach qurilma qayta ulansa chiqish oqimi
+    tiklanadi — suppression abadiy bloklamasligi kerak."""
+    _reset(monkeypatch)
+    monkeypatch.setattr(jt1078, "_LOOP", None)
+    key = jt1078._muxer_key("123", 1, "live")
+    clock = {"t": jt1078._now()}
+    monkeypatch.setattr(jt1078, "_now", lambda: clock["t"])
+    jt1078._mark_suppressed(key)
+    assert jt1078._is_suppressed(key) is True
+    assert jt1078._get_muxer("123", 1, "live", codec="h264") is None
+    clock["t"] += jt1078.SUPPRESS_TTL_S + 1   # oyna muddati o'tdi
+    assert jt1078._is_suppressed(key) is False
+    m = jt1078._get_muxer("123", 1, "live", codec="h264")
+    assert m is not None
+
+
+def test_playback_stop_close_suppresses_pb_key(monkeypatch):
+    """0x9202 stop → close_stream('playback'): pb kaliti yopiladi va
+    suppression qo'yiladi; yangi 0x9201 (set_playback) oynani bekor qiladi."""
+    _reset(monkeypatch)
+    monkeypatch.setattr(jt1078, "_LOOP", None)
+    m = jt1078._get_muxer("123", 4, mode="playback", codec="h264")
+    assert m is not None and "pb:123_4" in jt1078._MUXERS
+    assert jt1078.close_stream("123", 4, "playback") is True
+    assert "pb:123_4" not in jt1078._MUXERS
+    assert jt1078._is_suppressed("pb:123_4") is True
+    assert jt1078._get_muxer("123", 4, mode="playback", codec="h264") is None
+    # Qurilmaga yangi 0x9201 yuborildi — to'siq olib tashlanadi.
+    jt1078.set_playback("123", 4)
+    assert jt1078._is_suppressed("pb:123_4") is False
+    m2 = jt1078._get_muxer("123", 4, mode="playback", codec="h264")
+    assert m2 is not None
+
+
+def test_idle_reaper_reopen_not_suppressed(monkeypatch):
+    """Idle reaper bilan yopilgan oqim suppression OLMAYDI: kamera qisqa
+    uzilib qayta ulanganda chiqish oqimi o'z-o'zidan tiklanishi shart."""
+    _reset(monkeypatch)
+    m = jt1078._get_muxer("123", 1, mode="live", codec="h264")
+    assert m is not None
+    m.last_active = jt1078._now() - jt1078.MUXER_IDLE_TIMEOUT - 1
+    assert jt1078._reap_idle_muxers() == 1
+    assert jt1078._is_suppressed("123_1") is False
+    m2 = jt1078._get_muxer("123", 1, mode="live", codec="h264")
+    assert m2 is not None
+    assert not any(not x.closed for x in _FakeMuxer.instances[:-1])
+
 

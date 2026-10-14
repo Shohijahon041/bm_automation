@@ -131,6 +131,15 @@ _PEER_KEYS_MAX = 500
 # uchun kelayotgan oqim "playback" deb belgilanadi (jonli bilan aralashmasin).
 _PLAYBACK: dict = {}
 MUXER_IDLE_TIMEOUT = 120.0   # sekund data kelmasa muxer yopiladi
+# "To'xtatish" buyrug'i keyin o'chirilgan muxer kaliti -> expiry epoch.
+# Qurilma 0x9102/0x9202'ni kech bajaradi yoki umuman tinglamaydi: yopilgan
+# muxer'ning ustiga darhol yangi media paketi tushsa `_get_muxer` ffmpeg'ni
+# qayta ochib yuborardi — karta yo'qolmay "to'xtatish ishlamadi"dek ko'rinardi.
+# Suppression oynasida (< SUPPRESS_TTL_S) shu kalitga muxer QAYTA OCHILMAYDI;
+# yangi ixtiyoriy so'rov (0x9101/0x9201) media kelsa — oyna TTL ichida o'zi
+# ochiladi, playback so'rovida `set_playback` kalitni oldindan tozalaydi.
+_SUPPRESS: dict = {}
+SUPPRESS_TTL_S = 45.0
 # Media server'ning asyncio loop'i (run_tcp'da saqlanadi). HTTP API
 # ThreadingHTTPServer bo'lgani uchun handler'lar ALOHIDA thread'larda ishlaydi;
 # muxer lifecycle (ochish/yopish) mutatsiyalarini shu loop'ga yig'sak,
@@ -148,6 +157,10 @@ def set_playback(sim: str, channel: int, seconds: int | None = None) -> None:
     """(sim, kanal) uchun kelayotgan oqimni yozuv (playback) deb belgilash."""
     secs = config.JT1078_PLAYBACK_WINDOW_S if seconds is None else seconds
     _PLAYBACK[f"{sim}_{channel}"] = _now() + max(1, int(secs))
+    # Yangi ixtiyoriy so'rov: avvalgi "to'xtatish" suppression'ini bekor qilamiz
+    # (aks holda TTL tugaguncha yozuv oqmi ochilmasligi mumkin edi).
+    _SUPPRESS.pop(_muxer_key(str(sim), int(channel), "playback"), None)
+    _SUPPRESS.pop(_muxer_key(str(sim), int(channel), "live"), None)
     log.info("JT1078: playback rejimi yoqildi %s_%s (%ss)",
              sim, channel, secs)
 
@@ -173,6 +186,21 @@ def _touch_playback(sim: str, channel: int) -> None:
 def _playback_active(sim: str, channel: int) -> bool:
     exp = _PLAYBACK.get(f"{sim}_{channel}")
     return bool(exp and _now() < exp)
+
+
+def _mark_suppressed(key: str) -> None:
+    """Muxer 'to'xtatish' bilan yopildi — shu kalitga vaqtincha ffmpeg ochilmaydi."""
+    _SUPPRESS[key] = _now() + SUPPRESS_TTL_S
+
+
+def _is_suppressed(key: str) -> bool:
+    exp = _SUPPRESS.get(key)
+    if exp is None:
+        return False
+    if _now() >= exp:
+        _SUPPRESS.pop(key, None)
+        return False
+    return True
 
 
 def _now() -> float:
@@ -374,6 +402,7 @@ def _close_stream_direct(sim: str, channel: int, mode: str = "live") -> bool:
     # Avval registry'dan chiqaramiz — shunda haligacha yopilgan muxer'ni
     # _get_muxer "mavjud, ammo closed" deb qayta yopishga urinmaydi.
     _MUXERS.pop(key, None)
+    _mark_suppressed(key)   # "to'xtatish" — kech kelgan paketlar qayta ochmasin
     try:
         m.close()
     except Exception:  # noqa: BLE001
@@ -395,6 +424,9 @@ def close_stream(sim: str, channel: int, mode: str = "live") -> bool:
     qurilma paket yubormay qo'ygandan keyin ham idle reaper (~120s) ni kutardi
     — video qotib qolgan kadrni ko'rsatayotgandek bo'lati. Bu funksiya muxer'ni
     joyida yopadi (oqim ro'yxatdan chiqadi → UI keyingi poll'da kartani oladi).
+    Yopilgan kalit `SUPPRESS_TTL_S` davomida qayta OCHILMAYDI (qarang:
+    `_SUPPRESS`) — qurilma to'xtatish buyrug'ini kech bajarganda karta
+    o'z-o'zidan "tirilib qolmasligi" uchun.
 
     HTTP handler ALOHIDA thread'da bo'lgani uchun yopish amali media loop'iga
     `run_coroutine_threadsafe` orqali yo'naltiriladi: `_MUXERS`/`_STREAMS`
@@ -874,6 +906,12 @@ def _get_muxer(sim: str, channel: int, mode: str = "live",
     key = _muxer_key(sim, channel, mode)
     codec = codec or DEFAULT_VIDEO_CODEC
     m = _MUXERS.get(key)
+    if m is None and _is_suppressed(key):
+        # "To'xtatish" buyrug'idan keyin oyna ochilmagan: qurilma 0x9102/0x9202
+        # ni kech bajarib yo'llardagi paketlarni uzatib turganda ffmpeg QAYTA
+        # ochilib, karta o'z-o'zidan "tirilib qolardi". Oyna TTL'ni yengib
+        # o'tgach yoki yangi ixtiyoriy so'rov (0x9101/0x9201) bilan ochiladi.
+        return None
     if peer:
         # Doimiy muxer qayta ulanishda davom etadi — manba manzilini yangilab
         # turamiz (logda oxirgi ulanish IP'si ko'rinadi).

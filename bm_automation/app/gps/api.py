@@ -828,9 +828,18 @@ class GpsHandler(BaseHTTPRequestHandler):
                                          multiples=int(payload.get("multiples") or 0))
                 if ok:
                     jt1078.set_playback(phone, channel)
+                # Pleyer manzillarini ham jt-streams bilan BIR xil beramiz:
+                # pilot (ZLMediaKit) yoqilganda mahalliy /hls/jtpb_* fayllari
+                # YO'Q — eski qattiq kodlangan manzil 404 berardi.
+                pb_name = config.zlmediakit_stream_name("jtpb_", phone, channel)
+                zl_on = config.zlmediakit_enabled()
                 self._json({
                     "ok": bool(ok), "phone": phone, "channel": channel,
-                    "hls": f"/hls/jtpb_{phone}_{channel}.m3u8",
+                    "hls": (config.zlmediakit_http_url(pb_name, "hls")
+                            if (zl_on and config.ZLMEDIAKIT_HTTP)
+                            else f"/hls/jtpb_{phone}_{channel}.m3u8"),
+                    "flv": (config.zlmediakit_http_url(pb_name, "flv")
+                            if zl_on else None),
                     "start": str(payload.get("start") or ""),
                     "end": str(payload.get("end") or ""),
                 })
@@ -848,10 +857,21 @@ class GpsHandler(BaseHTTPRequestHandler):
                 ok = jt808.send_playback_control(
                     phone, channel, control, speed, time_bcd)
                 if control == jt808.PB_CTRL_STOP:
+                    # ILDIZI TUZATISH: avval playback oynasi faqat 120s idle
+                    # reaper'ni kutardi — "To'xtatish"dan keyin jtpb oqimi tirik
+                    # qolardi va Xotira oynasini qayta ochganda ESLAGAN yozuv
+                    # oqimi darhol "ko'rinishib" playback buzilgandek bo'lardi.
+                    closed_pb = jt1078.close_stream(phone, channel, "playback")
                     jt1078.clear_playback(phone, channel)
+                    # Qurilma 0x9202'ni tinglamasa media oqimi davom etadi;
+                    # clear_playback'dan keyingi kadrlar "jonli"ga yorilib
+                    # jtpb_... oqimini jonli karta ostiga qayta ochardi —
+                    # shu sabli live muxer'ni ham yopamiz (oyna ichida).
+                    closed_live = jt1078.close_stream(phone, channel, "live")
                 self._json({"ok": bool(ok), "phone": phone,
                             "channel": channel, "control": control,
-                            "speed": speed})
+                            "speed": speed,
+                            "closed": bool(closed_pb) if control == jt808.PB_CTRL_STOP else None})
             elif path == "/api/video/relay":
                 # On-demand: UI "Ochish" bosganda RTSP relay'ni ko'taradi.
                 try:

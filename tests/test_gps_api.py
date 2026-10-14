@@ -590,14 +590,17 @@ def test_jt_streams_disabled(env, monkeypatch):
 
 
 def test_jt_live_start_and_stop(env, monkeypatch):
-    """POST /api/video/jt-live|jt-stop: 0x9101/0x9102 buyrug'i yuboriladi."""
+    """POST /api/video/jt-live|jt-stop: 0x9101/0x9102 + muxer darhol yopiladi."""
     calls = []
+    closed = []
     monkeypatch.setattr(gps_api.config, "JT1078_MEDIA_HOST", "1.2.3.4")
     monkeypatch.setattr(gps_api.config, "JT1078_TCP_PORT", 6107)
     monkeypatch.setattr(gps_api.jt808, "send_live_request",
                         lambda *a, **k: calls.append(("start", a, k)) or True)
     monkeypatch.setattr(gps_api.jt808, "send_live_stop",
                         lambda *a, **k: calls.append(("stop", a, k)) or True)
+    monkeypatch.setattr(gps_api.jt1078, "close_stream",
+                        lambda sim, ch, mode="live": closed.append((sim, ch, mode)) or True)
     body = json.dumps({"phone": "123", "channel": 2}).encode()
     status, data = _request(monkeypatch, "/api/video/jt-live", method="POST",
                             headers=_auth(), scope=None, body=body)
@@ -608,6 +611,9 @@ def test_jt_live_start_and_stop(env, monkeypatch):
                             headers=_auth(), scope=None, body=body)
     assert status == 200 and data["ok"] is True
     assert calls[-1][0] == "stop" and calls[-1][1] == ("123", 2)
+    # To'xtatish = ffmpeg muxer ham DARHOL yopiladi (idle reaper kutilmaydi).
+    assert ("123", 2, "live") in closed
+    assert data["closed"] is True
 
 
 def test_jt_live_requires_admin_and_phone(env, monkeypatch):
@@ -644,11 +650,61 @@ def test_jt_playback_endpoint(env, monkeypatch):
                             method="POST", headers=_auth(), scope=None, body=body)
     assert status == 200 and data["ok"] is True
     assert data["hls"] == "/hls/jtpb_123_2.m3u8"
+    assert data["flv"] is None      # pilot OFF → HTTP-FLV yo'q
     assert pb[-1][0][0] == "123" and pb[-1][0][1] == "1.2.3.4"
     assert pb[-1][0][2] == 6107 and pb[-1][0][5] == 2
     # start/end BCD[6] ga aylantirilgan
     assert len(pb[-1][0][3]) == 6 and len(pb[-1][0][4]) == 6
     assert marked[-1] == ("123", 2)
+
+
+def test_jt_playback_endpoint_pilot_urls(env, monkeypatch):
+    """Pilot (ZLMediaKit) YOQILGANDA playback javobidagi manzil ham ZLM'ga
+    o'g'riladi — eski qattiq `/hls/jtpb_*` 404 berar edi (pleyer shu sabab
+    Xotira oynasida qora ekran ko'rsatardi)."""
+    monkeypatch.setattr(gps_api.config, "JT1078_MEDIA_HOST", "1.2.3.4")
+    monkeypatch.setattr(gps_api.jt808, "send_playback",
+                        lambda *a, **k: True)
+    monkeypatch.setattr(gps_api.jt1078, "set_playback", lambda *a: None)
+    monkeypatch.setattr(gps_api.config, "ZLMEDIAKIT_RTMP",
+                        "rtmp://127.0.0.1:1935/live")
+    monkeypatch.setattr(gps_api.config, "ZLMEDIAKIT_HTTP", "https://x/zl")
+    body = json.dumps({"phone": "123", "channel": 2,
+                       "start": "2026-10-13 15:06:00",
+                       "end": "2026-10-13 15:16:00"}).encode()
+    status, data = _request(monkeypatch, "/api/video/jt-playback",
+                            method="POST", headers=_auth(), scope=None, body=body)
+    assert status == 200
+    assert data["hls"] == "https://x/zl/live/jtpb_123_2/hls.m3u8"
+    assert data["flv"] == "https://x/zl/live/jtpb_123_2.live.flv"
+
+
+def test_jt_playback_stop_closes_both_muxers(env, monkeypatch):
+    """0x9202 stop: jtpb muxer DARHOL yopiladi + jonli muxer ham (qurilma
+    buyruqni tinglamasa qolgan kadrlar 'jonli' sifatida qayta ffmpeg
+    ochib, karta 'to'xtatilmagan'dek ko'rinardi)."""
+    closed = []
+    cleared = []
+    monkeypatch.setattr(gps_api.jt808, "send_playback_control",
+                        lambda *a, **k: True)
+    monkeypatch.setattr(gps_api.jt1078, "clear_playback",
+                        lambda *a: cleared.append(a))
+    monkeypatch.setattr(gps_api.jt1078, "close_stream",
+                        lambda sim, ch, mode="live": closed.append((sim, ch, mode)) or True)
+    body = json.dumps({"phone": "123", "channel": 4, "control": 2}).encode()
+    status, data = _request(monkeypatch, "/api/video/jt-playback-control",
+                            method="POST", headers=_auth(), scope=None, body=body)
+    assert status == 200 and data["ok"] is True
+    assert ("123", 4, "playback") in closed
+    assert ("123", 4, "live") in closed
+    assert cleared[-1] == ("123", 4)
+    assert data["closed"] is True
+    # Pauza (control=1) muxer'ni YOPMASIN — oqim davom etadi.
+    closed.clear()
+    body = json.dumps({"phone": "123", "channel": 4, "control": 1}).encode()
+    status, data = _request(monkeypatch, "/api/video/jt-playback-control",
+                            method="POST", headers=_auth(), scope=None, body=body)
+    assert status == 200 and closed == []
 
 
 def test_jt_playback_control_endpoint(env, monkeypatch):
