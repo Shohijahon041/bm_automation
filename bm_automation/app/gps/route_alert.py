@@ -219,7 +219,9 @@ def learn_route_path(route_id: str, date_from: str = "", date_to: str = "",
     tol = simplify_m if simplify_m is not None else config.ROUTE_LEARN_SIMPLIFY_M
     best: list = []
     try:
-        devs = storage.list_devices()
+        # Faqat Teltonika GPS — kamera (kind='camera') yo'lak o'rganishga
+        # kirmaydi.
+        devs = storage.teltonika_only(storage.list_devices())
     except Exception:  # noqa: BLE001
         log.exception("route_alert: qurilmalar olinmadi")
         return best

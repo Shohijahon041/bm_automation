@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS gps_devices (
     vehicle_id TEXT DEFAULT '',
     name TEXT DEFAULT '',
     model TEXT DEFAULT 'FMB920',
+    kind TEXT DEFAULT 'teltonika',
     last_seen TIMESTAMPTZ,
     last_lat DOUBLE PRECISION,
     last_lng DOUBLE PRECISION,
@@ -114,8 +115,33 @@ def init_schema() -> bool:
         return False
     for stmt in [s.strip() for s in _SCHEMA.split(";") if s.strip()]:
         st.db.execute(stmt)
+    _migrate()
     log.info("GPS: sxema tayyor (gps_devices, gps_positions, video_cameras)")
     return True
+
+
+def _migrate() -> None:
+    """Eski bazalarga ustun qo'shadi (idempotent).
+
+    `gps_devices.kind` — 'teltonika' (xarita uchun haqiqiy GPS) yoki
+    'camera' (JT808/JT1078 kamera: faqat video/yordamchi, xaritaga
+    chiqmaydi). Eski qatorlar 'teltonika' bo'lib qoladi.
+    """
+    st = _st()
+    try:
+        if getattr(st.db, "driver", "") == "sqlite":
+            cols = {str(r.get("name") or "")
+                    for r in st.db.query("PRAGMA table_info(gps_devices)")}
+            if "kind" not in cols:
+                st.db.execute(
+                    "ALTER TABLE gps_devices ADD COLUMN kind TEXT "
+                    "DEFAULT 'teltonika'")
+        else:
+            st.db.execute(
+                "ALTER TABLE gps_devices ADD COLUMN IF NOT EXISTS "
+                "kind TEXT DEFAULT 'teltonika'")
+    except Exception:  # noqa: BLE001
+        log.exception("GPS: gps_devices.kind migratsiyasi bajarilmadi")
 
 
 def purge_old_positions() -> int:
@@ -142,8 +168,13 @@ def upsert_device_position(
     speed: int,
     ignition: int,
     satellites: int,
+    kind: str = "teltonika",
 ) -> None:
-    """Qurilmaning oxirgi holatini yangilaydi (yangi IMEI bo'lsa yaratadi)."""
+    """Qurilmaning oxirgi holatini yangilaydi (yangi IMEI bo'lsa yaratadi).
+
+    kind faqat YANGI qatorda qo'llanadi — mavjud qatorning turi
+    o'zgartirilmaydi (kamera qatori tasodifan Teltonika bo'lib qolmasin).
+    """
     st = _st()
     if not st.enabled:
         return
@@ -151,8 +182,8 @@ def upsert_device_position(
         """
         INSERT INTO gps_devices
             (imei, last_seen, last_lat, last_lng, last_speed,
-             last_ignition, last_satellites)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+             last_ignition, last_satellites, kind)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (imei) DO UPDATE SET
             last_seen = EXCLUDED.last_seen,
             last_lat = EXCLUDED.last_lat,
@@ -161,7 +192,8 @@ def upsert_device_position(
             last_ignition = EXCLUDED.last_ignition,
             last_satellites = EXCLUDED.last_satellites
         """,
-        (imei, ts, lat, lng, speed, ignition, satellites),
+        (imei, ts, lat, lng, speed, ignition, satellites,
+         str(kind or "teltonika")),
     )
 
 
@@ -174,14 +206,19 @@ def device_known(imei: str) -> bool:
     return bool(rows)
 
 
-def register_device(imei: str) -> None:
-    """Yangi IMEI'ni avtomatik ro'yxatga oladi (AUTO_REGISTER=1 bo'lsa)."""
+def register_device(imei: str, kind: str = "teltonika") -> None:
+    """Yangi IMEI'ni avtomatik ro'yxatga oladi (AUTO_REGISTER=1 bo'lsa).
+
+    kind='camera' — JT808/JT1078 kamera terminali: xaritada ko'rsatilmaydi,
+    faqat video va yordamchi tahlil uchun ishlatiladi.
+    """
     st = _st()
     if not st.enabled:
         return
     st.db.execute(
-        "INSERT INTO gps_devices (imei) VALUES (%s) ON CONFLICT DO NOTHING",
-        (imei,),
+        "INSERT INTO gps_devices (imei, kind) VALUES (%s,%s) "
+        "ON CONFLICT DO NOTHING",
+        (imei, str(kind or "teltonika")),
     )
 
 
@@ -237,7 +274,7 @@ def list_devices() -> list:
         return []
     rows = st.db.query(
         """
-        SELECT d.imei, d.vehicle_id, d.name, d.model, d.last_seen,
+        SELECT d.imei, d.vehicle_id, d.name, d.model, d.kind, d.last_seen,
                d.last_lat, d.last_lng, d.last_speed, d.last_ignition,
                d.last_satellites, d.enabled,
                v.plate_number, v.route_id AS route_id
@@ -248,6 +285,7 @@ def list_devices() -> list:
     )
     now = time.time()
     for r in rows:
+        r["kind"] = str(r.get("kind") or "teltonika")
         # online: oxirgi ko'rinish ONLINE_WINDOW ichida
         ls = r.get("last_seen")
         online = False
@@ -270,6 +308,46 @@ def list_devices() -> list:
         r["_now"] = now  # debugging uchun emas — API'da ishlatilmaydi
         del r["_now"]
     return rows
+
+
+def teltonika_only(rows: list) -> list:
+    """Ro'yxatdan kamera (kind='camera') qatorlarini chiqarib tashlaydi.
+
+    Kamera GPS xarita/trek/nazoratda ishlatilmaydi — faqat video va
+    yordamchi tahlil (`gps/camera.py`). Test mock'larida `kind` bo'lmasa
+    qator Teltonika deb hisoblanadi (eski xatti-harakat saqlanadi).
+    """
+    return [r for r in (rows or [])
+            if str(r.get("kind") or "teltonika") != "camera"]
+
+
+def list_camera_devices() -> list:
+    """Kamera terminallari (kind='camera') + avtobus raqami (O'QISH)."""
+    st = _st()
+    if not st.enabled:
+        return []
+    try:
+        rows = st.db.query(
+            """
+            SELECT d.imei, d.vehicle_id, d.name, d.last_seen, d.last_lat,
+                   d.last_lng, d.last_speed, d.enabled, d.kind,
+                   v.plate_number, v.route_id AS route_id
+            FROM gps_devices d
+            LEFT JOIN vehicles v ON v.external_id = d.vehicle_id
+            WHERE COALESCE(d.kind, 'teltonika') = 'camera'
+            ORDER BY d.imei
+            """
+        )
+    except Exception:  # noqa: BLE001
+        return []
+    for r in rows:
+        r["kind"] = "camera"
+    return rows
+
+
+def bind_camera(imei: str, vehicle_id: str, name: str = "") -> bool:
+    """Kamera terminalini avtobusga bog'lash (bind_device bilan bir xil)."""
+    return bind_device(imei, vehicle_id, name)
 
 
 def list_vehicles() -> list:

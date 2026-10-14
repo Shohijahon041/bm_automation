@@ -52,7 +52,9 @@ def check_devices(devices: list | None = None) -> list:
     global _seeded
     if devices is None:
         try:
-            devices = storage.list_devices()
+            # Faqat Teltonika GPS: kamera (kind='camera') aloqasi uzilishi
+            # haqida ogohlantirilmaydi — u GPS nazoratiga kirmaydi.
+            devices = storage.teltonika_only(storage.list_devices())
         except Exception:  # noqa: BLE001
             log.exception("offline: qurilmalar olinmadi")
             return []

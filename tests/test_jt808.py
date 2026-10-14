@@ -125,12 +125,19 @@ def _sent_msg(writer):
 
 @pytest.fixture
 def gps_storage(monkeypatch):
-    calls = {"upsert": [], "register": []}
+    calls = {"upsert": [], "register": [], "register_kinds": [],
+             "upsert_kw": []}
     monkeypatch.setattr(jt808.storage, "device_known", lambda imei: False)
-    monkeypatch.setattr(jt808.storage, "register_device",
-                        lambda imei: calls["register"].append(imei))
-    monkeypatch.setattr(jt808.storage, "upsert_device_position",
-                        lambda *a, **k: calls["upsert"].append(a))
+
+    def _reg(imei, kind="teltonika"):
+        calls["register"].append(imei)
+        calls["register_kinds"].append(kind)
+
+    monkeypatch.setattr(jt808.storage, "register_device", _reg)
+    monkeypatch.setattr(
+        jt808.storage, "upsert_device_position",
+        lambda *a, **k: (calls["upsert"].append(a),
+                         calls["upsert_kw"].append(k)))
     monkeypatch.setattr(jt808.config, "GPS_AUTO_REGISTER", True)
     return calls
 
@@ -302,6 +309,8 @@ def test_dispatch_register(gps_storage):
     resp = _sent_msg(w)
     assert resp["msg_id"] == 0x8100
     assert "123456" in gps_storage["register"]
+    # Kamera terminali Teltonika GPS deb hisoblanmasin — xaritaga chiqmaydi
+    assert gps_storage["register_kinds"] == ["camera"]
 
 
 def test_dispatch_heartbeat(gps_storage):
@@ -320,6 +329,8 @@ def test_dispatch_location_stores(gps_storage):
     assert args[0] == "123456"
     assert abs(args[2] - 41.31) < 1e-5   # lat
     assert abs(args[3] - 69.25) < 1e-5   # lng
+    # Kamera joyi kind='camera' bilan yoziladi (xarita uchun emas, yordamchi)
+    assert gps_storage["upsert_kw"][0].get("kind") == "camera"
 
 
 # ------------------------------------------------- qurilma imkoniyatlari

@@ -74,6 +74,18 @@ ROUTE_DEVIATION_TELEGRAM = os.environ.get(
 ROUTE_LEARN_SIMPLIFY_M = int(os.environ.get("GPS_ROUTE_LEARN_SIMPLIFY_M", "40"))
 
 
+# ---- Kamera GPS ↔ Teltonika GPS solishtirmasi (yordamchi) ----
+# Kamera joyi Teltonika joyidan shu metrdan uzoq bo'lsa "drift" deb
+# belgilanadi (o'rnatish/bog'lash xatosi bo'lishi mumkin). Bundan tashqari
+# bog'lanmagan kamera shu radius ichida avtobus topilsa bog'lash tavsiya
+# etiladi. Kamera GPS xaritaga/kuzatuvga chiqarilmaydi.
+GPS_CAMERA_MATCH_M = int(os.environ.get("GPS_CAMERA_MATCH_M", "300"))
+# 4G kamera kanallar soni (UI kanal tugmalari uchun standart).
+# Ko'p kanalli qurilmalar uchun env orqali oshiriladi.
+JT_CAMERA_CHANNELS = max(1, min(16, int(os.environ.get(
+    "JT_CAMERA_CHANNELS", "4"))))
+
+
 # ---- JT1078 xom oqim diagnostikasi ----
 # 0 (standart) = serverga video SAQLANMAYDI (faqat vaqtinchalik HLS segmentlar).
 # 1 = xom H.264 va raw dump diskka yoziladi (faqat diagnostika uchun).
@@ -84,22 +96,30 @@ JT1078_RAW_DUMP = os.environ.get(
 JT1078_PLAYBACK_WINDOW_S = int(
     os.environ.get("GPS_JT1078_PLAYBACK_WINDOW_S", "180")
 )
-# Kamera JT1078 oqimida B-frame bo'lsa va aniq fps bo'lmasa, ffmpeg'ga kirish
-# fps'ni biz beramiz (aks holda u 25fps deb faraz qilib, past-fps oqimni bitta
-# segmentga siqib qo'yadi). Qiymatni real kamera fps'iga moslang: bu qurilma
-# ~1 fps yuboradi. OUT — chiqish HLS fps (past kirishni silliqlash uchun).
-JT1078_FPS_IN = os.environ.get("GPS_JT1078_FPS_IN", "1")
-JT1078_FPS_OUT = os.environ.get("GPS_JT1078_FPS_OUT", "5")
-# Audio: qurilma audio paketlarini (G.711A/U) HLS'ga AAC sifatida mux qilish.
-# 0 (standart) = o'chirilgan (faqat video) — kamera audio yuborsa ham tashlanadi.
-# 1 = audio ham qo'shiladi (ffmpeg'ga ikkinchi kirish quvuri orqali).
-JT1078_AUDIO = os.environ.get("GPS_JT1078_AUDIO", "0") in ("1", "true", "yes")
-# Qabul qilinadigan audio namuna chastotasi (G.711 odatda 8 kHz, mono).
-JT1078_AUDIO_RATE = int(os.environ.get("GPS_JT1078_AUDIO_RATE", "8000"))
+# Kamera JT1078 oqimida B-frame bor va aniq fps yo'q. `-use_wallclock` B-frame
+# reorder bilan to'qnashib jonli oqimda tiqilib qoladi; `-c copy` esa mpegts'ga
+# PTS bermaydi. Shuning uchun kirish fps'ni o'zimiz beramiz va libx264'ga
+# qayta kodlab, CFR chiqishda barqaror 2s HLS olamiz.
+# MUHIM: kirish fps real kadr kelish tezligiga MOS bo'lishi kerak. Aks holda
+# (masalan IN=1 bo'lsa-yu kamera 3fps yuborsa) ffmpeg har kadrni 1s oraliqda
+# deb belgilab, videoni 3 barobar sekinlashtiradi ("slideshow" effekti).
+# 2026-10-14 da real qurilmadan o'lchandi: jonli (0x9101) ~3 fps,
+# yozuv/playback (0x9201) ~13 fps. Shu sababli live va playback uchun alohida.
+# Qiymatlar env orqali joyida sozlanadi (kod o'zgartirmasdan).
+JT1078_FPS_IN = os.environ.get("GPS_JT1078_FPS_IN", "3")
+JT1078_FPS_OUT = os.environ.get("GPS_JT1078_FPS_OUT", "6")
+JT1078_FPS_IN_PB = os.environ.get("GPS_JT1078_FPS_IN_PB", "13")
+JT1078_FPS_OUT_PB = os.environ.get("GPS_JT1078_FPS_OUT_PB", "13")
 # ffmpeg stdin'iga yozuvchi navbat hajmi (access-unit soni). ffmpeg ulgurmasa
 # (kuchsiz VPS) navbat to'ladi va eng eski kadr tashlanadi — event loop
 # bloklanmaydi (ilgari bloklovchi yozuv butun serverni muzlatardi).
-JT1078_QUEUE_MAX = int(os.environ.get("GPS_JT1078_QUEUE_MAX", "24"))
+# Playback ~13 fps: 64 AU ≈ ~5s bufer — qisqa CPU cho'qqilarini yutadi.
+JT1078_QUEUE_MAX = int(os.environ.get("GPS_JT1078_QUEUE_MAX", "64"))
+# ffmpeg kirish (demuxer) navbati. Standart 8 juda kichik — ffmpeg "Thread
+# message queue blocking" beradi va kirish tiqilib, kadr tashlanadi (ayniqsa
+# 1 vCPU VPS'da ffmpeg CPU uchun kurashganda). Kattaroq qiymat cho'qqilarni
+# yutadi. Xato: "consider raising the thread_queue_size option (current: 8)".
+JT1078_THREAD_QUEUE = int(os.environ.get("GPS_JT1078_THREAD_QUEUE", "1024"))
 
 # ---- RTSP → HLS relay (ffmpeg) ----
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN", "ffmpeg")

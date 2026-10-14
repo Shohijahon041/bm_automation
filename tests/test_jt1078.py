@@ -35,12 +35,11 @@ def _pkt(typ, payload, sub=SUB_ATOMIC, pt=98, sim="000000000123", ch=1,
 class _FakeMuxer:
     instances = []
 
-    def __init__(self, sim, channel, mode="live", codec="h264", audio_pt=None):
+    def __init__(self, sim, channel, mode="live", codec="h264"):
         self.sim = sim
         self.channel = channel
         self.mode = mode
         self.codec = codec
-        self.audio_pt = audio_pt
         self.key = f"{sim}_{channel}" if mode == "live" else f"pb:{sim}_{channel}"
         self.prefix = "jt_" if mode == "live" else "jtpb_"
         self.bytes = 0
@@ -48,15 +47,11 @@ class _FakeMuxer:
         self.last_active = 0.0
         self.closed = False
         self.aus = []
-        self.audio = []
         _FakeMuxer.instances.append(self)
 
     def write(self, au):
         self.bytes += len(au)
         self.aus.append(au)
-
-    def write_audio(self, pcm):
-        self.audio.append(pcm)
 
     def close(self):
         self.closed = True
@@ -68,9 +63,7 @@ def _registries_clear():
     jt1078._MUXERS.clear()
     jt1078._STREAMS.clear()
     jt1078._DIAG.clear()
-    jt1078._AUDIO_PT.clear()
-    jt1078._STATS.update({"audio_packets": 0, "audio_units": 0,
-                          "access_units": 0})
+    jt1078._STATS.update({"access_units": 0})
     jt1078.clear_playback()
 
 
@@ -277,17 +270,15 @@ def test_session_waits_for_keyframe(monkeypatch):
 
 
 def test_session_ignores_audio_and_transparent(monkeypatch):
-    """Audio o'chirilgan bo'lsa paket faqat sanaladi (video muxer
-    ochilmaydi); shaffof/xizmat paketlari butunlay tashlanadi."""
+    """Audio va shaffof/xizmat paketlari butunlay tashlanadi — video muxer
+    ochilmaydi (qo'llanilmaydi)."""
     _reset(monkeypatch)
-    monkeypatch.setattr(jt1078.config, "JT1078_AUDIO", False)
     sess = jt1078._Session()
-    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"audio", pt=jt1078.PT_AUDIO_G711A)
+    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"audio")
     _feed(sess, DT_TRANSPARENT, SUB_ATOMIC, b"priv")
     _feed(sess, DT_TRANSPARENT, SUB_FIRST, b"priv2")
     sess.close()
     assert _FakeMuxer.instances == []
-    assert jt1078._STATS["audio_packets"] == 1
 
 
 def test_session_accepts_b_frames(monkeypatch):
@@ -353,141 +344,6 @@ def test_frame_buffer_cap_forces_emit(monkeypatch):
     _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"y" * 8, ts=0)
     assert _FakeMuxer.instances[0].aus == [b"x" * 8 + b"y" * 8]
     assert bytes(sess.frames[("123", 1)]["buf"]) == b""
-
-
-# ------------------------------------------------------------------ audio
-
-def test_audio_muxed_into_stream(monkeypatch):
-    """Audio paket kelganda muxer audio kirish quvuri bilan qayta ochiladi
-    va PCM muxerga yoziladi (HLS'da ovoz bo'lishi uchun)."""
-    _reset(monkeypatch)
-    monkeypatch.setattr(jt1078.config, "JT1078_AUDIO", True)
-    sess = jt1078._Session()
-    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I", ts=1)
-    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"P", ts=2)      # video muxer
-    assert _FakeMuxer.instances[0].audio_pt is None
-
-    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"pcm1",
-          pt=jt1078.PT_AUDIO_G711A, ts=3)
-    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"pcm2",
-          pt=jt1078.PT_AUDIO_G711A, ts=4)                 # pcm1 chiqadi
-    sess.close()                                          # pcm2 chiqadi
-
-    m = _FakeMuxer.instances[-1]
-    assert m.audio_pt == jt1078.PT_AUDIO_G711A
-    assert m.audio == [b"pcm1", b"pcm2"]
-    assert jt1078._STATS["audio_units"] == 2
-
-
-def test_audio_subpackets_assembled(monkeypatch):
-    """first+middle+last bitta PCM bo'lagiga yig'iladi."""
-    _reset(monkeypatch)
-    monkeypatch.setattr(jt1078.config, "JT1078_AUDIO", True)
-    pt = jt1078.PT_AUDIO_G711A
-    sess = jt1078._Session()
-    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I", ts=1)
-    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"P", ts=2)
-    _feed(sess, DT_AUDIO, SUB_FIRST, b"a", pt=pt, ts=3)
-    _feed(sess, DT_AUDIO, SUB_MIDDLE, b"b", pt=pt, ts=3)
-    _feed(sess, DT_AUDIO, SUB_LAST, b"c", pt=pt, ts=3)
-    assert _FakeMuxer.instances[-1].audio == [b"abc"]
-
-
-def test_audio_unsupported_pt_dropped(monkeypatch):
-    """G.726/AAC kabi qo'llanmaydigan kodeklar tashlanadi."""
-    _reset(monkeypatch)
-    monkeypatch.setattr(jt1078.config, "JT1078_AUDIO", True)
-    sess = jt1078._Session()
-    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"aac", pt=jt1078.PT_AUDIO_AAC, ts=1)
-    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"g726", pt=jt1078.PT_AUDIO_G726, ts=2)
-    sess.close()
-    assert _FakeMuxer.instances == []
-    assert jt1078._STATS["audio_units"] == 0
-
-
-def test_audio_pt_change_recreates_muxer(monkeypatch):
-    """Audio kodeki o'zgarsa (alaw -> mulaw) muxer qayta ochiladi."""
-    _reset(monkeypatch)
-    monkeypatch.setattr(jt1078.config, "JT1078_AUDIO", True)
-    sess = jt1078._Session()
-    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I", ts=1)
-    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"P", ts=2)
-    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"u1", pt=jt1078.PT_AUDIO_G711A, ts=3)
-    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"u2", pt=jt1078.PT_AUDIO_G711A, ts=4)
-    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"m1", pt=jt1078.PT_AUDIO_G711U, ts=5)
-    sess.close()
-    assert [m.audio_pt for m in _FakeMuxer.instances if m.audio_pt] == [
-        jt1078.PT_AUDIO_G711A, jt1078.PT_AUDIO_G711U]
-
-
-def test_streams_report_audio_flag(monkeypatch):
-    """Oqim ro'yxatida audio borligi ko'rinadi (UI diagnostikasi uchun)."""
-    _reset(monkeypatch)
-    monkeypatch.setattr(jt1078.config, "JT1078_AUDIO", True)
-    pt = jt1078.PT_AUDIO_G711A
-    sess = jt1078._Session()
-    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I", ts=1)
-    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"P", ts=2)
-    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"p1", pt=pt, ts=3)
-    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"p2", pt=pt, ts=4)
-    out = jt1078.streams()
-    assert out and out[0]["audio"] is True
-
-
-def test_audio_recreate_waits_for_keyframe(monkeypatch):
-    """Audio paydo bo'lib muxer qayta ochilsa — yangi ffmpeg keyingi I-kadrni
-    kutadi. Aks holda (SPS/PPS'siz P-kadr) ffmpeg HLS'ga hech narsa yozmaydi
-    va oqim butunlay yo'qoladi."""
-    _reset(monkeypatch)
-    monkeypatch.setattr(jt1078.config, "JT1078_AUDIO", True)
-    pt = jt1078.PT_AUDIO_G711A
-    sess = jt1078._Session()
-    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I", ts=1)
-    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"P1", ts=2)      # muxer #1: I yozildi
-    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"a1", pt=pt, ts=3)
-    _feed(sess, DT_AUDIO, SUB_ATOMIC, b"a2", pt=pt, ts=4)  # -> muxer #2
-    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"P2", ts=5)       # P1 tashlanadi
-    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I2", ts=6)       # P2 tashlanadi
-    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"P3", ts=7)       # I2 yoziladi
-    sess.close()                                            # P3 yoziladi
-    assert _FakeMuxer.instances[0].aus == [b"I"]
-    assert _FakeMuxer.instances[1].aus == [b"I2", b"P3"]
-
-
-def test_muxer_audio_pipe_args(monkeypatch, tmp_path):
-    """POSIX'da audio ffmpeg'ga ikkinchi kirish (xom PCM quvuri) sifatida
-    beriladi va AAC'ga kodlanadi (Windows'da bu yo'l o'chirilgan).
-
-    Bu test HAQIQIY `_Muxer`ni sinaydi — `_reset`dagi fake'ni qo'llamaymiz.
-    """
-    jt1078._MUXERS.clear()
-    jt1078._STREAMS.clear()
-    jt1078._AUDIO_PT.clear()
-    monkeypatch.setattr(jt1078.config, "HLS_DIR", str(tmp_path))
-    monkeypatch.setattr(jt1078.config, "JT1078_AUDIO", True)
-    monkeypatch.setattr(jt1078, "ffmpeg_available", lambda: True)
-    monkeypatch.setattr(jt1078, "_audio_pipe_supported", lambda: True)
-    captured = {}
-
-    class _Proc:
-        stdin = None
-
-        def __init__(self, cmd, **kw):
-            captured["cmd"] = cmd
-            captured["kw"] = kw
-
-        def kill(self):
-            pass
-
-    monkeypatch.setattr(jt1078.subprocess, "Popen", _Proc)
-    m = jt1078._Muxer("123", 1, codec="h264", audio_pt=jt1078.PT_AUDIO_G711A)
-    cmd = captured["cmd"]
-    assert "alaw" in cmd
-    assert any(str(a).startswith("/dev/fd/") for a in cmd)
-    assert "-c:a" in cmd and "aac" in cmd
-    assert captured["kw"]["pass_fds"]          # fd ffmpeg'ga uzatilgan
-    m.write_audio(b"\xd5\xaa")                 # quvurga yozish xato bermaydi
-    m.close()
 
 
 # ---------------------------------------------------------------- persistence

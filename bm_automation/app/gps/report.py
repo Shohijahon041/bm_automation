@@ -61,7 +61,7 @@ def build_report(day=None) -> str:
     lines = []
     devices = []
     try:
-        devices = storage.list_devices()
+        devices = storage.teltonika_only(storage.list_devices())
     except Exception:  # noqa: BLE001
         devices = []
     for i, r in enumerate(rows, 1):

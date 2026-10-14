@@ -49,7 +49,6 @@ def muxer_env(tmp_path, monkeypatch):
     """HLS_DIR/ffmpeg'ni izolyatsiya qiladi va sun'iy Popen beradi."""
     monkeypatch.setattr(config, "HLS_DIR", str(tmp_path / "hls"))
     monkeypatch.setattr(config, "JT1078_RAW_DUMP", False)
-    monkeypatch.setattr(config, "JT1078_AUDIO", False)
     monkeypatch.setattr(jt1078, "ffmpeg_available", lambda: True)
     state = {"delay": 0.0, "stdin": None, "cmd": None, "popens": 0}
 
@@ -62,7 +61,7 @@ def muxer_env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(jt1078.subprocess, "Popen", fake_popen)
     for table in (jt1078._MUXERS, jt1078._STREAMS, jt1078._DIAG,
-                  jt1078._MUXER_SRC, jt1078._AUDIO_PT):
+                  jt1078._MUXER_SRC):
         table.clear()
     yield state
     for m in list(jt1078._MUXERS.values()):
@@ -71,7 +70,7 @@ def muxer_env(tmp_path, monkeypatch):
         except Exception:  # noqa: BLE001
             pass
     for table in (jt1078._MUXERS, jt1078._STREAMS, jt1078._DIAG,
-                  jt1078._MUXER_SRC, jt1078._AUDIO_PT):
+                  jt1078._MUXER_SRC):
         table.clear()
 
 

@@ -218,6 +218,9 @@
     border-radius:13px;margin-bottom:14px;background:rgba(15,22,35,.5)}
   @media(max-width:920px){.player-form{grid-template-columns:1fr}}
   .cam-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px}
+  /* Video xonasi: avtobus bo'yicha tanlov (bir nechta / barchasi) */
+  .vid-buses{margin-bottom:14px}
+  .vid-buses .fchips{flex-wrap:wrap}
   .jt-sec{margin-bottom:18px}
   .jt-head{display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:14px}
   .jt-head .grow{flex:1}
@@ -237,8 +240,18 @@
   .jt-rec .rrow .t{font-variant-numeric:tabular-nums}
   .jt-rec .rrow .grow{margin-left:auto}
   .jt-rec video{width:100%;max-height:420px;background:#000;border-radius:11px;margin-top:10px}
+  .jt-rec .rec-time{display:flex;align-items:center;gap:10px;margin-top:8px;font-size:11px;color:var(--muted)}
+  .jt-rec .rec-time input[type=range]{flex:1;accent-color:var(--teal);height:4px;cursor:pointer}
+  .jt-rec .rec-time .rt{font-variant-numeric:tabular-nums;min-width:54px;text-align:center;font-family:ui-monospace,Consolas,monospace}
+  .jt-rec .rec-wait{display:none;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:var(--muted)}
+  .jt-rec .rec-wait.on{display:flex}
+  .jt-rec .spin{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--teal);border-radius:50%;animation:recspin .8s linear infinite}
+  @keyframes recspin{to{transform:rotate(360deg)}}
+  .jt-rec .rec-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--red);animation:recblink 1.2s infinite;margin-right:4px;vertical-align:middle}
+  @keyframes recblink{0%,100%{opacity:1}50%{opacity:.25}}
+  .jt-rec .btn[disabled]{opacity:.45;pointer-events:none}
 
-  /* ---------- oqim diagnostikasi (kodek / audio / kalit kadr / oxirgi xato) ---------- */
+  /* ---------- oqim diagnostikasi (kodek / kalit kadr / oxirgi xato) ---------- */
   .jt-diag{margin:0 12px 9px;font-size:11px;line-height:1.6;color:var(--muted);word-break:break-word}
   .jt-diag-line{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
   .jt-diag b{color:var(--ink);font-weight:600}
@@ -461,6 +474,15 @@
 <!-- ================= VIDEO ================= -->
 <div id="video">
   <div class="vwrap">
+    <div class="vid-buses">
+      <div class="jt-head" style="margin-bottom:6px">
+        <b>🚌 Avtobuslar</b>
+        <span class="muted" id="vid-bus-info"></span>
+        <span class="grow"></span>
+        <button class="btn sm" onclick="vidBusAll()">Barchasi</button>
+      </div>
+      <div class="fchips" id="vid-buses"></div>
+    </div>
     <div class="jt-sec">
       <div class="jt-head">
         <b>JT1078 / CMSV6 — 4G kameralar</b>
@@ -594,7 +616,7 @@ function showTab(t) {
   document.getElementById('tab-video').classList.toggle('on', t === 'video');
   if (location.hash !== '#' + t) { try { history.replaceState(null, '', '#' + t); } catch (e) {} }
   if (t === 'gps') { initMaps(); setTimeout(function () { map.invalidateSize(); }, 60); }
-  if (t === 'video') { loadJtStreams(); }
+  if (t === 'video') { loadJtStreams(); refreshCams(); }
 }
 function tabFromHash() {
   var h = (location.hash || '').replace('#', '').split('?')[0];
@@ -618,6 +640,7 @@ function refresh() {
     devices = rs[0].devices || [];
     routes = rs[1].routes || [];
     lastRefresh = Date.now();
+    renderVideoBuses();   /* avtobus nomlari (plate) yangilandi */
     var lc = document.getElementById('liveclk');
     if (lc) { lc.classList.remove('pulse'); void lc.offsetWidth; lc.classList.add('pulse'); }
     renderRouteFilter();
@@ -813,6 +836,9 @@ function updateSelCard() {
       '<div class="sc-acts">' +
         '<button class="btn sm primary" onclick="openTraj(\'' + esc(d.imei) + '\')">📈 Tarix</button>' +
         '<button class="btn sm" onclick="centerSel()">🎯 Markaz</button>' +
+        (d.vehicle_id
+          ? '<button class="btn sm primary" onclick="openBusVideo(\'' + esc(d.vehicle_id) + '\')">🎥 Video</button>'
+          : '<button class="btn sm" disabled title="Avval avtobusga bog\'lang">🎥 Video yo\'q</button>') +
       '</div>' +
       '<div class="sc-acts" style="margin-top:7px">' +
         '<button class="btn sm" onclick="openEdit(\'' + esc(d.imei) + '\')">✏️ Tahrirlash</button>' +
@@ -1068,16 +1094,125 @@ function exportStopsCsv() {
     curStops.map(function (s) { return [s.start, s.end, s.duration_s, s.lat, s.lng, s.fence || '', s.points, s.ignition_off ? 1 : 0]; }));
 }
 
+/* ============ video: avtobus bo'yicha tanlov (multi-select) ============
+   Bo'sh tanlov = BARCHASI. Chip'ni bosish shu avtobusni qo'shadi/olib
+   tashlaydi — kameralar va kanallar faqat tanlangan avtobuslar bo'yicha
+   ko'rsatiladi. Shu tarzda "nechta bo'lsa barchasini" ham ko'rish mumkin. */
+var vidBusSel = {};        /* vehicle_id -> 1 (bo'sh = barchasi) */
+var jtBindings = {};       /* phone -> {vehicle_id, plate, name} */
+var jtAssist = {};         /* phone -> kamera GPS/Teltonika solishtirmasi */
+var jtChannels = 4;        /* qurilma kanallari soni (server: JT_CAMERA_CHANNELS) */
+
+function vidBusKey(v) { return String(v || ''); }
+function vidBusOn() { return Object.keys(vidBusSel).length > 0; }
+function vidBusSelected(vehicleId) {
+  if (!vidBusOn()) return true;
+  return !!vidBusSel[vidBusKey(vehicleId)];
+}
+function _vidBusSig() { return Object.keys(vidBusSel).sort().join(','); }
+function vidPlateFor(vid) {
+  /* 1) avtobuslar ro'yxati (har bir avtobusda plate bor) */
+  var b = (typeof busById === 'function') ? busById(String(vid || '')) : null;
+  if (b) return b.plate_number || b.garage_number || b.external_id || '';
+  /* 2) zaxira: GPS qurilmasi orqali */
+  for (var i = 0; i < devices.length; i++) {
+    if (String(devices[i].vehicle_id || '') === String(vid || '')) {
+      return devices[i].plate_number || devices[i].name || '';
+    }
+  }
+  return '';
+}
+function vidBusName(vid) { return vidPlateFor(vid) || String(vid || ''); }
+function vidBusToggle(vid) {
+  vid = vidBusKey(vid);
+  if (!vid) return;
+  if (vidBusSel[vid]) delete vidBusSel[vid]; else vidBusSel[vid] = 1;
+  camSig = ''; jtSig = '';
+  renderVideoBuses(); renderCams();
+}
+function vidBusAll() {
+  vidBusSel = {};
+  camSig = ''; jtSig = '';
+  renderVideoBuses(); renderCams();
+}
+/* Avtobus → kameralar xaritasi (HLS/RTSP + JT1078 qurilmalari) */
+function vidBusList() {
+  var map = {};
+  function add(vid, plate, n) {
+    vid = vidBusKey(vid);
+    if (!vid) return;
+    var it = map[vid] || (map[vid] = { vid: vid, plate: '', count: 0 });
+    if (plate && !it.plate) it.plate = plate;
+    it.count += (n || 0);
+  }
+  cams.forEach(function (c) { add(c.vehicle_id, '', 1); });
+  jtDevices.forEach(function (sim) {
+    var b = jtBindings[sim] || {};
+    add(b.vehicle_id, b.plate || vidPlateFor(b.vehicle_id), 1);
+  });
+  var list = Object.keys(map).map(function (k) { return map[k]; });
+  list.sort(function (a, b) {
+    return String(vidBusName(a.vid)).localeCompare(String(vidBusName(b.vid)), 'uz');
+  });
+  return list;
+}
+function renderVideoBuses() {
+  var box = document.getElementById('vid-buses');
+  if (!box) return;
+  var list = vidBusList();
+  box.innerHTML = list.length ? list.map(function (b) {
+    return '<button class="fchip' + (vidBusSel[b.vid] ? ' on' : '') + '" onclick="vidBusToggle(\'' +
+      esc(b.vid) + '\')">🚌 ' + esc(vidBusName(b.vid)) + ' <b>' + b.count + '</b></button>';
+  }).join('') : '<span class="muted" style="font-size:11.5px">Avtobusga bog\'langan kamera hali yo\'q — quyida qurilmani avtobusga bog\'lang.</span>';
+  var info = document.getElementById('vid-bus-info');
+  if (info) {
+    info.textContent = vidBusOn()
+      ? ('· ' + Object.keys(vidBusSel).length + ' ta tanlandi')
+      : ('· Barchasi (' + list.length + ' avtobus)');
+  }
+}
+/* GPS xaritasidan: shu avtobusning videolarini ochish */
+function openBusVideo(vehicleId) {
+  vehicleId = vidBusKey(vehicleId);
+  if (!vehicleId) { alert("Avtobus bog'lanmagan"); return; }
+  vidBusSel = {}; vidBusSel[vehicleId] = 1;
+  camSig = ''; jtSig = '';
+  showTab('video');
+  refreshCams();
+  loadJtStreams();
+  renderVideoBuses();
+  renderCams();
+  setTimeout(function () { playBusVideos(vehicleId); }, 1500);
+}
+function playBusVideos(vehicleId) {
+  vehicleId = vidBusKey(vehicleId);
+  jtDevices.forEach(function (sim) {
+    var b = jtBindings[sim] || {};
+    if (vidBusKey(b.vehicle_id) === vehicleId) startJtAll(sim);
+  });
+  cams.forEach(function (c) {
+    if (vidBusKey(c.vehicle_id) !== vehicleId) return;
+    if (c.source_type === 'embed') return;
+    if (_camLiveCount() < CAM_MAX_LIVE) playCam(c.id);
+  });
+}
+
 /* ============ video kameralar ============ */
 var cams = [];
 var camSig = '';
 var camPlayers = {};         /* id -> {hls, video} */
 var camStarting = {};        /* id -> 1 (relay/playlist kutilmoqda) */
-var CAM_MAX_LIVE = 12;       /* bir vaqtda ochiq oqimlar chegarasi (100+ kamera uchun) */
+/* Bir vaqtda ochiq oqimlar chegarasi. "Barcha kameralarni birdan ko'rish"
+   uchun katta; juda ko'p oqim tarmoqni/CPU'ni yeydi — kerak bo'lsa
+   avtobus tanlab, kamroq oqim oching. */
+var CAM_MAX_LIVE = 64;
 
 function refreshCams() {
-  API.get('/api/video/cameras').then(function (d) { cams = d.cameras || []; renderCams(); })
-    .catch(function (e) { console.warn('kamera xato', e); });
+  API.get('/api/video/cameras').then(function (d) {
+    cams = d.cameras || [];
+    renderCams();
+    renderVideoBuses();
+  }).catch(function (e) { console.warn('kamera xato', e); });
   refreshRelays();
 }
 
@@ -1110,7 +1245,9 @@ function updateRelayDiag() {
   });
 }
 function _camSignature() {
-  return cams.map(function (c) {
+  /* busList.length — avtobus nomlari (plate) yuklanganda kartalarni
+     qayta chizish uchun (birinchi yuklashda UUID emas, raqam ko'rinsin). */
+  return (busList ? busList.length : 0) + '|' + cams.map(function (c) {
     return c.id + ':' + (c.source_type || '') + ':' + (c.name || '') + ':' +
       (c.url || '') + ':' + (c.vehicle_id || '');
   }).join('|');
@@ -1118,18 +1255,26 @@ function _camSignature() {
 function _camLiveCount() { return Object.keys(camPlayers).length; }
 function _camStatus() {
   var el = document.getElementById('cam-status');
-  if (el) el.textContent = cams.length + ' kamera · ' + _camLiveCount() + ' ochiq';
+  if (!el) return;
+  var n = _camShown().length;
+  el.textContent = (vidBusOn() ? n + '/' + cams.length : cams.length) +
+    ' kamera · ' + _camLiveCount() + ' ochiq';
+}
+function _camShown() {
+  /* Faqat tanlangan avtobuslar (bo'sh tanlov = hammasi). */
+  return cams.filter(function (c) { return vidBusSelected(c.vehicle_id); });
 }
 function renderCams() {
   var grid = document.getElementById('cam-grid');
   if (!grid) return;
   /* Diag satrlari innerHTML bilan qayta yaratiladi — keyin qayta to'ldiramiz. */
-  var sig = _camSignature();
+  var sig = _camSignature() + '#' + _vidBusSig();
   if (sig === camSig) { _camStatus(); return; }   /* o'zgarish yo'q — oqimlarni uzmaymiz */
   camSig = sig;
   stopAllCams();
-  grid.innerHTML = cams.map(camCard).join('');
-  document.getElementById('cam-empty').style.display = cams.length ? 'none' : 'block';
+  var shown = _camShown();
+  grid.innerHTML = shown.map(camCard).join('');
+  document.getElementById('cam-empty').style.display = shown.length ? 'none' : 'block';
   updateRelayDiag();
   _camStatus();
   /* Avtomatik ochmaymiz: 100+ kamera bo'lsa ham brauzer qotmaydi —
@@ -1148,7 +1293,10 @@ function camCard(c) {
   }
   var diag = c.source_type === 'rtsp' ? ('<div class="jt-diag" id="rd-' + c.id +
     '" style="display:none"></div>') : '';
-  return '<div class="cam"><div class="head"><span class="dot"></span>' + esc(c.name) + ' ' + badge + '</div>' +
+  var bus = c.vehicle_id
+    ? '<span class="badge">🚌 ' + esc(vidBusName(c.vehicle_id)) + '</span>'
+    : '<span class="badge warn">bog\'lanmagan</span>';
+  return '<div class="cam"><div class="head"><span class="dot"></span>' + esc(c.name) + ' ' + badge + ' ' + bus + '</div>' +
     '<div class="body">' + body + '</div>' + diag +
     '<div class="foot"><span class="muted">' + esc(c.url) + '</span><span class="grow">' +
     act +
@@ -1243,11 +1391,12 @@ function stopAllCams() {
   _camStatus();
 }
 function playAllCams() {
-  cams.forEach(function (c) {
-    if (c.source_type === 'embed') return;
-    if (_camLiveCount() >= CAM_MAX_LIVE) return;
-    playCam(c.id);
-  });
+  /* Tanlangan avtobuslardagi BARCHA kameralarni ochadi. */
+  var list = _camShown().filter(function (c) { return c.source_type !== 'embed'; });
+  if (list.length > CAM_MAX_LIVE) {
+    if (!confirm(list.length + ' ta kamera ochiladi — bu tarmoqni sekinlashtirishi mumkin. Davom etilsinmi?')) return;
+  }
+  list.forEach(function (c) { playCam(c.id); });
 }
 function showCamNote(c, details) {
   var v = document.getElementById('v-' + c.id);
@@ -1277,7 +1426,7 @@ function delCam(id) { if (!confirm("Kamerani o'chirish?")) return; API.del('/api
 
 /* ============ JT1078 / CMSV6 4G kameralar (avto-aniqlangan) ============ */
 var jtStreams = [], jtDevices = [], jtSig = '', jtHlsMap = {};
-var jtAudioOn = null, jtAudioRate = null, jtRecent = [];
+var jtRecent = [];
 function fmtBytes(n) {
   n = n || 0;
   if (n < 1024) return n + ' B';
@@ -1289,8 +1438,10 @@ function loadJtStreams() {
     var now = Date.now();
     jtStreams = (d.streams || []).map(function (s) { s._at = now; return s; });
     jtDevices = d.devices || [];
-    jtAudioOn = (d.audio_enabled === undefined ? null : !!d.audio_enabled);
-    jtAudioRate = d.audio_rate || null;
+    jtBindings = d.bindings || {};
+    jtChannels = parseInt(d.camera_channels, 10) || 4;
+    jtAssist = {};
+    (d.assist || []).forEach(function (a) { jtAssist[String(a.phone)] = a; });
     jtRecent = (d.recent || []).map(function (s) { s._at = now; return s; });
     var st = document.getElementById('jt-status');
     if (st) {
@@ -1298,12 +1449,11 @@ function loadJtStreams() {
       if (d.enabled === false) bits.push('JT808 o\'chirilgan');
       else bits.push(jtDevices.length ? jtDevices.length + ' qurilma onlayn' : 'qurilma yo\'q');
       if (d.ffmpeg === false) bits.push('⚠ ffmpeg topilmadi');
-      if (jtAudioOn === false) bits.push('🔇 audio o\'chirilgan (GPS_JT1078_AUDIO=0)');
-      else if (jtAudioOn === true) bits.push('🔊 audio yoqilgan' + (jtAudioRate ? ' ' + (jtAudioRate / 1000) + ' kHz' : ''));
       st.textContent = '· ' + bits.join(' · ');
     }
     renderJtStreams();
     renderJtClosed();
+    renderVideoBuses();
   }).catch(function () {});
 }
 function fmtAge(sec) {
@@ -1323,14 +1473,6 @@ function _ageAt(s, field) {
 }
 function jtDiagHtml(s) {
   var parts = ['<b>' + esc(s.codec_name || s.codec || '?') + '</b>'];
-  if (s.audio) {
-    var an = s.audio_codec || (s.audio_pt === null || s.audio_pt === undefined ? '?' : 'PT ' + s.audio_pt);
-    parts.push('<span class="ok">🔊 ' + esc(an) + '</span>');
-  } else if (jtAudioOn === false) {
-    parts.push('<span class="warn">🔇 audio o\'chirilgan</span>');
-  } else {
-    parts.push('<span>🔇 audio yo\'q</span>');
-  }
   var kf = _ageAt(s, 'keyframe_age_s');
   if (kf === null) {
     parts.push('<span class="warn">⏱ kalit kadr yo\'q</span>');
@@ -1357,8 +1499,7 @@ function renderJtClosed() {
   var rows = jtRecent.map(function (s) {
     var bits = ['<b>' + esc(s.sim) + ' · kanal ' + s.channel + '</b>',
       (s.kind === 'playback' ? '🗂 xotira' : 'jonli'),
-      esc(s.codec_name || s.codec || '?'),
-      (s.audio ? '🔊 ' + esc(s.audio_codec || '') : '🔇')];
+      esc(s.codec_name || s.codec || '?')];
     var kf = _ageAt(s, 'keyframe_age_s');
     bits.push('oxirgi kalit kadr: ' + (kf === null ? 'yo\'q' : fmtAge(kf) + ' oldin'));
     bits.push((s.keyframes || 0) + ' kalit / ' + (s.frames || 0) + ' kadr');
@@ -1378,33 +1519,54 @@ function renderJtClosed() {
 function _jtStreamFor(sim) {
   return jtStreams.filter(function (s) { return String(s.sim) === String(sim); });
 }
+/* Tanlangan avtobuslardagi kameralar (bo'sh tanlov = hammasi) */
+function _jtCamOn(sim) {
+  var b = jtBindings[sim] || {};
+  return vidBusSelected(b.vehicle_id);
+}
+function _jtShownStreams() {
+  return jtStreams.filter(function (s) { return _jtCamOn(s.sim); });
+}
+function _jtShownDevices() {
+  return jtDevices.filter(_jtCamOn);
+}
 function renderJtStreams() {
   var g = document.getElementById('jt-grid');
   if (!g) return;
   var sig = jtDevices.slice().sort().join(',') + '|' +
-    jtStreams.map(function (s) { return s.sim + '_' + s.channel; }).sort().join(',');
+    jtStreams.map(function (s) { return s.sim + '_' + s.channel; }).sort().join(',') +
+    '#' + _vidBusSig() + '|' + Object.keys(jtBindings).length + '|' + Object.keys(jtAssist).length;
   if (sig === jtSig) { updateJtDiag(); return; }  // o'yinni uzmaslik uchun
   jtSig = sig;
   destroyJtPlayers();
   var html = '';
-  jtStreams.forEach(function (s) { html += jtStreamCard(s); });
-  jtDevices.forEach(function (sim) {
+  var shownStreams = _jtShownStreams();
+  shownStreams.forEach(function (s) { html += jtStreamCard(s); });
+  _jtShownDevices().forEach(function (sim) {
     if (_jtStreamFor(sim).length) return;  // allaqachon jonli oqim bor
     html += jtDeviceCard(sim);
   });
   g.innerHTML = html;
   var e = document.getElementById('jt-empty');
-  if (e) e.style.display = (jtStreams.length || jtDevices.length) ? 'none' : 'block';
-  jtStreams.forEach(function (s) { mountJtHls(s); });
+  if (e) e.style.display = (shownStreams.length || _jtShownDevices().length) ? 'none' : 'block';
+  shownStreams.forEach(function (s) { mountJtHls(s); });
   updateJtDiag();
 }
 function jtStreamCard(s) {
   var vid = 'jt-' + s.sim + '-' + s.channel;
   var badges = '<span class="badge rtsp">LIVE</span>' +
-    '<span class="badge hls">' + esc(s.codec_name || s.codec || '?') + '</span>' +
-    (s.audio ? '<span class="badge hls">🔊 ' + esc(s.audio_codec || 'audio') + '</span>' : '');
-  return '<div class="cam"><div class="head"><span class="dot"></span> Kamera ' + esc(s.sim) +
-    ' · kanal ' + s.channel + ' ' + badges + '</div>' +
+    '<span class="badge hls">' + esc(s.codec_name || s.codec || '?') + '</span>';
+  var b = jtBindings[s.sim] || {};
+  var bus = b.vehicle_id
+    ? '<span class="badge">🚌 ' + esc(b.plate || vidBusName(b.vehicle_id)) + '</span>'
+    : '';
+  var a = jtAssist[String(s.sim)];
+  if (a) {
+    bus += ' <span class="badge ' + (a.status === 'ok' ? 'hls' : 'warn') +
+      '" title="' + esc(a.status_text) + '">📍 ' + esc(a.status_text) + '</span>';
+  }
+  return '<div class="cam"><div class="head"><span class="dot"></span> 📷 ' + esc(s.sim) +
+    ' · <b>kanal ' + s.channel + '</b> ' + badges + ' ' + bus + '</div>' +
     '<div class="body"><video id="' + vid + '" controls muted playsinline></video></div>' +
     '<div class="jt-diag" id="d-' + vid + '"></div>' +
     '<div class="foot"><span class="muted" id="b-' + vid + '">' + fmtBytes(s.bytes) + '</span>' +
@@ -1414,21 +1576,87 @@ function jtStreamCard(s) {
     '<button class="btn danger sm" onclick="stopJtLive(\'' + esc(s.sim) + '\',' + s.channel + ')">⏹ To\'xtatish</button>' +
     '</div></div>';
 }
+function jtChCount() { return Math.max(1, Math.min(16, parseInt(jtChannels, 10) || 4)); }
+function jtChLive(sim, ch) {
+  return jtStreams.some(function (s) {
+    return String(s.sim) === String(sim) && Number(s.channel) === Number(ch);
+  });
+}
+/* Kanal tugmalari: har bir kanal alohida boshlanadi/to'xtatiladi — shu tarzda
+   "kanaliga qarab" va bir nechta kanalni birdan ko'rish mumkin. */
+function jtChannelBtns(sim) {
+  var out = [];
+  for (var c = 1; c <= jtChCount(); c++) {
+    var live = jtChLive(sim, c);
+    out.push('<button class="btn sm' + (live ? ' danger' : '') + '" onclick="' +
+      (live
+        ? 'stopJtLive(\'' + esc(sim) + '\',' + c + ')'
+        : 'startJtLive(\'' + esc(sim) + '\',null,' + c + ')') +
+      '">' + (live ? '⏹' : '▶') + ' ch' + c + '</button>');
+  }
+  return out.join(' ');
+}
 function jtDeviceCard(sim) {
-  var sel = 'ch-' + sim;
-  var opts = [1, 2, 3, 4, 5, 6, 7, 8].map(function (n) {
-    return '<option value="' + n + '">' + n + '</option>';
-  }).join('');
-  return '<div class="cam"><div class="head"><span class="dot"></span> Kamera ' + esc(sim) +
-    ' <span class="badge hls">JT808</span></div>' +
+  var b = jtBindings[sim] || {};
+  var a = jtAssist[String(sim)];
+  var bus = b.vehicle_id
+    ? '<span class="badge">🚌 ' + esc(b.plate || vidBusName(b.vehicle_id)) + '</span>'
+    : '<span class="badge warn">bog\'lanmagan</span>';
+  var gps = a ? ' <span class="badge ' + (a.status === 'ok' ? 'hls' : 'warn') +
+    '" title="' + esc(a.status_text) +
+    (a.dist_m == null ? '' : ' · Teltonika bilan farq ' + Math.round(a.dist_m) + ' m') +
+    '">📍 ' + esc(a.status_text) + '</span>' : '';
+  var act = '';
+  if (!b.vehicle_id) {
+    if (a && a.suggest_vehicle_id) {
+      act += '<button class="btn sm" onclick="bindCameraTo(\'' + esc(sim) + '\',\'' +
+        esc(a.suggest_vehicle_id) + '\')" title="Kamera GPS Teltonika GPS bilan mos keladi">✓ ' +
+        esc(a.suggest_plate || a.suggest_vehicle_id) + ' (tavsiya)</button> ';
+    }
+    act += '<button class="btn sm primary" onclick="openCamBind(\'' + esc(sim) + '\')">🔗 Avtobusga bog\'lash</button>';
+  }
+  return '<div class="cam"><div class="head"><span class="dot"></span> 📷 ' + esc(sim) +
+    ' <span class="badge hls">JT808</span> ' + bus + gps + '</div>' +
     '<div class="body" style="display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px;text-align:center;padding:18px">' +
-    'Video hali boshlanmagan. Kanalni tanlab "Jonli video" ni bosing — kameraga buyruq (0x9101) yuboriladi va oqim shu yerda ochiladi.</div>' +
-    '<div class="foot"><label class="muted" style="display:flex;align-items:center;gap:4px">Kanal ' +
-    '<select id="' + sel + '">' + opts + '</select></label>' +
-    '<span class="grow"></span>' +
-    '<button class="btn sm" onclick="openRec(\'' + esc(sim) + '\',document.getElementById(\'' + sel + '\').value)">🗂 Xotira</button>' +
-    '<button class="btn primary sm" onclick="startJtLive(\'' + esc(sim) + '\', this)">▶ Jonli video</button>' +
+    'Video hali boshlanmagan. Kanal tugmasini (yoki "Barcha kanallar") bosing — kameraga 0x9101 buyrug\'i yuboriladi.</div>' +
+    '<div class="foot" style="flex-wrap:wrap;gap:5px">' +
+    jtChannelBtns(sim) +
+    '<button class="btn primary sm" onclick="startJtAll(\'' + esc(sim) + '\')">▶ Barcha kanallar</button>' +
+    '<span class="grow"></span>' + act +
+    '<button class="btn sm" onclick="openRec(\'' + esc(sim) + '\',1)">🗂 Xotira</button>' +
     '</div></div>';
+}
+/* Kamera terminalini avtobusga bog'lash (mavjud dlg orqali) */
+function openCamBind(sim) {
+  editImei = String(sim);
+  document.getElementById('dlg-title').textContent = "Kamerani avtobusga bog'lash — " + sim;
+  document.getElementById('dlg-err').style.display = 'none';
+  Promise.all([
+    API.get('/api/gps/devices').catch(function () { return { devices: [] }; }),
+    loadVehicles()
+  ]).then(function (rs) {
+    devices = rs[0].devices || devices;
+    fillDeviceSelect(devices);
+    fillBusSelect();
+    document.getElementById('dlg-device').value = '';
+    document.getElementById('dlg-device').disabled = true;
+    document.getElementById('dlg-imei').value = sim;
+    document.getElementById('dlg-imei').readOnly = true;
+    var a = jtAssist[String(sim)] || {};
+    var b = jtBindings[String(sim)] || {};
+    document.getElementById('dlg-vehicle').value = a.suggest_vehicle_id || b.vehicle_id || '';
+    document.getElementById('dlg-name').value = b.name || '';
+    updateDlgHint();
+  });
+  document.getElementById('dlg').showModal();
+}
+function bindCameraTo(sim, vehicleId) {
+  if (!confirm("Kamerani «" + vidBusName(vehicleId) + "» avtobusiga bog'lash?")) return;
+  API.patch('/api/gps/devices/' + encodeURIComponent(sim), { vehicle_id: vehicleId })
+    .then(function () {
+      camSig = ''; jtSig = '';
+      loadJtStreams(); refreshCams(); loadVehicles();
+    }).catch(function (e) { alert(e.message); });
 }
 function jtMediaHost() {
   // Qurilma oqimni shu hostga yuboradi — bu serverga tashqaridan (internetdan)
@@ -1441,9 +1669,12 @@ function jtMediaHost() {
       || h.indexOf('172.') === 0 || h.indexOf('169.254.') === 0) return '';
   return h;
 }
-function startJtLive(sim, btn) {
-  var sel = document.getElementById('ch-' + sim);
-  var ch = sel ? parseInt(sel.value, 10) : 1;
+function startJtLive(sim, btn, chArg) {
+  var ch = parseInt(chArg, 10) || 0;
+  if (!ch) {
+    var sel = document.getElementById('ch-' + sim);
+    ch = sel ? parseInt(sel.value, 10) : 1;
+  }
   if (btn) { btn.disabled = true; btn.textContent = '… yuborilmoqda'; }
   API.post('/api/video/jt-live', { phone: sim, channel: ch, host: jtMediaHost() }).then(function (d) {
     if (d && d.ok === false) alert('Buyruq yuborilmadi: ' + (d.error || 'qurilma ulanmagan'));
@@ -1451,6 +1682,14 @@ function startJtLive(sim, btn) {
     setTimeout(loadJtStreams, 7000);
   }).catch(function (e) { alert('Xato: ' + e.message); })
     .then(function () { if (btn) { btn.disabled = false; btn.textContent = '▶ Jonli video'; } });
+}
+/* Shu qurilmaning BARCHA kanallarini birdan ochish */
+function startJtAll(sim) {
+  for (var c = 1; c <= jtChCount(); c++) {
+    if (!jtChLive(sim, c)) startJtLive(sim, null, c);
+  }
+  setTimeout(loadJtStreams, 3000);
+  setTimeout(loadJtStreams, 8000);
 }
 function stopJtLive(sim, ch) {
   API.post('/api/video/jt-stop', { phone: sim, channel: ch }).then(function () {
@@ -1497,42 +1736,80 @@ function fullscreenVid(id) {
 }
 
 /* ============ qurilma xotirasidagi yozuvlar (playback) ============ */
-var recSel = { sim: '', ch: 1 };
-var recItems = [];
-var recPoll = null;
-var recHls = null;
-var recCurrent = null, recWait = null, recWaitN = 0, recVideoBound = false;
+/* 0x9202 boshqaruv (JT/T 1078-2016 Table 25):
+   play=0, pause=1, stop=2, tez=3, orqaga=4, drag=5(vaqtga o'tish), kalit=6. */
 var REC_CTRL = { play: 0, pause: 1, stop: 2, fwd: 3, rew: 4, drag: 5, keyfwd: 6 };
+var REC_MAX_CH = 4;            /* qurilma kanallari (ch1..chN) */
+var recSel = { sim: '', ch: 1 };
+var recItems = [], recIndex = -1, recCurrent = null;
+var recPoll = null, recHls = null, recWait = null, recWaitN = 0;
+var recVideoBound = false, recPlaying = false, recTick = null;
+/* Joriy pozitsiya hisobi (HLS jonli qayta uzatish bo'lgani uchun buffer emas,
+   soat bo'yicha): t = langar offset, at = langar epoch(ms), rate = tezlik. */
+var recAnchor = { t: 0, at: 0, rate: 1, len: 0 };
+var recRec = null, recChunks = [];   /* MediaRecorder (yuklab olish) */
+
 function _val(id) { var e = document.getElementById(id); return e ? String(e.value || '').trim() : ''; }
 function _recHls(sim, ch) { return '/hls/jtpb_' + sim + '_' + ch + '.m3u8'; }
+function _recBtn(id, on) { var b = document.getElementById(id); if (b) b.disabled = !on; }
+function _recSetStatus(text) { var s = document.getElementById('rec-status'); if (s) s.textContent = text; }
+function _recShowWait(on, text) {
+  var w = document.getElementById('rec-wait');
+  if (!w) return;
+  w.classList.toggle('on', !!on);
+  var t = document.getElementById('rec-wait-txt');
+  if (t && text != null) t.textContent = text;
+}
 function openRec(sim, ch) {
-  recSel = { sim: String(sim), ch: ch || 1 };
+  recSel = { sim: String(sim), ch: parseInt(ch, 10) || 1 };
   var box = document.getElementById('jt-rec');
   if (!box) return;
   box.style.display = 'block';
   var today = new Date().toISOString().slice(0, 10);
+  var chOpts = '';
+  for (var c = 1; c <= REC_MAX_CH; c++) {
+    chOpts += '<option value="' + c + '"' + (c === recSel.ch ? ' selected' : '') +
+      '>ch' + c + '</option>';
+  }
   box.innerHTML =
-    '<div class="rbar"><b>🗂 Xotira — ' + esc(sim) + ' · kanal ' + (ch || 1) + '</b>' +
+    '<div class="rbar"><b>🗂 Xotira — ' + esc(sim) + ' · kanal ' + recSel.ch + '</b>' +
+    '<label class="muted">Kanal <select id="rec-ch">' + chOpts + '</select></label>' +
     '<span class="grow"></span>' +
     '<label class="muted">Sana <input type="date" id="rec-date" value="' + today + '"></label>' +
     '<label class="muted">Dan <input type="time" id="rec-t0" value="00:00" step="1"></label>' +
     '<label class="muted">Gacha <input type="time" id="rec-t1" value="23:59" step="1"></label>' +
-    '<button class="btn primary sm" onclick="loadRecList()">🔎 Yozuvlarni so\'rash</button>' +
+    '<button class="btn primary sm" id="rec-load" onclick="loadRecList()">🔎 Yozuvlarni so\'rash</button>' +
     '<button class="btn sm" onclick="closeRec()">✕</button></div>' +
     '<div class="muted" id="rec-status">Yozuvlar ro\'yxati qurilma xotirasidan so\'raladi (0x9205). ' +
     'Serverga video saqlanmaydi — uzatish jonli oqim sifatida bo\'ladi.</div>' +
     '<div id="rec-list"></div>' +
     '<div id="rec-player" style="display:none">' +
     '<video id="rec-video" controls muted playsinline></video>' +
-    '<div class="muted" id="rec-pos" style="margin-top:6px;font-variant-numeric:tabular-nums"></div>' +
-    '<div class="foot" style="margin-top:8px">' +
-    '<button class="btn sm" onclick="recCtrl(\'play\')">▶ Davom</button>' +
-    '<button class="btn sm" onclick="recCtrl(\'pause\')">⏸ Pauza</button>' +
-    '<button class="btn sm" onclick="recCtrl(\'fwd\')">⏩ Tez</button>' +
+    '<div class="rec-time"><span class="rt" id="rec-cur">00:00</span>' +
+    '<input type="range" id="rec-seek" min="0" max="1000" value="0" step="1" ' +
+    'oninput="onRecSeekInput()" onchange="onRecSeek()">' +
+    '<span class="rt" id="rec-dur">--:--</span></div>' +
+    '<div class="foot" style="margin-top:8px;flex-wrap:wrap">' +
+    '<button class="btn primary sm" id="rec-play" onclick="recPlayToggle()">⏸ Pauza</button>' +
     '<button class="btn sm" onclick="recCtrl(\'rew\')">⏪ Orqaga</button>' +
+    '<button class="btn sm" onclick="recCtrl(\'fwd\')">⏩ Tez</button>' +
+    '<label class="muted">Tezlik <select id="rec-speed" onchange="setRecSpeed()">' +
+    '<option value="1">1x</option><option value="2">2x</option>' +
+    '<option value="4">4x</option><option value="8">8x</option></select></label>' +
+    '<button class="btn sm" id="rec-dl" onclick="toggleRecDownload()">⤓ Yuklab olish</button>' +
     '<span class="grow"></span>' +
     '<button class="btn danger sm" onclick="stopRec()">⏹ To\'xtatish</button>' +
-    '</div></div>';
+    '</div>' +
+    '<div class="rec-wait" id="rec-wait"><span class="spin"></span><span id="rec-wait-txt">…</span></div>' +
+    '<div class="muted" id="rec-pos" style="margin-top:6px;font-variant-numeric:tabular-nums"></div>' +
+    '</div>';
+  var chSel = document.getElementById('rec-ch');
+  if (chSel) chSel.addEventListener('change', function () {
+    recSel.ch = parseInt(chSel.value, 10) || 1;
+    stopRec();
+    loadRecList();
+  });
+  recVideoBound = false;
   loadRecList();
 }
 function closeRec() {
@@ -1542,54 +1819,66 @@ function closeRec() {
   if (recPoll) { clearInterval(recPoll); recPoll = null; }
 }
 function loadRecList() {
-  var status = document.getElementById('rec-status');
   var date = _val('rec-date');
   var t0 = _val('rec-t0') || '00:00';
   var t1 = _val('rec-t1') || '23:59';
-  if (!date) { if (status) status.textContent = 'Sanani tanlang.'; return; }
-  if (status) status.textContent = 'Yozuvlar ro\'yxati so\'ralmoqda (0x9205)…';
+  if (!date) { _recSetStatus('Sanani tanlang.'); return; }
+  if (recPoll) { clearInterval(recPoll); recPoll = null; }
+  _recSetStatus('Yozuvlar ro\'yxati so\'ralmoqda (0x9205)…');
+  _recBtn('rec-load', false);
+  _recShowWait(true, 'Yozuvlar so\'ralmoqda…');
   API.post('/api/video/jt-files', {
     phone: recSel.sim, channel: recSel.ch,
     start: date + ' ' + t0 + ':00', end: date + ' ' + t1 + ':59'
   })
     .then(function (d) {
       if (d && d.ok === false) {
-        if (status) status.textContent = 'Buyruq yuborilmadi: ' + (d.error || 'qurilma ulanmagan');
-        return;
+        _recSetStatus('Buyruq yuborilmadi: ' + (d.error || 'qurilma ulanmagan'));
+        _recShowWait(false); _recBtn('rec-load', true); return;
       }
-      if (recPoll) { clearInterval(recPoll); }
       var n = 0;
       recPoll = setInterval(function () {
         n += 1;
         API.get('/api/video/jt-files?phone=' + encodeURIComponent(recSel.sim)).then(function (r) {
           if (r && r.items && r.items.length) {
-            clearInterval(recPoll); recPoll = null; renderRecList(r);
+            clearInterval(recPoll); recPoll = null;
+            _recShowWait(false); _recBtn('rec-load', true);
+            renderRecList(r);
           } else if (n >= 6) {
             clearInterval(recPoll); recPoll = null;
-            var s = document.getElementById('rec-status');
-            if (s) s.textContent = 'Yozuv topilmadi yoki qurilma javob bermadi.';
+            _recShowWait(false); _recBtn('rec-load', true);
+            _recSetStatus('Yozuv topilmadi yoki qurilma javob bermadi.');
+          } else {
+            _recShowWait(true, 'Yozuvlar so\'ralmoqda… (' + n + '/6)');
           }
         }).catch(function () {});
       }, 2000);
     }).catch(function (e) {
-      var s2 = document.getElementById('rec-status');
-      if (s2) s2.textContent = 'Xato: ' + e.message;
+      _recShowWait(false); _recBtn('rec-load', true);
+      _recSetStatus('Xato: ' + e.message);
     });
+}
+function _recDur(it) {
+  var a = Date.parse(it.start), b = Date.parse(it.end);
+  return (isFinite(a) && isFinite(b) && b > a) ? (b - a) / 1000 : 0;
 }
 function renderRecList(r) {
   var all = r.items || [];
   var mine = all.filter(function (it) {
     return parseInt(it.channel, 10) === parseInt(recSel.ch, 10);
   });
-  recItems = mine.length ? mine : all;
-  var status = document.getElementById('rec-status');
-  if (status) status.textContent = recItems.length + ' ta yozuv topildi.';
+  recItems = (mine.length ? mine : all).slice().sort(function (x, y) {
+    return (Date.parse(x.start) || 0) - (Date.parse(y.start) || 0);
+  });
+  _recSetStatus(recItems.length + ' ta yozuv topildi' +
+    (recItems.length ? ' — ko\'rish uchun "▶ Ko\'rish"ni bosing.' : '.'));
   var el = document.getElementById('rec-list');
   if (!el) return;
   el.innerHTML = recItems.map(function (it, i) {
+    var dur = _recDur(it);
     return '<div class="rrow"><span class="badge">ch' + (it.channel || 1) + '</span>' +
-      '<span class="t">' + esc(it.start || '') + ' → ' +
-      esc(it.end || '') + '</span>' +
+      '<span class="t">' + esc(it.start || '') + ' → ' + esc(it.end || '') + '</span>' +
+      (dur ? '<span class="badge">' + _recFmtClock(dur) + '</span>' : '') +
       '<span class="badge">' + fmtBytes(it.size || 0) + '</span>' +
       '<span class="grow"></span>' +
       '<button class="btn primary sm" onclick="playRec(' + i + ')">▶ Ko\'rish</button></div>';
@@ -1597,29 +1886,31 @@ function renderRecList(r) {
 }
 function playRec(i) {
   var it = recItems[i];
-  if (!it) return;
-  var status = document.getElementById('rec-status');
-  if (status) status.textContent = 'Yozuv oqimi so\'ralmoqda (0x9201)…';
+  if (!it) { _recSetStatus('Yozuv topilmadi.'); return; }
+  recIndex = i; recCurrent = it;
   var p = document.getElementById('rec-player');
   if (p) p.style.display = 'block';
+  _recSetStatus('Yozuv oqimi so\'ralmoqda (0x9201)… ' + it.start + ' → ' + it.end);
   var v = document.getElementById('rec-video');
   if (v) { v.removeAttribute('src'); v.load(); }
-  var posEl = document.getElementById('rec-pos');
-  if (posEl) posEl.textContent = '';
-  recCurrent = it;
+  recAnchor = { t: 0, at: 0, rate: _recRate(), len: _recDur(it) };
+  recPlaying = false;
+  _recTimeline(0, recAnchor.len);
+  _recShowWait(true, 'Yozuv oqimi so\'ralmoqda…');
   API.post('/api/video/jt-playback', {
     phone: recSel.sim, channel: recSel.ch, start: it.start, end: it.end,
     host: jtMediaHost()
   }).then(function (d) {
     if (d && d.ok === false) {
-      if (status) status.textContent = 'Buyruq yuborilmadi: ' + (d.error || 'qurilma ulanmagan');
+      _recShowWait(false);
+      _recSetStatus('Buyruq yuborilmadi: ' + (d.error || 'qurilma ulanmagan'));
       return;
     }
-    if (status) status.textContent = 'Qurilma ulanmoqda… oqim tayyorlanmoqda';
     recWaitN = 0;
     waitRecStream();
   }).catch(function (e) {
-    if (status) status.textContent = 'Xato: ' + e.message;
+    _recShowWait(false);
+    _recSetStatus('Xato: ' + e.message);
   });
 }
 function _recFmtClock(s) {
@@ -1628,10 +1919,51 @@ function _recFmtClock(s) {
   function p(n) { return (n < 10 ? '0' : '') + n; }
   return (h ? p(h) + ':' : '') + p(m) + ':' + p(ss);
 }
+function _recTimeline(cur, dur) {
+  var ce = document.getElementById('rec-cur'), de = document.getElementById('rec-dur');
+  var sk = document.getElementById('rec-seek');
+  if (ce) ce.textContent = _recFmtClock(cur);
+  if (de) de.textContent = dur ? _recFmtClock(dur) : '--:--';
+  if (sk && dur) sk.value = String(Math.round(Math.max(0, Math.min(1, cur / dur)) * 1000));
+}
+function _recNow() {
+  if (!recCurrent) return 0;
+  if (!recPlaying) return recAnchor.t;
+  var adv = (Date.now() - recAnchor.at) / 1000 * (recAnchor.rate || 1);
+  return recAnchor.t + adv;
+}
+function _recStartTick() {
+  if (recTick) clearInterval(recTick);
+  recTick = setInterval(_recTick, 500);
+}
+function _recStopTick() { if (recTick) { clearInterval(recTick); recTick = null; } }
+function _recTick() {
+  if (!recPlaying || !recCurrent) return;
+  var cur = _recNow();
+  _recTimeline(cur, recAnchor.len);
+  var pos = document.getElementById('rec-pos');
+  if (pos) pos.textContent = 'Joriy: ' + _recFmtClock(cur) +
+    (recAnchor.len ? ' / ' + _recFmtClock(recAnchor.len) : '');
+  if (recAnchor.len && cur >= recAnchor.len - 0.5) _recOnSegmentEnd();
+}
+function _recOnSegmentEnd() {
+  if (!recPlaying) return;
+  recPlaying = false; _recStopTick();
+  if (recIndex >= 0 && recIndex + 1 < recItems.length) {
+    _recSetStatus('Keyingi yozuvga o\'tilmoqda…');
+    recCtrl('stop');                       /* eski oqimni yopamiz */
+    var nx = recIndex + 1;
+    setTimeout(function () { playRec(nx); }, 700);
+  } else {
+    _recSetStatus('Yozuvlar tugadi.');
+    _recTimeline(recAnchor.len, recAnchor.len);
+    recCtrl('stop');
+    if (recRec) stopRecDownload();
+  }
+}
 function waitRecStream() {
   if (recWait) { clearTimeout(recWait); recWait = null; }
   recWaitN += 1;
-  var status = document.getElementById('rec-status');
   API.get('/api/video/jt-streams').then(function (d) {
     var list = (d && d.streams) || [], hit = null;
     for (var i = 0; i < list.length; i++) {
@@ -1639,41 +1971,50 @@ function waitRecStream() {
           parseInt(list[i].channel, 10) === parseInt(recSel.ch, 10)) { hit = list[i]; break; }
     }
     if (hit && hit.active) {
-      if (status) status.textContent = 'Ijro etilmoqda: ' +
-        (recCurrent ? recCurrent.start + ' → ' + recCurrent.end : '');
+      _recShowWait(false);
+      _recSetStatus('Ijro etilmoqda: ' +
+        (recCurrent ? recCurrent.start + ' → ' + recCurrent.end : ''));
       mountRecHls(_recHls(recSel.sim, recSel.ch));
       return;
     }
     if (recWaitN >= 15) {
-      if (status) status.textContent = 'Oqim kelmadi — qurilma ulanmagan yoki yozuv mavjud emas.';
+      _recShowWait(false);
+      _recSetStatus('Oqim kelmadi — qurilma ulanmagan yoki yozuv mavjud emas.');
       return;
     }
-    if (status) status.textContent = 'Qurilma ulanmoqda… oqim tayyorlanmoqda (' + recWaitN + ')';
+    _recShowWait(true, 'Qurilma ulanmoqda… oqim tayyorlanmoqda (' + recWaitN + '/15)');
     recWait = setTimeout(waitRecStream, 1500);
   }).catch(function () {
-    if (recWaitN >= 15) { if (status) status.textContent = 'Oqim holati aniqlanmadi.'; return; }
+    if (recWaitN >= 15) { _recShowWait(false); _recSetStatus('Oqim holati aniqlanmadi.'); return; }
     recWait = setTimeout(waitRecStream, 1500);
   });
 }
 function mountRecHls(url) {
   var v = document.getElementById('rec-video');
   if (!v) return;
+  _recStopTick();
+  recPlaying = false;
   if (recHls) { try { recHls.destroy(); } catch (e) {} recHls = null; }
   v.removeAttribute('src'); v.load();
   bindRecVideo(v);
+  var go = function () {
+    recAnchor.t = 0; recAnchor.at = Date.now(); recAnchor.rate = _recRate();
+    recPlaying = true;
+    _recStartTick();
+    try { v.playbackRate = _recRate(); } catch (e) {}
+  };
   if (v.canPlayType('application/vnd.apple.mpegurl')) {
-    v.src = url; v.play().catch(function () {}); return;
+    v.src = url; v.play().catch(function () {}); go(); return;
   }
-  if (!window.Hls || !Hls.isSupported()) return;
+  if (!window.Hls || !Hls.isSupported()) { _recSetStatus('Brauzer HLS oqimini qo\'llamaydi.'); return; }
   recHls = new Hls({ liveDurationInfinity: false, manifestLoadingMaxRetry: 8,
                      levelLoadingMaxRetry: 8, fragLoadingMaxRetry: 8 });
   recHls.loadSource(url);
   recHls.attachMedia(v);
-  recHls.on(Hls.Events.MANIFEST_PARSED, function () { v.play().catch(function () {}); });
+  recHls.on(Hls.Events.MANIFEST_PARSED, function () { v.play().catch(function () {}); go(); });
   recHls.on(Hls.Events.ERROR, function (evt, data) {
     if (data && data.fatal) {
-      var s = document.getElementById('rec-status');
-      if (s) s.textContent = 'Oqim uzildi — qayta yuklanmoqda…';
+      _recSetStatus('Oqim uzildi — qayta yuklanmoqda…');
       try { recHls.startLoad(); } catch (e) {}
     }
   });
@@ -1681,44 +2022,130 @@ function mountRecHls(url) {
 function bindRecVideo(v) {
   if (recVideoBound) return;
   recVideoBound = true;
-  var pos = function () {
-    var el = document.getElementById('rec-pos');
-    if (!el) return;
-    var cur = v.currentTime || 0, dur = v.duration;
-    el.textContent = _recFmtClock(cur) +
-      (isFinite(dur) && dur > 0 ? ' / ' + _recFmtClock(dur) : '');
-  };
-  v.addEventListener('timeupdate', pos);
-  v.addEventListener('loadedmetadata', pos);
-  v.addEventListener('durationchange', pos);
-  v.addEventListener('waiting', function () {
-    var s = document.getElementById('rec-status');
-    if (s) s.textContent = 'Yuklanmoqda…';
-    pos();
-  });
+  v.addEventListener('loadedmetadata', function () { _recTimeline(_recNow(), recAnchor.len); });
+  v.addEventListener('waiting', function () { _recShowWait(true, 'Yuklanmoqda…'); });
   v.addEventListener('playing', function () {
-    var s = document.getElementById('rec-status');
-    if (s && recCurrent) s.textContent = 'Ijro etilmoqda: ' + recCurrent.start + ' → ' + recCurrent.end;
-    pos();
-  });
-  v.addEventListener('ended', function () {
-    var s = document.getElementById('rec-status');
-    if (s) s.textContent = 'Yozuv tugadi.';
+    _recShowWait(false);
+    if (recCurrent) _recSetStatus('Ijro etilmoqda: ' + recCurrent.start + ' → ' + recCurrent.end);
   });
   v.addEventListener('error', function () {
-    var s = document.getElementById('rec-status');
-    if (s) s.textContent = 'Oqim xatosi (yozuv mavjud bo\'lmasligi mumkin).';
+    _recSetStatus('Oqim xatosi (yozuv mavjud bo\'lmasligi mumkin).');
   });
 }
-function recCtrl(name) {
+function _recRate() { var s = _val('rec-speed'); return parseFloat(s) || 1; }
+function setRecSpeed() {
+  var r = _recRate();
+  var v = document.getElementById('rec-video');
+  if (v) { try { v.playbackRate = r; } catch (e) {} }
+  recAnchor.t = _recNow(); recAnchor.at = Date.now(); recAnchor.rate = r;
+  recCtrl(r <= 1 ? 'play' : 'fwd', { speed: r > 1 ? r : 0 });
+}
+function recPlayToggle() {
+  var v = document.getElementById('rec-video');
+  if (!v || !recCurrent) return;
+  var b = document.getElementById('rec-play');
+  if (recPlaying) {
+    recPlaying = false; _recStopTick();
+    recAnchor.t = _recNow();
+    try { v.pause(); } catch (e) {}
+    recCtrl('pause');
+    if (b) b.textContent = '▶ Davom';
+  } else {
+    recAnchor.at = Date.now(); recAnchor.rate = _recRate(); recPlaying = true;
+    _recStartTick();
+    try { v.play(); } catch (e) {}
+    recCtrl('play');
+    if (b) b.textContent = '⏸ Pauza';
+  }
+}
+function onRecSeekInput() {
+  var sk = document.getElementById('rec-seek');
+  if (!sk || !recAnchor.len) return;
+  var cur = parseInt(sk.value, 10) / 1000 * recAnchor.len;
+  var ce = document.getElementById('rec-cur'); if (ce) ce.textContent = _recFmtClock(cur);
+}
+function _recAbsIso(offset) {
+  if (!recCurrent) return '';
+  var a = Date.parse(recCurrent.start);
+  if (!isFinite(a)) return '';
+  var d = new Date(a + offset * 1000);
+  function p(n) { return (n < 10 ? '0' : '') + n; }
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+    p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+function onRecSeek() {
+  var sk = document.getElementById('rec-seek');
+  if (!sk || !recAnchor.len || !recCurrent) return;
+  var target = parseInt(sk.value, 10) / 1000 * recAnchor.len;
+  recAnchor.t = target; recAnchor.at = Date.now(); recAnchor.rate = _recRate();
+  if (recPlaying) _recStartTick();
+  var v = document.getElementById('rec-video');
+  if (v && isFinite(v.duration) && v.duration > 0 && target <= v.duration) {
+    try { v.currentTime = target; } catch (e) {}
+  }
+  /* Qurilma ham shu vaqtga o'tsin (0x9202 drag=5). */
+  var iso = _recAbsIso(target);
+  recCtrl('drag', iso ? { time: iso } : {});
+  _recSetStatus('O\'tilmoqda: ' + _recFmtClock(target) + (iso ? ' (' + iso + ')' : ''));
+  if (recHls) { try { recHls.startLoad(); } catch (e) {} }
+}
+function recCtrl(name, opts) {
+  opts = opts || {};
   var control = (typeof name === 'number') ? name : (REC_CTRL[name] || 0);
-  API.post('/api/video/jt-playback-control', {
-    phone: recSel.sim, channel: recSel.ch, control: control
-  }).catch(function () {});
+  var body = { phone: recSel.sim, channel: recSel.ch, control: control };
+  if (opts.speed != null) body.speed = opts.speed;
+  if (opts.time) body.time = opts.time;
+  return API.post('/api/video/jt-playback-control', body).catch(function () {});
+}
+/* ---- yuklab olish: joriy oqimni brauzerda yozib .webm qilib saqlash ---- */
+function toggleRecDownload() {
+  if (recRec) { stopRecDownload(); return; }
+  startRecDownload();
+}
+function startRecDownload() {
+  var v = document.getElementById('rec-video');
+  var b = document.getElementById('rec-dl');
+  if (!v || !v.captureStream || !window.MediaRecorder) {
+    _recSetStatus('Yuklab olish bu brauzerda qo\'llab-quvvatlanmaydi.');
+    return;
+  }
+  var stream = v.captureStream();
+  recChunks = [];
+  try { recRec = new MediaRecorder(stream, { mimeType: 'video/webm' }); }
+  catch (e) {
+    try { recRec = new MediaRecorder(stream); }
+    catch (e2) { _recSetStatus('Yozib olishni boshlab bo\'lmadi.'); recRec = null; return; }
+  }
+  recRec.ondataavailable = function (ev) { if (ev.data && ev.data.size) recChunks.push(ev.data); };
+  recRec.onstop = function () {
+    var blob = new Blob(recChunks, { type: 'video/webm' });
+    recChunks = [];
+    var a = document.createElement('a');
+    var base = (recCurrent ? String(recCurrent.start) : '').replace(/[:T]/g, '-');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'yozuv_' + recSel.sim + '_ch' + recSel.ch +
+      (base ? '_' + base : '') + '.webm';
+    document.body.appendChild(a); a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+    recRec = null;
+    if (b) b.innerHTML = '⤓ Yuklab olish';
+    _recSetStatus('Fayl saqlandi.');
+  };
+  recRec.start(1000);
+  if (b) b.innerHTML = '<span class="rec-dot"></span>Saqlash';
+  _recSetStatus('Yozib olinmoqda… tugagach "Saqlash"ni bosing.');
+}
+function stopRecDownload() {
+  if (recRec && recRec.state !== 'inactive') {
+    try { recRec.stop(); } catch (e) { recRec = null; }
+  } else { recRec = null; }
 }
 function stopRec() {
   if (recWait) { clearTimeout(recWait); recWait = null; }
-  recCtrl(2);
+  recPlaying = false;
+  _recStopTick();
+  recCtrl('stop');
+  if (recRec) stopRecDownload();
   if (recHls) { try { recHls.destroy(); } catch (e) {} recHls = null; }
   var v = document.getElementById('rec-video');
   if (v) { v.removeAttribute('src'); v.load(); }
@@ -1726,13 +2153,17 @@ function stopRec() {
   if (p) p.style.display = 'none';
   var posEl = document.getElementById('rec-pos');
   if (posEl) posEl.textContent = '';
+  recAnchor = { t: 0, at: 0, rate: 1, len: 0 };
 }
 
 /* ============ bind dialog (mavjud avtobuslarga bog'lash) ============ */
 var busList = [], editImei = '';
 function loadVehicles() {
-  return API.get('/api/gps/vehicles').then(function (d) { busList = d.vehicles || []; })
-    .catch(function () { busList = []; });
+  return API.get('/api/gps/vehicles').then(function (d) {
+    busList = d.vehicles || [];
+    renderVideoBuses();   /* avtobus nomlari video bo'limida ham ko'rinsin */
+    renderCams();
+  }).catch(function () { busList = []; });
 }
 function busById(vid) {
   for (var i = 0; i < busList.length; i++) if (busList[i].external_id === vid) return busList[i];
@@ -1862,6 +2293,8 @@ function saveBind() {
     editImei = '';
     refresh();
     loadVehicles();
+    camSig = ''; jtSig = '';
+    loadJtStreams(); refreshCams();   /* kamera bog'lanishi video xonasiga darhol */
   }).catch(function (e) { err.textContent = e.message; err.style.display = 'block'; });
 }
 

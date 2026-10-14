@@ -21,7 +21,7 @@ class _FakeMuxer:
 
     instances = []
 
-    def __init__(self, sim, channel, mode="live", codec="h264", audio_pt=None):
+    def __init__(self, sim, channel, mode="live", codec="h264"):
         self.sim = sim
         self.channel = channel
         self.mode = mode
@@ -33,9 +33,6 @@ class _FakeMuxer:
 
     def write(self, au):
         self.bytes += len(au)
-
-    def write_audio(self, pcm):
-        pass
 
     def note(self, msg):
         pass
@@ -101,7 +98,8 @@ def _media_packet(payload=b"\x00\x00\x00\x01\x65AU", pt=98, ch=1):
 
 def _isolate(monkeypatch):
     monkeypatch.setattr(jt808.storage, "device_known", lambda imei: False)
-    monkeypatch.setattr(jt808.storage, "register_device", lambda imei: None)
+    monkeypatch.setattr(jt808.storage, "register_device",
+                        lambda imei, kind="teltonika": None)
     monkeypatch.setattr(jt808.config, "GPS_AUTO_REGISTER", True)
     monkeypatch.setattr(jt1078, "_Muxer", _FakeMuxer)
     _FakeMuxer.instances.clear()

@@ -626,9 +626,13 @@ async def _dispatch(writer: asyncio.StreamWriter, m: dict) -> None:
         _ensure_device(phone)
         try:
             ts = datetime.now(timezone.utc)
+            # kind='camera': bu joy faqat YORDAMCHI (kamera qaysi avtobusda
+            # ekanini aniqlash/drift nazorati). Xarita va trek faqat
+            # Teltonika'dan olinadi — kamera shu sababli chiqarilmaydi.
             storage.upsert_device_position(
                 phone, ts, loc["lat"], loc["lng"],
                 int(round(loc["speed"])), int(loc["ignition"]), 0,
+                kind="camera",
             )
         except Exception:  # noqa: BLE001
             log.exception("JT808: joy saqlashda xato (%s)", phone)
@@ -689,7 +693,7 @@ def _ensure_device(phone: str) -> None:
     try:
         if storage.device_known(phone) or config.GPS_AUTO_REGISTER:
             if not storage.device_known(phone):
-                storage.register_device(phone)
+                storage.register_device(phone, kind="camera")
     except Exception:  # noqa: BLE001
         log.exception("JT808: qurilma ro'yxatga olishda xato (%s)", phone)
 

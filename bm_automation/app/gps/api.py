@@ -19,8 +19,8 @@ from urllib.parse import parse_qs, urlparse
 import shutil
 from pathlib import Path
 
-from . import (compare, config, jt1078, jt808, listener, relay, route_alert,
-               stops, storage)
+from . import (camera, compare, config, jt1078, jt808, listener, relay,
+               route_alert, stops, storage)
 
 log = logging.getLogger(__name__)
 
@@ -176,6 +176,8 @@ class GpsHandler(BaseHTTPRequestHandler):
         body = UI_FILE.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        # Yangilangandan keyin eski sahifa keshdan ochilib qolmasin.
+        self.send_header("Cache-Control", "no-cache")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -227,7 +229,7 @@ class GpsHandler(BaseHTTPRequestHandler):
         if allowed is None:
             return set()
         return {str(d.get("imei") or "")
-                for d in storage.list_devices()
+                for d in storage.teltonika_only(storage.list_devices())
                 if str(d.get("vehicle_id") or "") in allowed}
 
     def _camera_allowed(self, cam_id: int) -> bool:
@@ -346,16 +348,37 @@ class GpsHandler(BaseHTTPRequestHandler):
             _maybe_purge()
             vehicles = self._company_vehicles()
             if path == "/api/gps/devices":
-                devices = self._only_vehicles(storage.list_devices(), vehicles)
+                # Kamera (JT808/JT1078) qurilmalari xaritaga chiqmaydi —
+                # faqat Teltonika GPS. Kameralar /api/gps/camera-assist va
+                # video bo'limida ko'rinadi.
+                devices = self._only_vehicles(
+                    storage.teltonika_only(storage.list_devices()), vehicles)
                 route_q = (qs.get("route") or [""])[0].strip()
                 if route_q:
                     devices = [d for d in devices
                                if str(d.get("route_id") or "") == route_q]
                 self._json({"ok": True, "count": len(devices), "devices": devices})
+            elif path == "/api/gps/camera-assist":
+                # Kamera GPS ↔ Teltonika GPS solishtirmasi (YORDAMCHI).
+                # Kamera XARITADA ko'rsatilmaydi; bu ma'lumot kamera qaysi
+                # avtobusda ekanini aniqlash va "drift" (joy farqi, ya'ni
+                # o'rnatish/bog'lash xatosi) ni ko'rish uchun.
+                items = camera.assist()
+                if vehicles is not None:
+                    items = [it for it in items
+                             if not it.get("vehicle_id")
+                             or str(it.get("vehicle_id")) in vehicles]
+                self._json({
+                    "ok": True,
+                    "threshold_m": config.GPS_CAMERA_MATCH_M,
+                    "count": len(items),
+                    "items": items,
+                })
             elif path == "/api/gps/routes":
                 # GPS qurilmasi bog'langan avtobuslar bo'yicha yo'nalishlar
                 # (qamrov allaqachon qurilmalarga qo'llangan).
-                devs = self._only_vehicles(storage.list_devices(), vehicles)
+                devs = self._only_vehicles(
+                    storage.teltonika_only(storage.list_devices()), vehicles)
                 agg: dict = {}
                 for d in devs:
                     rid = str(d.get("route_id") or "").strip()
@@ -415,19 +438,43 @@ class GpsHandler(BaseHTTPRequestHandler):
                 })
             elif path == "/api/video/jt-streams":
                 # JT1078 (CMSV6/4G) avtomatik aniqlangan jonli/yozuv oqimlari.
-                # Har bir oqim diagnostikasi bilan: kodek, audio, kadr/kalit kadr
+                # Har bir oqim diagnostikasi bilan: kodek, kadr/kalit kadr
                 # va oxirgi kalit kadr vaqti, restart soni, oxirgi xato.
                 enabled = config.JT808_ENABLED
                 streams = jt1078.streams() if enabled else []
                 phones = jt808.connected_phones() if enabled else []
+                # Kamera ↔ avtobus bog'lanishi (video xonasida avtobus
+                # bo'yicha tanlash uchun) va GPS moslik/drift holati.
+                bindings: dict = {}
+                try:
+                    for d in storage.list_camera_devices():
+                        bindings[str(d.get("imei") or "")] = {
+                            "vehicle_id": str(d.get("vehicle_id") or ""),
+                            "plate": str(d.get("plate_number") or ""),
+                            "name": str(d.get("name") or ""),
+                        }
+                except Exception:  # noqa: BLE001
+                    log.exception("jt-streams: bog'lanishlar olinmadi")
+                assist: list = []
+                try:
+                    assist = camera.assist()
+                except Exception:  # noqa: BLE001
+                    log.exception("jt-streams: assist tahlili bajarilmadi")
+                if vehicles is not None:
+                    ok_vids = vehicles
+                    assist = [a for a in assist
+                              if not a.get("vehicle_id")
+                              or str(a.get("vehicle_id")) in ok_vids]
                 self._json({
                     "ok": True,
                     "enabled": enabled,
                     "ffmpeg": jt1078.ffmpeg_available(),
-                    "audio_enabled": config.JT1078_AUDIO,
-                    "audio_rate": config.JT1078_AUDIO_RATE,
                     "media_host": config.JT1078_MEDIA_HOST,
                     "devices": phones,
+                    "camera_channels": config.JT_CAMERA_CHANNELS,
+                    "bindings": bindings,
+                    "assist": assist,
+                    "assist_threshold_m": config.GPS_CAMERA_MATCH_M,
                     "count": len(streams),
                     "streams": streams,
                     "recent": jt1078.recent_streams() if enabled else [],
@@ -466,7 +513,8 @@ class GpsHandler(BaseHTTPRequestHandler):
             elif path == "/api/gps/route-paths":
                 paths = storage.list_route_paths()
                 if vehicles is not None:
-                    devs = self._only_vehicles(storage.list_devices(), vehicles)
+                    devs = self._only_vehicles(
+                        storage.teltonika_only(storage.list_devices()), vehicles)
                     allowed = {str(d.get("route_id") or "") for d in devs}
                     paths = [p for p in paths
                              if str(p.get("route_id") or "") in allowed]
@@ -504,8 +552,8 @@ class GpsHandler(BaseHTTPRequestHandler):
                 date_to = (qs.get("to") or [""])[0].strip()
                 min_s = _int_or(qs, "min_s")
                 radius = _int_or(qs, "radius")
-                dev_scope = self._only_vehicles(storage.list_devices(),
-                                                vehicles)
+                dev_scope = self._only_vehicles(
+                    storage.teltonika_only(storage.list_devices()), vehicles)
                 if imei:
                     targets = [d for d in dev_scope
                                if str(d.get("imei")) == imei]
@@ -788,11 +836,15 @@ class GpsHandler(BaseHTTPRequestHandler):
                 channel = int(payload.get("channel") or 1)
                 control = int(payload.get("control") or 0)
                 speed = int(payload.get("speed") or 0)
-                ok = jt808.send_playback_control(phone, channel, control, speed)
+                raw_time = str(payload.get("time") or "").strip()
+                time_bcd = jt808.iso_to_bcd6(raw_time) if raw_time else None
+                ok = jt808.send_playback_control(
+                    phone, channel, control, speed, time_bcd)
                 if control == jt808.PB_CTRL_STOP:
                     jt1078.clear_playback(phone, channel)
                 self._json({"ok": bool(ok), "phone": phone,
-                            "channel": channel, "control": control})
+                            "channel": channel, "control": control,
+                            "speed": speed})
             elif path == "/api/video/relay":
                 # On-demand: UI "Ochish" bosganda RTSP relay'ni ko'taradi.
                 try:

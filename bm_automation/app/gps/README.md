@@ -75,8 +75,6 @@ ro'yxatga olinadi. So'ng frontend'da avtobusga bog'lanadi.
 | `JT1078_MEDIA_HOST` | (bo'sh) | qurilma oqim yuboradigan public IP/host |
 | `GPS_JT1078_RAW_DUMP` | `0` | `1` = xom video diskka yoziladi (faqat diagnostika) |
 | `GPS_JT1078_PLAYBACK_WINDOW_S` | `180` | playback rejimi oqimi shu sekund davomida belgilanadi |
-| `GPS_JT1078_AUDIO` | `0` | `1` = kameradagi ovoz (G.711A/U) HLS'ga AAC sifatida qo'shiladi (faqat Linux) |
-| `GPS_JT1078_AUDIO_RATE` | `8000` | audio namuna chastotasi (G.711 uchun 8 kHz) |
 | `GPS_HLS_MAX_AGE_S` | `3600` | shu sekunddan eski HLS segmentlar tozalanadi |
 
 Token: dashboard bilan bir xil `DASHBOARD_TOKEN` ishlatiladi.
@@ -94,6 +92,38 @@ python -m bm_automation.app.gps.simulator --imei 350424106661230 --count 60
 Frontend: `http://localhost:5173/gps`
 
 ## Video kuzatuv
+
+### Avtobus bo'yicha (video kuzatuv xonasi)
+
+Har bir kamera (HLS/RTSP) va har bir 4G kamera terminali (JT808/JT1078)
+avtobusga bog'lanadi: HLS/RTSP → `video_cameras.vehicle_id`, 4G terminal →
+`gps_devices.vehicle_id` (kind=`camera`). Video bo'limining yuqorisida
+**🚌 Avtobuslar** chiplari bor — bir nechtasini (yoki hammasini) tanlab,
+faqat shu avtobuslarning kameralarini ko'rish mumkin. Tanlov bo'sh bo'lsa
+"Barchasi" ko'rsatiladi.
+
+Kanal bo'yicha: 4G kamera kartasida har bir kanal alohida tugma
+(`▶ ch1 … chN`) va **▶ Barcha kanallar** tugmasi bor. Kanal tugmasi o'sha
+kanalga `0x9101` yuboradi, jonli oqim kartasi sarlavhasida
+`📷 <IMEI/SIM> · kanal N` ko'rinadi.
+
+**Xaritadan videoga:** jonli xaritada avtobusni (marker yoki ro'yxatdagi
+qatorni) tanlaganda uning kartasida **🎥 Video** tugmasi chiqadi — u video
+bo'limini ochib, shu avtobusni tanlaydi va kameralarini (HLS/RTSP + 4G
+kanallarini) avtomatik ochadi.
+
+**Kamera GPS — faqat yordamchi.** 4G kamera o'z GPS joyini ham yuboradi,
+lekin u **xaritaga, trekka va nazoratga chiqarilmaydi** (`gps_devices.kind`
+= `camera`; `/api/gps/devices`, offline/tezlik/yo'lak/idling va kunlik
+hisobot faqat Teltonika'ni hisobga oladi). Kamera joyi
+`/api/gps/camera-assist` va `jt-streams` javoblarida **solishtirma** uchun
+ishlatiladi:
+
+- `ok` — kamera GPS Teltonika GPS bilan mos (farq < `GPS_CAMERA_MATCH_M`);
+- `drift` — farq katta: kamera boshqa avtobusda yoki GPS chalg'iyapti;
+- `suggest` — bog'lanmagan kamera yaqin avtobus topildi (bog'lash tavsiyasi,
+  UI'da bir bosishda bog'lanadi);
+- `unbound` / `no_camera_gps` / `no_teltonika`.
 
 Kameralar `video_cameras` jadvalida saqlanadi. Uch turdagi manba:
 
@@ -161,25 +191,35 @@ bosilsa server qurilmaga `0x9101` yuboradi; qurilma oqimni 6107-portga uzatadi,
 ffmpeg uni HLS'ga aylantiradi (`/hls/jt_<sim>_<kanal>.m3u8`). "⏹ To'xtatish"
 `0x9102` yuboradi (4G trafikni tejash).
 
-**Yozuvlar (playback, qurilma xotirasidan):** UI'da "🗂 Xotira" → sana va
-vaqt oralig'i (Dan/Gacha) tanlanadi → `0x9205` bilan ro'yxat so'raladi
-(`GET /api/video/jt-files`), tanlangan yozuv `0x9201` bilan oqim sifatida
-so'raladi va `/hls/jtpb_<sim>_<kanal>.m3u8` orqali ko'rsatiladi; pauza/davom/
-tez/orqaga `0x9202` bilan boshqariladi. Pleyer oqim tayyor bo'lguncha kutadi
-(retry/status) va joriy pozitsiya/davomiylikni ko'rsatadi. **Video serverga
-saqlanmaydi** — qurilmaning o'z xotirasida qoladi, server faqat jonli uzatish
-(HLS) qiladi.
+**Yozuvlar (playback, qurilma xotirasidan):** UI'da "🗂 Xotira" → kanal
+(ch1..chN), sana va vaqt oralig'i (Dan/Gacha) tanlanadi → `0x9205` bilan
+ro'yxat so'raladi (`GET /api/video/jt-files`), tanlangan yozuv `0x9201` bilan
+oqim sifatida so'raladi va `/hls/jtpb_<sim>_<kanal>.m3u8` orqali ko'rsatiladi.
+Pleyer imkoniyatlari:
 
+- **Timeline + seek** — slayder joriy pozitsiyani ko'rsatadi; surilsa `0x9202`
+  `drag=5` bilan qurilma belgilangan vaqtga o'tadi (offset yozuv `start`idan
+  hisoblanadi).
+- **Tezlik** — `1x/2x/4x/8x`; `0x9202` `tez=3` + `speed` bilan, video
+  `playbackRate` ham sinxronlanadi.
+- **Pauza / davom / stop / tez / orqaga** — `0x9202` (Table 25).
+- **Ketma-ket ijro** — yozuv tugagach keyingisiga avtomatik o'tadi.
+- **Yuklab olish** — joriy oqim brauzerda (MediaRecorder + `captureStream`)
+  `.webm` fayl qilib saqlanadi; serverga yozilmaydi.
+
+Pleyer oqim tayyor bo'lguncha kutadi (retry/status) va joriy
+pozitsiya/davomiylikni ko'rsatadi. **Video serverga saqlanmaydi** —
+qurilmaning o'z xotirasida qoladi, server faqat jonli uzatish (HLS) qiladi.
+
+> 0x9202 boshqaruv (JT/T 1078-2016 Table 25): play=0, pauza=1, stop=2,
+> tez=3, orqaga=4, drag=5 (vaqtga o'tish), kalit=6.
+>
 > 0x9201 tanasi (JT/T 1078-2016 Table 24) da `10+n` "tez oldinga/orqaga
 > koeffitsiyenti" bayti MAJBURIY (0) — usiz qurilma start/end vaqtni bir
 > baytga siljigan holda o'qib, `0x1205 total=0` qaytaradi.
 
-**Ovoz:** qurilma audio (G.711A/U) paketlarini yuborsa, `GPS_JT1078_AUDIO=1`
-bilan ovoz ham HLS'ga AAC sifatida qo'shiladi (ffmpeg'ga ikkinchi kirish
-quvuri orqali). Bu faqat POSIX/Linux'da ishlaydi — Windows'da faqat video
-oqadi. Boshqa audio kodeklar (G.726/AAC/MP3) hozircha qo'llanmaydi.
-Audio yoqilmagan bo'lsa paketlar faqat sanaladi (`audio_packets`) va
-tashlanadi.
+**Ovoz:** qurilma audio paketlarini (G.711A/U) yuborsa ham HLS'ga
+qo'shilmaydi — faqat video uzatiladi (audio paketlar tashlanadi).
 
 `JT1078_MEDIA_HOST` — qurilma oqimni yuboradigan public IP/host (bo'sh bo'lsa
 UI'dagi host ishlatiladi). `GPS_JT1078_RAW_DUMP=1` faqat diagnostika uchun
@@ -193,14 +233,12 @@ bir yangilanadi (`GET /api/video/jt-streams`):
 
 - **kodek** — `H.264` / `H.265` (PT 98/99 bo'yicha; sarlavhadagi `H.265`
   badge ham shu qiymatdan olinadi)
-- **audio** — `🔊 G.711A/G.711U` (PT ma'lum) yoki `🔇 audio yo'q`;
-  `GPS_JT1078_AUDIO=0` bo'lsa `🔇 audio o'chirilgan` deb ogohlantiradi
 - **⏱ kalit kadr** — oxirgi I-kadr muxer'ga qancha vaqt oldin yozilgani
   (20 sekunddan oshsa sariq ogohlantirish). Kalit kadr umuman bo'lmasa
   `kalit kadr yo'q` — odatda qurilma P-kadr yuboryapti yoki oqim uzilgan
 - **kadr / kalit** — muxer'ga yozilgan access-unit va I-kadrlar soni
 - **↻ N marta qayta** — muxer qayta ishga tushirilgan holatlar: kodek
-  almashishi, audio paydo bo'lishi, ffmpeg o'lishi
+  almashishi, ffmpeg o'lishi
 - **⚠ oxirgi xato** — ilova xatosi (masalan `ffmpeg yozish xatosi — qayta
   ishga tushiriladi`) va/yoki ffmpeg'ning oxirgi ma'noli stderr qatori
   (`ffmpeg: [h264 @ ...] no frame!` kabi). Doimiy, ahamiyatsiz
@@ -305,6 +343,8 @@ Kunlik hisobotni qo'lda yuborish: UI'da "📨 Telegramga yuborish"
 
 | Var | Standart | Ma'no |
 |---|---|---|
+| `GPS_CAMERA_MATCH_M` | `300` | kamera GPS Teltonika GPS bilan mos hisoblanadigan radius (m); shundan uzoq — `drift`, bog'lanmagani uchun bog'lash tavsiyasi |
+| `JT_CAMERA_CHANNELS` | `4` | 4G kamera kanallari soni (UI kanal tugmalari) |
 | `GPS_STOPS_MIN_S` | `120` | to'xtash minimal davomiyligi (sekund) |
 | `GPS_STOPS_RADIUS_M` | `120` | to'xtash radiusi (metr) |
 | `GPS_VS_MANUAL_TOLERANCE_PCT` | `20` | GPS↔qo'lda km farqi hisobotda belgilanadigan chegara (%) |
@@ -316,7 +356,8 @@ Himoya: `Authorization: Bearer <DASHBOARD_TOKEN>`
 
 | Usul | Endpoint | Ma'no |
 |---|---|---|
-| GET | `/api/gps/devices` | qurilmalar + oxirgi holat |
+| GET | `/api/gps/devices` | Teltonika qurilmalari + oxirgi holat (kameralar chiqarilmaydi) |
+| GET | `/api/gps/camera-assist` | kamera GPS ↔ Teltonika GPS solishtirmasi (mos/drift/bog'lash tavsiyasi) |
 | GET | `/api/gps/positions?imei=&from=&to=&limit=` | traektoriya |
 | POST | `/api/gps/devices` | `{imei, vehicle_id?, name?}` — qo'shish/bog'lash |
 | PATCH | `/api/gps/devices/{imei}` | `{vehicle_id?, name?, enabled?}` |
@@ -328,13 +369,13 @@ Himoya: `Authorization: Bearer <DASHBOARD_TOKEN>`
 | GET | `/api/gps/daily?from=&to=&imei=` | kunlik yig'ama (rollup) |
 | GET | `/api/video/cameras` | kameralar |
 | GET | `/api/video/relay` | relay holati (ffmpeg, jarayonlar, oxirgi xato) |
-| GET | `/api/video/jt-streams` | JT1078 faol oqimlar (live/playback) + qurilmalar + diagnostika (`streams`, `recent`, `audio_enabled`) |
+| GET | `/api/video/jt-streams` | JT1078 faol oqimlar + qurilmalar + diagnostika + kamera↔avtobus bog'lanishi (`bindings`), kanal soni (`camera_channels`), GPS mosligi (`assist`) |
 | POST | `/api/video/jt-live` | `{phone, channel}` — `0x9101` jonli oqim |
 | POST | `/api/video/jt-stop` | `{phone, channel}` — `0x9102` to'xtatish |
 | GET | `/api/video/jt-files?phone=` | qurilma xotirasidagi yozuvlar (kesh) |
 | POST | `/api/video/jt-files` | `{phone, channel, date? \| start?, end?}` — `0x9205` ro'yxat so'rash |
 | POST | `/api/video/jt-playback` | `{phone, channel, start, end, host?, media?, stream?, memory?, method?, multiples?}` — `0x9201` yozuv oqimi |
-| POST | `/api/video/jt-playback-control` | `{phone, channel, control, speed?}` — `0x9202` |
+| POST | `/api/video/jt-playback-control` | `{phone, channel, control, speed?, time?}` — `0x9202` (`time` = drag uchun maqsad vaqt) |
 | POST | `/api/video/cameras` | `{name, url, source_type, vehicle_id?}` |
 | DELETE | `/api/video/cameras/{id}` | o'chirish |
 | GET | `/api/gps/health` | servis holati (token'siz) |
