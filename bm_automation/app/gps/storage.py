@@ -126,6 +126,10 @@ def _migrate() -> None:
     `gps_devices.kind` — 'teltonika' (xarita uchun haqiqiy GPS) yoki
     'camera' (JT808/JT1078 kamera: faqat video/yordamchi, xaritaga
     chiqmaydi). Eski qatorlar 'teltonika' bo'lib qoladi.
+
+    Bundan tashqari 12 xonali IMEI'li qatorlar (JT808 kamera BCD 6 bayt)
+    'camera' deb belgilanadi — ilgari noto'g'ri 'teltonika' bo'lib yozilgan
+    bo'lsa tuzatiladi. Teltonika IMEI 15 xonali, shu sababli tegilmaydi.
     """
     st = _st()
     try:
@@ -142,6 +146,15 @@ def _migrate() -> None:
                 "kind TEXT DEFAULT 'teltonika'")
     except Exception:  # noqa: BLE001
         log.exception("GPS: gps_devices.kind migratsiyasi bajarilmadi")
+
+    try:
+        n = st.db.execute(
+            "UPDATE gps_devices SET kind = 'camera' "
+            "WHERE length(imei) = 12 AND COALESCE(kind, '') <> 'camera'")
+        if n:
+            log.info("GPS: %s ta 12-xonali IMEI 'camera' deb belgilandi", n)
+    except Exception:  # noqa: BLE001
+        log.exception("GPS: 12-xonali IMEI -> camera migratsiyasi bajarilmadi")
 
 
 def purge_old_positions() -> int:

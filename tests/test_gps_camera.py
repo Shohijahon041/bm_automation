@@ -118,3 +118,17 @@ def test_assist_threshold_env_override(cam_env, monkeypatch):
     assert camera.assist()[0]["status"] == "drift"
     monkeypatch.setattr(gstorage.config, "GPS_CAMERA_MATCH_M", 5000)
     assert camera.assist()[0]["status"] == "ok"
+
+
+def test_migrate_marks_12_digit_imei_as_camera(cam_env):
+    """Doimiy migratsiya: 12 xonali IMEI (JT808 kamera) 'camera' bo'ladi,
+    15 xonali (Teltonika) tegilmaydi. Idempotent."""
+    st, db = cam_env
+    _dev(db, "221080328726", "v1", kind="teltonika")        # 12 xona — kamera
+    _dev(db, "350424106661230", "v1", kind="teltonika")     # 15 xona — Teltonika
+    gstorage._migrate()
+    gstorage._migrate()                                     # idempotent
+    kinds = {r["imei"]: r["kind"]
+             for r in db.query("SELECT imei, kind FROM gps_devices")}
+    assert kinds["221080328726"] == "camera"
+    assert kinds["350424106661230"] == "teltonika"
