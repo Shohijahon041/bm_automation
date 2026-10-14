@@ -100,26 +100,47 @@ JT1078_PLAYBACK_WINDOW_S = int(
 # reorder bilan to'qnashib jonli oqimda tiqilib qoladi; `-c copy` esa mpegts'ga
 # PTS bermaydi. Shuning uchun kirish fps'ni o'zimiz beramiz va libx264'ga
 # qayta kodlab, CFR chiqishda barqaror 2s HLS olamiz.
-# MUHIM: kirish fps real kadr kelish tezligiga MOS bo'lishi kerak. Aks holda
-# (masalan IN=1 bo'lsa-yu kamera 3fps yuborsa) ffmpeg har kadrni 1s oraliqda
-# deb belgilab, videoni 3 barobar sekinlashtiradi ("slideshow" effekti).
-# 2026-10-14 da real qurilmadan o'lchandi: jonli (0x9101) ~3 fps,
-# yozuv/playback (0x9201) ~13 fps. Shu sababli live va playback uchun alohida.
+# MUHIM: kirish fps ffmpeg'ga BIZ yozayotgan access-unit (AU) kelish
+# tezligiga MOS bo'lishi kerak. Aks holda ffmpeg har AU'ni noto'g'ri vaqt
+# oralig'ida belgilab, videoni sekinlashtiradi/tezlashtiradi.
+# 2026-10-14 da 4-vCPU serverda /api/video/jt-streams diagnostikasi
+# (frames/uptime_s) bilan qayta o'lchandi: jonli (0x9101) ~18-22 AU/s
+# (kanalga qarab), yozuv/playback (0x9201) ~13 AU/s. Shu sababli alohida.
 # Qiymatlar env orqali joyida sozlanadi (kod o'zgartirmasdan).
-JT1078_FPS_IN = os.environ.get("GPS_JT1078_FPS_IN", "3")
-JT1078_FPS_OUT = os.environ.get("GPS_JT1078_FPS_OUT", "6")
+JT1078_FPS_IN = os.environ.get("GPS_JT1078_FPS_IN", "20")
+JT1078_FPS_OUT = os.environ.get("GPS_JT1078_FPS_OUT", "20")
 JT1078_FPS_IN_PB = os.environ.get("GPS_JT1078_FPS_IN_PB", "13")
 JT1078_FPS_OUT_PB = os.environ.get("GPS_JT1078_FPS_OUT_PB", "13")
 # ffmpeg stdin'iga yozuvchi navbat hajmi (access-unit soni). ffmpeg ulgurmasa
 # (kuchsiz VPS) navbat to'ladi va eng eski kadr tashlanadi — event loop
 # bloklanmaydi (ilgari bloklovchi yozuv butun serverni muzlatardi).
-# Playback ~13 fps: 64 AU ≈ ~5s bufer — qisqa CPU cho'qqilarini yutadi.
-JT1078_QUEUE_MAX = int(os.environ.get("GPS_JT1078_QUEUE_MAX", "64"))
+# Playback ~13 fps: 128 AU ≈ ~10s bufer — qisqa CPU cho'qqilarini yutadi
+# (4-vCPU/8GB serverda xotira yetarli).
+JT1078_QUEUE_MAX = int(os.environ.get("GPS_JT1078_QUEUE_MAX", "128"))
 # ffmpeg kirish (demuxer) navbati. Standart 8 juda kichik — ffmpeg "Thread
 # message queue blocking" beradi va kirish tiqilib, kadr tashlanadi (ayniqsa
 # 1 vCPU VPS'da ffmpeg CPU uchun kurashganda). Kattaroq qiymat cho'qqilarni
 # yutadi. Xato: "consider raising the thread_queue_size option (current: 8)".
 JT1078_THREAD_QUEUE = int(os.environ.get("GPS_JT1078_THREAD_QUEUE", "1024"))
+
+# ---- ffmpeg libx264 sozlamalari ----
+# Preset: sifat <-> CPU. 4+ yadroda "veryfast" sifatni oshiradi; kuchsiz
+# serverda "ultrafast". Xato qiymat ffmpeg'ni ishga tushirmaydi.
+JT1078_X264_PRESET = (
+    os.environ.get("GPS_JT1078_X264_PRESET", "ultrafast") or "ultrafast"
+).strip()
+# Bitta ffmpeg (muxer) uchun x264 thread soni. 0 = ffmpeg o'zi tanlaydi.
+# Ko'p oqimli serverda har biriga cheklov qo'yish CPU raqobatini kamaytiradi.
+JT1078_X264_THREADS = max(
+    0, int(os.environ.get("GPS_JT1078_X264_THREADS", "0"))
+)
+
+# Bir vaqtda ochiq JT1078 muxer (ffmpeg jarayoni) lar soni chegarasi.
+# 0 = cheksiz. Har bir oqim ~1 ffmpeg; 4 yadroda ~16 xavfsiz, kuchsiz
+# serverda kamaytiriladi (CPU to'yinishini oldini oladi).
+JT1078_MAX_STREAMS = max(
+    0, int(os.environ.get("GPS_JT1078_MAX_STREAMS", "16"))
+)
 
 # ---- RTSP → HLS relay (ffmpeg) ----
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN", "ffmpeg")

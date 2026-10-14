@@ -463,12 +463,14 @@ class _Muxer:
                 "-f", self.codec, "-i", "pipe:0",
             ]
             cmd += [
-                "-c:v", "libx264", "-preset", "ultrafast",
+                "-c:v", "libx264", "-preset", config.JT1078_X264_PRESET,
                 "-tune", "zerolatency", "-pix_fmt", "yuv420p",
                 "-vsync", "cfr", "-r", str(fps_out),
                 "-force_key_frames", "expr:gte(t,n_forced*2)",
                 "-max_muxing_queue_size", "1024",
             ]
+            if config.JT1078_X264_THREADS > 0:
+                cmd += ["-threads", str(config.JT1078_X264_THREADS)]
             cmd += [
                 "-f", "hls",
                 "-hls_time", "2",
@@ -644,7 +646,7 @@ class _Muxer:
 # ---------------------------------------------------------------- server
 
 def _get_muxer(sim: str, channel: int, mode: str = "live",
-               codec: str = DEFAULT_VIDEO_CODEC, peer=None) -> "_Muxer":
+               codec: str = DEFAULT_VIDEO_CODEC, peer=None) -> "_Muxer | None":
     """(sim,kanal,mode) uchun DOIMIY muxer: mavjudini qaytaradi yoki yangi ochadi.
 
     Kamera qisqa-qisqa ulanib/uzilib turgani uchun muxer bir marta yaratiladi
@@ -678,6 +680,13 @@ def _get_muxer(sim: str, channel: int, mode: str = "live",
         m.close()
         m = None
     if m is None or m.closed:
+        # Global cheklov: bir vaqtda ochiq ffmpeg (muxer) lar soni. Limitga
+        # yetganda yangi oqim ochilmaydi — CPU to'yinishini oldini oladi.
+        open_count = sum(1 for x in _MUXERS.values() if not x.closed)
+        if config.JT1078_MAX_STREAMS > 0 and open_count >= config.JT1078_MAX_STREAMS:
+            log.warning("JT1078: muxer limiti %s — %s ochilmadi",
+                        config.JT1078_MAX_STREAMS, _src(peer, key))
+            return None
         prev = _DIAG.get(key) or {}
         m = _MUXERS[key] = _Muxer(sim, channel, mode=mode, codec=codec)
         # Diagnostika: avvalgi holatdan meros (qayta ishga tushish soni, xato)
@@ -841,6 +850,10 @@ class _Session:
         if mode == "playback":
             _touch_playback(key[0], key[1])
         m = _get_muxer(key[0], key[1], mode, codec=codec, peer=self.peer)
+        if m is None:
+            # Global muxer limiti — yangi oqim ochilmadi (keyingi kadrda
+            # yana urinib ko'riladi, joy bo'shashi mumkin).
+            return
         if m.bytes == 0 and typ != DT_VIDEO_I:
             # Muxer ENDIGINA ochildi (kodek o'zgardi).
             # Yangi ffmpeg SPS/PPS'siz P-kadrni dekodlay olmaydi va HLS'ga
