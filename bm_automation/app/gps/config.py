@@ -80,10 +80,11 @@ ROUTE_LEARN_SIMPLIFY_M = int(os.environ.get("GPS_ROUTE_LEARN_SIMPLIFY_M", "40"))
 # bog'lanmagan kamera shu radius ichida avtobus topilsa bog'lash tavsiya
 # etiladi. Kamera GPS xaritaga/kuzatuvga chiqarilmaydi.
 GPS_CAMERA_MATCH_M = int(os.environ.get("GPS_CAMERA_MATCH_M", "300"))
-# 4G kamera kanallar soni (UI kanal tugmalari uchun standart).
-# Ko'p kanalli qurilmalar uchun env orqali oshiriladi.
+# 4G kamera kanallar soni (UI kanal tugmalari va "Barcha kanallar" uchun).
+# Fleet standarti: BD-T8008V2 MDVR = 8 kanalli (avtobusda 8 kamera). Env
+# (JT_CAMERA_CHANNELS) orqali boshqa qurilmalar uchun o'zgartiriladi.
 JT_CAMERA_CHANNELS = max(1, min(16, int(os.environ.get(
-    "JT_CAMERA_CHANNELS", "4"))))
+    "JT_CAMERA_CHANNELS", "8"))))
 
 
 # ---- JT1078 xom oqim diagnostikasi ----
@@ -111,6 +112,29 @@ JT1078_FPS_IN = os.environ.get("GPS_JT1078_FPS_IN", "20")
 JT1078_FPS_OUT = os.environ.get("GPS_JT1078_FPS_OUT", "20")
 JT1078_FPS_IN_PB = os.environ.get("GPS_JT1078_FPS_IN_PB", "13")
 JT1078_FPS_OUT_PB = os.environ.get("GPS_JT1078_FPS_OUT_PB", "13")
+# Playback (0x9201) tezligini real vaqtga keltirish. Qurilma yozuvni real
+# vaqtdan tez yuborishi mumkin (o'lchandi ~1.6-2x) — HLS timeline "yugurib"
+# ketadi, pleer sakrab/pirpirab ko'rinadi. Kelayotgan oqimni qurilma
+# timestamp (ts, ms) asosida "sekinlashtirib" o'qiymiz (o'qishni to'xtatib TCP
+# orqaga bosim beramiz) — shunda HLS real vaqt bilan mos bo'ladi.
+JT1078_PLAYBACK_PACE = os.environ.get(
+    "GPS_JT1078_PLAYBACK_PACE", "1"
+) in ("1", "true", "yes")
+# Pace qilishda bir marta kutish chegarasi (s) — bitta katta ts sakrashini
+# cheklab, iterator "uxlab qolmasligi"ni ta'minlaydi.
+JT1078_PACE_MAX_SLEEP_S = float(
+    os.environ.get("GPS_JT1078_PACE_MAX_SLEEP_S", "1.0")
+)
+# Playback kirish fps'ni qurilma ts'idan o'lchash oynasi (ms). Shu vaqt ichida
+# yig'ilgan AU soni / ts oralig'i = real fps (qurilma modelidan qat'i nazar).
+# 0 = o'lchamaymiz (qat'iy FPS_IN_PB/OUT_PB ishlatiladi).
+JT1078_PLAYBACK_PRIME_MS = int(
+    os.environ.get("GPS_JT1078_PLAYBACK_PRIME_MS", "1500")
+)
+# O'lchash tugamasa ham shu sondan keyin muxer ishga tushadi (fallback).
+JT1078_PLAYBACK_PRIME_MAX_AU = int(
+    os.environ.get("GPS_JT1078_PLAYBACK_PRIME_MAX_AU", "60")
+)
 # ffmpeg stdin'iga yozuvchi navbat hajmi (access-unit soni). ffmpeg ulgurmasa
 # (kuchsiz VPS) navbat to'ladi va eng eski kadr tashlanadi — event loop
 # bloklanmaydi (ilgari bloklovchi yozuv butun serverni muzlatardi).
@@ -141,6 +165,52 @@ JT1078_X264_THREADS = max(
 JT1078_MAX_STREAMS = max(
     0, int(os.environ.get("GPS_JT1078_MAX_STREAMS", "16"))
 )
+
+# ---- HLS kechikishini boshqarish ----
+# HLS segment davomiyligi (soniya). Kichik = past kechikish (jonli video
+# tezkor ochiladi va 'To'xtatish' darhol aks etadi), lekin har segmentda
+# I-kadr = ko'proq CPU/bitrate. Panjara (barcha kanallar/substream) uchun
+# 1s yaxshi; server CPU og'irlashsa env orqali 2 ga qaytariladi.
+JT1078_HLS_SECONDS = max(1, min(10, int(os.environ.get(
+    "GPS_JT1078_HLS_SECONDS", "1"))))
+# Playlist'da saqlanadigan segment soni (hls_list_size). Kamera qisqa
+# uzilishlarini yutishi uchun yetarli, lekin pleer kechikishini oshirmasin.
+JT1078_HLS_LIST_SIZE = max(2, min(20, int(os.environ.get(
+    "GPS_JT1078_HLS_LIST_SIZE", "6"))))
+
+# ---- ZLMediaKit media-server (PILOT: HTTP-FLV past kechikish) ----
+# Ixtiyoriy: flag BO'SH (default) = o'chirilgan, muxer avvalgidek ffmpeg→HLS
+# qiladi — hech narsa o'zgarmaydi. Flag YOQILGanda ffmpeg HLS o'rniga
+# ZLMediaKit'ga RTMP orqali uzatadi; ZLMediaKit bitta jarayon bilan HLS va
+# HTTP-FLV chiqaradi (pleyer FLV olinsa kechikish ~1s gacha tushadi).
+# Pilot uchun env bilan yoqiladi (masalan VDS drop-in):
+#   GPS_ZLMEDIAKIT_RTMP=rtmp://127.0.0.1:1935/live
+#   GPS_ZLMEDIAKIT_HTTP=https://bmbrutto.uz/zl   (nginx 8090 proksi)
+# Chiqish oqim nomi: <prefix><sim>_<kanal> (live=jt_, playback=jtpb_).
+ZLMEDIAKIT_RTMP = (os.environ.get("GPS_ZLMEDIAKIT_RTMP") or "").strip()
+ZLMEDIAKIT_HTTP = (os.environ.get("GPS_ZLMEDIAKIT_HTTP") or "").strip()
+
+# ZLMediaKit yoqilganmi (RTMP push manzili berilgan bo'lsa).
+def zlmediakit_enabled() -> bool:
+    return bool(ZLMEDIAKIT_RTMP)
+
+
+def zlmediakit_stream_name(prefix: str, sim: str, channel) -> str:
+    """ZLMediaKit RTMP/HTTP-FLV/HLS oqim nomi (bizning prefix bilan)."""
+    return f"{prefix}{sim}_{channel}"
+
+
+def zlmediakit_http_url(stream_name: str, kind: str = "flv") -> str | None:
+    """Pleyer uchun ZLMediaKit chiqish manzili; HTTP base bo'lmasa None.
+
+    kind='flv' -> HTTP-FLV (past kechikish), 'hls' -> ZLMediaKit HLS.
+    """
+    if not ZLMEDIAKIT_HTTP:
+        return None
+    base = ZLMEDIAKIT_HTTP.rstrip("/")
+    if kind == "hls":
+        return f"{base}/live/{stream_name}/hls.m3u8"
+    return f"{base}/live/{stream_name}.live.flv"
 
 # ---- RTSP → HLS relay (ffmpeg) ----
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN", "ffmpeg")

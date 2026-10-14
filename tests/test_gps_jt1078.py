@@ -122,3 +122,27 @@ def test_get_muxer_recreates_after_close(muxer_env, monkeypatch):
     assert m2.restarts == 1
     m2.close()
     assert jt1078._MUXERS.get(m2.key) is None
+
+
+def test_playback_primes_and_uses_estimated_fps(muxer_env, monkeypatch):
+    """Playback'da ffmpeg darhol emas — ts'dan fps baholanib ishga tushadi.
+
+    Qurilma yozuvni real vaqtdan tez yuborsa ham, kirish fps ts oraliqidan
+    o'lchanadi (bu yerda 25 fps) — video tez aylanmaydi."""
+    monkeypatch.setattr(config, "JT1078_PLAYBACK_PRIME_MS", 1000)
+    monkeypatch.setattr(config, "JT1078_PLAYBACK_PRIME_MAX_AU", 10_000)
+    monkeypatch.setattr(config, "JT1078_FPS_IN_PB", 13)
+    m = jt1078._Muxer("777", 1, mode="playback", codec="h264")
+    try:
+        assert m._proc is None          # hali ishga tushmagan
+        assert muxer_env["popens"] == 0
+        # 26 kadr, 40ms oraliq -> 1000ms span -> 25 fps
+        for i in range(26):
+            m.write(b"z" * 100, ts=1000 + i * 40)
+        assert muxer_env["popens"] == 1
+        cmd = muxer_env["cmd"]
+        idx = cmd.index("-framerate")
+        assert cmd[idx + 1] == "25"
+        assert m.bytes == 26 * 100
+    finally:
+        m.close()

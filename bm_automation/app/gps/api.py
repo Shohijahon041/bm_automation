@@ -472,6 +472,10 @@ class GpsHandler(BaseHTTPRequestHandler):
                     "media_host": config.JT1078_MEDIA_HOST,
                     "devices": phones,
                     "camera_channels": config.JT_CAMERA_CHANNELS,
+                    # PILOT: ZLMediaKit media-server holati (flag yoqilganda
+                    # oqimlarda "flv" maydoni paydo bo'ladi).
+                    "zlmediakit": bool(config.zlmediakit_enabled()),
+                    "zlmediakit_http": config.ZLMEDIAKIT_HTTP,
                     "bindings": bindings,
                     "assist": assist,
                     "assist_threshold_m": config.GPS_CAMERA_MATCH_M,
@@ -756,9 +760,12 @@ class GpsHandler(BaseHTTPRequestHandler):
                     return
                 channel = int(payload.get("channel") or 1)
                 ok = jt808.send_live_stop(phone, channel)
+                # Muxer'ni DARHOL yop — pleer karta ~120s idle reaper'ni
+                # kutmasdan zudlik bilan yo'qolsin (to'xtatish kechikishi).
+                closed = jt1078.close_stream(phone, channel, "live")
                 jt1078.clear_playback(phone, channel)
                 self._json({"ok": bool(ok), "phone": phone,
-                            "channel": channel})
+                            "channel": channel, "closed": bool(closed)})
             elif path == "/api/video/jt-query":
                 # Qurilma imkoniyatlarini so'rash: params|attrs|av|specific.
                 phone = str(payload.get("phone") or "").strip()

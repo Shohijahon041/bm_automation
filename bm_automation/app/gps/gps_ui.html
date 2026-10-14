@@ -11,6 +11,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/flv.js@1.6.2/dist/flv.min.js"></script>
 <style>
   :root{
     --bg:#0b0f19; --panel:#0f1524; --panel2:#131a2c; --line:rgba(148,163,184,.14);
@@ -226,6 +227,8 @@
   .jt-head .grow{flex:1}
   .jt-sec .cam-grid:not(:empty){margin-bottom:4px}
   .cam{background:var(--panel);border:1px solid var(--line);border-radius:15px;overflow:hidden}
+  .cam.offline{opacity:.8}
+  .cam.offline .head{filter:saturate(.7)}
   .cam .head{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line);font-weight:600;font-size:13px}
   .cam .body{aspect-ratio:16/9;background:#000;position:relative}
   .cam .body video{width:100%;height:100%;display:block}
@@ -1198,6 +1201,27 @@ function playBusVideos(vehicleId) {
 }
 
 /* ============ video kameralar ============ */
+/* HLS (jonli) umumiy sozlamalari. Kamera oqimi sekin/uzilib-ulangan bo'ladi;
+   shu sababli pleerni "jonli chekkadan" bir necha segment orqada ushlab
+   turamiz (bufer — qisqa uzilishlarni yutadi) va orqada qolsa tezroq quvib
+   yetadigan qilib qo'yamiz. Bu videoning qotib qolishi/pirpirashini
+   kamaytiradi. Dagitma (retry) sonlari ham oshirilgan. */
+var HLS_LIVE_CFG = {
+  liveDurationInfinity: true,
+  lowLatencyMode: false,
+  liveSyncDurationCount: 2,
+  maxLiveSyncPlaybackRate: 2,
+  backBufferLength: 6,
+  maxBufferLength: 6,
+  maxMaxBufferLength: 10,
+  manifestLoadingMaxRetry: 10,
+  levelLoadingMaxRetry: 10,
+  fragLoadingMaxRetry: 10,
+  manifestLoadingRetryDelay: 500,
+  levelLoadingRetryDelay: 500,
+  fragLoadingRetryDelay: 500,
+  fragLoadingMaxRetryTimeout: 8000
+};
 var cams = [];
 var camSig = '';
 var camPlayers = {};         /* id -> {hls, video} */
@@ -1353,12 +1377,13 @@ function _mountCam(c, src) {
     return;
   }
   if (!window.Hls || !Hls.isSupported()) return;
-  var hls = new Hls({ liveDurationInfinity: true });
+  var hls = new Hls(HLS_LIVE_CFG);
   hls.loadSource(src);
   hls.attachMedia(v);
   hls.on(Hls.Events.ERROR, function (_, data) {
     if (!data || !data.fatal) return;
     if (data.type === Hls.ErrorTypes.NETWORK_ERROR) { try { hls.startLoad(); return; } catch (e) {} }
+    if (data.type === Hls.ErrorTypes.MEDIA_ERROR) { try { hls.recoverMediaError(); return; } catch (e) {} }
     showCamNote(c, data.details);
     stopCam(id);
   });
@@ -1447,7 +1472,11 @@ function loadJtStreams() {
     if (st) {
       var bits = [];
       if (d.enabled === false) bits.push('JT808 o\'chirilgan');
-      else bits.push(jtDevices.length ? jtDevices.length + ' qurilma onlayn' : 'qurilma yo\'q');
+      else {
+        var tot = _jtDeviceUniverse().length;
+        var on = jtDevices.length;
+        bits.push(tot ? (on + '/' + tot + ' kamera onlayn') : 'kamera yo\'q');
+      }
       if (d.ffmpeg === false) bits.push('⚠ ffmpeg topilmadi');
       st.textContent = '· ' + bits.join(' · ');
     }
@@ -1527,8 +1556,22 @@ function _jtCamOn(sim) {
 function _jtShownStreams() {
   return jtStreams.filter(function (s) { return _jtCamOn(s.sim); });
 }
+/* Barcha ma'lum kameralar: hozir ulangan (jtDevices) ∪ doimiy ro'yxatdagi
+   (jtBindings + jtAssist — oflaynlarni ham saqlaydi) ∪ jonli oqimli simlar.
+   Shu orqali kamera oflayn bo'lsa ham kartasi ko'rinib turadi. */
+function _jtDeviceUniverse() {
+  var m = {};
+  jtDevices.forEach(function (p) { m[String(p)] = 1; });
+  Object.keys(jtBindings).forEach(function (p) { m[String(p)] = 1; });
+  Object.keys(jtAssist).forEach(function (p) { m[String(p)] = 1; });
+  jtStreams.forEach(function (s) { m[String(s.sim)] = 1; });
+  return Object.keys(m);
+}
+function _jtIsOnline(sim) {
+  return jtDevices.some(function (p) { return String(p) === String(sim); });
+}
 function _jtShownDevices() {
-  return jtDevices.filter(_jtCamOn);
+  return _jtDeviceUniverse().filter(_jtCamOn);
 }
 function renderJtStreams() {
   var g = document.getElementById('jt-grid');
@@ -1598,14 +1641,23 @@ function jtChannelBtns(sim) {
 }
 function jtDeviceCard(sim) {
   var b = jtBindings[sim] || {};
-  var a = jtAssist[String(sim)];
+  var a = jtAssist[String(sim)] || {};
+  var online = _jtIsOnline(sim);
   var bus = b.vehicle_id
     ? '<span class="badge">🚌 ' + esc(b.plate || vidBusName(b.vehicle_id)) + '</span>'
     : '<span class="badge warn">bog\'lanmagan</span>';
-  var gps = a ? ' <span class="badge ' + (a.status === 'ok' ? 'hls' : 'warn') +
+  var gps = a.status ? ' <span class="badge ' + (a.status === 'ok' ? 'hls' : 'warn') +
     '" title="' + esc(a.status_text) +
     (a.dist_m == null ? '' : ' · Teltonika bilan farq ' + Math.round(a.dist_m) + ' m') +
     '">📍 ' + esc(a.status_text) + '</span>' : '';
+  var stat = online
+    ? '<span class="badge hls">● ONLAYN</span>'
+    : '<span class="badge warn">● OFLAYN</span>';
+  var seen = '';
+  if (!online && a.last_seen_s != null) {
+    seen = '<div class="jt-diag-line"><span class="muted">oxirgi ko\'rinish: ' +
+      fmtAge(a.last_seen_s) + ' oldin · qayta ulanganda jonli video ochiladi</span></div>';
+  }
   var act = '';
   if (!b.vehicle_id) {
     if (a && a.suggest_vehicle_id) {
@@ -1615,16 +1667,29 @@ function jtDeviceCard(sim) {
     }
     act += '<button class="btn sm primary" onclick="openCamBind(\'' + esc(sim) + '\')">🔗 Avtobusga bog\'lash</button>';
   }
-  return '<div class="cam"><div class="head"><span class="dot"></span> 📷 ' + esc(sim) +
-    ' <span class="badge hls">JT808</span> ' + bus + gps + '</div>' +
-    '<div class="body" style="display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px;text-align:center;padding:18px">' +
-    'Video hali boshlanmagan. Kanal tugmasini (yoki "Barcha kanallar") bosing — kameraga 0x9101 buyrug\'i yuboriladi.</div>' +
-    '<div class="foot" style="flex-wrap:wrap;gap:5px">' +
-    jtChannelBtns(sim) +
-    '<button class="btn primary sm" onclick="startJtAll(\'' + esc(sim) + '\')">▶ Barcha kanallar</button>' +
-    '<span class="grow"></span>' + act +
-    '<button class="btn sm" onclick="openRec(\'' + esc(sim) + '\',1)">🗂 Xotira</button>' +
-    '</div></div>';
+  var body, foot;
+  if (online) {
+    body = '<div class="body" style="display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px;text-align:center;padding:18px">' +
+      'Video hali boshlanmagan. Kanal tugmasini (yoki "Barcha kanallar") bosing — kameraga 0x9101 buyrug\'i yuboriladi.</div>';
+    foot = '<div class="foot" style="flex-wrap:wrap;gap:5px">' +
+      jtChannelBtns(sim) +
+      '<button class="btn primary sm" onclick="startJtAll(\'' + esc(sim) + '\')">▶ Barcha kanallar</button>' +
+      '<span class="grow"></span>' + act +
+      '<button class="btn sm" onclick="openRec(\'' + esc(sim) + '\',1)">🗂 Xotira</button>' +
+      '</div>';
+  } else {
+    body = '<div class="body" style="display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px;text-align:center;padding:18px">' +
+      '📴 Kamera ayni paytda oflayn (signing ulanishi yo\'q). Ro\'yxatda saqlanib turadi — qayta ulangan avtomatik "onlayn" bo\'ladi va jonli video/yozuv ochiladi.</div>' +
+      seen;
+    foot = '<div class="foot" style="flex-wrap:wrap;gap:5px">' +
+      '<span class="badge warn" title="Jonli video faqat qurilma ulanganda ishlaydi">jonli/oflayn</span>' +
+      '<span class="grow"></span>' + act +
+      '<button class="btn sm" disabled title="Qurilma oflayn">🗂 Xotira</button>' +
+      '</div>';
+  }
+  return '<div class="cam' + (online ? '' : ' offline') + '"><div class="head"><span class="dot"></span> 📷 ' +
+    esc(sim) + ' <span class="badge hls">JT808</span> ' + stat + bus + gps + '</div>' +
+    body + foot + '</div>';
 }
 /* Kamera terminalini avtobusga bog'lash (mavjud dlg orqali) */
 function openCamBind(sim) {
@@ -1669,31 +1734,45 @@ function jtMediaHost() {
       || h.indexOf('172.') === 0 || h.indexOf('169.254.') === 0) return '';
   return h;
 }
-function startJtLive(sim, btn, chArg) {
+function startJtLive(sim, btn, chArg, stArg) {
   var ch = parseInt(chArg, 10) || 0;
   if (!ch) {
     var sel = document.getElementById('ch-' + sim);
     ch = sel ? parseInt(sel.value, 10) : 1;
   }
+  /* stArg: 0 = main (yuqori sifat, bitta kanal uchun), 1 = substream
+     (past bitrate — qurilma bir vaqtda ko'proq kanal yubora oladi). */
+  var st = (stArg === undefined || stArg === null) ? 0 : (parseInt(stArg, 10) || 0);
   if (btn) { btn.disabled = true; btn.textContent = '… yuborilmoqda'; }
-  API.post('/api/video/jt-live', { phone: sim, channel: ch, host: jtMediaHost() }).then(function (d) {
+  API.post('/api/video/jt-live', { phone: sim, channel: ch, host: jtMediaHost(),
+    stream_type: st }).then(function (d) {
     if (d && d.ok === false) alert('Buyruq yuborilmadi: ' + (d.error || 'qurilma ulanmagan'));
-    setTimeout(loadJtStreams, 2500);
-    setTimeout(loadJtStreams, 7000);
+    setTimeout(loadJtStreams, 1500);
+    setTimeout(loadJtStreams, 4000);
+    setTimeout(loadJtStreams, 8000);
   }).catch(function (e) { alert('Xato: ' + e.message); })
     .then(function () { if (btn) { btn.disabled = false; btn.textContent = '▶ Jonli video'; } });
 }
-/* Shu qurilmaning BARCHA kanallarini birdan ochish */
+/* Shu qurilmaning BARCHA kanallarini birdan ochish.
+   Panjara (bir nechta kanal) uchun SUBSTREAM (stream_type=1) so'raladi:
+   4G MDVR main oqimni bir vaqtda faqat 1-2 kanalga bera oladi, substream'da
+   esa 6-8 kanal bir vaqtda keladi. Yakka "▶ chN" tugmalari main (yuqori sifat). */
 function startJtAll(sim) {
   for (var c = 1; c <= jtChCount(); c++) {
-    if (!jtChLive(sim, c)) startJtLive(sim, null, c);
+    if (!jtChLive(sim, c)) startJtLive(sim, null, c, 1);
   }
   setTimeout(loadJtStreams, 3000);
   setTimeout(loadJtStreams, 8000);
 }
 function stopJtLive(sim, ch) {
   API.post('/api/video/jt-stop', { phone: sim, channel: ch }).then(function () {
+    /* Server muxer'ni darhol yopdi — kartani kutmasdan yo'qotamiz. */
     jtSig = '';
+    jtStreams = jtStreams.filter(function (s) {
+      return !(String(s.sim) === String(sim) && Number(s.channel) === Number(ch));
+    });
+    renderJtStreams();
+    loadJtStreams();
     setTimeout(loadJtStreams, 1500);
   }).catch(function () {});
 }
@@ -1716,17 +1795,42 @@ function mountJtHls(s) {
   var vid = 'jt-' + s.sim + '-' + s.channel;
   var v = document.getElementById(vid);
   if (!v) return;
+  // PILOT: server ZLMediaKit yoqilganda s.flv (HTTP-FLV) yuboradi — u
+  // kechikish eng past (~1s), shuning uchun avval uni sinaymiz; bo'lmasa
+  // yoki flv.js ishlamasa avvalgidek HLS'ga qaytamiz.
+  if (s.flv && window.flvjs && flvjs.isSupported && flvjs.isSupported()) {
+    try {
+      var p = flvjs.createPlayer(
+        { type: 'flv', isLive: true, url: s.flv, cors: true },
+        { enableWorker: false, enableStashBuffer: false, stashInitialSize: 128,
+          autoCleanupSourceBuffer: true, lazyLoad: false });
+      p.attachMediaElement(v);
+      p.on(flvjs.Events.ERROR, function () {
+        // FLV uzilsa (muxer yopildi / server ishtamaydi) — HLS'ga qaytamiz.
+        try { p.destroy(); } catch (e) {}
+        if (jtHlsMap[vid] === p) { delete jtHlsMap[vid]; mountJtHlsFallback(s, v); }
+      });
+      p.load();
+      if (v.play) v.play().catch(function () {});
+      jtHlsMap[vid] = p;
+      return;
+    } catch (e) { /* flv.js xatosi → HLS fallback */ }
+  }
+  mountJtHlsFallback(s, v);
+}
+function mountJtHlsFallback(s, v) {
   if (v.canPlayType('application/vnd.apple.mpegurl')) { v.src = s.hls; v.play().catch(function () {}); return; }
   if (!window.Hls || !Hls.isSupported()) return;
-  var hls = new Hls({ liveDurationInfinity: true });
+  var hls = new Hls(HLS_LIVE_CFG);
   hls.loadSource(s.hls);
   hls.attachMedia(v);
   hls.on(Hls.Events.ERROR, function (ev, data) {
     if (!data || !data.fatal) return;
-    if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
-    else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+    if (data.type === Hls.ErrorTypes.NETWORK_ERROR) { try { hls.startLoad(); } catch (e) {} }
+    else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) { try { hls.recoverMediaError(); } catch (e) {} }
+    else { try { hls.startLoad(); } catch (e) {} }
   });
-  jtHlsMap[vid] = hls;
+  jtHlsMap['jt-' + s.sim + '-' + s.channel] = hls;
 }
 function fullscreenVid(id) {
   var v = document.getElementById(id);
@@ -2007,8 +2111,16 @@ function mountRecHls(url) {
     v.src = url; v.play().catch(function () {}); go(); return;
   }
   if (!window.Hls || !Hls.isSupported()) { _recSetStatus('Brauzer HLS oqimini qo\'llamaydi.'); return; }
-  recHls = new Hls({ liveDurationInfinity: false, manifestLoadingMaxRetry: 8,
-                     levelLoadingMaxRetry: 8, fragLoadingMaxRetry: 8 });
+  recHls = new Hls({ liveDurationInfinity: false, lowLatencyMode: false,
+                     liveSyncDurationCount: 4, maxLiveSyncPlaybackRate: 1.5,
+                     backBufferLength: 30, maxBufferLength: 30,
+                     maxMaxBufferLength: 60,
+                     manifestLoadingMaxRetry: 10, levelLoadingMaxRetry: 10,
+                     fragLoadingMaxRetry: 10,
+                     manifestLoadingRetryDelay: 500,
+                     levelLoadingRetryDelay: 500,
+                     fragLoadingRetryDelay: 500,
+                     fragLoadingMaxRetryTimeout: 8000 });
   recHls.loadSource(url);
   recHls.attachMedia(v);
   recHls.on(Hls.Events.MANIFEST_PARSED, function () { v.play().catch(function () {}); go(); });

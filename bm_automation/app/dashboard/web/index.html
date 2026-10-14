@@ -1467,24 +1467,12 @@ body.auth-locked .auth-overlay { display: flex; }
 </section>
 
 <section class="page" id="page-gps" data-page-view="gps">
-  <div class="page-hero"><div><div class="eyebrow">KUZATUV</div><h2>Kuzatuv — GPS + Video</h2><p>Teltonika FMB920 trackerlari (TCP 5027) va 4G kameralar (JT808/JT1078) bitta oynada: jonli xarita, traektoriya, IMEI → avtobus bog'lash hamda jonli/yozuv video. Quyidagi tugmalar yoki panel ichidagi "Xarita"/"Video" tab'lari bilan almashtiring.</p></div><div class="page-kicker" id="gps-kicker">—</div></div>
-  <div class="section" style="display:flex;gap:8px;margin:6px 0 12px">
-    <button class="btn" id="gps-tab-map" onclick="gpsFrameTab('gps')">🗺 Xarita</button>
-    <button class="btn" id="gps-tab-vid" onclick="gpsFrameTab('video')">🎥 Video</button>
-  </div>
+  <div class="page-hero"><div><div class="eyebrow">KUZATUV</div><h2>Kuzatuv — GPS + Video</h2><p>Teltonika FMB920 trackerlari (TCP 5027) va 4G kameralar (JT808/JT1078) bitta oynada: jonli xarita, traektoriya, IMEI → avtobus bog'lash hamda jonli/yozuv video. Panel ichidagi "Xarita"/"Video" tab'laridan almashtiring.</p></div><div class="page-kicker" id="gps-kicker">—</div></div>
   <div class="side-card" style="padding:0;overflow:hidden;border-radius:16px">
-    <iframe id="gps-frame" data-src="" title="Kuzatuv" style="width:100%;height:calc(100vh - 250px);min-height:560px;border:0;display:block;background:#0b0f19"></iframe>
+    <iframe id="gps-frame" data-src="" title="Kuzatuv" style="width:100%;height:calc(100vh - 220px);min-height:600px;border:0;display:block;background:#0b0f19"></iframe>
   </div>
   <script>
   var _gpsFrameInit = false;
-  function gpsFrameTab(t){
-    var f = document.getElementById('gps-frame');
-    if(!f || !f.dataset.src) return;
-    try { f.contentWindow.postMessage('tab:' + t, '*'); } catch(e) {}
-    var m = document.getElementById('gps-tab-map'), v = document.getElementById('gps-tab-vid');
-    if(m) m.classList.toggle('primary', t === 'gps');
-    if(v) v.classList.toggle('primary', t === 'video');
-  }
   function initGpsFrame(){
     var f = document.getElementById('gps-frame');
     if(!f) return;
@@ -1494,10 +1482,12 @@ body.auth-locked .auth-overlay { display: flex; }
     var _gpsLocal = (location.hostname === 'localhost' || location.hostname === '127.0.0.1');
     var apiBase = _gpsLocal ? 'http://127.0.0.1:8081' : location.origin;
     var uiBase = _gpsLocal ? 'http://127.0.0.1:8081' : (location.origin + '/gps');
-    var url = uiBase + '/' + (tok ? '?token=' + encodeURIComponent(tok) : '');
+    // Production'da same-origin bm_token/bm_session cookie auth ishlaydi —
+    // master token'ni URL'ga yozmaymiz (nginx access.log'ga tushib qolmasligi
+    // uchun). Faqat lokal dev (portlar xilma-xil) uchun ?token= saqlanadi.
+    var url = uiBase + '/' + (_gpsLocal && tok ? '?token=' + encodeURIComponent(tok) : '');
     f.dataset.src = url;
     f.src = url;
-    var m = document.getElementById('gps-tab-map'); if(m) m.classList.add('primary');
     var k = document.getElementById('gps-kicker');
     fetch(apiBase + '/api/gps/health').then(function(r){ return r.json(); }).then(function(h){
       if (k && h && h.ok) k.textContent = 'GPS servis: online — TCP ' + h.tcp_port;
@@ -1521,7 +1511,9 @@ body.auth-locked .auth-overlay { display: flex; }
     try { tok = localStorage.getItem('bm-token') || ''; } catch(e) {}
     var _vLocal = (location.hostname === 'localhost' || location.hostname === '127.0.0.1');
     var uiBase = _vLocal ? 'http://127.0.0.1:8081' : (location.origin + '/gps');
-    var url = uiBase + '/' + (tok ? '?token=' + encodeURIComponent(tok) : '') + '#video';
+    // Master token production URL'ida ko'rinmaydi (cookie yetarli); ?token=
+    // faqat lokal dev uchun.
+    var url = uiBase + '/' + (_vLocal && tok ? '?token=' + encodeURIComponent(tok) : '') + '#video';
     f.dataset.src = url;
     f.src = url;
   }

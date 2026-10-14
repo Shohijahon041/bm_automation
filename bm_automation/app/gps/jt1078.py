@@ -32,6 +32,7 @@ import queue
 import shutil
 import subprocess
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -130,6 +131,13 @@ _PEER_KEYS_MAX = 500
 # uchun kelayotgan oqim "playback" deb belgilanadi (jonli bilan aralashmasin).
 _PLAYBACK: dict = {}
 MUXER_IDLE_TIMEOUT = 120.0   # sekund data kelmasa muxer yopiladi
+# Media server'ning asyncio loop'i (run_tcp'da saqlanadi). HTTP API
+# ThreadingHTTPServer bo'lgani uchun handler'lar ALOHIDA thread'larda ishlaydi;
+# muxer lifecycle (ochish/yopish) mutatsiyalarini shu loop'ga yig'sak,
+# _get_muxer / _reap (media loop) bilan close_stream (HTTP thread) o'rtasidagi
+# poyga (race) yo'qoladi — bitta kanalga ikki ffmpeg tushib qolishi shu
+# race'dan edi.
+_LOOP = None
 # Bitta kadr (access-unit) buferining eng katta hajmi. Qurilma timestamp'ni
 # yangilamasa yoki subMark'ni butunlay noto'g'ri belgilasa, bufer cheksiz
 # o'smasligi uchun chegaraga yetganda kadr majburan chiqariladi.
@@ -169,6 +177,57 @@ def _playback_active(sim: str, channel: int) -> bool:
 
 def _now() -> float:
     return datetime.now(timezone.utc).timestamp()
+
+
+def estimate_fps(samples, min_fps: float = 2.0, max_fps: float = 60.0):
+    """Qurilma timestamp'lari (ms) ro'yxatidan real fps'ni baholaydi.
+
+    fps = (kadr soni - 1) / (ts oralig'i sekundda). Bu qurilma yozuvni
+    qanchalik tez yuborishidan QAT'I NAZAR to'g'ri (ts = kontent vaqti).
+    None qaytaradi — namuna yetarli/ishonchli bo'lmasa (chaqiruvchi standart
+    qiymatga tushadi)."""
+    ts = [t for t in samples if isinstance(t, int) and t > 0]
+    if len(ts) < 4:
+        return None
+    span = ts[-1] - ts[0]
+    if span <= 0:
+        return None
+    fps = (len(ts) - 1) * 1000.0 / span
+    if fps < min_fps or fps > max_fps:
+        return None
+    return max(1, int(round(fps)))
+
+
+class _Pacer:
+    """Qurilma ts (ms) asosida oqimni real vaqt tezligida o'qish uchun
+    hisoblagich. `delay()` — qancha kutish kerakligini (s) qaytaradi."""
+
+    def __init__(self, max_sleep: float = 1.0, reset_gap_ms: int = 30000):
+        self._base_ts = None
+        self._base_wall = None
+        self._last_ts = None
+        self._max_sleep = max(0.0, float(max_sleep))
+        self._reset_gap = max(1000, int(reset_gap_ms))
+
+    def delay(self, ts, now: float) -> float:
+        """Keyingi ts kelguncha kutish kerak bo'lgan vaqt (s, >=0)."""
+        if not isinstance(ts, int) or ts <= 0:
+            return 0.0
+        if self._base_ts is None:
+            self._base_ts, self._base_wall, self._last_ts = ts, now, ts
+            return 0.0
+        # ts orqaga ketdi (yangi bo'lak/qurilma) yoki katta sakrash — bazani
+        # qayta o'rnatamiz (noto'g'ri kutishdan saqlaydi).
+        if ts < self._last_ts or (ts - self._last_ts) > self._reset_gap:
+            self._base_ts, self._base_wall, self._last_ts = ts, now, ts
+            return 0.0
+        self._last_ts = ts
+        target = self._base_wall + (ts - self._base_ts) / 1000.0
+        ahead = target - now
+        if ahead <= 0:
+            return 0.0
+        return min(ahead, self._max_sleep)
+
 
 
 def _remember_peer(peer, keys) -> None:
@@ -238,6 +297,16 @@ def _stream_view(key: str, st: dict, active: bool) -> dict:
     lk = st.get("last_keyframe_at")
     err_at = st.get("last_error_at")
     since = st.get("since")
+    # PILOT: ZLMediaKit yoqilganda muxer RTMP uzatadi va ZLMediaKit o'zi
+    # HLS+FLV chiqaradi. Shunda fayl-based /hls/ generatsiya QILINMAYDI —
+    # shuning uchun 'hls' maydonini ham ZLMediaKit HLS'iga og'ktiramiz
+    # (native-Safari yo'li va FLV-xato fallback ham ishlashi uchun).
+    name = config.zlmediakit_stream_name(prefix, sim, ch)
+    zl_on = config.zlmediakit_enabled()
+    flv = config.zlmediakit_http_url(name, "flv") if zl_on else None
+    hls = (config.zlmediakit_http_url(name, "hls")
+           if (zl_on and config.ZLMEDIAKIT_HTTP)
+           else f"/hls/{prefix}{sim}_{ch}.m3u8")
     out = {
         "sim": str(sim), "channel": int(ch),
         "bytes": int(st.get("bytes") or 0),
@@ -245,7 +314,8 @@ def _stream_view(key: str, st: dict, active: bool) -> dict:
         "active": bool(active),
         "codec": st.get("codec") or DEFAULT_VIDEO_CODEC,
         "codec_name": codec_name(st.get("codec")),
-        "hls": f"/hls/{prefix}{sim}_{ch}.m3u8",
+        "hls": hls,
+        "flv": flv,
         # Diagnostika: kadrlar va oxirgi kalit kadr
         "frames": int(st.get("frames") or 0),
         "keyframes": int(st.get("keyframes") or 0),
@@ -267,8 +337,13 @@ def _stream_view(key: str, st: dict, active: bool) -> dict:
 
 
 def streams() -> list:
-    """FAOL oqimlar (diagnostika maydonlari bilan) — sim/kanal bo'yicha tartibda."""
-    out = [_stream_view(key, st, True) for key, st in _STREAMS.items()]
+    """FAOL oqimlar (diagnostika maydonlari bilan) — sim/kanal bo'yicha tartibda.
+
+    HTTP thread'dan chaqiriladi; media loop shu paytda `_STREAMS` ni
+    o'zgartirishi mumkin → aynan iteratsiyada 'changed size' xatosi chiqmasin
+    uchun oldin snapshot olamiz.
+    """
+    out = [_stream_view(key, st, True) for key, st in list(_STREAMS.items())]
     out.sort(key=lambda s: (s["sim"], s["channel"]))
     return out
 
@@ -279,10 +354,66 @@ def recent_streams(limit: int = 8) -> list:
     Kamera uzilib qolsa yoki muxer qayta ishga tushsa, faol ro'yxatdan
     yo'qoladi; sababni ko'rish uchun shu ro'yxat dashboard'da ko'rsatiladi.
     """
-    items = [v for v in _DIAG.values() if v.get("closed_at")]
+    items = [v for v in list(_DIAG.values()) if v.get("closed_at")]
     items.sort(key=lambda v: v.get("closed_at") or 0, reverse=True)
     return [_stream_view(str(v.get("key") or ""), v, False)
             for v in items[:max(1, limit)]]
+
+
+def _close_stream_direct(sim: str, channel: int, mode: str = "live") -> bool:
+    """Muxer'ni joyida yopadi (registry'dan chiqaradi + ffmpeg'ni o'ldiradi).
+
+    DIQQAT: bu funksiya media loop'ning O'Z thread'ida bajarilishi kerak
+    (qarang: close_stream). Shunda `_MUXERS.pop` va keyingi `_get_muxer`
+    o'rtasida poyga bo'lmaydi — bir (sim,kanal,mode) uchun doimo bitta ffmpeg.
+    """
+    key = _muxer_key(str(sim), int(channel), mode)
+    m = _MUXERS.get(key)
+    if m is None or getattr(m, "closed", False):
+        return False
+    # Avval registry'dan chiqaramiz — shunda haligacha yopilgan muxer'ni
+    # _get_muxer "mavjud, ammo closed" deb qayta yopishga urinmaydi.
+    _MUXERS.pop(key, None)
+    try:
+        m.close()
+    except Exception:  # noqa: BLE001
+        log.exception("JT1078: muxer yopilishida xato (%s)", key)
+        _MUXERS.pop(key, None)
+    return True
+
+
+async def _aclose_stream(sim: str, channel: int, mode: str) -> bool:
+    """Media loop'ida ishlaydigan yopish koroutini (yopish bloklovchi
+    bo'lishi mumkin — reaper'ning xuddi shu xatti-harakati bilan bir xil)."""
+    return _close_stream_direct(sim, channel, mode)
+
+
+def close_stream(sim: str, channel: int, mode: str = "live") -> bool:
+    """Jonli/yozuv muxer'ni DARHOL yopish.
+
+    'To'xtatish' bosilganda 0x9102 qurilmaga yuboriladi, lekin ffmpeg muxer
+    qurilma paket yubormay qo'ygandan keyin ham idle reaper (~120s) ni kutardi
+    — video qotib qolgan kadrni ko'rsatayotgandek bo'lati. Bu funksiya muxer'ni
+    joyida yopadi (oqim ro'yxatdan chiqadi → UI keyingi poll'da kartani oladi).
+
+    HTTP handler ALOHIDA thread'da bo'lgani uchun yopish amali media loop'iga
+    `run_coroutine_threadsafe` orqali yo'naltiriladi: `_MUXERS`/`_STREAMS`
+    barcha mutatsiyalari shu bitta loop'da serilashadi. Loop tayyor bo'lmasa
+    (servis endigina o'chgan/ishga tushgan) yopish beziqar shu thread'da
+    bajariladi — bunda race xavfi yo'q, chunki media loop islamaydi.
+    """
+    sim = str(sim)
+    channel = int(channel)
+    loop = _LOOP
+    if loop is None or loop.is_closed():
+        return _close_stream_direct(sim, channel, mode)
+    try:
+        fut = asyncio.run_coroutine_threadsafe(
+            _aclose_stream(sim, channel, mode), loop)
+        return bool(fut.result(timeout=10))
+    except Exception:  # noqa: BLE001
+        log.exception("JT1078: close_stream media loop'iga yo'naltirilmadi")
+        return _close_stream_direct(sim, channel, mode)
 
 
 def _prune_diag(ttl: float = DIAG_TTL, keep: int = DIAG_KEEP) -> None:
@@ -441,63 +572,131 @@ class _Muxer:
         self._in_q = None
         self._pump_thread = None
         self.dropped = 0
-        if ffmpeg_available():
-            out = Path(config.HLS_DIR) / f"{self.prefix}{sim}_{channel}.m3u8"
-            # Kamera oqimida B-frame bor va aniq fps yo'q. `-use_wallclock`
-            # B-frame reorder bilan to'qnashib jonli oqimda tiqilib qoladi;
-            # `-c copy` esa mpegts'ga PTS bermaydi. Shuning uchun kirish fps'ni
-            # o'zimiz beramiz va libx264'ga qayta kodlab, CFR chiqishda
-            # barqaror 2s HLS olamiz. Kirish fps real kadr tezligiga mos
-            # bo'lmog'i shart: jonli ~3fps, yozuv(playback) ~13fps (o'lchangan),
-            # shu sababli rejimga qarab alohida qiymat tanlanadi.
-            fps_in = (config.JT1078_FPS_IN_PB if self.mode == "playback"
-                      else config.JT1078_FPS_IN)
-            fps_out = (config.JT1078_FPS_OUT_PB if self.mode == "playback"
-                       else config.JT1078_FPS_OUT)
-            cmd = [
-                config.FFMPEG_BIN,
-                "-hide_banner", "-loglevel", "warning",
-                "-fflags", "+genpts+discardcorrupt",
-                "-thread_queue_size", str(config.JT1078_THREAD_QUEUE),
-                "-framerate", str(fps_in),
-                "-f", self.codec, "-i", "pipe:0",
-            ]
+        # Playback uchun kirish fps'ni qurilma ts'idan o'lchaymiz (priming):
+        # o'lchov tugagach muxer ishga tushadi. Jonli uchun darhol ishga
+        # tushadi (live fps allaqachon ~1x, o'lchash shart emas).
+        self._pending = []      # [(au, ts)] — priming buferi
+        self._sample_ts = []    # fps baholash uchun ts namunalari
+        self._started = False
+        self._prime_at = None
+        self.fps_in: int | None = None
+        self.fps_out: int | None = None
+        if not ffmpeg_available():
+            return
+        if self.mode == "playback" and config.JT1078_PLAYBACK_PRIME_MS > 0:
+            # Priming rejimi — birinchi kadrlarni ts bilan to'playmiz, keyin
+            # real fps'ni baholab muxerni ishga tushiramiz.
+            self._prime_at = _now()
+            return
+        self._spawn(
+            config.JT1078_FPS_IN if self.mode == "live"
+            else config.JT1078_FPS_IN_PB,
+            config.JT1078_FPS_OUT if self.mode == "live"
+            else config.JT1078_FPS_OUT_PB,
+        )
+
+    def _spawn(self, fps_in, fps_out) -> None:
+        """ffmpeg jarayonini berilgan kirish/chiqish fps bilan ishga tushiradi.
+
+        Kamera oqimida B-frame bor va aniq fps yo'q. `-use_wallclock` B-frame
+        reorder bilan to'qnashib jonli oqimda tiqilib qoladi; `-c copy` esa
+        mpegts'ga PTS bermaydi. Shuning uchun kirish fps'ni beramiz va
+        libx264'ga qayta kodlab, CFR chiqishda barqaror 2s HLS olamiz."""
+        if self._started or not ffmpeg_available():
+            return
+        self._started = True
+        self.fps_in, self.fps_out = fps_in, fps_out
+        zl = config.zlmediakit_enabled()
+        out = Path(config.HLS_DIR) / f"{self.prefix}{self.sim}_{self.channel}.m3u8"
+        cmd = [
+            config.FFMPEG_BIN,
+            "-hide_banner", "-loglevel", "warning",
+            "-fflags", "+genpts+discardcorrupt",
+            "-thread_queue_size", str(config.JT1078_THREAD_QUEUE),
+            "-framerate", str(fps_in),
+            "-f", self.codec, "-i", "pipe:0",
+        ]
+        cmd += [
+            "-c:v", "libx264", "-preset", config.JT1078_X264_PRESET,
+            "-tune", "zerolatency", "-pix_fmt", "yuv420p",
+            # -vsync eskirgan (ffmpeg "deprecated" ogohlantiradi) ->
+            # -fps_mode cfr (bir xil ma'no).
+            "-fps_mode", "cfr", "-r", str(fps_out),
+            "-force_key_frames",
+            "expr:gte(t,n_forced*%d)" % config.JT1078_HLS_SECONDS,
+            "-max_muxing_queue_size", "1024",
+        ]
+        if config.JT1078_X264_THREADS > 0:
+            cmd += ["-threads", str(config.JT1078_X264_THREADS)]
+        if zl:
+            # PILOT: ffmpeg faqat qayta kodlaydi va ZLMediaKit'ga RTMP
+            # (FLV) uzatadi; HLS/HTTP-FLV/WebRTC'ni ZLMediaKit chiqaradi.
+            # Bitta media-server ko'p kanal/pleyerni bog'laydi — HLS
+            # segmentlash (disk/CPU) o'rniga. Kechikish past (FLV ~1s).
+            name = config.zlmediakit_stream_name(
+                self.prefix, self.sim, self.channel)
             cmd += [
-                "-c:v", "libx264", "-preset", config.JT1078_X264_PRESET,
-                "-tune", "zerolatency", "-pix_fmt", "yuv420p",
-                "-vsync", "cfr", "-r", str(fps_out),
-                "-force_key_frames", "expr:gte(t,n_forced*2)",
-                "-max_muxing_queue_size", "1024",
+                # FLV/RTMP B-kadrlarni yomon ko'radi — zerolatency CFR'da
+                # allaqachon asosan I/P; baribir -g kalit oralig'ini
+                # segmentga bog'lab qo'yamiz (yuqoridagi force_key_frames).
+                "-f", "flv", "-flvflags", "no_duration_filesize",
+                f"{config.ZLMEDIAKIT_RTMP}/{name}",
             ]
-            if config.JT1078_X264_THREADS > 0:
-                cmd += ["-threads", str(config.JT1078_X264_THREADS)]
+        else:
             cmd += [
                 "-f", "hls",
-                "-hls_time", "2",
-                "-hls_list_size", "6",
-                "-hls_flags", "delete_segments+independent_segments",
+                "-hls_time", str(config.JT1078_HLS_SECONDS),
+                # Segment ro'yxati uzunligi (env: GPS_JT1078_HLS_LIST_SIZE).
+                # Ko'proq segment = kattaroq bufer (kamera uzilishlarini yutadi),
+                # kamroq = past kechikish. Muvozanat: 6 (~6s).
+                "-hls_list_size", str(config.JT1078_HLS_LIST_SIZE),
+                # temp_file: segment/playlist avval .tmp'ga yozilib, tayyor
+                # bo'lgach nomlanadi — pleer chala faylni o'qib xato bermaydi.
+                "-hls_flags",
+                "delete_segments+independent_segments+temp_file",
                 str(out),
             ]
-            try:
-                self._dir.mkdir(parents=True, exist_ok=True)
-                # "wb": log har yangi muxer bilan boshlanadi — shunda
-                # diagnostikadagi "oxirgi xato" joriy ffmpeg'ga tegishli
-                # bo'ladi (eski jarayonning xatosi qolib ketmaydi).
-                self._errlog = open(self.log_path, "wb", buffering=0)
-            except Exception:  # noqa: BLE001
-                self._errlog = None
-            try:
-                self._proc = subprocess.Popen(
-                    cmd, stdin=subprocess.PIPE,
-                    stdout=subprocess.DEVNULL,
-                    stderr=(self._errlog if self._errlog else subprocess.DEVNULL),
-                )
-                self._start_pump()
-            except Exception as exc:  # noqa: BLE001
-                log.exception("JT1078: ffmpeg ishga tushmadi (%s)",
-                              _src(_MUXER_SRC.get(self.key), self.key))
-                self._proc = None
-                self.note(f"ffmpeg ishga tushmadi: {exc}")
+        try:
+            self._dir.mkdir(parents=True, exist_ok=True)
+            # "wb": log har yangi muxer bilan boshlanadi — shunda
+            # diagnostikadagi "oxirgi xato" joriy ffmpeg'ga tegishli
+            # bo'ladi (eski jarayonning xatosi qolib ketmaydi).
+            self._errlog = open(self.log_path, "wb", buffering=0)
+        except Exception:  # noqa: BLE001
+            self._errlog = None
+        try:
+            self._proc = subprocess.Popen(
+                cmd, stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=(self._errlog if self._errlog else subprocess.DEVNULL),
+            )
+            self._start_pump()
+        except Exception as exc:  # noqa: BLE001
+            log.exception("JT1078: ffmpeg ishga tushmadi (%s)",
+                          _src(_MUXER_SRC.get(self.key), self.key))
+            self._proc = None
+            self.note(f"ffmpeg ishga tushmadi: {exc}")
+
+    def _maybe_start_priming(self) -> None:
+        """Playback priming: yetarli namuna yig'ilgach fps'ni baholab muxerni
+        ishga tushiradi va buferlangan kadrlarni oqizadi."""
+        if self._started:
+            return
+        n = len(self._pending)
+        span = (self._sample_ts[-1] - self._sample_ts[0]
+                if len(self._sample_ts) >= 2 else 0)
+        enough = (span >= config.JT1078_PLAYBACK_PRIME_MS
+                  or n >= config.JT1078_PLAYBACK_PRIME_MAX_AU
+                  or (self._prime_at is not None
+                      and (_now() - self._prime_at) >= 3.0))
+        if not enough:
+            return
+        fps = estimate_fps(self._sample_ts) or int(config.JT1078_FPS_IN_PB)
+        self._spawn(fps, fps)
+        pending, self._pending = self._pending, []
+        for au in pending:
+            self._enqueue(au)
+
 
     def note(self, msg: str) -> None:
         """Diagnostika: oxirgi xato/ogohlantirishni yozib qo'yish.
@@ -548,7 +747,7 @@ class _Muxer:
                 self.closed = True
                 break
 
-    def write(self, au: bytes) -> None:
+    def write(self, au: bytes, ts=None) -> None:
         self.bytes += len(au)
         self.last_active = _now()
         if self._raw is not None:
@@ -556,6 +755,18 @@ class _Muxer:
                 self._raw.write(au)
             except Exception:  # noqa: BLE001
                 pass
+        # Playback priming: muxer hali ishga tushmagan — kadrlarni ts bilan
+        # to'playmiz, yetarli bo'lgach fps'ni baholab muxerni ochamiz.
+        if not self._started:
+            if self.mode == "playback" and self._prime_at is not None:
+                self._pending.append(au)
+                if isinstance(ts, int) and ts > 0:
+                    self._sample_ts.append(ts)
+                self._maybe_start_priming()
+            return
+        self._enqueue(au)
+
+    def _enqueue(self, au: bytes) -> None:
         q = self._in_q
         if q is None:
             return
@@ -820,23 +1031,35 @@ class _Session:
         st = self.frames.get(key)
         if st is None:
             st = self.frames[key] = {"buf": bytearray(), "ts": ts,
-                                     "dt": typ, "codec": codec}
+                                     "dt": typ, "codec": codec, "open": False}
         elif st["buf"] and (ts != st["ts"] or sub == SUB_FIRST):
             # timestamp o'zgardi yoki yangi kadr boshi -> avvalgisini chiqaramiz
-            self._emit(key, st["dt"], st["codec"], bytes(st["buf"]))
+            self._emit(key, st["dt"], st["codec"], bytes(st["buf"]), st["ts"])
             st["buf"] = bytearray()
+            st["open"] = False
         if not st["buf"]:
             # Yangi kadr — tur/kodek joriy paketdan olinadi. Aks holda
             # SUB_LAST yo'lida eski (oldingi kadrning) tur qolib, birinchi
             # I-kadr "P" deb hisoblanib, oqim umuman boshlanmasdi.
             st["ts"], st["dt"], st["codec"] = ts, typ, codec
+            st["open"] = False
         st["buf"].extend(payload)
+        # Subpaket holati: kadr hali tugamagan bo'lsa "open" belgilanadi.
+        # Bufer uzilish paytida to'lgan bo'lsa-yu "open" — yarim (buzilgan)
+        # H.264 — uni ffmpeg'ga yubormaymiz (aks holda "corrupt decoded
+        # frame" -> videoda pirpirak). SUB_ATOMIC/SUB_LAST tugallangan
+        # kadrni bildiradi.
+        if sub in (SUB_FIRST, SUB_MIDDLE):
+            st["open"] = True
+        elif sub in (SUB_LAST, SUB_ATOMIC):
+            st["open"] = False
         if sub == SUB_LAST or len(st["buf"]) >= FRAME_MAX_BYTES:
             # oxirgi subpaket (yoki bufer chegarasi) — kadrni darhol chiqaramiz
-            self._emit(key, st["dt"], st["codec"], bytes(st["buf"]))
+            self._emit(key, st["dt"], st["codec"], bytes(st["buf"]), st["ts"])
             st["buf"] = bytearray()
+            st["open"] = False
 
-    def _emit(self, key, typ: int, codec: str, au: bytes) -> None:
+    def _emit(self, key, typ: int, codec: str, au: bytes, ts=None) -> None:
         if not au:
             return
         # ffmpeg SPS/PPS'siz P-kadrlarni dekodlay olmaydi — birinchi I-kadr
@@ -860,7 +1083,7 @@ class _Session:
             # umuman yozmaydi — keyingi I-kadrgacha kutamiz.
             return
         _STATS["access_units"] += 1
-        m.write(au)
+        m.write(au, ts)
         # Diagnostika: muxer'ga haqiqatan yozilgan kadrlar shu yerda sanaladi
         # (kalit kadr vaqti — "nega video qora?" savolining asosiy belgisi).
         st = _STREAMS.get(m.key)
@@ -884,10 +1107,12 @@ class _Session:
     def close(self) -> None:
         # Ulanish yopildi — muxerlarni YOPMAYMIZ (doimiy, qayta ulanishda
         # davom etadi). Kutayotgan (chiqarilmagan) kadrlarni bo'shatamiz, chunki
-        # keyingi paket kelmaydi — aks holda oxirgi kadr yo'qoladi.
+        # keyingi paket kelmaydi — aks holda oxirgi kadr yo'qoladi. LEKIN kadr
+        # yarim subpaket bo'lsa ("open") — u TUGALLANMAGAN, buzilgan H.264;
+        # uni ffmpeg'ga yubormaymiz (videoda pirpirak/artefakt bermasin).
         for key, st in list(self.frames.items()):
-            if st["buf"]:
-                self._emit(key, st["dt"], st["codec"], bytes(st["buf"]))
+            if st["buf"] and not st.get("open"):
+                self._emit(key, st["dt"], st["codec"], bytes(st["buf"]), st["ts"])
             st["buf"] = bytearray()
         self.frames.clear()
         self.primed.clear()
@@ -953,6 +1178,9 @@ async def handle_session(reader: asyncio.StreamReader,
     # ishlanishini kutamiz (har bir qatorda qaysi kamera ekani ko'rinishi kerak).
     announced = False
     buf = first
+    # Playback uchun (sim,kanal) -> _Pacer: kelayotgan oqimni qurilma ts'iga
+    # qarab real tezlikda o'qiymiz (o'qishni to'xtatib TCP orqaga bosim).
+    pacers: dict = {}
     try:
         while True:
             # TCP paketlarni birlashtirishi/bo'laklashi mumkin — FLAG+body_len
@@ -963,6 +1191,18 @@ async def handle_session(reader: asyncio.StreamReader,
             for p in pkts:
                 _STATS["packets"] += 1
                 sess.on_packet(p)
+                # Playback tezligini normallashtirish: qurilma yozuvni real
+                # vaqtdan tez yuborsa ham ts bo'yicha kutamiz (HLS real vaqt).
+                if (config.JT1078_PLAYBACK_PACE
+                        and p["data_type"] in _VIDEO_TYPES
+                        and _playback_active(p["sim"], p["channel"])):
+                    k = (p["sim"], p["channel"])
+                    pc = pacers.get(k)
+                    if pc is None:
+                        pc = pacers[k] = _Pacer(config.JT1078_PACE_MAX_SLEEP_S)
+                    d = pc.delay(p.get("ts"), time.monotonic())
+                    if d > 0:
+                        await asyncio.sleep(d)
             if not announced:
                 # Paket kelmagan/tanish bo'lmasa IMEI aniqlanmaydi — baribir
                 # ulanish fakti ko'rinsin ("qurilma urindimi?" savoliga javob).
@@ -1012,6 +1252,8 @@ async def handle_session(reader: asyncio.StreamReader,
 
 
 async def run_tcp(host: str, port: int) -> None:
+    global _LOOP
+    _LOOP = asyncio.get_running_loop()
     _STATS["started"] = _now()
     try:
         cleanup_hls_dir(max_age_s=0)  # ishga tushishda eski/bo'sh fayllarni tozalash

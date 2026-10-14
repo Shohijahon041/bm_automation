@@ -6,6 +6,8 @@ data_type bayti: bits5-4 = kadr turi, bits1-0 = subpaket belgisi. Muxer
 (ffmpeg) monkeypatch qilinadi — faqat freyming va yig'ish mantiq'i tekshiriladi.
 """
 
+import pytest
+
 from bm_automation.app.gps import jt1078
 from bm_automation.app.gps.jt1078 import (AUDIO_HEADER_LEN, DT_AUDIO,
                                           DT_TRANSPARENT, DT_VIDEO_B,
@@ -49,7 +51,7 @@ class _FakeMuxer:
         self.aus = []
         _FakeMuxer.instances.append(self)
 
-    def write(self, au):
+    def write(self, au, ts=None):
         self.bytes += len(au)
         self.aus.append(au)
 
@@ -344,6 +346,66 @@ def test_frame_buffer_cap_forces_emit(monkeypatch):
     _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"y" * 8, ts=0)
     assert _FakeMuxer.instances[0].aus == [b"x" * 8 + b"y" * 8]
     assert bytes(sess.frames[("123", 1)]["buf"]) == b""
+
+
+def test_session_discards_partial_frame_on_close(monkeypatch):
+    """Uzilishda yarim subpaket (SUB_LAST kelmagan) ffmpeg'ga YUBORILMAYDI —
+    tugallanmagan H.264 buzilgan kadr beradi (videoda pirpirak)."""
+    _reset(monkeypatch)
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_LAST, b"I")            # prime + emit I
+    _feed(sess, DT_VIDEO_P, SUB_FIRST, b"P-yarim")     # LAST yo'q — yarim
+    sess.close()
+    assert _FakeMuxer.instances[0].aus == [b"I"]        # yarim P tashlandi
+
+
+def test_session_keeps_complete_atomic_frame_on_close(monkeypatch):
+    """SUB_ATOMIC (butun kadr) uzilishda SAQLANADI (bugungi xatti-harakat)."""
+    _reset(monkeypatch)
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"whole-I", ts=1)
+    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"whole-P", ts=2)
+    sess.close()
+    assert _FakeMuxer.instances[0].aus == [b"whole-I", b"whole-P"]
+
+
+# ------------------------------------------------- playback pacing (tezlik)
+
+def test_estimate_fps_25():
+    ts = [i * 40 for i in range(26)]      # 25 oraliq * 40ms = 1000ms -> 25 fps
+    assert jt1078.estimate_fps(ts) == 25
+
+
+def test_estimate_fps_rejects_bad_samples():
+    assert jt1078.estimate_fps([1, 1, 1, 1]) is None       # span 0
+    assert jt1078.estimate_fps([100, 50, 20]) is None      # namuna kam
+    assert jt1078.estimate_fps([1, 2, 3, 4, 100000]) is None  # juda sekin
+
+
+def test_pacer_first_packet_no_wait():
+    p = jt1078._Pacer(max_sleep=1.0)
+    assert p.delay(1000, now=0.0) == 0.0
+
+
+def test_pacer_waits_to_stay_realtime():
+    """ts 2000ms oldinga, 0.5s o'tgan -> 1.5s kutamiz (real vaqt)."""
+    p = jt1078._Pacer(max_sleep=5.0)
+    p.delay(1000, now=0.0)
+    assert p.delay(3000, now=0.5) == pytest.approx(1.5)
+
+
+def test_pacer_caps_sleep_and_resets_on_jump():
+    p = jt1078._Pacer(max_sleep=0.25)
+    p.delay(1000, now=0.0)
+    assert p.delay(2000, now=0.0) == pytest.approx(0.25)   # cap
+    assert p.delay(100000, now=0.0) == 0.0                 # katta sakrash reset
+    assert p.delay(99000, now=0.0) == 0.0                  # orqaga -> reset
+
+
+def test_pacer_ignores_invalid_ts():
+    p = jt1078._Pacer()
+    assert p.delay(0, now=0.0) == 0.0
+    assert p.delay(None, now=0.0) == 0.0
 
 
 # ---------------------------------------------------------------- persistence
@@ -690,4 +752,65 @@ def test_reconnect_connection_log_shows_imei(monkeypatch, caplog):
               for r in caplog.records if "birinchi" in r.getMessage()]
     assert "221080344988" not in firsts[0], firsts[0]
     assert "221080344988_5" in firsts[1], firsts[1]
+
+
+# ------------------------------------------------- close_stream (thread-safe)
+
+def test_close_stream_without_loop_closes_direct(monkeypatch):
+    """_LOOP yo'q bo'lsa close_stream joyida yopadi (fallback)."""
+    _reset(monkeypatch)
+    monkeypatch.setattr(jt1078, "_LOOP", None)
+    m = jt1078._get_muxer("123", 1, mode="live", codec="h264")
+    assert m is not None and "123_1" in jt1078._MUXERS
+    assert jt1078.close_stream("123", 1, "live") is True
+    assert "123_1" not in jt1078._MUXERS      # ffmpeg birorta qolmadi
+    # yopiq/yo'q oqimni qayta yopishga urinish — False.
+    assert jt1078.close_stream("123", 1, "live") is False
+
+
+def test_close_stream_routes_to_media_loop(monkeypatch):
+    """_LOOP borida yopish HTTP thread'dan EMAS, media loop'ida bajariladi.
+
+    Bu race tuzatishining kaliti: muxer lifecycle barcha mutatsiyalari bitta
+    thread'da serilashadi, shunda bir kanalga ikki ffmpeg tushmaydi."""
+    _reset(monkeypatch)
+    m = jt1078._get_muxer("123", 1, mode="live", codec="h264")
+    assert m is not None
+
+    routed = {}
+
+    class _FakeFuture:
+        def result(self, timeout=None):
+            return True
+
+    def _fake_rcts(coro, loop):
+        routed["coro"] = coro
+        routed["loop"] = loop
+        coro.close()  # haqiqiy loop'ga tushmadi — koroutinni yopamiz
+        return _FakeFuture()
+
+    class _FakeLoop:
+        def is_closed(self):
+            return False
+
+    sentinel_loop = _FakeLoop()
+    monkeypatch.setattr(jt1078, "_LOOP", sentinel_loop)
+    monkeypatch.setattr(jt1078.asyncio, "run_coroutine_threadsafe", _fake_rcts)
+
+    assert jt1078.close_stream("123", 1, "live") is True
+    assert routed.get("loop") is sentinel_loop
+    assert "coro" in routed  # yopish media loop'iga yo'naltirildi
+
+
+def test_one_muxer_per_channel_even_with_codec_change(monkeypatch):
+    """Kodek o'zgarsa eskisi yopilib yenisi ochiladi — bir vaqtda bitta."""
+    _reset(monkeypatch)
+    m1 = jt1078._get_muxer("123", 1, mode="live", codec="h264")
+    assert m1.closed is False
+    m2 = jt1078._get_muxer("123", 1, mode="live", codec="hevc")
+    assert m1.closed is True          # eskisi yopildi
+    assert m2 is not m1               # yangi muxer
+    live = [x for x in jt1078._MUXERS.values() if not x.closed]
+    assert len(live) == 1
+    assert live[0] is m2
 
