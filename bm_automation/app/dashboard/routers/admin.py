@@ -12,6 +12,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response as FastResponse
 
 from ..deps import Scope, force_route, scope_routes
+from ...utils.logger import get_logger
+
+log = get_logger("bm_automation.dashboard.admin")
 
 router = APIRouter(tags=["admin"])
 
@@ -268,6 +271,21 @@ async def get_env_settings(request: Request, scope: dict = Depends(Scope())):
     return {"ok": True, "fields": fields}
 
 
+# Kritikal maxfiy kalitlar — faqat SUPER ADMIN o'zgartira oladi
+_CRITICAL_ENV_KEYS = frozenset((
+    "BM_PASSWORD", "TG_BOT_TOKEN", "TG_CHAT_ID", "TG_ADMIN_IDS",
+    "TG_DISPATCHER_IDS", "TG_MANAGER_IDS", "TG_DRIVER_IDS",
+    "OPENROUTER_API_KEY", "ANDROID_SMS_GATEWAY_LOGIN",
+    "ANDROID_SMS_GATEWAY_PASSWORD", "ANDROID_SMS_GATEWAY_URL",
+    "SUPABASE_BACKUP_DSN", "DASHBOARD_TOKEN",
+    "DASHBOARD_ADMIN_USER", "DASHBOARD_ADMIN_PASS",
+))
+
+def _is_super(scope: dict) -> bool:
+    from ..deps import is_super_username
+    return scope.get("is_admin") and is_super_username(scope.get("username") or "")
+
+
 @router.post("/api/settings/env")
 async def update_env_settings(request: Request, scope: dict = Depends(Scope())):
     payload = await request.json()
@@ -275,9 +293,17 @@ async def update_env_settings(request: Request, scope: dict = Depends(Scope())):
     values = payload.get("values") or {}
     if not isinstance(values, dict):
         return {"ok": False, "error": "values noto'g'ri"}
+
+    is_super_admin = _is_super(scope)
     for key, raw in values.items():
         if key not in _ENV_KEYS:
             continue
+        # Kritikal maxfiy kalitlar — faqat SUPER ADMIN
+        if key in _CRITICAL_ENV_KEYS and not is_super_admin:
+            log.warning("ENV o'zgartirish rad etildi (super admin emas): %s -> %s",
+                        scope.get("username"), key)
+            return {"ok": False, "error": f"{key} — faqat SUPER ADMIN o'zgartira oladi"}
+
         val = str(raw or "").strip()
         _, secret = _ENV_KEYS[key]
         if not val:
@@ -290,6 +316,7 @@ async def update_env_settings(request: Request, scope: dict = Depends(Scope())):
     if not updates:
         return {"ok": True, "changed": [], "message": "O'zgartirish yo'q"}
     _write_env(updates)
+    log.info("ENV yangilandi: %s -> %s", scope.get("username"), list(updates.keys()))
     return {"ok": True, "changed": list(updates),
             "message": "Saqlandi. O'zgarishlar jarayon qayta ishga tushganda kuchga kiradi."}
 
@@ -349,6 +376,228 @@ async def update_companies(request: Request, scope: dict = Depends(Scope())):
 
     # default: creds
     return _update_company_creds(payload)
+
+
+# ---------------------------------------------------------------------------
+# SaaS: Company registry (Super Admin only)
+# ---------------------------------------------------------------------------
+
+def _require_super_admin(scope: dict) -> None:
+    """Faqat Super Admin (role=ADMIN + super flag) uchun."""
+    if not scope.get("is_admin"):
+        raise HTTPException(403, "Ruxsat yo'q")
+    from ..deps import is_super_username
+    if not is_super_username(scope.get("username") or ""):
+        raise HTTPException(403, "Faqat Super Admin")
+
+
+@router.get("/api/admin/companies")
+async def list_companies_admin(request: Request, scope: dict = Depends(Scope())):
+    """Barcha kompaniyalar ro'yxati (Super Admin uchun)."""
+    _require_super_admin(scope)
+    from ...db.storage import get_storage
+    st = get_storage()
+    companies = []
+    if st.enabled:
+        try:
+            for r in st.query(
+                "SELECT id, name, slug, logo, phone, email, address, "
+                "subscription_plan, subscription_expire_date, status, "
+                "max_users, max_drivers, max_routes, features, "
+                "contact_telegram, contact_phone, notes, created_at, updated_at "
+                "FROM companies ORDER BY id", limit=1000):
+                companies.append(dict(r))
+        except Exception:  # noqa: BLE001
+            pass
+    return {"ok": True, "companies": companies}
+
+
+@router.post("/api/admin/companies")
+async def create_company(request: Request, scope: dict = Depends(Scope())):
+    """Yangi kompaniya yaratish (Super Admin)."""
+    _require_super_admin(scope)
+    from ...db.storage import get_storage
+    payload = await request.json()
+    name = str(payload.get("name") or "").strip()
+    slug = str(payload.get("slug") or "").strip().lower()
+    if not name:
+        return {"ok": False, "error": "Kompaniya nomi kerak"}
+    if not slug:
+        slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    st = get_storage()
+    if not st.enabled:
+        return {"ok": False, "error": "DB mavjud emas"}
+    # slug unikalligi
+    exist = st.query("SELECT 1 FROM companies WHERE slug = %s", (slug,), limit=1)
+    if exist:
+        return {"ok": False, "error": "Bu slug band"}
+    from ...utils.io import now_iso
+    now = now_iso()
+    try:
+        st.query(
+            """INSERT INTO companies (name, slug, logo, phone, email, address,
+                subscription_plan, subscription_expire_date, status,
+                max_users, max_drivers, max_routes, features,
+                contact_telegram, contact_phone, notes, created_at, updated_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (name, slug, payload.get("logo") or "", payload.get("phone") or "",
+             payload.get("email") or "", payload.get("address") or "",
+             payload.get("subscription_plan") or "basic",
+             payload.get("subscription_expire_date") or "",
+             payload.get("status") or "active",
+             int(payload.get("max_users") or 5),
+             int(payload.get("max_drivers") or 50),
+             int(payload.get("max_routes") or 10),
+             json.dumps(payload.get("features") or {}),
+             payload.get("contact_telegram") or "",
+             payload.get("contact_phone") or "",
+             payload.get("notes") or "",
+             now, now))
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "message": "Kompaniya yaratildi", "slug": slug}
+
+
+@router.get("/api/admin/companies/{company_id}")
+async def get_company(company_id: int, request: Request, scope: dict = Depends(Scope())):
+    """Kompaniya ma'lumotlari (Super Admin)."""
+    _require_super_admin(scope)
+    from ...db.storage import get_storage
+    st = get_storage()
+    if not st.enabled:
+        return {"ok": False, "error": "DB mavjud emas"}
+    row = st.query("SELECT * FROM companies WHERE id = %s", (company_id,), limit=1)
+    if not row:
+        raise HTTPException(404, "Kompaniya topilmadi")
+    return {"ok": True, "company": dict(row[0])}
+
+
+@router.put("/api/admin/companies/{company_id}")
+async def update_company(company_id: int, request: Request, scope: dict = Depends(Scope())):
+    """Kompaniya ma'lumotlarini yangilash (Super Admin)."""
+    _require_super_admin(scope)
+    from ...db.storage import get_storage
+    from ...utils.io import now_iso
+    payload = await request.json()
+    st = get_storage()
+    if not st.enabled:
+        return {"ok": False, "error": "DB mavjud emas"}
+    allowed = {
+        "name", "slug", "logo", "phone", "email", "address",
+        "subscription_plan", "subscription_expire_date", "status",
+        "max_users", "max_drivers", "max_routes", "features",
+        "contact_telegram", "contact_phone", "notes"
+    }
+    updates = {k: v for k, v in payload.items() if k in allowed}
+    if not updates:
+        return {"ok": False, "error": "O'zgartirish yo'q"}
+    # slug unikalligi
+    if "slug" in updates:
+        slug = str(updates["slug"]).strip().lower()
+        exist = st.query("SELECT 1 FROM companies WHERE slug = %s AND id != %s", (slug, company_id), limit=1)
+        if exist:
+            return {"ok": False, "error": "Bu slug band"}
+    set_clause = ", ".join(f"{k} = %s" for k in updates)
+    values = list(updates.values()) + [now_iso(), company_id]
+    try:
+        st.query(f"UPDATE companies SET {set_clause}, updated_at = %s WHERE id = %s", tuple(values))
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "message": "Yangilandi"}
+
+
+@router.delete("/api/admin/companies/{company_id}")
+async def delete_company(company_id: int, request: Request, scope: dict = Depends(Scope())):
+    """Kompaniya o'chirish (Super Admin) — soft delete: status='deleted'."""
+    _require_super_admin(scope)
+    from ...db.storage import get_storage
+    from ...utils.io import now_iso
+    st = get_storage()
+    if not st.enabled:
+        return {"ok": False, "error": "DB mavjud emas"}
+    try:
+        st.query("UPDATE companies SET status = 'deleted', updated_at = %s WHERE id = %s", (now_iso(), company_id))
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "message": "O'chirildi (status=deleted)"}
+
+
+@router.post("/api/admin/companies/{company_id}/activate")
+async def activate_company(company_id: int, request: Request, scope: dict = Depends(Scope())):
+    """Kompaniyani faollashtirish (obuna yo'qolganida ham)."""
+    _require_super_admin(scope)
+    from ...db.storage import get_storage
+    from ...utils.io import now_iso
+    payload = await request.json()
+    days = int(payload.get("days") or 365)
+    st = get_storage()
+    if not st.enabled:
+        return {"ok": False, "error": "DB mavjud emas"}
+    from datetime import date, timedelta
+    expire = (date.today() + timedelta(days=days)).isoformat()
+    try:
+        st.query(
+            "UPDATE companies SET status = 'active', subscription_expire_date = %s, updated_at = %s WHERE id = %s",
+            (expire, now_iso(), company_id))
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "message": f"Faollashtirildi ({days} kun)", "expire_date": expire}
+
+
+# ---------------------------------------------------------------------------
+# SaaS: Company users (per-company admin)
+# ---------------------------------------------------------------------------
+
+@router.get("/api/admin/companies/{company_id}/users")
+async def list_company_users(company_id: int, request: Request, scope: dict = Depends(Scope())):
+    """Kompaniya foydalanuvchilari ro'yxati."""
+    _require_super_admin(scope)
+    from ...db.storage import get_storage
+    st = get_storage()
+    if not st.enabled:
+        return {"ok": False, "error": "DB mavjud emas"}
+    users = st.query(
+        "SELECT id, username, role, company, active, created_at, data FROM dashboard_users WHERE company = (SELECT name FROM companies WHERE id = %s)", (company_id,), limit=200)
+    return {"ok": True, "users": [dict(u) for u in users]}
+
+
+@router.post("/api/admin/companies/{company_id}/users")
+async def create_company_user(company_id: int, request: Request, scope: dict = Depends(Scope())):
+    """Kompaniyaga yangi foydalanuvchi qo'shish."""
+    _require_super_admin(scope)
+    from ...db.storage import get_storage
+    from ..deps import hash_password
+    payload = await request.json()
+    username = str(payload.get("username") or "").strip().lower()
+    password = str(payload.get("password") or "")
+    role = str(payload.get("role") or "VIEWER").strip().upper()
+    if role not in ("VIEWER", "DISPATCHER", "MANAGER", "ADMIN", "DIRECTOR"):
+        role = "VIEWER"
+    if not username or not password:
+        return {"ok": False, "error": "Login va parol kerak"}
+    if len(password) < 4:
+        return {"ok": False, "error": "Parol kamida 4 belgi"}
+    st = get_storage()
+    if not st.enabled:
+        return {"ok": False, "error": "DB mavjud emas"}
+    # company nomi
+    comp = st.query("SELECT name FROM companies WHERE id = %s", (company_id,), limit=1)
+    if not comp:
+        return {"ok": False, "error": "Kompaniya topilmadi"}
+    company_name = str(comp[0].get("name") or "")
+    # max_users chek
+    comp_info = st.query("SELECT max_users FROM companies WHERE id = %s", (company_id,), limit=1)
+    max_u = int(comp_info[0].get("max_users") or 5) if comp_info else 5
+    cur_count = st.query("SELECT COUNT(*) as c FROM dashboard_users WHERE company = %s", (company_name,), limit=1)
+    if int(cur_count[0].get("c") or 0) >= max_u:
+        return {"ok": False, "error": f"Maksimal foydalanuvchi soni ({max_u}) yetib qo'yilgan"}
+    if st.dashboard_user_get(username=username):
+        return {"ok": False, "error": "Bu login allaqachon mavjud"}
+    digest, salt = hash_password(password)
+    uid = st.dashboard_user_add(
+        username=username, salt=salt, password_hash=digest,
+        role=role, company=company_name, active=1)
+    return {"ok": True, "id": uid, "message": "Foydalanuvchi qo'shildi"}
 
 
 def _update_company_creds(payload: dict) -> dict:
@@ -483,7 +732,8 @@ async def set_user_role(uid: int, request: Request, scope: dict = Depends(Scope(
 @router.post("/api/users/{uid}/delete")
 async def delete_user(uid: int, request: Request, scope: dict = Depends(Scope())):
     from ...core.bot_users import remove_user
-    return {"ok": remove_user(uid)}
+    result = remove_user(uid)
+    return {"ok": result, "message": "Foydalanuvchi faol edilmagan (o'chirildi)" if result else "Foydalanuvchi topilmadi"}
 
 
 @router.post("/api/users/{uid}/link-driver")
@@ -1057,3 +1307,408 @@ def _doc_in_scope(storage, driver_id: str, scopes: set) -> bool:
         return False
     row = storage.find("drivers", external_id=driver_id)
     return bool(row and str(row.get("route_id") or "") in scopes)
+
+
+# =============================================================================
+# Video Kuzatuv — ruxsatli tokenlar, audit, arxiv cheklovlari
+# =============================================================================
+
+import hashlib
+import hmac
+import secrets
+import time
+from datetime import datetime, timedelta
+from typing import Optional
+
+# Token imzosi uchun maxfiy kalit (production'da .env dan olinadi)
+_VIDEO_TOKEN_SECRET = os.environ.get("VIDEO_TOKEN_SECRET", "").encode()
+if not _VIDEO_TOKEN_SECRET:
+    # Dev fallback — productionda shart emas
+    _VIDEO_TOKEN_SECRET = secrets.token_bytes(32)
+
+# Ruxsat matritsasi
+_VIDEO_ROLE_PERMS = {
+    "VIEWER": set(),
+    "DISPATCHER": {"live", "archive"},
+    "MANAGER": {"live", "archive"},
+    "DIRECTOR": {"live", "archive", "export"},
+    "ADMIN": {"live", "archive", "export"},
+}
+
+# Dispetcher arxivi uchun maksimal kunlar (sozlanadigan)
+_VIDEO_ARCHIVE_MAX_DAYS = int(os.environ.get("VIDEO_ARCHIVE_MAX_DAYS", "7"))
+
+
+def _video_perms_for_role(role: str) -> set:
+    return _VIDEO_ROLE_PERMS.get(role.upper(), set())
+
+
+def _has_video_perm(scope: dict, perm: str) -> bool:
+    """Foydalanuvchida video ruxsati bormi?"""
+    if scope.get("is_admin"):
+        return True
+    role = (scope.get("role") or "VIEWER").upper()
+    return perm in _video_perms_for_role(role)
+
+
+def _sign_video_token(camera_id: int, user_id: int, action: str, ttl_s: int = 300) -> str:
+    """Video uchun imzoli token yaratadi (1-5 daqiqa)."""
+    payload = f"{camera_id}|{user_id}|{action}|{int(time.time()) + ttl_s}"
+    sig = hmac.new(_VIDEO_TOKEN_SECRET, payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}|{sig}"
+
+
+def _verify_video_token(token: str) -> tuple[int, int, str] | None:
+    """Token ni tekshiradi va (camera_id, user_id, action) qaytaradi."""
+    try:
+        parts = token.split("|")
+        if len(parts) != 5:
+            return None
+        camera_id = int(parts[0])
+        user_id = int(parts[1])
+        action = parts[2]
+        exp = int(parts[3])
+        sig = parts[4]
+        if time.time() > exp:
+            return None
+        payload = "|".join(parts[:4])
+        expected = hmac.new(_VIDEO_TOKEN_SECRET, payload.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            return None
+        return camera_id, user_id, action
+    except Exception:
+        return None
+
+
+async def _log_video_audit(storage, camera_id: int, scope: dict, action: str, duration_s: int = 0):
+    """Video ko'rishni audit jadvaliga yozadi."""
+    try:
+        storage.db.execute(
+            """INSERT INTO video_audit (camera_id, user_id, username, action, ip, duration_s, created_at)
+               VALUES (%s, %s, %s, %s, %s, %s, now())""",
+            (camera_id, scope.get("user_id") or 0, scope.get("username") or "",
+             action, "", duration_s)
+        )
+    except Exception:
+        pass  # audit xatosi asosiy so'rovni buzmasin
+
+
+@router.get("/api/video/cameras")
+async def video_cameras_list(request: Request, scope: dict = Depends(Scope(min_role=1))):
+    """Ruxsatli kameralar ro'yxati (URL parollarisiz)."""
+    from ...db.storage import get_storage
+    storage = get_storage()
+    scopes = scope_routes(scope)
+
+    # Kameralar jadvalini o'qiyamiz (company_id bilan filtrlangan)
+    # Dispatcher/MANAGER uchun faqat o'z yo'nalishlaridagi avtobus kameralari
+    query = """SELECT id, name, source_type, vehicle_id, enabled, company_id
+               FROM video_cameras WHERE enabled = 1"""
+    params: tuple = ()
+
+    if scopes is not None:
+        # Faqat o'z kompaniyasining kameralari
+        company_id = scope.get("company_id") or 0
+        query += " AND company_id = %s"
+        params = (company_id,)
+        # Va faqat yo'nalishlarga tegishli avtobuslar
+        if scopes:
+            ph = ", ".join(storage.db.ph for _ in scopes)
+            query += f" AND vehicle_id IN (SELECT external_id FROM vehicles WHERE route_id IN ({ph}))"
+            params = (company_id,) + tuple(scopes)
+
+    query += " ORDER BY id"
+    cams = storage.db.query(query, params)
+
+    # URL va boshqa maxfiy maydonlarni chiqarib yuboramiz
+    for c in cams:
+        c.pop("url", None)
+        c.pop("company_id", None)
+
+    return {"ok": True, "cameras": cams}
+
+
+@router.get("/api/video/cameras/{cam_id}/token")
+async def video_camera_token(cam_id: int, request: Request, scope: dict = Depends(Scope(min_role=1))):
+    """Kamera uchun imzoli token beradi (live/archive/export)."""
+    action = request.query_params.get("action", "live")
+    if action not in ("live", "archive", "export"):
+        raise HTTPException(400, "Noto'g'ri action")
+
+    if not _has_video_perm(scope, action):
+        raise HTTPException(403, "Sizda bu video harakati uchun ruxsat yo'q")
+
+    from ...db.storage import get_storage
+    storage = get_storage()
+    scopes = scope_routes(scope)
+
+    # Kameraning kompaniya/yo'nalishga tegishliligi tekshiriladi
+    cam = storage.db.query(
+        "SELECT id, vehicle_id, company_id FROM video_cameras WHERE id = %s",
+        (cam_id,), limit=1)
+    if not cam:
+        raise HTTPException(404, "Kamera topilmadi")
+    cam = cam[0]
+
+    if scopes is not None:
+        company_id = scope.get("company_id") or 0
+        if int(cam.get("company_id") or 0) != company_id:
+            raise HTTPException(403, "Kamera sizga tegishli emas")
+        vehicle_id = cam.get("vehicle_id")
+        if vehicle_id:
+            # Avtobus yo'nalishi foydalanuvchi qamrovida yo'q
+            route_row = storage.db.query(
+                "SELECT route_id FROM vehicles WHERE external_id = %s",
+                (vehicle_id,), limit=1)
+            if route_row and str(route_row[0].get("route_id") or "") not in scopes:
+                raise HTTPException(403, "Kamera sizga tegishli emas")
+
+    # Arxiv uchun dispetcher 7 kun cheklovi
+    if action == "archive" and scope.get("role") == "DISPATCHER":
+        max_days = _VIDEO_ARCHIVE_MAX_DAYS
+        cutoff = (datetime.now() - timedelta(days=max_days)).isoformat()
+        # Token payloadiga cutoff qo'shamiz (keyinroq relay/hls da tekshiriladi)
+        token = _sign_video_token(cam_id, scope.get("user_id") or 0, f"archive:{cutoff}", 300)
+    else:
+        token = _sign_video_token(cam_id, scope.get("user_id") or 0, action, 300)
+
+    await _log_video_audit(storage, cam_id, scope, action)
+    return {"ok": True, "token": token, "ttl_s": 300}
+
+
+@router.get("/api/video/archive/range")
+async def video_archive_range(request: Request, scope: dict = Depends(Scope(min_role=1))):
+    """Arxiv uchun mavjud sana oralig'ini qaytaradi (dispetcher uchun cheklangan)."""
+    cam_id = int(request.query_params.get("camera_id") or 0)
+    if not cam_id:
+        raise HTTPException(400, "camera_id kerak")
+
+    if not _has_video_perm(scope, "archive"):
+        raise HTTPException(403, "Arxiv ruxsati yo'q")
+
+    from ...db.storage import get_storage
+    storage = get_storage()
+    scopes = scope_routes(scope)
+
+    cam = storage.db.query(
+        "SELECT id, company_id FROM video_cameras WHERE id = %s",
+        (cam_id,), limit=1)
+    if not cam:
+        raise HTTPException(404, "Kamera topilmadi")
+    cam = cam[0]
+
+    if scopes is not None:
+        company_id = scope.get("company_id") or 0
+        if int(cam.get("company_id") or 0) != company_id:
+            raise HTTPException(403, "Kamera sizga tegishli emas")
+
+    # Dispetcher uchun 7 kun cheklovi
+    if scope.get("role") == "DISPATCHER":
+        max_days = _VIDEO_ARCHIVE_MAX_DAYS
+        end = datetime.now()
+        start = end - timedelta(days=max_days)
+    else:
+        # Admin/Director/Manager uchun cheklov yo'q (yoki konfiguratsiyaga qarab)
+        end = datetime.now()
+        start = end - timedelta(days=30)
+
+    await _log_video_audit(storage, cam_id, scope, "archive_range")
+    return {
+        "ok": True,
+        "from": start.isoformat(),
+        "to": end.isoformat(),
+        "max_days": (end - start).days
+    }
+
+
+@router.post("/api/video/cameras")
+async def video_camera_create(request: Request, scope: dict = Depends(Scope(min_role=4))):
+    """Yangi kamera qo'shish (faqat ADMIN)."""
+    from ...db.storage import get_storage
+    storage = get_storage()
+    payload = await request.json()
+
+    name = str(payload.get("name") or "").strip()
+    url = str(payload.get("url") or "").strip()
+    source_type = str(payload.get("source_type") or "hls").strip()
+    vehicle_id = str(payload.get("vehicle_id") or "").strip()
+
+    if not name or not url:
+        raise HTTPException(400, "name va url kerak")
+
+    company_id = scope.get("company_id") or 0
+    storage.db.execute(
+        """INSERT INTO video_cameras (name, source_type, url, vehicle_id, company_id, enabled, created_at)
+           VALUES (%s, %s, %s, %s, %s, 1, now())""",
+        (name, source_type, url, vehicle_id, company_id)
+    )
+    rows = storage.db.query("SELECT MAX(id) AS id FROM video_cameras", limit=1)
+    cam_id = int(rows[0]["id"]) if rows else 0
+
+    return {"ok": True, "id": cam_id}
+
+
+@router.patch("/api/video/cameras/{cam_id}")
+async def video_camera_update(cam_id: int, request: Request, scope: dict = Depends(Scope(min_role=4))):
+    """Kamera tahrirlash (faqat ADMIN)."""
+    from ...db.storage import get_storage
+    storage = get_storage()
+    payload = await request.json()
+
+    cam = storage.db.query("SELECT id FROM video_cameras WHERE id = %s", (cam_id,), limit=1)
+    if not cam:
+        raise HTTPException(404, "Kamera topilmadi")
+
+    fields, params = [], []
+    for key in ("name", "source_type", "url", "vehicle_id", "enabled"):
+        if key in payload:
+            fields.append(f"{key} = %s")
+            params.append(payload[key])
+    if fields:
+        params.append(cam_id)
+        storage.db.execute(f"UPDATE video_cameras SET {', '.join(fields)} WHERE id = %s", tuple(params))
+
+    return {"ok": True}
+
+
+@router.delete("/api/video/cameras/{cam_id}")
+async def video_camera_delete(cam_id: int, request: Request, scope: dict = Depends(Scope(min_role=4))):
+    """Kamera o'chirish (faqat ADMIN)."""
+    from ...db.storage import get_storage
+    storage = get_storage()
+
+    storage.db.execute("DELETE FROM video_cameras WHERE id = %s", (cam_id,))
+    return {"ok": True}
+
+
+# =============================================================================
+# Video Setka (Grid) — bitta kanal bo'yicha barcha avtobuslar
+# =============================================================================
+
+@router.get("/api/video/channels")
+async def video_channels_list(request: Request, scope: dict = Depends(Scope(min_role=1))):
+    """Foydalanuvchi uchun mavjud kamera kanallar ro'yxati."""
+    if not _has_video_perm(scope, "live"):
+        raise HTTPException(403, "Video ko'rish ruxsati yo'q")
+
+    # Standart 8 kanal (JT_CAMERA_CHANNELS), lekin keyinroq kameralar jadvalidan aniqlanishi mumkin
+    max_channels = 8
+    return {"ok": True, "channels": list(range(1, max_channels + 1))}
+
+
+@router.get("/api/video/grid")
+async def video_grid(
+    request: Request,
+    channel: int = 1,
+    page: int = 1,
+    page_size: int = 25,
+    scope: dict = Depends(Scope(min_role=1))
+):
+    """Video setka uchun ma'lumotlar: avtobuslar va har biri uchun oqim tokeni."""
+    if not _has_video_perm(scope, "live"):
+        raise HTTPException(403, "Video ko'rish ruxsati yo'q")
+
+    from ...db.storage import get_storage
+    from ...gps import storage as gps_storage
+    storage = get_storage()
+    scopes = scope_routes(scope)
+
+    if channel < 1:
+        channel = 1
+
+    # Kameralar jadvalidan shu kanalda oqim bor kameralarni topamiz
+    # Hozircha video_cameras jadvalidan vehicle_id orqali bog'laymiz
+    query = """SELECT c.id, c.name, c.source_type, c.vehicle_id, c.company_id,
+                      v.plate_number, v.route_id, r.name as route_name
+               FROM video_cameras c
+               LEFT JOIN vehicles v ON v.external_id = c.vehicle_id
+               LEFT JOIN routes r ON r.external_id = v.route_id
+               WHERE c.enabled = 1"""
+    params: list = []
+
+    if scopes is not None:
+        company_id = scope.get("company_id") or 0
+        query += " AND c.company_id = %s"
+        params.append(company_id)
+        if scopes:
+            ph = ", ".join(storage.db.ph for _ in scopes)
+            query += f" AND v.route_id IN ({ph})"
+            params.extend(scopes)
+
+    query += " ORDER BY v.plate_number, c.id"
+    cams = storage.db.query(query, tuple(params))
+
+    # Har bir kamera uchun token yaratamiz
+    result = []
+    for cam in cams:
+        cam_id = cam.get("id")
+        if not cam_id:
+            continue
+        # Imzoli token yaratish (5 daqiqa)
+        token_data = _sign_video_token(cam_id, scope.get("user_id") or 0, "grid", 300)
+        result.append({
+            "camera_id": cam_id,
+            "name": cam.get("name"),
+            "source_type": cam.get("source_type"),
+            "vehicle_id": cam.get("vehicle_id"),
+            "plate_number": cam.get("plate_number"),
+            "route_id": cam.get("route_id"),
+            "route_name": cam.get("route_name"),
+            "token": token_data,
+            "channel": channel,
+            "status": "online",  # keyinroq health check bilan aniqlanadi
+        })
+
+    # Sahifalash
+    total = len(result)
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_items = result[start:end]
+
+    return {
+        "ok": True,
+        "channel": channel,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "pages": (total + page_size - 1) // page_size,
+        "items": page_items,
+    }
+
+
+@router.post("/api/video/token/refresh")
+async def video_token_refresh(request: Request, scope: dict = Depends(Scope(min_role=1))):
+    """Token muddati tugagandan oldin yangilash."""
+    if not _has_video_perm(scope, "live"):
+        raise HTTPException(403, "Video ko'rish ruxsati yo'q")
+
+    payload = await request.json()
+    camera_id = int(payload.get("camera_id") or 0)
+    action = payload.get("action", "grid")
+
+    if not camera_id:
+        raise HTTPException(400, "camera_id kerak")
+
+    # Kamerani tekshirish (scope da bo'lgani)
+    from ...db.storage import get_storage
+    storage = get_storage()
+    scopes = scope_routes(scope)
+
+    cam = storage.db.query(
+        "SELECT id, vehicle_id, company_id FROM video_cameras WHERE id = %s",
+        (camera_id,), limit=1)
+    if not cam:
+        raise HTTPException(404, "Kamera topilmadi")
+    cam = cam[0]
+
+    if scopes is not None:
+        company_id = scope.get("company_id") or 0
+        if int(cam.get("company_id") or 0) != company_id:
+            raise HTTPException(403, "Kamera sizga tegishli emas")
+
+    token = _sign_video_token(camera_id, scope.get("user_id") or 0, action, 300)
+
+    from ...gps import storage as gps_storage
+    await _log_video_audit(gps_storage, camera_id, scope, f"token_refresh:{action}")
+
+    return {"ok": True, "token": token, "ttl_s": 300}

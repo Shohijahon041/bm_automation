@@ -43,6 +43,8 @@ _GET_ROLE_MIN: dict[str, int] = {
     "/api/route-skm": 2, "/api/electricity/price": 2, "/api/electricity": 2,
     "/api/drivers": 2, "/api/salary": 2, "/api/check": 3, "/api/sms": 3,
     "/api/documents": 3, "/api/me": 0,
+    "/api/video": 1, "/api/video/cameras": 1, "/api/video/relay": 1,
+    "/api/video/archive": 2, "/api/video/export": 4,
 }
 
 _POST_ROLE_MIN: dict[str, int] = {
@@ -51,6 +53,8 @@ _POST_ROLE_MIN: dict[str, int] = {
     "/api/sms": 3, "/api/documents": 3, "/api/rejects/tariff": 2,
     "/api/kmrate": 2, "/api/route-skm": 2, "/api/sync": 2,
     "/api/electricity/price": 4, "/api/users": 4, "/api/dispatchers": 4,
+    "/api/video/cameras": 4, "/api/video/relay": 4, "/api/video/archive": 4,
+    "/api/video/export": 4,
 }
 
 _ROUTE_SCOPED_PREFIXES = (
@@ -387,8 +391,19 @@ async def resolve_scope(
     request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> dict[str, Any] | None:
-    """So'rov egasini aniqlaydi: sessiya birinchi, DASHBOARD_TOKEN ikkinchi."""
+    """So'rov egasini aniqlaydi: sessiya birinchi, DASHBOARD_TOKEN ikkinchi.
+
+    BM_TEST_MODE=1 faqat testlar uchun. Avtomatik bypass bo'lishi uchun
+    so'rov loopback (127.0.0.1/::1) bo'lishi kerak — tashqi tarmoqdan
+    test rejimida ham kirish qilmaslik uchun.
+    """
     if os.environ.get("BM_TEST_MODE") == "1":
+        # TestClient so'rovlari 'testclient' client host bilan keladi — bu
+        # FastAPI test rejimiga xos, xavfsiz holda ruxsat etiladi.
+        if not (_is_loopback(request) or client_ip(request) == "testclient"):
+            log.warning("BM_TEST_MODE bypass tashqi so'rovdan bloklandi: %s",
+                        client_ip(request))
+            return None
         return {"username": "test", "role": "ADMIN", "company": "", "is_admin": True, "routes": None}
 
     token = _session_token_from_request(request, creds)

@@ -48,7 +48,8 @@ class SQLiteDatabase:
                 "created_at TEXT NOT NULL",
                 "updated_at TEXT NOT NULL",
             ]
-            cols.extend(f"{c} {t}" for c, t in TABLE_COLUMNS[table])
+            existing_cols = {"created_at", "updated_at"}
+            cols.extend(f"{c} {t}" for c, t in TABLE_COLUMNS[table] if c not in existing_cols)
             self._conn.execute(
                 f"CREATE TABLE IF NOT EXISTS {table} ({', '.join(cols)})")
         for table, keys in UNIQUE_KEYS.items():

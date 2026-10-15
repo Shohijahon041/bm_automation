@@ -5,13 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BM — GPS &amp; Video Kuzatuv</title>
 <link rel="preconnect" href="https://unpkg.com" crossorigin>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/flv.js@1.6.2/dist/flv.min.js"></script>
+<!-- hls.js / flv.js endi faqat video ochilganda yuklanadi (_loadJtLib) -->
 <style>
   :root{
     --bg:#0b0f19; --panel:#0f1524; --panel2:#131a2c; --line:rgba(148,163,184,.14);
@@ -90,6 +90,16 @@
   .bus-pin.off .bus-no{color:#fca5a5}
   .bus-pin.sel{border-color:var(--teal);box-shadow:0 0 0 4px rgba(63,182,168,.4),0 3px 12px rgba(0,0,0,.6)}
   .bus-pin .bus-no{max-width:86px;overflow:hidden;text-overflow:ellipsis}
+  .bus-pin .bus-age{font-size:9px;font-weight:700;color:#fca5a5;opacity:.85;letter-spacing:0}
+  /* ctab ichidagi ogohlantirish soni (badge) */
+  .ctb-badge{display:inline-block;min-width:15px;height:15px;line-height:15px;padding:0 4px;margin-left:4px;
+    border-radius:99px;background:#c0353b;color:#fff;font-size:9.5px;font-weight:800;text-align:center;
+    vertical-align:middle;font-variant-numeric:tabular-nums}
+  .ctb-badge[hidden]{display:none}
+  /* embed rejimi: dashboard iframe ichida — takror sarlavhani yashirish */
+  body.embedded .tb-left{display:none}
+  body.embedded .topbar{padding-left:10px}
+  body.embedded .tb-mid{justify-content:flex-start}
   /* traektoriya yo'nalish strelkalari */
   .traj-arrow{position:absolute;color:rgba(255,255,255,.9);font-size:11px;line-height:1;
     text-shadow:0 0 4px rgba(0,0,0,.9);pointer-events:none}
@@ -214,6 +224,25 @@
 
   /* ---------- video ---------- */
   #video{display:none}
+
+  /* ---------- setka (kanal bo'yicha avtobuslar panjarasi) ---------- */
+  #setka{display:none}
+  .sgwrap{max-width:1500px;margin:0 auto;padding:16px 18px 30px}
+  .sg-ctl{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+  .sg-ctl .lbl{font-size:12.5px;color:var(--muted)}
+  .sg-ctl .fchip{padding:4px 10px;font-size:12px}
+  .sg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+  .sg-tile{background:var(--panel);border:1px solid var(--line);border-radius:13px;overflow:hidden}
+  .sg-tile.live{border-color:var(--teal)}
+  .sg-tile .shead{display:flex;align-items:center;gap:7px;padding:8px 10px;border-bottom:1px solid var(--line);font-size:12px;font-weight:600;min-width:0}
+  .sg-tile .shead .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sg-tile .sbody{aspect-ratio:16/9;background:#000;position:relative}
+  .sg-tile .sbody video{width:100%;height:100%;display:block}
+  .sg-tile .ph{position:absolute;inset:0;display:flex;flex-direction:column;gap:7px;align-items:center;justify-content:center;color:var(--muted);font-size:12px;cursor:pointer;background:rgba(9,13,22,.45);text-align:center;padding:10px}
+  .sg-tile .ph .big{width:36px;height:36px;border-radius:50%;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;color:var(--ink);background:rgba(15,22,35,.75)}
+  .sg-tile .ph .big svg{width:15px;height:15px}
+  .sg-pager{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:14px}
+  .sg-pager button[disabled]{opacity:.45;pointer-events:none}
   .vwrap{max-width:1500px;margin:0 auto;padding:16px 18px 30px}
   .player-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:12px;border:1px dashed var(--line);
     border-radius:13px;margin-bottom:14px;background:rgba(15,22,35,.5)}
@@ -269,6 +298,13 @@
 
   /* ---------- mobil ---------- */
   @media(max-width:860px){
+    .topbar{gap:10px;padding:0 10px}
+    .tb-left{flex:1 1 auto;min-width:0;gap:7px}
+    .tb-left>div{min-width:0}
+    .tb-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .tb-sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+    .tb-right{gap:8px}
+    .tab{padding:5px 10px}
     .tb-mid{display:none}
     #gps{height:auto;min-height:calc(100vh - var(--tb));overflow:visible}
     #map{position:relative;inset:auto;height:58vh}
@@ -279,32 +315,93 @@
     #play-bar{position:relative;left:auto;transform:none;bottom:auto;max-width:none;margin:0 10px 10px;border-radius:14px}
     .mapbtn{display:none}
     .ctabs{flex-wrap:nowrap;overflow:auto}
+    /* barmoq bilan qulay bosish: 42px balandlik */
+    .btn{padding:10px 14px;font-size:13px;min-height:42px}
+    .iconbtn{width:40px;height:40px}
+    .ctab{min-height:42px}
   }
+  @media(max-width:560px){
+    .tb-sub{display:none}
+  }
+
+  /* ---------- UI/UX sayqallash (2026-10): fokus, bosish, motion, barmoq ---------- */
+  /* Klaviatura fokusi ko'rinadi (WCAG focus-states); sichqonchada ortiqcha halqa yo'q */
+  :focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+  .p-head:focus-visible{outline-offset:-3px}
+  input:focus-visible,select:focus-visible{outline:2px solid var(--teal);outline-offset:1px}
+  .btn:focus:not(:focus-visible),.tab:focus:not(:focus-visible),.ctab:focus:not(:focus-visible),
+  .iconbtn:focus:not(:focus-visible),.fchip:focus:not(:focus-visible),.mapbtn:focus:not(:focus-visible){outline:none}
+  /* Bir xil o'tishlar (150ms) + bosilganda yengil feedback — layout siljimaydi */
+  .btn,.tab,.ctab,.fchip,.iconbtn,.mapbtn{
+    transition:background .15s ease,border-color .15s ease,color .15s ease,box-shadow .15s ease,transform .1s ease}
+  .btn:active,.tab:active,.ctab:active,.fchip:active,.iconbtn:active,.mapbtn:active{transform:translateY(1px)}
+  /* Qisqa xabar (toast): snapshot/saqlash amallaridan keyin */
+  .ui-toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:2000;pointer-events:none;
+    background:rgba(13,19,32,.96);border:1px solid rgba(63,182,168,.45);color:var(--ink);padding:9px 16px;
+    border-radius:12px;font-size:12.5px;font-weight:600;box-shadow:0 10px 30px rgba(0,0,0,.55);
+    opacity:0;animation:toastIn .18s ease forwards}
+  .ui-toast.out{animation:toastOut .3s ease forwards}
+  @keyframes toastIn{to{opacity:1}}
+  @keyframes toastOut{from{opacity:1}to{opacity:0;transform:translateX(-50%) translateY(6px)}}
+  /* Barmoq: 300ms tap-delay yo'q, iOS ko'k highlight o'chirilgan */
+  button,input,select,a,[role=button]{touch-action:manipulation}
+  body{-webkit-tap-highlight-color:transparent}
+  /* Mobil: min 44px barmoq nishonlari + iOS fokus-zoom oldini olish (16px input) */
+  @media(max-width:860px){
+    .btn,.ctab{min-height:44px}
+    .iconbtn{width:44px;height:44px}
+    .mapbtn{width:44px;height:44px}
+    .fchips{gap:8px}
+    input,select{font-size:16px}
+    .topbar{padding-left:max(10px,env(safe-area-inset-left));padding-right:max(10px,env(safe-area-inset-right))}
+  }
+  /* Harakat sezgirligi: animatsiyalarni kamaytirish so'ralgan bo'lsa o'chiriladi */
+  @media(prefers-reduced-motion:reduce){
+    *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+  }
+
+  /* ---------- ikonkalar (Feather-style SVG — emoji o'rniga) ---------- */
+  .ic{display:inline-flex;width:15px;height:15px;vertical-align:-3px;margin-right:6px;flex-shrink:0}
+  .ic svg{width:100%;height:100%;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+  .ic.sm{width:12px;height:12px;vertical-align:-1.5px;margin-right:5px}
+  .tb-logo .ic{width:17px;height:17px;margin:0;vertical-align:0;color:var(--teal)}
+  .search-wrap .ic svg{width:14px;height:14px}
+  .iconbtn .ic{margin:0;width:14px;height:14px;vertical-align:0}
+  .mapbtn .ic{margin:0;width:18px;height:18px;vertical-align:0}
+  .badge .ic.sm{width:10px;height:10px;vertical-align:-1px;margin-right:4px}
+  .bus-pin .bus-ic{display:inline-flex;align-items:center}
+  .bus-pin .bus-ic svg{width:11px;height:11px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+  .traj-arrow svg{width:11px;height:11px;fill:currentColor;stroke:none}
+  .sc-head-ic{display:inline-flex;width:18px;height:18px;color:var(--teal);flex:none}
+  .sc-head-ic svg{width:100%;height:100%;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+  #sel-card .sc-x{display:inline-flex}
+  #sel-card .sc-x svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 </style>
 </head>
 <body>
 <header class="topbar">
   <div class="tb-left">
-    <span class="tb-logo">📍</span>
+    <span class="tb-logo"><i class="ic" data-ic="map-pin"></i></span>
     <div>
       <div class="tb-title">GPS &amp; Video Kuzatuv</div>
-      <div class="tb-sub">FMB920 · TCP 5027 · <span id="gps-health">tekshirilmoqda…</span></div>
+      <div class="tb-sub">FMB920 · TCP 5027 · <span id="gps-health" aria-live="polite">tekshirilmoqda…</span></div>
     </div>
   </div>
   <div class="tb-mid">
     <span class="search-wrap">
-      <span class="ic">🔍</span>
-      <input id="dev-search" placeholder="Avtobus / IMEI qidirish…" autocomplete="off">
+      <span class="ic" data-ic="search"></span>
+      <input id="dev-search" placeholder="Avtobus / IMEI qidirish…" autocomplete="off" aria-label="Avtobus yoki IMEI qidirish">
       <div class="search-drop" id="dev-search-drop"></div>
     </span>
   </div>
   <div class="tb-right">
     <span class="liveclk" id="liveclk"><span class="rdot"></span><span class="ctxt" id="liveclk-txt">yangilanmoqda…</span></span>
-    <button class="iconbtn" id="pause-btn" onclick="togglePause()" title="Avtomatik yangilashni to'xtatish / davom ettirish">⏸</button>
+    <button class="iconbtn" id="pause-btn" onclick="togglePause()" title="Avtomatik yangilashni to'xtatish / davom ettirish" aria-label="Avtomatik yangilashni to'xtatish yoki davom ettirish"><i class="ic" data-ic="pause"></i></button>
     <div class="pills" id="stats"></div>
     <div class="tabs">
-      <button class="tab on" id="tab-gps" onclick="showTab('gps')">Xarita</button>
-      <button class="tab" id="tab-video" onclick="showTab('video')">Video</button>
+      <button class="tab on" id="tab-gps" onclick="showTab('gps')" aria-pressed="true">Xarita</button>
+      <button class="tab" id="tab-video" onclick="showTab('video')" aria-pressed="false">Video</button>
+      <button class="tab" id="tab-setka" onclick="showTab('setka')" aria-pressed="false">Setka</button>
     </div>
   </div>
 </header>
@@ -315,8 +412,9 @@
 
   <!-- chap: qurilmalar -->
   <div class="panel" id="dev-panel">
-    <div class="p-head" onclick="togglePanel('dev-panel')">
-      <span>🚌 Qurilmalar</span><span class="cnt" id="dev-count"></span><span class="tog">▾</span>
+    <div class="p-head" onclick="togglePanel('dev-panel')" role="button" tabindex="0" aria-expanded="true"
+         onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}">
+      <span><i class="ic" data-ic="bus"></i>Qurilmalar</span><span class="cnt" id="dev-count"></span><span class="tog">▾</span>
     </div>
     <div class="dev-filter">
       <span class="lbl">Yo'nalish</span>
@@ -331,20 +429,21 @@
     <div class="p-body dev-list" id="dev-list"></div>
     <div style="padding:9px 11px;border-top:1px solid var(--line);display:flex;gap:8px;flex:none">
       <button class="btn sm" style="flex:1" onclick="openBind()">+ IMEI bog'lash</button>
-      <button class="btn sm" onclick="recenterLive()" title="Jonli qurilmalarni ko'rsatish">🎯</button>
+      <button class="btn sm" onclick="recenterLive()" title="Jonli qurilmalarni ko'rsatish"><i class="ic" data-ic="crosshair"></i></button>
     </div>
   </div>
 
   <!-- o'ng: boshqaruv (tarix / zonalar / yo'laklar / ogohlantirish / hisobot) -->
   <div class="panel" id="ctrl-panel">
-    <div class="p-head" onclick="togglePanel('ctrl-panel')">
-      <span>🎛 Boshqaruv</span><span class="tog">▾</span>
+    <div class="p-head" onclick="togglePanel('ctrl-panel')" role="button" tabindex="0" aria-expanded="true"
+         onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}">
+      <span><i class="ic" data-ic="sliders"></i>Boshqaruv</span><span class="tog">▾</span>
     </div>
     <div class="ctabs">
       <button class="ctab on" data-ct="traj" onclick="ctrlTab('traj')">Tarix</button>
       <button class="ctab" data-ct="gf" onclick="ctrlTab('gf')">Zonalar</button>
       <button class="ctab" data-ct="rp" onclick="ctrlTab('rp')">Yo'laklar</button>
-      <button class="ctab" data-ct="al" onclick="ctrlTab('al')">Ogoh.</button>
+      <button class="ctab" data-ct="al" onclick="ctrlTab('al')">Ogoh.<span class="ctb-badge" id="al-badge" hidden></span></button>
       <button class="ctab" data-ct="rep" onclick="ctrlTab('rep')">Hisobot</button>
     </div>
     <div class="p-body">
@@ -360,7 +459,7 @@
           <button class="btn" onclick="presetDay(0)">Bugun</button>
           <button class="btn" onclick="presetDay(-1)">Kecha</button>
           <button class="btn" onclick="clearTraj()">Tozalash</button>
-          <button class="btn" onclick="exportTrajCsv()">⬇ CSV</button>
+          <button class="btn" onclick="exportTrajCsv()"><i class="ic sm" data-ic="download"></i>CSV</button>
         </div>
         <div class="traj-stats" id="traj-stats" style="display:none"></div>
         <div class="spd-legend">
@@ -373,7 +472,7 @@
         <div class="err" id="traj-err"></div>
         <div class="note" style="margin-top:12px">
           <b>Harakat (tinglash):</b> qurilmani tanlab davrni ko'rsating — pastdagi pleer orqali
-          avtobusning harakatini xaritada ko'ring (⏵), tezlikni o'zgartiring yoki vaqt bo'ylab suring.
+          avtobusning harakatini xaritada ko'ring (<i class="ic sm" style="margin:0 2px" data-ic="play"></i>), tezlikni o'zgartiring yoki vaqt bo'ylab suring.
         </div>
       </div>
 
@@ -393,7 +492,7 @@
         </div>
         <div class="row" style="margin-top:8px">
           <button class="btn" onclick="pickCenter()">Xarita markazi</button>
-          <button class="btn" id="gf-pick-btn" onclick="toggleGfPick()" title="Xaritani bosing — koordinata avtomatik qo'yiladi">📍 Xaritadan</button>
+          <button class="btn" id="gf-pick-btn" onclick="toggleGfPick()" title="Xaritani bosing — koordinata avtomatik qo'yiladi"><i class="ic" data-ic="map-pin"></i>Xaritadan</button>
           <button class="btn primary" id="gf-save-btn" onclick="saveGf()">+ Zona qo'shish</button>
           <button class="btn" id="gf-cancel-btn" onclick="cancelGfEdit()" style="display:none">Bekor</button>
         </div>
@@ -412,7 +511,7 @@
           <label class="f">O'rganish (kun) <input id="rp-days" type="number" value="7"></label>
         </div>
         <div class="row" style="margin-top:8px">
-          <button class="btn primary" onclick="learnPath()">📐 O'rganib saqlash</button>
+          <button class="btn primary" onclick="learnPath()"><i class="ic" data-ic="route"></i>O'rganib saqlash</button>
         </div>
         <div class="note" style="margin-top:10px">Yo'lak avtobusning oxirgi kunlardagi harakatidan avtomatik o'rganiladi. Keyin shu yo'nalishdagi avtobuslar <b>tolerantlik</b>dan uzoqlashsa ogohlantirish keladi.</div>
         <div class="err" id="rp-err"></div>
@@ -434,8 +533,8 @@
         </div>
         <div class="row" style="margin-top:8px">
           <button class="btn primary" onclick="loadDaily()">Hisoblash</button>
-          <button class="btn" onclick="exportDailyCsv()">⬇ CSV</button>
-          <button class="btn" onclick="sendDaily()">📨 Telegram</button>
+          <button class="btn" onclick="exportDailyCsv()"><i class="ic sm" data-ic="download"></i>CSV</button>
+          <button class="btn" onclick="sendDaily()"><i class="ic" data-ic="send"></i>Telegram</button>
         </div>
         <div id="daily-body" style="margin-top:10px"></div>
 
@@ -446,7 +545,7 @@
         </div>
         <div class="row" style="margin-top:8px">
           <button class="btn primary" onclick="loadVsManual()">Tekshirish</button>
-          <button class="btn" onclick="exportVsCsv()">⬇ CSV</button>
+          <button class="btn" onclick="exportVsCsv()"><i class="ic sm" data-ic="download"></i>CSV</button>
         </div>
         <div class="err" id="vm-err"></div>
         <div id="vm-body" style="margin-top:10px"></div>
@@ -456,7 +555,7 @@
 
   <!-- harakat pleeri (karta ustida) -->
   <div id="play-bar">
-    <button class="btn primary" id="play-btn" onclick="togglePlay()">⏵ Harakat</button>
+    <button class="btn primary" id="play-btn" onclick="togglePlay()"><i class="ic" data-ic="play"></i>Harakat</button>
     <label class="f" style="flex-direction:row;align-items:center;gap:6px">Tezlik
       <select id="play-speed">
         <option value="1">1×</option>
@@ -470,7 +569,7 @@
     <span class="info" id="play-info"></span>
   </div>
 
-  <button class="mapbtn" onclick="recenterLive()" title="Jonli qurilmalarga qaytish">🎯</button>
+  <button class="mapbtn" onclick="recenterLive()" title="Jonli qurilmalarga qaytish" aria-label="Jonli qurilmalarga qaytish"><i class="ic" data-ic="crosshair"></i></button>
   <div id="sel-card"></div>
 </div>
 
@@ -479,7 +578,7 @@
   <div class="vwrap">
     <div class="vid-buses">
       <div class="jt-head" style="margin-bottom:6px">
-        <b>🚌 Avtobuslar</b>
+        <b><i class="ic" data-ic="bus"></i>Avtobuslar</b>
         <span class="muted" id="vid-bus-info"></span>
         <span class="grow"></span>
         <button class="btn sm" onclick="vidBusAll()">Barchasi</button>
@@ -491,7 +590,7 @@
         <b>JT1078 / CMSV6 — 4G kameralar</b>
         <span class="badge rtsp" style="margin-left:6px">AVTO</span>
         <span class="muted grow" id="jt-status"></span>
-        <button class="btn sm" onclick="loadJtStreams()">↻ Yangilash</button>
+        <button class="btn sm" onclick="loadJtStreams()"><i class="ic sm" data-ic="refresh-cw"></i>Yangilash</button>
       </div>
       <div class="cam-grid" id="jt-grid"></div>
       <div class="note" id="jt-empty" style="display:none">
@@ -516,9 +615,9 @@
     <div class="jt-head" style="margin:16px 0 8px">
       <b>Ro'yxatdagi kameralar</b>
       <span class="muted grow" id="cam-status"></span>
-      <button class="btn sm" onclick="refreshCams()">↻ Yangilash</button>
-      <button class="btn primary sm" onclick="playAllCams()">▶ Hammasini ochish</button>
-      <button class="btn sm" onclick="stopAllCams()">⏹ Hammasini to'xtatish</button>
+      <button class="btn sm" onclick="refreshCams()"><i class="ic sm" data-ic="refresh-cw"></i>Yangilash</button>
+      <button class="btn primary sm" onclick="playAllCams()"><i class="ic sm" data-ic="play"></i>Hammasini ochish</button>
+      <button class="btn sm" onclick="stopAllCams()"><i class="ic sm" data-ic="square"></i>Hammasini to'xtatish</button>
     </div>
     <div class="cam-grid" id="cam-grid"></div>
     <div class="empty" id="cam-empty" style="display:none">Kameralar yo'q. Yuqorida manba qo'shib kuzatuvni boshlang.</div>
@@ -531,6 +630,34 @@
       <b>FMB920 ni ulash:</b> qurilmaga SMS yuboring
       <code>setgprps 10,&lt;SERVER_IP&gt;,5027,0,TCP,1,,,codec8e</code> — qurilma avtomatik ro'yxatga olinadi,
       keyin "+ IMEI bog'lash" orqali avtobusga bog'lanadi.
+    </div>
+  </div>
+</div>
+
+<!-- ================= SETKA: kanal bo'yicha avtobuslar panjarasi ================= -->
+<div id="setka">
+  <div class="sgwrap">
+    <div class="sg-ctl">
+      <b style="font-size:14px"><i class="ic" data-ic="video"></i>Video Setka</b>
+      <span class="muted" id="sg-info" style="font-size:12px"></span>
+      <span class="grow" style="flex:1"></span>
+      <span class="lbl">Kanal</span>
+      <div class="fchips" id="sg-ch"></div>
+      <button class="btn sm" id="sg-rot" onclick="sgToggleRotate()" title="Sahifalar har 30 sekundda avtomatik almashadi">Aylanma: o'chiq</button>
+      <button class="btn sm" onclick="sgStopAll()"><i class="ic sm" data-ic="square"></i>Hammasini to'xtatish</button>
+    </div>
+    <div class="sg-grid" id="sg-grid"></div>
+    <div class="empty" id="sg-empty" style="display:none">
+      Kamera bilan bog'langan avtobus yo'q. «Video» bo'limida qurilmani avtobusga bog'lang.
+    </div>
+    <div class="sg-pager" id="sg-pager" style="display:none">
+      <button class="btn sm" id="sg-prev" onclick="sgPageGo(-1)">‹ Oldingi</button>
+      <span class="muted" id="sg-pnum" style="font-size:12px"></span>
+      <button class="btn sm" id="sg-next" onclick="sgPageGo(1)">Keyingi ›</button>
+    </div>
+    <div class="note" style="margin-top:14px">
+      Kanalni tanlab, kerakli avtobuslar plitkalarini bosing — <b>substream</b> (yengil oqim) ochiladi,
+      yana bosilsa to'xtaydi. Devor/monitoring uchun <b>Aylanma</b>ni yoqing — sahifalar o'zi almashinadi.
     </div>
   </div>
 </div>
@@ -571,6 +698,48 @@ var API = {
   del: function (p) { return request('DELETE', p); }
 };
 
+/* ============ ikonkalar (Feather-style SVG — emoji o'rniga) ============ */
+var FEATHER_GPS = {
+  "map-pin": '<path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>',
+  "search": '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+  "pause": '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>',
+  "play": '<polygon points="5 3 19 12 5 21 5 3"/>',
+  "square": '<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>',
+  "crosshair": '<circle cx="12" cy="12" r="10"/><line x1="22" y1="12" x2="18" y2="12"/><line x1="6" y1="12" x2="2" y2="12"/><line x1="12" y1="6" x2="12" y2="2"/><line x1="12" y1="22" x2="12" y2="18"/>',
+  "sliders": '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>',
+  "download": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+  "send": '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>',
+  "refresh-cw": '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>',
+  "clock": '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  "video": '<polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/>',
+  "edit-2": '<path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>',
+  "trash-2": '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>',
+  "x": '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+  "alert-triangle": '<path d="M10.3 3.9l-8.9 15.5a2 2 0 0 0 1.7 3h17.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+  "camera": '<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>',
+  "maximize": '<path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>',
+  "hard-drive": '<line x1="22" y1="12" x2="2" y2="12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" y1="16" x2="6.01" y2="16"/><line x1="10" y1="16" x2="10.01" y2="16"/>',
+  "link": '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+  "wifi-off": '<line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.58 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/>',
+  "alert-octagon": '<polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>',
+  "zap": '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
+  "save": '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>',
+  "check": '<polyline points="20 6 9 17 4 12"/>',
+  "route": '<circle cx="6" cy="19" r="3"/><circle cx="18" cy="5" r="3"/><path d="M6 19V8a3 3 0 0 1 3-3h6"/>',
+  "pause-circle": '<circle cx="12" cy="12" r="10"/><line x1="10" y1="15" x2="10" y2="9"/><line x1="14" y1="15" x2="14" y2="9"/>',
+  "rewind": '<polygon points="11 19 2 12 11 5 11 19"/><polygon points="22 19 13 12 22 5 22 19"/>',
+  "fast-forward": '<polygon points="13 19 22 12 13 5 13 19"/><polygon points="2 19 11 12 2 5 2 19"/>',
+  "bus": '<rect x="3" y="3" width="18" height="14" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><circle cx="7" cy="20" r="1.6"/><circle cx="17" cy="20" r="1.6"/><line x1="7" y1="17" x2="7" y2="18.4"/><line x1="17" y1="17" x2="17" y2="18.4"/>'
+};
+function featherIcon(name) {
+  var p = FEATHER_GPS[name] || '';
+  return '<svg viewBox="0 0 24 24" aria-hidden="true">' + p + '</svg>';
+}
+function _initIcons(root) {
+  var els = (root || document).querySelectorAll('[data-ic]');
+  for (var i = 0; i < els.length; i++) els[i].innerHTML = featherIcon(els[i].getAttribute('data-ic'));
+}
+
 /* ============ BITTA xarita ============ */
 var map, cluster = null, trajLayer = null, corridorLayer = null;
 var markers = {}, trajStart = null, trajEnd = null;
@@ -581,7 +750,7 @@ function initMaps() {
   L.control.zoom({ position: 'bottomleft' }).addTo(map);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' }).addTo(map);
   trajLayer = L.layerGroup().addTo(map);   /* traektoriya + to'xtashlar + harakat markeri */
-  map.on('click', onMapClick);              /* 📍 zona koordinatasini xaritadan tanlash */
+  map.on('click', onMapClick);              /* zona koordinatasini xaritadan tanlash */
 }
 function initCluster() {
   if (cluster || !window.L || !L.MarkerClusterGroup) return;
@@ -600,6 +769,8 @@ function togglePanel(id) {
   var p = document.getElementById(id);
   if (!p) return;
   p.classList.toggle('collapsed');
+  var h = p.querySelector('.p-head');
+  if (h) h.setAttribute('aria-expanded', p.classList.contains('collapsed') ? 'false' : 'true');
   try { localStorage.setItem(id === 'dev-panel' ? 'bm-gps-devcol' : 'bm-gps-ctrlcol', p.classList.contains('collapsed') ? '1' : '0'); } catch (e) {}
   setTimeout(function () { if (map) map.invalidateSize(); }, 60);
 }
@@ -613,22 +784,33 @@ function ctrlTab(t) {
   try { localStorage.setItem('bm-gps-ctab', t); } catch (e) {}
 }
 function showTab(t) {
+  if (t !== 'gps' && t !== 'video' && t !== 'setka') t = 'gps';
   document.getElementById('gps').style.display = (t === 'gps') ? 'block' : 'none';
   document.getElementById('video').style.display = (t === 'video') ? 'block' : 'none';
-  document.getElementById('tab-gps').classList.toggle('on', t === 'gps');
-  document.getElementById('tab-video').classList.toggle('on', t === 'video');
+  document.getElementById('setka').style.display = (t === 'setka') ? 'block' : 'none';
+  var tg = document.getElementById('tab-gps'), tv = document.getElementById('tab-video'),
+    ts = document.getElementById('tab-setka');
+  tg.classList.toggle('on', t === 'gps');
+  tv.classList.toggle('on', t === 'video');
+  ts.classList.toggle('on', t === 'setka');
+  tg.setAttribute('aria-pressed', t === 'gps' ? 'true' : 'false');
+  tv.setAttribute('aria-pressed', t === 'video' ? 'true' : 'false');
+  ts.setAttribute('aria-pressed', t === 'setka' ? 'true' : 'false');
   if (location.hash !== '#' + t) { try { history.replaceState(null, '', '#' + t); } catch (e) {} }
   if (t === 'gps') { initMaps(); setTimeout(function () { map.invalidateSize(); }, 60); }
   if (t === 'video') { loadJtStreams(); refreshCams(); }
+  if (t === 'setka') { loadJtStreams(); sgRenderCh(); sgRender(); }
+  else sgDestroyPlayers();   /* setkadan chiqildi — brauzer pleyerlarini bo'shatamiz */
 }
 function tabFromHash() {
   var h = (location.hash || '').replace('#', '').split('?')[0];
-  return (h === 'video') ? 'video' : 'gps';
+  return (h === 'video' || h === 'setka') ? h : 'gps';
 }
 window.addEventListener('hashchange', function () { showTab(tabFromHash()); });
 window.addEventListener('message', function (e) {
   if (e.data === 'tab:gps') showTab('gps');
   else if (e.data === 'tab:video') showTab('video');
+  else if (e.data === 'tab:setka') showTab('setka');
 });
 
 /* ============ qurilmalar ============ */
@@ -755,7 +937,7 @@ function renderDevices() {
     if (ag) sub += ' · <span class="' + (d.online ? 'muted' : 'old') + '">' + ag + ' oldin</span>';
     return '<div class="dev' + (d.imei === curImei ? ' active' : '') + '" data-imei="' + esc(d.imei) + '" onclick="selectBus(\'' + esc(d.imei) + '\')">' +
       '<span class="dot ' + (d.online ? 'on' : '') + '"></span>' +
-      '<div><div class="dev-name">🚌 ' + esc(nm) + '</div>' +
+      '<div><div class="dev-name"><i class="ic sm">' + featherIcon("bus") + '</i>' + esc(nm) + '</div>' +
       '<div class="dev-sub">' + sub + '</div></div>' +
       '<span class="go">' + (d.online ? (d.last_speed || 0).toFixed(0) + ' km/h' : 'offline') + '</span></div>';
   }).join('') : '<div class="empty">Bu filtrda qurilma yo\'q.</div>';
@@ -774,16 +956,17 @@ function renderMap() {
     var moving = d.online && (d.last_speed || 0) > 3;
     var cls = sel ? 'sel' : (d.online ? (moving ? 'mv' : '') : 'off');
     var lbl = d.plate_number ? esc(d.plate_number) : esc(shortImei(d.imei));
+    var ag2 = ageStr(d.last_seen_s);
+    var ageHtml = (!d.online && ag2) ? '<span class="bus-age">· ' + esc(ag2) + '</span>' : '';
     var m = L.marker([d.last_lat, d.last_lng], {
       icon: L.divIcon({
         className: '',
-        html: '<span class="bus-pin ' + cls + '"><span class="bus-ic">🚌</span>' +
-              '<span class="bus-no">' + lbl + '</span></span>',
+        html: '<span class="bus-pin ' + cls + '"><span class="bus-ic">' + featherIcon("bus") + '</span>' +
+              '<span class="bus-no">' + lbl + '</span>' + ageHtml + '</span>',
         iconSize: [0, 0], iconAnchor: [0, 0]
       })
     });
-    var ag2 = ageStr(d.last_seen_s);
-    m.bindTooltip('🚌 ' + devLabel(d) + (rn ? ' · ' + rn : '') + ' · ' + (d.last_speed || 0).toFixed(0) + ' km/h' +
+    m.bindTooltip('<i class="ic sm">' + featherIcon("bus") + '</i>' + devLabel(d) + (rn ? ' · ' + rn : '') + ' · ' + (d.last_speed || 0).toFixed(0) + ' km/h' +
       (ag2 ? ' · ' + ag2 + ' oldin' : ''), { direction: 'top', offset: [0, -12] });
     m.on('click', (function (im) { return function () { selectBus(im); }; })(d.imei));
     if (cluster) cluster.addLayer(m); else m.addTo(map);
@@ -824,8 +1007,8 @@ function updateSelCard() {
   var seen = String(d.last_seen_s || '').replace('T', ' ').slice(0, 16);
   card.style.display = 'block';
   card.innerHTML =
-    '<div class="sc-head"><span style="font-size:18px">🚌</span><b>' + esc(devLabel(d)) + '</b>' +
-      '<span class="sc-x" onclick="clearSel()" title="Yopish">✕</span></div>' +
+    '<div class="sc-head"><span class="sc-head-ic">' + featherIcon("bus") + '</span><b>' + esc(devLabel(d)) + '</b>' +
+      '<span class="sc-x" onclick="clearSel()" title="Yopish">' + featherIcon("x") + '</span></div>' +
     '<div class="sc-body">' +
       '<div><span class="badge" style="color:' + stCol + ';border-color:' + stCol + '">' + stTxt + '</span>' +
         (rn ? ' <span class="badge">' + esc(rn) + '</span>' : '') + '</div>' +
@@ -837,15 +1020,15 @@ function updateSelCard() {
       '</div>' +
       '<div class="dev-sub" style="margin-bottom:10px">IMEI: ' + esc(d.imei) + (d.plate_number ? '' : ' · <span class="rt">bog\'lanmagan</span>') + '</div>' +
       '<div class="sc-acts">' +
-        '<button class="btn sm primary" onclick="openTraj(\'' + esc(d.imei) + '\')">📈 Tarix</button>' +
-        '<button class="btn sm" onclick="centerSel()">🎯 Markaz</button>' +
+        '<button class="btn sm primary" onclick="openTraj(\'' + esc(d.imei) + '\')"><i class="ic sm">' + featherIcon("clock") + '</i>Tarix</button>' +
+        '<button class="btn sm" onclick="centerSel()"><i class="ic sm">' + featherIcon("crosshair") + '</i>Markaz</button>' +
         (d.vehicle_id
-          ? '<button class="btn sm primary" onclick="openBusVideo(\'' + esc(d.vehicle_id) + '\')">🎥 Video</button>'
-          : '<button class="btn sm" disabled title="Avval avtobusga bog\'lang">🎥 Video yo\'q</button>') +
+          ? '<button class="btn sm primary" onclick="openBusVideo(\'' + esc(d.vehicle_id) + '\')"><i class="ic sm">' + featherIcon("video") + '</i>Video</button>'
+          : '<button class="btn sm" disabled title="Avval avtobusga bog\'lang"><i class="ic sm">' + featherIcon("video") + '</i>Video yo\'q</button>') +
       '</div>' +
       '<div class="sc-acts" style="margin-top:7px">' +
-        '<button class="btn sm" onclick="openEdit(\'' + esc(d.imei) + '\')">✏️ Tahrirlash</button>' +
-        '<button class="btn sm danger" onclick="delDevice(\'' + esc(d.imei) + '\')">🗑 O\'chirish</button>' +
+        '<button class="btn sm" onclick="openEdit(\'' + esc(d.imei) + '\')"><i class="ic sm">' + featherIcon("edit-2") + '</i>Tahrirlash</button>' +
+        '<button class="btn sm danger" onclick="delDevice(\'' + esc(d.imei) + '\')"><i class="ic sm">' + featherIcon("trash-2") + '</i>O\'chirish</button>' +
       '</div>' +
     '</div>';
 }
@@ -935,7 +1118,7 @@ function drawTraj(pts, stops) {
       interactive: false,
       icon: L.divIcon({
         className: '',
-        html: '<span class="traj-arrow" style="transform:translate(-50%,-50%) rotate(' + (br - 90).toFixed(0) + 'deg)">➤</span>',
+        html: '<span class="traj-arrow" style="transform:translate(-50%,-50%) rotate(' + (br - 90).toFixed(0) + 'deg)">' + featherIcon("play") + '</span>',
         iconSize: [0, 0], iconAnchor: [0, 0]
       })
     }).addTo(trajLayer));
@@ -986,14 +1169,14 @@ function startPlay() {
   if (!curPts.length) return;
   if (!playMarker) resetPlay(curPts);
   playing = true;
-  var b = document.getElementById('play-btn'); if (b) b.textContent = '⏸ To\'xtat';
+  var b = document.getElementById('play-btn'); if (b) b.innerHTML = '<i class="ic sm">' + featherIcon("pause") + '</i>To\'xtat';
   if (playTimer) clearInterval(playTimer);
   playTimer = setInterval(stepPlay, 120);
 }
 function stopPlay() {
   if (playTimer) { clearInterval(playTimer); playTimer = null; }
   playing = false;
-  var b = document.getElementById('play-btn'); if (b) b.textContent = '⏵ Harakat';
+  var b = document.getElementById('play-btn'); if (b) b.innerHTML = '<i class="ic sm">' + featherIcon("play") + '</i>Harakat';
 }
 function playStep() {
   var sel = document.getElementById('play-speed');
@@ -1057,8 +1240,9 @@ function renderStops(stops) {
   }).join('');
   el.style.display = 'block';
   el.innerHTML = '<div class="stops-head"><b>To\'xtashlar · ' + stops.length + ' ta</b>' +
-    '<button class="btn sm" style="margin-left:auto" onclick="exportStopsCsv()">⬇ CSV</button></div>' +
+    '<button class="btn sm" style="margin-left:auto" onclick="exportStopsCsv()"><i class="ic sm" data-ic="download"></i>CSV</button></div>' +
     '<div style="max-height:220px;overflow:auto"><table class="mini"><tr><th>Boshlanish</th><th>Davom.</th><th>Joy</th><th>Nuqta</th><th>Dvig.</th></tr>' + rows + '</table></div>';
+  _initIcons(el);
 }
 function haversine(a, b) {
   var R = 6371000, dLat = (b[0] - a[0]) * Math.PI / 180, dLng = (b[1] - a[1]) * Math.PI / 180;
@@ -1165,7 +1349,7 @@ function renderVideoBuses() {
   var list = vidBusList();
   box.innerHTML = list.length ? list.map(function (b) {
     return '<button class="fchip' + (vidBusSel[b.vid] ? ' on' : '') + '" onclick="vidBusToggle(\'' +
-      esc(b.vid) + '\')">🚌 ' + esc(vidBusName(b.vid)) + ' <b>' + b.count + '</b></button>';
+      esc(b.vid) + '\')"><i class="ic sm">' + featherIcon("bus") + '</i>' + esc(vidBusName(b.vid)) + ' <b>' + b.count + '</b></button>';
   }).join('') : '<span class="muted" style="font-size:11.5px">Avtobusga bog\'langan kamera hali yo\'q — quyida qurilmani avtobusga bog\'lang.</span>';
   var info = document.getElementById('vid-bus-info');
   if (info) {
@@ -1231,11 +1415,38 @@ var camStarting = {};        /* id -> 1 (relay/playlist kutilmoqda) */
    avtobus tanlab, kamroq oqim oching. */
 var CAM_MAX_LIVE = 64;
 
+/* --- Video kutubxonalari (hls.js / flv.js) faqat kerak bo'lganda yuklanadi.
+   Ilgari ikkalasi <head>da har sahifa ochilishida (~1 MB) yuklanardi;
+   endi video birinchi marta ochilganda chaqiriladi. */
+var _libLoaded = {}, _libLoading = {};
+function _loadJtLib(which, cb) {
+  if (_libLoaded[which]) { cb(true); return; }
+  if (_libLoading[which]) { _libLoading[which].push(cb); return; }
+  _libLoading[which] = [cb];
+  var s = document.createElement('script');
+  s.src = which === 'flv'
+    ? 'https://cdn.jsdelivr.net/npm/flv.js@1.6.2/dist/flv.min.js'
+    : 'https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js';
+  s.async = true;
+  s.onload = function () {
+    _libLoaded[which] = true;
+    var qs = _libLoading[which] || []; delete _libLoading[which];
+    qs.forEach(function (f) { try { f(true); } catch (e) {} });
+  };
+  s.onerror = function () {
+    var qs = _libLoading[which] || []; delete _libLoading[which];
+    qs.forEach(function (f) { try { f(false); } catch (e) {} });
+  };
+  document.head.appendChild(s);
+}
+
 function refreshCams() {
   API.get('/api/video/cameras').then(function (d) {
     cams = d.cameras || [];
     renderCams();
     renderVideoBuses();
+    /* Yangi: kamalar holatini kamra ro'yxati shunda ko'rsatish uchun qo'shimcha indicator qo'shamiz */
+    _camStatus();
   }).catch(function (e) { console.warn('kamera xato', e); });
   refreshRelays();
 }
@@ -1258,12 +1469,12 @@ function updateRelayDiag() {
     var r = relayInfo[String(c.id)];
     if (!r) { el.style.display = 'none'; el.innerHTML = ''; return; }
     var parts = [];
-    if (r.running) parts.push('<span class="ok">▶ ffmpeg ishlayapti</span>');
-    else parts.push('<span class="bad">⏹ ffmpeg to\'xtagan' +
+    if (r.running) parts.push('<span class="ok"><i class="ic sm">' + featherIcon("play") + '</i>ffmpeg ishlayapti</span>');
+    else parts.push('<span class="bad"><i class="ic sm">' + featherIcon("square") + '</i>ffmpeg to\'xtagan' +
       (r.exit_code === null || r.exit_code === undefined ? '' : ' (kod ' + r.exit_code + ')') + '</span>');
     if (r.uptime_s) parts.push('<span>' + fmtAge(r.uptime_s) + ' ishlayapti</span>');
-    if (r.restarts) parts.push('<span class="warn">↻ ' + r.restarts + ' marta qayta</span>');
-    if (r.error) parts.push('<span class="bad" title="' + esc(r.error) + '">⚠ ' + esc(r.error) + '</span>');
+    if (r.restarts) parts.push('<span class="warn"><i class="ic sm">' + featherIcon("refresh-cw") + '</i>' + r.restarts + ' marta qayta</span>');
+    if (r.error) parts.push('<span class="bad" title="' + esc(r.error) + '"><i class="ic sm">' + featherIcon("alert-triangle") + '</i>' + esc(r.error) + '</span>');
     el.innerHTML = '<div class="jt-diag-line">' + parts.join(' · ') + '</div>';
     el.style.display = 'block';
   });
@@ -1312,15 +1523,30 @@ function camCard(c) {
     body = '<iframe src="' + esc(c.url) + '" loading="lazy" allowfullscreen></iframe>';
   } else {
     body = '<video id="v-' + c.id + '" controls muted playsinline preload="none"></video>' +
-      '<div class="ph" id="ph-' + c.id + '" onclick="playCam(' + c.id + ')">▶ Ochish uchun bosing</div>';
-    act = '<button class="btn primary sm" id="tg-' + c.id + '" onclick="toggleCam(' + c.id + ')">▶ Ochish</button>';
+      '<div class="ph" id="ph-' + c.id + '" onclick="playCam(' + c.id + ')"><i class="ic sm">' + featherIcon("play") + '</i>Ochish uchun bosing</div>';
+    act = '<button class="btn primary sm" id="tg-' + c.id + '" onclick="toggleCam(' + c.id + ')"><i class="ic sm">' + featherIcon("play") + '</i>Ochish</button>' +
+      '<button class="btn sm" title="Kadr (rasm) sifatida saqlash" aria-label="Kadr sifatida saqlash" onclick="snapVideo(\'v-' + c.id + '\')"><i class="ic sm" style="margin:0">' + featherIcon("camera") + '</i></button>';
   }
   var diag = c.source_type === 'rtsp' ? ('<div class="jt-diag" id="rd-' + c.id +
     '" style="display:none"></div>') : '';
   var bus = c.vehicle_id
-    ? '<span class="badge">🚌 ' + esc(vidBusName(c.vehicle_id)) + '</span>'
+    ? '<span class="badge"><i class="ic sm">' + featherIcon("bus") + '</i>' + esc(vidBusName(c.vehicle_id)) + '</span>'
     : '<span class="badge warn">bog\'lanmagan</span>';
-  return '<div class="cam"><div class="head"><span class="dot"></span>' + esc(c.name) + ' ' + badge + ' ' + bus + '</div>' +
+  /* Yangi: Kamera holati (online/offline/consecutive_failures) */
+  var healthClass = 'ok';
+  var healthText = 'Faol';
+  if (!c.enabled) {
+    healthClass = 'off';
+    healthText = 'O\'chirilgan';
+  } else if (c.consecutive_failures && c.consecutive_failures > 0) {
+    healthClass = c.consecutive_failures >= 3 ? 'critical' : 'warn';
+    healthText = 'Xatolik: ' + c.consecutive_failures + ' marta';
+  }
+  var healthBadge = '<span class="badge ' + healthClass + '"><i class="ic sm">' +
+    (healthClass === 'ok' ? featherIcon("check-circle") :
+     healthClass === 'warn' ? featherIcon("alert-triangle") : featherIcon("alert-circle")) +
+    '</i>' + healthText + '</span>';
+  return '<div class="cam"><div class="head"><span class="dot"></span>' + esc(c.name) + ' ' + badge + ' ' + bus + ' ' + healthBadge + '</div>' +
     '<div class="body">' + body + '</div>' + diag +
     '<div class="foot"><span class="muted">' + esc(c.url) + '</span><span class="grow">' +
     act +
@@ -1369,14 +1595,24 @@ function _mountCam(c, src) {
   var ph = document.getElementById('ph-' + id);
   if (ph) ph.style.display = 'none';
   var b = document.getElementById('tg-' + id);
-  if (b) { b.textContent = '⏹ To\'xtatish'; b.classList.remove('primary'); }
+  if (b) { b.innerHTML = '<i class="ic sm">' + featherIcon("square") + '</i>To\'xtatish'; b.classList.remove('primary'); }
   if (v.canPlayType('application/vnd.apple.mpegurl')) {
     v.src = src; v.play().catch(function () {});
     camPlayers[id] = { hls: null, video: v };
     _camStatus();
     return;
   }
-  if (!window.Hls || !Hls.isSupported()) return;
+  if (!window.Hls) {
+    /* hls.js hali yuklanmagan — yuklab bo'lgach qayta urinamiz. */
+    camStarting[id] = 1;
+    _loadJtLib('hls', function (ok) {
+      delete camStarting[id];
+      if (ok) _mountCam(c, src);
+      else { showCamNote(c, 'hls.js yuklanmadi (internet?)'); stopCam(id); }
+    });
+    return;
+  }
+  if (!Hls.isSupported()) return;
   var hls = new Hls(HLS_LIVE_CFG);
   hls.loadSource(src);
   hls.attachMedia(v);
@@ -1406,7 +1642,7 @@ function stopCam(id) {
   var ph = document.getElementById('ph-' + id);
   if (ph) ph.style.display = 'flex';
   var b = document.getElementById('tg-' + id);
-  if (b) { b.textContent = '▶ Ochish'; b.classList.add('primary'); }
+  if (b) { b.innerHTML = '<i class="ic sm">' + featherIcon("play") + '</i>Ochish'; b.classList.add('primary'); }
   _camStatus();
 }
 function toggleCam(id) { if (camPlayers[id]) stopCam(id); else playCam(id); }
@@ -1477,12 +1713,13 @@ function loadJtStreams() {
         var on = jtDevices.length;
         bits.push(tot ? (on + '/' + tot + ' kamera onlayn') : 'kamera yo\'q');
       }
-      if (d.ffmpeg === false) bits.push('⚠ ffmpeg topilmadi');
+      if (d.ffmpeg === false) bits.push('ffmpeg topilmadi');
       st.textContent = '· ' + bits.join(' · ');
     }
     renderJtStreams();
     renderJtClosed();
     renderVideoBuses();
+    _sgPoll();   /* Setka tab ochiq bo'lsa plitkalarni ham yangilaymiz */
   }).catch(function () {});
 }
 function fmtAge(sec) {
@@ -1504,17 +1741,17 @@ function jtDiagHtml(s) {
   var parts = ['<b>' + esc(s.codec_name || s.codec || '?') + '</b>'];
   var kf = _ageAt(s, 'keyframe_age_s');
   if (kf === null) {
-    parts.push('<span class="warn">⏱ kalit kadr yo\'q</span>');
+    parts.push('<span class="warn"><i class="ic sm">' + featherIcon("clock") + '</i>kalit kadr yo\'q</span>');
   } else {
-    parts.push('<span' + (kf > 20 ? ' class="warn"' : '') + '>⏱ kalit kadr ' + fmtAge(kf) +
+    parts.push('<span' + (kf > 20 ? ' class="warn"' : '') + '><i class="ic sm">' + featherIcon("clock") + '</i>kalit kadr ' + fmtAge(kf) +
       ' oldin</span>');
   }
   parts.push('<span>' + (s.frames || 0) + ' kadr · ' + (s.keyframes || 0) + ' kalit</span>');
   if (s.uptime_s) parts.push('<span>' + fmtAge(s.uptime_s) + ' efirda</span>');
-  if (s.restarts) parts.push('<span class="warn">↻ ' + s.restarts + ' marta qayta</span>');
+  if (s.restarts) parts.push('<span class="warn"><i class="ic sm">' + featherIcon("refresh-cw") + '</i>' + s.restarts + ' marta qayta</span>');
   var html = '<div class="jt-diag-line">' + parts.join(' · ') + '</div>';
   if (s.last_error) {
-    html += '<div class="errline bad" title="' + esc(s.last_error) + '">⚠ ' + esc(s.last_error) + '</div>';
+    html += '<div class="errline bad" title="' + esc(s.last_error) + '"><i class="ic sm">' + featherIcon("alert-triangle") + '</i>' + esc(s.last_error) + '</div>';
   }
   if (s.ffmpeg_note) {
     html += '<div class="errline bad" title="' + esc(s.ffmpeg_note) + '">ffmpeg: ' + esc(s.ffmpeg_note) + '</div>';
@@ -1527,7 +1764,7 @@ function renderJtClosed() {
   if (!jtRecent.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
   var rows = jtRecent.map(function (s) {
     var bits = ['<b>' + esc(s.sim) + ' · kanal ' + s.channel + '</b>',
-      (s.kind === 'playback' ? '🗂 xotira' : 'jonli'),
+      (s.kind === 'playback' ? '<i class="ic sm">' + featherIcon("hard-drive") + '</i>xotira' : 'jonli'),
       esc(s.codec_name || s.codec || '?')];
     var kf = _ageAt(s, 'keyframe_age_s');
     bits.push('oxirgi kalit kadr: ' + (kf === null ? 'yo\'q' : fmtAge(kf) + ' oldin'));
@@ -1535,10 +1772,10 @@ function renderJtClosed() {
     var closed = _ageAt(s, 'closed_s');
     if (closed !== null) bits.push(fmtAge(closed) + ' oldin yopildi');
     if (s.close_reason) bits.push('sabab: ' + esc(s.close_reason));
-    if (s.restarts) bits.push('↻ ' + s.restarts + ' marta qayta');
+    if (s.restarts) bits.push('<i class="ic sm">' + featherIcon("refresh-cw") + '</i>' + s.restarts + ' marta qayta');
     var err = s.last_error || s.ffmpeg_note || '';
     return '<div class="crow">' + bits.join(' · ') +
-      (err ? '<div class="errline bad" title="' + esc(err) + '">⚠ ' + esc(err) + '</div>' : '') +
+      (err ? '<div class="errline bad" title="' + esc(err) + '"><i class="ic sm">' + featherIcon("alert-triangle") + '</i>' + esc(err) + '</div>' : '') +
       '</div>';
   }).join('');
   box.innerHTML = '<div class="jt-diag-line"><b>Yaqinda yopilgan oqimlar</b> ' +
@@ -1609,25 +1846,26 @@ function jtStreamCard(s) {
     '<span class="badge hls">' + esc(s.codec_name || s.codec || '?') + '</span>';
   var b = jtBindings[s.sim] || {};
   var bus = b.vehicle_id
-    ? '<span class="badge">🚌 ' + esc(b.plate || vidBusName(b.vehicle_id)) + '</span>'
+    ? '<span class="badge"><i class="ic sm">' + featherIcon("bus") + '</i>' + esc(b.plate || vidBusName(b.vehicle_id)) + '</span>'
     : '';
   var a = jtAssist[String(s.sim)];
   if (a) {
     bus += ' <span class="badge ' + (a.status === 'ok' ? 'hls' : 'warn') +
-      '" title="' + esc(a.status_text) + '">📍 ' + esc(a.status_text) + '</span>';
+      '" title="' + esc(a.status_text) + '"><i class="ic sm">' + featherIcon("map-pin") + '</i>' + esc(a.status_text) + '</span>';
   }
-  return '<div class="cam"><div class="head"><span class="dot"></span> 📷 ' + esc(s.sim) +
+  return '<div class="cam"><div class="head"><span class="dot"></span> <i class="ic sm">' + featherIcon("camera") + '</i>' + esc(s.sim) +
     ' · <b>kanal ' + s.channel + '</b> ' + badges + ' ' + bus + '</div>' +
     '<div class="body"><video id="' + vid + '" controls muted playsinline></video></div>' +
     '<div class="jt-diag" id="d-' + vid + '"></div>' +
     '<div class="foot"><span class="muted" id="b-' + vid + '">' + fmtBytes(s.bytes) + '</span>' +
     '<span class="grow"></span>' +
-    '<button class="btn sm" onclick="fullscreenVid(\'' + vid + '\')">⛶</button>' +
-    '<button class="btn sm" onclick="openRec(\'' + esc(s.sim) + '\',' + s.channel + ')">🗂 Xotira</button>' +
+    '<button class="btn sm" title="Kadr (rasm) sifatida saqlash" aria-label="Kadr sifatida saqlash" onclick="snapVideo(\'' + vid + '\')"><i class="ic sm" style="margin:0">' + featherIcon("camera") + '</i></button>' +
+    '<button class="btn sm" title="To\'liq ekran" aria-label="To\'liq ekran" onclick="fullscreenVid(\'' + vid + '\')"><i class="ic sm" style="margin:0">' + featherIcon("maximize") + '</i></button>' +
+    '<button class="btn sm" onclick="openRec(\'' + esc(s.sim) + '\',' + s.channel + ')"><i class="ic sm">' + featherIcon("hard-drive") + '</i>Xotira</button>' +
     (_jtSimLiveChCount(s.sim) > 1
-      ? '<button class="btn danger sm" title="Shu kameraning barcha ochiq jonli kanallarini to\'xtatish" onclick="stopJtAll(\'' + esc(s.sim) + '\')">⏹ Barcha kanallar</button>'
+      ? '<button class="btn danger sm" title="Shu kameraning barcha ochiq jonli kanallarini to\'xtatish" onclick="stopJtAll(\'' + esc(s.sim) + '\')"><i class="ic sm">' + featherIcon("square") + '</i>Barcha kanallar</button>'
       : '') +
-    '<button class="btn danger sm" onclick="stopJtLive(\'' + esc(s.sim) + '\',' + s.channel + ')">⏹ To\'xtatish</button>' +
+    '<button class="btn danger sm" onclick="stopJtLive(\'' + esc(s.sim) + '\',' + s.channel + ')"><i class="ic sm">' + featherIcon("square") + '</i>To\'xtatish</button>' +
     '</div></div>';
 }
 function jtChCount() { return Math.max(1, Math.min(16, parseInt(jtChannels, 10) || 4)); }
@@ -1647,7 +1885,7 @@ function _jtSimLiveChCount(sim) {
   return Object.keys(m).length;
 }
 function jtChLive(sim, ch) {
-  /* FAQAT jonli oqim — Xotira (playback) oqimi kanal tugmasini "⏹" qilib
+  /* FAQAT jonli oqim — Xotira (playback) oqimi kanal tugmasini "to'xtatish" qilib
     qo'ymasligi va "Barcha kanallar"ni sun'iy ravishda o'tkazib yubormasligi
     uchun kind filtrlanadi. */
   return jtStreams.some(function (s) {
@@ -1665,7 +1903,7 @@ function jtChannelBtns(sim) {
       (live
         ? 'stopJtLive(\'' + esc(sim) + '\',' + c + ')'
         : 'startJtLive(\'' + esc(sim) + '\',null,' + c + ')') +
-      '">' + (live ? '⏹' : '▶') + ' ch' + c + '</button>');
+      '">' + (live ? '<i class="ic sm" style="margin:0 4px 0 0">' + featherIcon("square") + '</i>' : '<i class="ic sm" style="margin:0 4px 0 0">' + featherIcon("play") + '</i>') + 'ch' + c + '</button>');
   }
   return out.join(' ');
 }
@@ -1674,12 +1912,12 @@ function jtDeviceCard(sim) {
   var a = jtAssist[String(sim)] || {};
   var online = _jtIsOnline(sim);
   var bus = b.vehicle_id
-    ? '<span class="badge">🚌 ' + esc(b.plate || vidBusName(b.vehicle_id)) + '</span>'
+    ? '<span class="badge"><i class="ic sm">' + featherIcon("bus") + '</i>' + esc(b.plate || vidBusName(b.vehicle_id)) + '</span>'
     : '<span class="badge warn">bog\'lanmagan</span>';
   var gps = a.status ? ' <span class="badge ' + (a.status === 'ok' ? 'hls' : 'warn') +
     '" title="' + esc(a.status_text) +
     (a.dist_m == null ? '' : ' · Teltonika bilan farq ' + Math.round(a.dist_m) + ' m') +
-    '">📍 ' + esc(a.status_text) + '</span>' : '';
+    '"><i class="ic sm">' + featherIcon("map-pin") + '</i>' + esc(a.status_text) + '</span>' : '';
   var stat = online
     ? '<span class="badge hls">● ONLAYN</span>'
     : '<span class="badge warn">● OFLAYN</span>';
@@ -1692,10 +1930,10 @@ function jtDeviceCard(sim) {
   if (!b.vehicle_id) {
     if (a && a.suggest_vehicle_id) {
       act += '<button class="btn sm" onclick="bindCameraTo(\'' + esc(sim) + '\',\'' +
-        esc(a.suggest_vehicle_id) + '\')" title="Kamera GPS Teltonika GPS bilan mos keladi">✓ ' +
+        esc(a.suggest_vehicle_id) + '\')" title="Kamera GPS Teltonika GPS bilan mos keladi"><i class="ic sm" style="margin:0 4px 0 0">' + featherIcon("check") + '</i>' +
         esc(a.suggest_plate || a.suggest_vehicle_id) + ' (tavsiya)</button> ';
     }
-    act += '<button class="btn sm primary" onclick="openCamBind(\'' + esc(sim) + '\')">🔗 Avtobusga bog\'lash</button>';
+    act += '<button class="btn sm primary" onclick="openCamBind(\'' + esc(sim) + '\')"><i class="ic sm">' + featherIcon("link") + '</i>Avtobusga bog\'lash</button>';
   }
   var body, foot;
   if (online) {
@@ -1705,22 +1943,22 @@ function jtDeviceCard(sim) {
     foot = '<div class="foot" style="flex-wrap:wrap;gap:5px">' +
       jtChannelBtns(sim) +
       (allOn
-        ? '<button class="btn danger sm" onclick="stopJtAll(\'' + esc(sim) + '\')">⏹ Barcha kanallar</button>'
-        : '<button class="btn primary sm" onclick="startJtAll(\'' + esc(sim) + '\')">▶ Barcha kanallar</button>') +
+        ? '<button class="btn danger sm" onclick="stopJtAll(\'' + esc(sim) + '\')"><i class="ic sm">' + featherIcon("square") + '</i>Barcha kanallar</button>'
+        : '<button class="btn primary sm" onclick="startJtAll(\'' + esc(sim) + '\')"><i class="ic sm">' + featherIcon("play") + '</i>Barcha kanallar</button>') +
       '<span class="grow"></span>' + act +
-      '<button class="btn sm" onclick="openRec(\'' + esc(sim) + '\',1)">🗂 Xotira</button>' +
+      '<button class="btn sm" onclick="openRec(\'' + esc(sim) + '\',1)"><i class="ic sm">' + featherIcon("hard-drive") + '</i>Xotira</button>' +
       '</div>';
   } else {
     body = '<div class="body" style="display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px;text-align:center;padding:18px">' +
-      '📴 Kamera ayni paytda oflayn (signing ulanishi yo\'q). Ro\'yxatda saqlanib turadi — qayta ulangan avtomatik "onlayn" bo\'ladi va jonli video/yozuv ochiladi.</div>' +
+      '<i class="ic sm">' + featherIcon("wifi-off") + '</i>Kamera ayni paytda oflayn (signing ulanishi yo\'q). Ro\'yxatda saqlanib turadi — qayta ulangan avtomatik "onlayn" bo\'ladi va jonli video/yozuv ochiladi.</div>' +
       seen;
     foot = '<div class="foot" style="flex-wrap:wrap;gap:5px">' +
       '<span class="badge warn" title="Jonli video faqat qurilma ulanganda ishlaydi">jonli/oflayn</span>' +
       '<span class="grow"></span>' + act +
-      '<button class="btn sm" disabled title="Qurilma oflayn">🗂 Xotira</button>' +
+      '<button class="btn sm" disabled title="Qurilma oflayn"><i class="ic sm">' + featherIcon("hard-drive") + '</i>Xotira</button>' +
       '</div>';
   }
-  return '<div class="cam' + (online ? '' : ' offline') + '"><div class="head"><span class="dot"></span> 📷 ' +
+  return '<div class="cam' + (online ? '' : ' offline') + '"><div class="head"><span class="dot"></span> <i class="ic sm">' + featherIcon("camera") + '</i>' +
     esc(sim) + ' <span class="badge hls">JT808</span> ' + stat + bus + gps + '</div>' +
     body + foot + '</div>';
 }
@@ -1784,12 +2022,12 @@ function startJtLive(sim, btn, chArg, stArg) {
     setTimeout(loadJtStreams, 4000);
     setTimeout(loadJtStreams, 8000);
   }).catch(function (e) { alert('Xato: ' + e.message); })
-    .then(function () { if (btn) { btn.disabled = false; btn.textContent = '▶ Jonli video'; } });
+    .then(function () { if (btn) { btn.disabled = false; btn.innerHTML = '<i class="ic sm">' + featherIcon("play") + '</i>Jonli video'; } });
 }
 /* Shu qurilmaning BARCHA kanallarini birdan ochish.
    Panjara (bir nechta kanal) uchun SUBSTREAM (stream_type=1) so'raladi:
    4G MDVR main oqimni bir vaqtda faqat 1-2 kanalga bera oladi, substream'da
-   esa 6-8 kanal bir vaqtda keladi. Yakka "▶ chN" tugmalari main (yuqori sifat). */
+   esa 6-8 kanal bir vaqtda keladi. Yakka chN tugmalari main (yuqori sifat). */
 function startJtAll(sim) {
   for (var c = 1; c <= jtChCount(); c++) {
     if (!jtChLive(sim, c)) startJtLive(sim, null, c, 1);
@@ -1853,9 +2091,22 @@ function mountJtHls(s) {
   var vid = 'jt-' + s.sim + '-' + s.channel;
   var v = document.getElementById(vid);
   if (!v) return;
-  // PILOT: server ZLMediaKit yoqilganda s.flv (HTTP-FLV) yuboradi — u
-  // kechikish eng past (~1s), shuning uchun avval uni sinaymiz; bo'lmasa
-  // yoki flv.js ishlamasa avvalgidek HLS'ga qaytamiz.
+  mountStreamTo(s, v, vid, jtHlsMap);
+}
+/* Umumiy oqim ulash: FLV (HTTP-FLV — ~1s kechikish, ZLMediaKit pilot)
+   bo'lsa avval u, aks holda HLS. key/map har UI'ga alohida pleyer reyestri
+   beradi (jt-grid → jtHlsMap, Setka → sgPlayers) — biri ikkinchisining
+   pleyerini buzmaydi. */
+function mountStreamTo(s, v, key, map) {
+  if (s.flv && !window.flvjs) {
+    /* flv.js hali yuklanmagan — yuklab bo'lgach qayta urinamiz. */
+    _loadJtLib('flv', function (ok) {
+      if (document.getElementById(v.id) !== v) return;   /* oqim yopilgan */
+      if (ok) mountStreamTo(s, v, key, map);
+      else mountHlsTo(s, v, key, map);
+    });
+    return;
+  }
   if (s.flv && window.flvjs && flvjs.isSupported && flvjs.isSupported()) {
     try {
       var p = flvjs.createPlayer(
@@ -1866,19 +2117,25 @@ function mountJtHls(s) {
       p.on(flvjs.Events.ERROR, function () {
         // FLV uzilsa (muxer yopildi / server ishtamaydi) — HLS'ga qaytamiz.
         try { p.destroy(); } catch (e) {}
-        if (jtHlsMap[vid] === p) { delete jtHlsMap[vid]; mountJtHlsFallback(s, v); }
+        if (map[key] === p) { delete map[key]; mountHlsTo(s, v, key, map); }
       });
       p.load();
       if (v.play) v.play().catch(function () {});
-      jtHlsMap[vid] = p;
+      map[key] = p;
       return;
     } catch (e) { /* flv.js xatosi → HLS fallback */ }
   }
-  mountJtHlsFallback(s, v);
+  mountHlsTo(s, v, key, map);
 }
-function mountJtHlsFallback(s, v) {
+function mountHlsTo(s, v, key, map) {
   if (v.canPlayType('application/vnd.apple.mpegurl')) { v.src = s.hls; v.play().catch(function () {}); return; }
-  if (!window.Hls || !Hls.isSupported()) return;
+  if (!window.Hls) {
+    _loadJtLib('hls', function (ok) {
+      if (ok && v.isConnected) mountHlsTo(s, v, key, map);
+    });
+    return;
+  }
+  if (!Hls.isSupported()) return;
   var hls = new Hls(HLS_LIVE_CFG);
   hls.loadSource(s.hls);
   hls.attachMedia(v);
@@ -1888,13 +2145,237 @@ function mountJtHlsFallback(s, v) {
     else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) { try { hls.recoverMediaError(); } catch (e) {} }
     else { try { hls.startLoad(); } catch (e) {} }
   });
-  jtHlsMap['jt-' + s.sim + '-' + s.channel] = hls;
+  map[key] = hls;
 }
+
+/* ============ Setka: kanal bo'yicha avtobuslar panjarasi ============
+   Har plitka — bitta avtobus kamerasi (tanlangan kanal). Plitka bosilsa
+   SUBSTREAM (yengil oqim) ochiladi/to'xtatiladi; aylanma rejimda sahifalar
+   har 30 sekundda almashadi (devor/monitoring uchun). */
+var sgCh = 1, sgPage = 1, sgPer = 12, sgRot = 0, sgRotTimer = null, sgPlayers = {}, sgSig = '', sgChCount = 0;
+function _sgVisible() {
+  var b = document.getElementById('setka');
+  return !!b && b.style.display !== 'none';
+}
+function _sgName(sim) {
+  var b = jtBindings[sim] || {};
+  return b.plate || vidBusName(b.vehicle_id) || String(sim);
+}
+function sgDevices() {
+  return _jtDeviceUniverse().filter(_jtCamOn).sort(function (a, b) {
+    return String(_sgName(a)).localeCompare(String(_sgName(b)), 'uz');
+  });
+}
+function sgSigOf() {
+  return jtDevices.slice().sort().join(',') + '|' +
+    jtStreams.filter(function (s) { return s.kind !== 'playback'; })
+      .map(function (s) { return s.sim + '_' + s.channel; }).sort().join(',') + '|' +
+    Object.keys(jtBindings).length + '|' + Object.keys(jtAssist).length + '|' +
+    _vidBusSig() + '|' + sgCh + '|' + sgPage + '|' + sgPer + '|' + sgRot;
+}
+function sgRenderCh() {
+  var box = document.getElementById('sg-ch');
+  if (!box) return;
+  var n = jtChCount();
+  if (sgChCount !== n) {
+    sgChCount = n;
+    var html = '';
+    for (var c = 1; c <= n; c++) {
+      html += '<button class="fchip" onclick="sgSetCh(' + c + ')">ch' + c + '</button>';
+    }
+    box.innerHTML = html;
+  }
+  for (var i = 0; i < box.children.length; i++) {
+    box.children[i].classList.toggle('on', i + 1 === sgCh);
+  }
+}
+function sgRender() {
+  if (!_sgVisible()) return;
+  var devs = sgDevices();
+  var pages = Math.max(1, Math.ceil(devs.length / sgPer));
+  if (sgPage > pages) sgPage = pages;
+  if (sgPage < 1) sgPage = 1;
+  var sig = sgSigOf() + '|' + devs.length;
+  if (sig === sgSig) { _sgDiag(); return; }   /* o'zgarish yo'q — pleyerlarni uzmaymiz */
+  sgSig = sig;
+  sgDestroyPlayers();
+  var start = (sgPage - 1) * sgPer;
+  var slice = devs.slice(start, start + sgPer);
+  var g = document.getElementById('sg-grid');
+  if (!g) return;
+  g.innerHTML = slice.map(sgTile).join('');
+  var e = document.getElementById('sg-empty');
+  if (e) e.style.display = devs.length ? 'none' : 'block';
+  var pg = document.getElementById('sg-pager');
+  if (pg) pg.style.display = pages > 1 ? 'flex' : 'none';
+  var pn = document.getElementById('sg-pnum');
+  if (pn) pn.textContent = sgPage + ' / ' + pages + ' · ' + devs.length + ' avtobus';
+  var info = document.getElementById('sg-info');
+  if (info) info.textContent = '· kanal ' + sgCh + ' · ' + devs.length + ' avtobus';
+  var pb = document.getElementById('sg-prev'), nb = document.getElementById('sg-next');
+  if (pb) pb.disabled = sgPage <= 1;
+  if (nb) nb.disabled = sgPage >= pages;
+  slice.forEach(function (sim) { if (jtChLive(sim, sgCh)) sgMount(sim); });
+  _sgDiag();
+}
+function sgTile(sim) {
+  var b = jtBindings[sim] || {};
+  var online = _jtIsOnline(sim);
+  var live = jtChLive(sim, sgCh);
+  var name = _sgName(sim);
+  var st = online
+    ? '<span class="badge hls">● ' + (live ? 'JONLI' : 'ONLAYN') + '</span>'
+    : '<span class="badge warn">● OFLAYN</span>';
+  var bus = b.vehicle_id ? '' : ' <span class="badge warn">bog\'lanmagan</span>';
+  var body;
+  if (live) {
+    body = '<video id="sgv-' + esc(sim) + '" controls muted playsinline></video>' +
+      '<button class="btn danger sm" style="position:absolute;top:6px;right:6px;z-index:2" onclick="sgClick(\'' + esc(sim) + '\')">' +
+      '<i class="ic sm" style="margin:0 4px 0 0">' + featherIcon('square') + '</i>To\'xtatish</button>';
+  } else {
+    body = '<div class="ph" onclick="sgClick(\'' + esc(sim) + '\')">' +
+      '<span class="big">' + featherIcon('play') + '</span>' +
+      (online ? 'Kanal ' + sgCh + ' — ochish uchun bosing' : 'Qurilma oflayn — qayta ulanganda ochiladi') + '</div>';
+  }
+  return '<div class="sg-tile' + (live ? ' live' : '') + '">' +
+    '<div class="shead"><span class="dot' + (online ? ' on' : '') + '"></span>' +
+    '<span class="nm">' + esc(name) + '</span> <span class="badge hls">ch' + sgCh + '</span> ' + st + bus +
+    '<span class="muted" id="sgb-' + esc(sim) + '" style="margin-left:auto;font-size:10.5px">' +
+    (live ? fmtBytes((_jtStreamFor(sim).filter(function (x) { return Number(x.channel) === sgCh; })[0] || {}).bytes) : '') +
+    '</span></div>' +
+    '<div class="sbody">' + body + '</div></div>';
+}
+function sgMount(sim) {
+  var v = document.getElementById('sgv-' + sim);
+  if (!v) return;
+  var s = _jtStreamFor(sim).filter(function (x) { return Number(x.channel) === sgCh; })[0];
+  if (!s) return;
+  mountStreamTo(s, v, 'sgv-' + sim, sgPlayers);
+}
+function _sgDiag() {
+  jtStreams.forEach(function (s) {
+    if (s.kind === 'playback' || Number(s.channel) !== sgCh) return;
+    var el = document.getElementById('sgb-' + s.sim);
+    if (el) el.textContent = fmtBytes(s.bytes);
+  });
+}
+function sgClick(sim) {
+  if (jtChLive(sim, sgCh)) { stopJtLive(sim, sgCh); return; }
+  uiToast('ch' + sgCh + ' — video so\'ralmoqda…');
+  startJtLive(sim, null, sgCh, 1);
+}
+function sgDestroyPlayers() {
+  Object.keys(sgPlayers).forEach(function (k) {
+    try { if (sgPlayers[k]) sgPlayers[k].destroy(); } catch (e) {}
+  });
+  sgPlayers = {};
+}
+function sgSetCh(c) {
+  c = parseInt(c, 10) || 1;
+  if (c === sgCh) return;
+  sgCh = c;
+  sgSig = '';
+  sgRenderCh();
+  sgRender();
+}
+function sgPageGo(d) {
+  var devs = sgDevices();
+  var pages = Math.max(1, Math.ceil(devs.length / sgPer));
+  var p = Math.min(pages, Math.max(1, sgPage + (d || 0)));
+  if (p === sgPage) return;
+  sgPage = p;
+  sgSig = '';
+  sgRender();
+}
+function sgToggleRotate() {
+  sgRot = sgRot ? 0 : 1;
+  var b = document.getElementById('sg-rot');
+  if (b) {
+    b.textContent = 'Aylanma: ' + (sgRot ? '30s' : 'o\'chiq');
+    b.classList.toggle('primary', !!sgRot);
+  }
+  if (sgRotTimer) { clearInterval(sgRotTimer); sgRotTimer = null; }
+  if (sgRot) {
+    sgRotTimer = setInterval(function () {
+      if (!_sgVisible()) return;
+      var devs = sgDevices();
+      var pages = Math.max(1, Math.ceil(devs.length / sgPer));
+      if (pages < 2) return;
+      sgPage = sgPage >= pages ? 1 : sgPage + 1;
+      sgSig = '';
+      sgRender();
+    }, 30000);
+  }
+}
+function sgStopAll() {
+  var sims = {};
+  jtStreams.forEach(function (s) {
+    if (s.kind === 'playback') return;
+    if (Number(s.channel) === sgCh) sims[String(s.sim)] = 1;
+  });
+  var ks = Object.keys(sims);
+  if (!ks.length) { loadJtStreams(); return; }
+  /* Kartani kutmasdan darhol tushiramiz (stopJtAll kabi). */
+  jtSig = '';
+  jtStreams = jtStreams.filter(function (s) {
+    return !(s.kind !== 'playback' && Number(s.channel) === sgCh);
+  });
+  renderJtStreams();
+  Promise.all(ks.map(function (sim) {
+    return API.post('/api/video/jt-stop', { phone: sim, channel: sgCh }).catch(function () {});
+  })).then(function () { loadJtStreams(); setTimeout(loadJtStreams, 1500); });
+}
+function _sgPoll() {
+  if (!_sgVisible()) return;
+  sgRenderCh();
+  sgRender();
+}
+
 function fullscreenVid(id) {
   var v = document.getElementById(id);
   if (!v) return;
   if (v.requestFullscreen) v.requestFullscreen();
   else if (v.webkitEnterFullscreen) v.webkitEnterFullscreen();
+}
+/* Qisqa xabar (toast) — status roli, fokusni olmaydi, ~3s da yo'qoladi */
+function uiToast(msg) {
+  var t = document.createElement('div');
+  t.className = 'ui-toast';
+  t.setAttribute('role', 'status');
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(function () { t.classList.add('out'); }, 2600);
+  setTimeout(function () { if (t.parentNode) t.parentNode.removeChild(t); }, 3200);
+}
+/* Kadr (snapshot): videoning joriy ko'rinishini PNG qilib yuklab olish */
+function snapVideo(id) {
+  var v = document.getElementById(id);
+  if (!v) return;
+  if (!v.videoWidth || v.readyState < 2) {
+    alert('Kadr olish uchun video hali tayyor emas — oqim ochilishini kuting.');
+    return;
+  }
+  try {
+    var cv = document.createElement('canvas');
+    cv.width = v.videoWidth; cv.height = v.videoHeight;
+    cv.getContext('2d').drawImage(v, 0, 0, cv.width, cv.height);
+    var d = new Date();
+    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+    var stamp = String(d.getFullYear()) + p(d.getMonth() + 1) + p(d.getDate()) + '_' +
+      p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+    var base = String(id || 'kadr').replace(/[^A-Za-z0-9_-]+/g, '_');
+    cv.toBlob(function (blob) {
+      if (!blob) { alert('Kadr olib bo\'lmadi.'); return; }
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'kadr_' + base + '_' + stamp + '.png';
+      document.body.appendChild(a); a.click();
+      uiToast('Kadr yuklab olindi: ' + a.download);
+      setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 3000);
+    }, 'image/png');
+  } catch (e) {
+    alert('Kadr olib bo\'lmadi (oqim himoyalangan). ' + (e && e.message ? e.message : ''));
+  }
 }
 
 /* ============ qurilma xotirasidagi yozuvlar (playback) ============ */
@@ -1935,14 +2416,14 @@ function openRec(sim, ch) {
       '>ch' + c + '</option>';
   }
   box.innerHTML =
-    '<div class="rbar"><b>🗂 Xotira — ' + esc(sim) + ' · kanal ' + recSel.ch + '</b>' +
+    '<div class="rbar"><b><i class="ic sm">' + featherIcon("hard-drive") + '</i>Xotira — ' + esc(sim) + ' · kanal ' + recSel.ch + '</b>' +
     '<label class="muted">Kanal <select id="rec-ch">' + chOpts + '</select></label>' +
     '<span class="grow"></span>' +
     '<label class="muted">Sana <input type="date" id="rec-date" value="' + today + '"></label>' +
     '<label class="muted">Dan <input type="time" id="rec-t0" value="00:00" step="1"></label>' +
     '<label class="muted">Gacha <input type="time" id="rec-t1" value="23:59" step="1"></label>' +
-    '<button class="btn primary sm" id="rec-load" onclick="loadRecList()">🔎 Yozuvlarni so\'rash</button>' +
-    '<button class="btn sm" onclick="closeRec()">✕</button></div>' +
+    '<button class="btn primary sm" id="rec-load" onclick="loadRecList()"><i class="ic sm">' + featherIcon("search") + '</i>Yozuvlarni so\'rash</button>' +
+    '<button class="btn sm" onclick="closeRec()"><i class="ic sm" style="margin:0">' + featherIcon("x") + '</i></button></div>' +
     '<div class="muted" id="rec-status">Yozuvlar ro\'yxati qurilma xotirasidan so\'raladi (0x9205). ' +
     'Serverga video saqlanmaydi — uzatish jonli oqim sifatida bo\'ladi.</div>' +
     '<div id="rec-list"></div>' +
@@ -1953,15 +2434,17 @@ function openRec(sim, ch) {
     'oninput="onRecSeekInput()" onchange="onRecSeek()">' +
     '<span class="rt" id="rec-dur">--:--</span></div>' +
     '<div class="foot" style="margin-top:8px;flex-wrap:wrap">' +
-    '<button class="btn primary sm" id="rec-play" onclick="recPlayToggle()">⏸ Pauza</button>' +
-    '<button class="btn sm" onclick="recCtrl(\'rew\')">⏪ Orqaga</button>' +
-    '<button class="btn sm" onclick="recCtrl(\'fwd\')">⏩ Tez</button>' +
+    '<button class="btn primary sm" id="rec-play" onclick="recPlayToggle()"><i class="ic sm">' + featherIcon("pause") + '</i>Pauza</button>' +
+    '<button class="btn sm" onclick="recCtrl(\'rew\')"><i class="ic sm">' + featherIcon("rewind") + '</i>Orqaga</button>' +
+    '<button class="btn sm" onclick="recCtrl(\'fwd\')"><i class="ic sm">' + featherIcon("fast-forward") + '</i>Tez</button>' +
     '<label class="muted">Tezlik <select id="rec-speed" onchange="setRecSpeed()">' +
     '<option value="1">1x</option><option value="2">2x</option>' +
     '<option value="4">4x</option><option value="8">8x</option></select></label>' +
-    '<button class="btn sm" id="rec-dl" onclick="toggleRecDownload()">⤓ Yuklab olish</button>' +
+    '<button class="btn sm" id="rec-dl" onclick="toggleRecDownload()"><i class="ic sm">' + featherIcon("download") + '</i>Yuklab olish</button>' +
+    '<button class="btn sm" title="Kadr (rasm) sifatida saqlash" aria-label="Kadr sifatida saqlash" onclick="snapVideo(\'rec-video\')"><i class="ic sm" style="margin:0">' + featherIcon("camera") + '</i></button>' +
+    '<button class="btn sm" title="To\'liq ekran" aria-label="To\'liq ekran" onclick="fullscreenVid(\'rec-video\')"><i class="ic sm" style="margin:0">' + featherIcon("maximize") + '</i></button>' +
     '<span class="grow"></span>' +
-    '<button class="btn danger sm" onclick="stopRec()">⏹ To\'xtatish</button>' +
+    '<button class="btn danger sm" onclick="stopRec()"><i class="ic sm">' + featherIcon("square") + '</i>To\'xtatish</button>' +
     '</div>' +
     '<div class="rec-wait" id="rec-wait"><span class="spin"></span><span id="rec-wait-txt">…</span></div>' +
     '<div class="muted" id="rec-pos" style="margin-top:6px;font-variant-numeric:tabular-nums"></div>' +
@@ -2034,7 +2517,7 @@ function renderRecList(r) {
     return (Date.parse(x.start) || 0) - (Date.parse(y.start) || 0);
   });
   _recSetStatus(recItems.length + ' ta yozuv topildi' +
-    (recItems.length ? ' — ko\'rish uchun "▶ Ko\'rish"ni bosing.' : '.'));
+    (recItems.length ? ' — ko\'rish uchun "Ko\'rish"ni bosing.' : '.'));
   var el = document.getElementById('rec-list');
   if (!el) return;
   el.innerHTML = recItems.map(function (it, i) {
@@ -2044,7 +2527,7 @@ function renderRecList(r) {
       (dur ? '<span class="badge">' + _recFmtClock(dur) + '</span>' : '') +
       '<span class="badge">' + fmtBytes(it.size || 0) + '</span>' +
       '<span class="grow"></span>' +
-      '<button class="btn primary sm" onclick="playRec(' + i + ')">▶ Ko\'rish</button></div>';
+      '<button class="btn primary sm" onclick="playRec(' + i + ')"><i class="ic sm">' + featherIcon("play") + '</i>Ko\'rish</button></div>';
   }).join('');
 }
 function playRec(i) {
@@ -2169,7 +2652,15 @@ function mountRecHls(url) {
   if (v.canPlayType('application/vnd.apple.mpegurl')) {
     v.src = url; v.play().catch(function () {}); go(); return;
   }
-  if (!window.Hls || !Hls.isSupported()) { _recSetStatus('Brauzer HLS oqimini qo\'llamaydi.'); return; }
+  if (!window.Hls) {
+    _recSetStatus('HLS kutubxonasi yuklanmoqda…');
+    _loadJtLib('hls', function (ok) {
+      if (ok) mountRecHls(url);
+      else _recSetStatus('hls.js yuklanmadi (internet?)');
+    });
+    return;
+  }
+  if (!Hls.isSupported()) { _recSetStatus('Brauzer HLS oqimini qo\'llamaydi.'); return; }
   recHls = new Hls({ liveDurationInfinity: false, lowLatencyMode: false,
                      liveSyncDurationCount: 4, maxLiveSyncPlaybackRate: 1.5,
                      backBufferLength: 30, maxBufferLength: 30,
@@ -2210,6 +2701,19 @@ function mountRecStream(s) {
     _recStartTick();
     try { v.playbackRate = _recRate(); } catch (e) {}
   };
+  if (s.flv && !window.flvjs) {
+    /* flv.js hali yuklanmagan — yuklab bo'lgach qayta urinamiz. */
+    var selSnap = recSel.sim + ':' + recSel.ch;
+    _recSetStatus('Video kutubxonasi yuklanmoqda…');
+    _loadJtLib('flv', function (ok) {
+      if (recSel.sim + ':' + recSel.ch !== selSnap) return;      /* kanal almashgan */
+      var p = document.getElementById('rec-player');
+      if (p && p.style.display === 'none') return;               /* yopilgan */
+      if (ok) mountRecStream(s);
+      else mountRecHls(s.hls);
+    });
+    return;
+  }
   if (s.flv && window.flvjs && flvjs.isSupported && flvjs.isSupported()) {
     try {
       var p = flvjs.createPlayer(
@@ -2259,13 +2763,13 @@ function recPlayToggle() {
     recAnchor.t = _recNow();
     try { v.pause(); } catch (e) {}
     recCtrl('pause');
-    if (b) b.textContent = '▶ Davom';
+    if (b) b.innerHTML = '<i class="ic sm">' + featherIcon("play") + '</i>Davom';
   } else {
     recAnchor.at = Date.now(); recAnchor.rate = _recRate(); recPlaying = true;
     _recStartTick();
     try { v.play(); } catch (e) {}
     recCtrl('play');
-    if (b) b.textContent = '⏸ Pauza';
+    if (b) b.innerHTML = '<i class="ic sm">' + featherIcon("pause") + '</i>Pauza';
   }
 }
 function onRecSeekInput() {
@@ -2338,7 +2842,7 @@ function startRecDownload() {
     document.body.appendChild(a); a.click();
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
     recRec = null;
-    if (b) b.innerHTML = '⤓ Yuklab olish';
+    if (b) b.innerHTML = '<i class="ic sm">' + featherIcon("download") + '</i>Yuklab olish';
     _recSetStatus('Fayl saqlandi.');
   };
   recRec.start(1000);
@@ -2392,12 +2896,12 @@ function fillDeviceSelect(devs) {
   var opts = ['<option value="">— qurilmani tanlang —</option>'];
   if (un.length) opts.push('<optgroup label="Bog\'lanmagan qurilmalar (' + un.length + ')">');
   un.forEach(function (d) {
-    opts.push('<option value="' + esc(d.imei) + '">🚌 ' + esc(devLabel(d)) + ' · ' + esc(d.imei) + '</option>');
+    opts.push('<option value="' + esc(d.imei) + '">' + esc(devLabel(d)) + ' · ' + esc(d.imei) + '</option>');
   });
   if (un.length) opts.push('</optgroup>');
   if (bd.length) opts.push('<optgroup label="Allaqachon bog\'langan (qayta bog\'lash)">');
   bd.forEach(function (d) {
-    opts.push('<option value="' + esc(d.imei) + '">🚌 ' + esc(devLabel(d)) + ' · ' + esc(d.imei) + ' → ' + esc(busLabel(d.vehicle_id)) + '</option>');
+    opts.push('<option value="' + esc(d.imei) + '">' + esc(devLabel(d)) + ' · ' + esc(d.imei) + ' → ' + esc(busLabel(d.vehicle_id)) + '</option>');
   });
   if (bd.length) opts.push('</optgroup>');
   sel.innerHTML = opts.join('');
@@ -2428,10 +2932,10 @@ function updateDlgHint() {
   var busSel = document.getElementById('dlg-vehicle').value;
   var lines = ['<b>' + unDev + '</b> ta qurilma bog\'lanmagan · <b>' + unBus + '</b> ta avtobusda GPS yo\'q'];
   if (devSel && busSel) {
-    lines.push('<span class="ok">✓</span> ' + esc(devSel) + ' → <b>' + esc(busLabel(busSel)) + '</b>');
+    lines.push('<span class="ok"><i class="ic sm" style="margin:0">' + featherIcon("check") + '</i></span> ' + esc(devSel) + ' → <b>' + esc(busLabel(busSel)) + '</b>');
     var b = busById(busSel);
     if (b && b.device_imei && b.device_imei !== devSel) {
-      lines.push('<span class="warn">⚠</span> bu avtobusda hozir <b>' + esc(b.device_imei) + '</b> bor — almashtiriladi');
+      lines.push('<span class="warn"><i class="ic sm" style="margin:0">' + featherIcon("alert-triangle") + '</i></span> bu avtobusda hozir <b>' + esc(b.device_imei) + '</b> bor — almashtiriladi');
     }
   }
   el.innerHTML = lines.join('<br>');
@@ -2481,7 +2985,7 @@ function openEdit(imei) {
 }
 function delDevice(imei) {
   var d = findDev(imei);
-  if (!confirm("Qurilmani butunlay o'chirish?\n🚌 " + (d ? devLabel(d) : imei) + ' · ' + imei + "\nBog'lash ham yo'qoladi.")) return;
+  if (!confirm("Qurilmani butunlay o'chirish?\n" + (d ? devLabel(d) : imei) + ' · ' + imei + "\nBog'lash ham yo'qoladi.")) return;
   API.del('/api/gps/devices/' + encodeURIComponent(imei)).then(function () {
     if (curImei === imei) clearSel();
     refresh(); loadVehicles();
@@ -2539,7 +3043,7 @@ function initSearch() {
     drop.innerHTML = hits.map(function (d) {
       var nm = devLabel(d);
       return '<div class="sr" onclick="_srFly(\'' + d.imei + '\')">' +
-        '<span class="dot ' + (d.online ? 'on' : '') + '"></span><b>🚌 ' + esc(nm) + '</b>' +
+        '<span class="dot ' + (d.online ? 'on' : '') + '"></span><b><i class="ic sm">' + featherIcon("bus") + '</i>' + esc(nm) + '</b>' +
         '<span class="muted">' + esc(d.imei) + '</span></div>';
     }).join('');
     drop.style.display = 'block';
@@ -2585,7 +3089,7 @@ function saveGf() {
   var lng = parseFloat(document.getElementById('gf-lng').value);
   var radius = parseInt(document.getElementById('gf-radius').value, 10) || 500;
   var vehicle = document.getElementById('gf-vehicle').value.trim();
-  if (!name || isNaN(lat) || isNaN(lng)) { err.textContent = 'Nomi va lat/lng kerak (yoki 📍 Xaritadan bosing)'; err.style.display = 'block'; return; }
+  if (!name || isNaN(lat) || isNaN(lng)) { err.textContent = 'Nomi va lat/lng kerak (yoki xaritadan tanlang)'; err.style.display = 'block'; return; }
   err.style.display = 'none';
   var body = { name: name, lat: lat, lng: lng, radius_m: radius, vehicle_id: vehicle };
   var req = gfEditId ? API.patch('/api/gps/geofences/' + gfEditId, body)
@@ -2605,7 +3109,7 @@ function editGf(id) {
   document.getElementById('gf-lng').value = f.lng;
   document.getElementById('gf-radius').value = f.radius_m;
   document.getElementById('gf-vehicle').value = f.vehicle_id || '';
-  document.getElementById('gf-save-btn').textContent = '💾 Saqlash';
+  document.getElementById('gf-save-btn').innerHTML = '<i class="ic sm">' + featherIcon("save") + '</i>Saqlash';
   document.getElementById('gf-cancel-btn').style.display = '';
   if (map && f.lat != null) map.panTo([f.lat, f.lng]);
 }
@@ -2627,9 +3131,9 @@ function renderFences() {
       return '<tr><td><b>' + esc(f.name) + '</b><div class="dev-sub">' + (f.vehicle_id ? esc(f.vehicle_id) : 'hammasi') + '</div></td>' +
         '<td>' + f.lat.toFixed(4) + ', ' + f.lng.toFixed(4) + '</td><td>' + f.radius_m + 'm</td>' +
         '<td>' + (f.enabled ? '<span class="badge hls">YOQ</span>' : '<span class="badge">O\'CH</span>') + '</td>' +
-        '<td style="text-align:right;white-space:nowrap"><button class="btn sm" onclick="editGf(' + f.id + ')">✏️</button> ' +
+        '<td style="text-align:right;white-space:nowrap"><button class="btn sm" onclick="editGf(' + f.id + ')"><i class="ic sm" style="margin:0">' + featherIcon("edit-2") + '</i></button> ' +
         '<button class="btn sm" onclick="toggleGf(' + f.id + ',' + (f.enabled ? 0 : 1) + ')">' + (f.enabled ? 'O\'chir' : 'Yoq') + '</button> ' +
-        '<button class="btn danger sm" onclick="delGf(' + f.id + ')">✕</button></td></tr>';
+        '<button class="btn danger sm" onclick="delGf(' + f.id + ')"><i class="ic sm" style="margin:0">' + featherIcon("x") + '</i></button></td></tr>';
     }).join('') + '</table>';
 }
 function toggleGf(id, en) { API.patch('/api/gps/geofences/' + id, { enabled: !!en }).then(loadFences); }
@@ -2652,7 +3156,7 @@ function renderRoutePaths() {
         '<td>' + n + '</td><td>' + (p.tolerance_m || 0) + 'm</td>' +
         '<td>' + (p.enabled ? '<span class="badge hls">YOQ</span>' : '<span class="badge">O\'CH</span>') + '</td>' +
         '<td style="text-align:right;white-space:nowrap"><button class="btn sm" onclick="toggleRp(\'' + esc(p.route_id) + '\',' + (p.enabled ? 0 : 1) + ')">' + (p.enabled ? 'O\'chir' : 'Yoq') + '</button> ' +
-        '<button class="btn danger sm" onclick="delRp(\'' + esc(p.route_id) + '\')">✕</button></td></tr>';
+        '<button class="btn danger sm" onclick="delRp(\'' + esc(p.route_id) + '\')"><i class="ic sm" style="margin:0">' + featherIcon("x") + '</i></button></td></tr>';
     }).join('') + '</table>';
 }
 function learnPath() {
@@ -2684,17 +3188,21 @@ function loadAlerts() {
   API.get('/api/gps/alerts?limit=50').then(function (d) {
     alerts = d.alerts || [];
     document.getElementById('al-count').textContent = alerts.length ? alerts.length + ' ta' : '';
+    var bdg = document.getElementById('al-badge');
+    if (bdg) { bdg.textContent = alerts.length > 99 ? '99+' : String(alerts.length); bdg.hidden = !alerts.length; }
     document.getElementById('al-list').innerHTML = alerts.length ? alerts.map(function (a) {
       var KINDS = {
-        overspeed: ['warn', '⚡️ tezlik oshdi'],
-        route_deviation: ['bad', "🛣 marshrutdan chiqdi"],
-        idling: ['warn', '🅿️ bekorchi ish'],
-        offline: ['bad', '📵 aloqa uzildi']
+        overspeed: ['warn', '<i class="ic sm">' + featherIcon("zap") + '</i>tezlik oshdi'],
+        route_deviation: ['bad', '<i class="ic sm">' + featherIcon("route") + '</i>marshrutdan chiqdi'],
+        idling: ['warn', '<i class="ic sm">' + featherIcon("pause-circle") + '</i>bekorchi ish'],
+        offline: ['bad', '<i class="ic sm">' + featherIcon("wifi-off") + '</i>aloqa uzildi']
       };
-      var k = KINDS[a.kind] || ['', '🚨 zonadan chiqdi'];
+      var k = KINDS[a.kind] || ['', '<i class="ic sm">' + featherIcon("alert-octagon") + '</i>zonadan chiqdi'];
       var kind = '<span class="m ' + k[0] + '">' + k[1] + '</span>';
+      var nm = a.vehicle_id ? String(vidPlateFor(a.vehicle_id) || '') : '';
+      if (!nm) nm = shortImei(a.imei || '');
       return '<div class="al"><span class="t">' + esc(String(a.ts || '').replace('T', ' ').slice(0, 16)) + '</span>' +
-        kind + '<span><b>' + esc(a.vehicle_id || a.imei) + '</b> · ' + esc(a.message) + '</span></div>';
+        kind + '<span><b>' + esc(nm || '—') + '</b> · ' + esc(a.message) + '</span></div>';
     }).join('') : '<div class="empty">Ogohlantirishlar yo\'q — hammasi tartibda.</div>';
   }).catch(function () {});
 }
@@ -2711,7 +3219,10 @@ function loadDaily() {
     if (!rows.length) { el.innerHTML = '<div class="empty">Bu davrda ma\'lumot yo\'q</div>'; return; }
     el.innerHTML = '<div style="max-height:240px;overflow:auto"><table class="mini"><tr><th>Sana</th><th>Qurilma</th><th>Nuqta</th><th>Masofa</th><th>Maks</th><th>Ort.</th></tr>' +
       rows.map(function (r) {
-        return '<tr><td>' + esc(r.day) + '</td><td><b>' + esc(r.imei) + '</b></td><td>' + r.points + '</td>' +
+        var dv = findDev(r.imei);
+        var nm = dv ? devLabel(dv) : '';
+        if (!nm) nm = shortImei(r.imei);
+        return '<tr><td>' + esc(r.day) + '</td><td><b title="' + esc(r.imei) + '">' + esc(nm) + '</b></td><td>' + r.points + '</td>' +
           '<td>' + (r.distance_m / 1000).toFixed(1) + ' km</td><td>' + r.max_speed + '</td>' +
           '<td>' + (r.avg_speed || 0).toFixed(0) + '</td></tr>';
       }).join('') + '</table></div>';
@@ -2795,7 +3306,7 @@ function checkHealth() {
 /* ============ jonli soat / pauza / UI holatini eslab qolish ============ */
 function togglePause() {
   paused = !paused;
-  var b = document.getElementById('pause-btn'); if (b) b.textContent = paused ? '▶' : '⏸';
+  var b = document.getElementById('pause-btn'); if (b) b.innerHTML = paused ? '<i class="ic">' + featherIcon("play") + '</i>' : '<i class="ic">' + featherIcon("pause") + '</i>';
   var lc = document.getElementById('liveclk'); if (lc) lc.classList.toggle('paused', paused);
   try { localStorage.setItem('bm-gps-paused', paused ? '1' : '0'); } catch (e) {}
   if (!paused) refresh();
@@ -2815,9 +3326,13 @@ function restoreUI() {
     var ct = localStorage.getItem('bm-gps-ctab'); if (ct) ctrlTab(ct);
     if (localStorage.getItem('bm-gps-devcol') === '1') document.getElementById('dev-panel').classList.add('collapsed');
     if (localStorage.getItem('bm-gps-ctrlcol') === '1') document.getElementById('ctrl-panel').classList.add('collapsed');
+    ['dev-panel', 'ctrl-panel'].forEach(function (id) {
+      var p = document.getElementById(id), h = p && p.querySelector('.p-head');
+      if (h) h.setAttribute('aria-expanded', p.classList.contains('collapsed') ? 'false' : 'true');
+    });
     if (localStorage.getItem('bm-gps-paused') === '1') {
       paused = true;
-      var b = document.getElementById('pause-btn'); if (b) b.textContent = '▶';
+      var b = document.getElementById('pause-btn'); if (b) b.innerHTML = '<i class="ic">' + featherIcon("play") + '</i>';
       var lc = document.getElementById('liveclk'); if (lc) lc.classList.add('paused');
     }
   } catch (e) {}
@@ -2825,7 +3340,11 @@ function restoreUI() {
 document.addEventListener('keydown', function (e) { if (e.key === 'Escape') clearSel(); });
 
 /* ============ init ============ */
+_initIcons();
 showTab(tabFromHash());
+/* Dashboard iframe ichida ochilgan bo'lsa — takroriy sarlavhani yashiramiz */
+try { if (window.self !== window.top) document.body.classList.add('embedded'); }
+catch (e) { document.body.classList.add('embedded'); }
 checkHealth();
 initMaps();
 document.getElementById('traj-from').value = dtToday(0);

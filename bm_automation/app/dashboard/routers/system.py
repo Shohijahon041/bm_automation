@@ -196,17 +196,22 @@ async def api_logs_stream(request: Request, scope: dict = Depends(Scope())):
         files = _files_for(source)
         multi = len(files) > 1
         handles: dict[str, list] = {}
-        for tag, path in files:
-            try:
-                fh = open(path, "rb")
-                fh.seek(0, 2)
-                handles[str(path)] = [tag, path, fh]
-            except OSError:
-                continue
-        idle = 0
-        while True:
-            if await request.is_disconnected():
-                return
+        try:
+            for tag, path in files:
+                try:
+                    fh = open(path, "rb")
+                    fh.seek(0, 2)
+                    handles[str(path)] = [tag, path, fh]
+                except OSError:
+                    continue
+            idle = 0
+            while True:
+                if await request.is_disconnected():
+                    return
+                # ... (loop)
+        finally:
+            for entry in handles.values():
+                entry[2].close()
             new: list[str] = []
             for key, entry in list(handles.items()):
                 tag, path, fh = entry

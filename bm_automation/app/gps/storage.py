@@ -57,6 +57,27 @@ CREATE TABLE IF NOT EXISTS video_cameras (
     url TEXT NOT NULL,
     vehicle_id TEXT DEFAULT '',
     enabled INTEGER DEFAULT 1,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    -- Camera health monitoring
+    last_check_at TIMESTAMPTZ,
+    last_online_at TIMESTAMPTZ,
+    consecutive_failures INTEGER DEFAULT 0,
+    total_failures INTEGER DEFAULT 0,
+    last_error TEXT DEFAULT '',
+    last_fps REAL DEFAULT 0,
+    last_bitrate INTEGER DEFAULT 0,
+    last_resolution TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS video_audit (
+    id BIGSERIAL PRIMARY KEY,
+    camera_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    username TEXT NOT NULL,
+    action TEXT NOT NULL,  -- grid, focus, fullscreen
+    channel INTEGER NOT NULL DEFAULT 1,
+    vehicle_id TEXT DEFAULT '',
+    ip TEXT DEFAULT '',
+    duration_s INTEGER DEFAULT 0,
     created_at TIMESTAMPTZ DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS gps_geofences (
@@ -130,6 +151,9 @@ def _migrate() -> None:
     Bundan tashqari 12 xonali IMEI'li qatorlar (JT808 kamera BCD 6 bayt)
     'camera' deb belgilanadi — ilgari noto'g'ri 'teltonika' bo'lib yozilgan
     bo'lsa tuzatiladi. Teltonika IMEI 15 xonali, shu sababli tegilmaydi.
+
+    `video_cameras` — health ustunlari (last_check_at va h.k.) eski
+    bazalarda yo'q bo'ladi, qo'shib qo'yiladi.
     """
     st = _st()
     try:
@@ -155,6 +179,34 @@ def _migrate() -> None:
             log.info("GPS: %s ta 12-xonali IMEI 'camera' deb belgilandi", n)
     except Exception:  # noqa: BLE001
         log.exception("GPS: 12-xonali IMEI -> camera migratsiyasi bajarilmadi")
+
+    try:
+        health_cols = (
+            ("last_check_at", "TIMESTAMPTZ"),
+            ("last_online_at", "TIMESTAMPTZ"),
+            ("consecutive_failures", "INTEGER DEFAULT 0"),
+            ("total_failures", "INTEGER DEFAULT 0"),
+            ("last_error", "TEXT DEFAULT ''"),
+            ("last_fps", "REAL DEFAULT 0"),
+            ("last_bitrate", "INTEGER DEFAULT 0"),
+            ("last_resolution", "TEXT DEFAULT ''"),
+        )
+        if getattr(st.db, "driver", "") == "sqlite":
+            have = {str(r.get("name") or "")
+                    for r in st.db.query("PRAGMA table_info(video_cameras)")}
+            if have:
+                for col, typ in health_cols:
+                    if col not in have:
+                        st.db.execute(
+                            "ALTER TABLE video_cameras ADD COLUMN "
+                            + col + " " + typ)
+        else:
+            for col, typ in health_cols:
+                st.db.execute(
+                    "ALTER TABLE video_cameras ADD COLUMN IF NOT EXISTS "
+                    + col + " " + typ)
+    except Exception:  # noqa: BLE001
+        log.exception("GPS: video_cameras health ustunlari migratsiyasi bajarilmadi")
 
 
 def purge_old_positions() -> int:
@@ -470,8 +522,10 @@ def list_cameras() -> list:
     if not st.enabled:
         return []
     return st.db.query(
-        "SELECT id, name, source_type, url, vehicle_id, enabled "
-        "FROM video_cameras ORDER BY id"
+        """SELECT id, name, source_type, url, vehicle_id, enabled,
+                  last_check_at, last_online_at, consecutive_failures,
+                  total_failures, last_error, last_fps, last_bitrate, last_resolution
+           FROM video_cameras ORDER BY id"""
     )
 
 
@@ -481,12 +535,57 @@ def add_camera(name: str, url: str, source_type: str = "hls",
     if not st.enabled:
         return 0
     st.db.execute(
-        "INSERT INTO video_cameras (name, source_type, url, vehicle_id) "
-        "VALUES (%s,%s,%s,%s)",
+        """INSERT INTO video_cameras (name, source_type, url, vehicle_id,
+              consecutive_failures, total_failures, last_error, last_fps, last_bitrate, last_resolution)
+           VALUES (%s,%s,%s,%s, 0, 0, '', 0, 0, '')""",
         (name, source_type, url, vehicle_id),
     )
     rows = st.db.query("SELECT MAX(id) AS id FROM video_cameras", limit=1)
     return int(rows[0]["id"]) if rows else 0
+
+
+def update_camera_health(camera_id: int, success: bool, error: str = "",
+                         fps: float = 0, bitrate: int = 0, resolution: str = "") -> None:
+    """Update camera health metrics after stream check."""
+    st = _st()
+    if not st.enabled:
+        return
+    now = datetime.now(timezone.utc)
+    if success:
+        st.db.execute(
+            """UPDATE video_cameras SET
+                last_check_at = %s, last_online_at = %s,
+                consecutive_failures = 0, last_error = '',
+                last_fps = %s, last_bitrate = %s, last_resolution = %s
+                WHERE id = %s""",
+            (now, now, fps, bitrate, resolution, camera_id),
+        )
+    else:
+        st.db.execute(
+            """UPDATE video_cameras SET
+                last_check_at = %s,
+                consecutive_failures = consecutive_failures + 1,
+                total_failures = total_failures + 1,
+                last_error = %s
+                WHERE id = %s""",
+            (now, error[:500], camera_id),
+        )
+
+
+def get_camera_health(camera_id: int) -> dict | None:
+    """Get camera health metrics."""
+    st = _st()
+    if not st.enabled:
+        return None
+    rows = st.db.query(
+        """SELECT id, name, source_type, vehicle_id, enabled,
+                  last_check_at, last_online_at, consecutive_failures,
+                  total_failures, last_error, last_fps, last_bitrate, last_resolution
+           FROM video_cameras WHERE id = %s""",
+        (camera_id,), limit=1)
+    if not rows:
+        return None
+    return dict(rows[0])
 
 
 def delete_camera(camera_id: int) -> None:
@@ -494,6 +593,20 @@ def delete_camera(camera_id: int) -> None:
     if not st.enabled:
         return
     st.db.execute("DELETE FROM video_cameras WHERE id = %s", (camera_id,))
+
+
+def log_video_audit(camera_id: int, user_id: int, username: str, action: str,
+                    channel: int = 1, vehicle_id: str = "", ip: str = "",
+                    duration_s: int = 0) -> None:
+    """Log video viewing action to audit table."""
+    st = _st()
+    if not st.enabled:
+        return
+    st.db.execute(
+        """INSERT INTO video_audit (camera_id, user_id, username, action, channel, vehicle_id, ip, duration_s)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+        (camera_id, user_id, username, action, channel, vehicle_id, ip, duration_s)
+    )
 
 
 def bind_device(imei: str, vehicle_id: str, name: str = "") -> bool:

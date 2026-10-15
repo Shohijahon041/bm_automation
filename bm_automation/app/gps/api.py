@@ -242,6 +242,14 @@ class GpsHandler(BaseHTTPRequestHandler):
                 return str(cam.get("vehicle_id") or "") in allowed
         return False
 
+    def _sign_video_token(self, cam_id: int, action: str, ttl_s: int = 300) -> str:
+        """Video oqimi uchun imzoli token yaratadi (1-5 daqiqa)."""
+        import hmac, hashlib, secrets
+        payload = f"{cam_id}|{action}|{int(time.time()) + ttl_s}"
+        secret = (os.environ.get("VIDEO_TOKEN_SECRET") or "dev-secret").encode()
+        sig = hmac.new(secret, payload.encode(), hashlib.sha256).hexdigest()
+        return f"{payload}|{sig}"
+
     def _require_admin(self) -> bool:
         """Yozish amallari faqat ADMIN uchun (403 bo'lsa javob yuborilgan)."""
         if self._session_admin():
@@ -421,6 +429,41 @@ class GpsHandler(BaseHTTPRequestHandler):
             elif path == "/api/video/cameras":
                 cams = self._only_vehicles(storage.list_cameras(), vehicles)
                 self._json({"ok": True, "count": len(cams), "cameras": cams})
+            elif path == "/api/video/grid":
+                # Video setka: bitta kanal bo'yicha barcha avtobuslar
+                channel = int((qs.get("channel") or ["1"])[0] or 1)
+                page = int((qs.get("page") or ["1"])[0] or 1)
+                page_size = int((qs.get("page_size") or ["25"])[0] or 25)
+                cams = self._only_vehicles(storage.list_cameras(), vehicles)
+                result = []
+                for cam in cams:
+                    cam_id = cam.get("id")
+                    if not cam_id:
+                        continue
+                    # Qisqa muddatli token (5 daqiqa)
+                    token = self._sign_video_token(cam_id, "grid", 300)
+                    result.append({
+                        "camera_id": cam_id,
+                        "name": cam.get("name"),
+                        "source_type": cam.get("source_type"),
+                        "vehicle_id": cam.get("vehicle_id"),
+                        "plate_number": cam.get("plate_number"),
+                        "token": token,
+                        "channel": channel,
+                        "status": "online",
+                    })
+                total = len(result)
+                start = (page - 1) * page_size
+                end = start + page_size
+                self._json({
+                    "ok": True,
+                    "channel": channel,
+                    "page": page,
+                    "page_size": page_size,
+                    "total": total,
+                    "pages": (total + page_size - 1) // page_size,
+                    "items": result[start:end],
+                })
             elif path == "/api/video/relay":
                 relays = relay.status()
                 if vehicles is not None:
@@ -660,7 +703,7 @@ class GpsHandler(BaseHTTPRequestHandler):
                     source_type=src_type,
                     vehicle_id=str(payload.get("vehicle_id") or "").strip(),
                 )
-                # RTSP kamera → relay darhol ko'tariladi (fon tredi ham nazorat qiladi)
+                # RTSP kamera → relay darhol ko'tariladi (fon tercero ham nazorat qiladi)
                 if src_type == "rtsp" and cid:
                     try:
                         relay.ensure_for_camera({
@@ -669,7 +712,18 @@ class GpsHandler(BaseHTTPRequestHandler):
                         })
                     except Exception:  # noqa: BLE001
                         log.exception("relay darhol ishga tushmadi (kamera %s)", cid)
-                self._json({"ok": True, "id": cid})
+                # Yangi kamera bilan bog'liq statistika yangilash
+                try:
+                    storage.update_camera_health(cid, success=True)
+                    self._json({"ok": True, "id": cid, "health": storage.get_camera_health(cid)})
+                    # Faqiriy statistika: kamera faol yoki yo'qligini tekshirish
+                    from ..utils.logger import get_logger
+                    log.info("Kamera qo'shildi: id=%s, name=%s, url=%s, source_type=%s, vehicle_id=%s", cid, name, url, src_type, payload.get("vehicle_id"))
+                except Exception as e:
+                    log.exception("Kamera qo'shishda xatolik")
+                # Yangi kamerni statistikaga to'liq yangilash
+                storage.update_camera_health(cid, success=True)
+                self._json({"ok": True, "id": cid, "health": storage.get_camera_health(cid)})
             elif path == "/api/gps/daily/send":
                 # Kunlik hisobotni Telegram'ga qo'lda yuborish (admin).
                 raw_day = str(payload.get("day") or "").strip()

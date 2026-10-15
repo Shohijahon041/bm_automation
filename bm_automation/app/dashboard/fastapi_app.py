@@ -78,12 +78,17 @@ def create_app() -> FastAPI:
         openapi_url="/api/openapi.json",
     )
 
+    _cors_origins = [
+        o.strip() for o in os.environ.get("DASHBOARD_CORS_ORIGINS", "").split(",")
+        if o.strip()
+    ] or ["http://localhost:8080", "http://127.0.0.1:8080"]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=_cors_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
+        max_age=3600,
     )
 
     @app.middleware("http")
@@ -133,28 +138,11 @@ def create_app() -> FastAPI:
             (client.host or "").lower().rstrip(".") in ("127.0.0.1", "::1", "localhost")
             or (client.host or "").startswith("127.")
         )
-        if dt and is_local:
-            token_lit = json.dumps(dt)
-            script = (
-                "<script>(function(){try{var t=" + token_lit + ";"
-                'if(t){localStorage.setItem("bm-token",t);'
-                'document.cookie="bm_token="+encodeURIComponent(t)'
-                '+"; path=/; SameSite=Lax";}}catch(e){}})();'
-                "</script>"
-            ).encode("utf-8")
-            head_idx = body.lower().find(b"<head")
-            if head_idx >= 0:
-                tag_end = body.find(b">", head_idx)
-                if tag_end >= 0:
-                    body = body[:tag_end + 1] + script + body[tag_end + 1:]
-                else:
-                    body = script + body
-            else:
-                body = script + body
         resp = HTMLResponse(body)
         if dt and is_local:
-            resp.set_cookie("bm_token", dt, path="/", samesite="lax",
-                            secure=request_is_https(request))
+            # Token faqat cookie'da (httponly), HTML body'ga emas — XSS/leak oldini olish.
+            resp.set_cookie("bm_token", dt, path="/", httponly=True,
+                            samesite="lax", secure=request_is_https(request))
         return resp
 
     if WEB_DIR.exists():

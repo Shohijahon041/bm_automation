@@ -35,6 +35,14 @@ _RAW_TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("subscription_plan", "TEXT NOT NULL DEFAULT 'basic'"),
         ("subscription_expire_date", "TEXT NOT NULL DEFAULT ''"),
         ("status", "TEXT NOT NULL DEFAULT 'active'"),
+        # SaaS sotish uchun: har kompaniya uchun alohida sozlamalar
+        ("max_users", "INTEGER NOT NULL DEFAULT 5"),
+        ("max_drivers", "INTEGER NOT NULL DEFAULT 50"),
+        ("max_routes", "INTEGER NOT NULL DEFAULT 10"),
+        ("features", "TEXT NOT NULL DEFAULT '{}'"),
+        ("contact_telegram", "TEXT NOT NULL DEFAULT ''"),
+        ("contact_phone", "TEXT NOT NULL DEFAULT ''"),
+        ("notes", "TEXT NOT NULL DEFAULT ''"),
     ],
     "profiles": [
         ("external_id", "TEXT NOT NULL DEFAULT ''"),
@@ -322,6 +330,24 @@ _RAW_TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("active", "INTEGER NOT NULL DEFAULT 1"),
         ("data", "TEXT NOT NULL DEFAULT '{}'"),
     ],
+    # Video kameralar (HLS/RTSP) — har bir kamera avtobusga bog'lanadi.
+    "video_cameras": [
+        ("name", "TEXT NOT NULL"),
+        ("source_type", "TEXT NOT NULL DEFAULT 'hls'"),
+        ("url", "TEXT NOT NULL"),
+        ("vehicle_id", "TEXT NOT NULL DEFAULT ''"),
+        ("enabled", "INTEGER NOT NULL DEFAULT 1"),
+        ("data", "TEXT NOT NULL DEFAULT '{}'"),
+    ],
+    # Video ko'rish auditi — har bir ko'rish yoziladi.
+    "video_audit": [
+        ("camera_id", "BIGINT NOT NULL"),
+        ("user_id", "BIGINT NOT NULL"),
+        ("username", "TEXT NOT NULL"),
+        ("action", "TEXT NOT NULL"),  # live, archive, export
+        ("ip", "TEXT NOT NULL DEFAULT ''"),
+        ("duration_s", "INTEGER NOT NULL DEFAULT 0"),
+    ],
 }
 
 # ---------------------------------------------------------------------------
@@ -339,7 +365,7 @@ TENANT_TABLES: tuple[str, ...] = (
     "driver_work_logs", "driver_fines", "driver_appeals", "duties",
     "schedules", "waybills", "route_daily", "trips", "reports",
     "dispatcher_routes", "documents", "sms_log", "sms_route_flags",
-    "avans", "staff", "dashboard_users",
+    "avans", "staff", "dashboard_users", "video_cameras", "video_audit",
 )
 
 _TENANT_COLUMNS: list[tuple[str, str]] = [
@@ -489,6 +515,21 @@ _MIGRATIONS: list[str] = [
     "trip_passed INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE driver_work_logs ADD COLUMN IF NOT EXISTS "
     "trip_approved INTEGER NOT NULL DEFAULT 0",
+    # SaaS kompaniya reyestri ustunlari (eski bazalarda yo'q edi).
+    "ALTER TABLE companies ADD COLUMN IF NOT EXISTS "
+    "max_users INTEGER NOT NULL DEFAULT 5",
+    "ALTER TABLE companies ADD COLUMN IF NOT EXISTS "
+    "max_drivers INTEGER NOT NULL DEFAULT 50",
+    "ALTER TABLE companies ADD COLUMN IF NOT EXISTS "
+    "max_routes INTEGER NOT NULL DEFAULT 10",
+    "ALTER TABLE companies ADD COLUMN IF NOT EXISTS "
+    "features TEXT NOT NULL DEFAULT '{}'",
+    "ALTER TABLE companies ADD COLUMN IF NOT EXISTS "
+    "contact_telegram TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE companies ADD COLUMN IF NOT EXISTS "
+    "contact_phone TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE companies ADD COLUMN IF NOT EXISTS "
+    "notes TEXT NOT NULL DEFAULT ''",
 ]
 
 # Tenant migratsiyasi (idempotent): eski bazalarga company_id/created_by/

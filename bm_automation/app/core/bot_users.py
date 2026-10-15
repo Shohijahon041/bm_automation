@@ -168,7 +168,7 @@ def remove_user(chat_id: int) -> bool:
     with _LOCK:
         _load()
         if key in _CACHE:
-            del _CACHE[key]
+            _CACHE[key]["active"] = False
             _save()
             return True
     return False

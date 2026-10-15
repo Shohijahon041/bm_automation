@@ -166,4 +166,6 @@ TABLES = [
     "staff",
     "driver_appeals",
     "dashboard_users",
+    "video_cameras",
+    "video_audit",
 ]
