@@ -1823,3 +1823,155 @@ def test_user_photo_cached_redirect(env, monkeypatch):
         assert r.status_code == 307
         assert r.headers["location"] == "https://t.me/p.jpg"
     assert calls == [555]
+
+# ------------------------------------------------ per-user bo'limlar (pages)
+#
+# Har bir dashboard foydalanuvchisiga qaysi bo'limlar ishlashini aniq belgilash
+# mumkin: `dashboard_users.data` JSON'idagi `pages` ro'yxati. Ro'yxat bo'lmasa
+# (None) — rol bo'yicha standart (eski xatti-harakat). Ro'yxat — roldan
+# KENGAYTIRA olmaydi, faqat qisqartiradi; ADMIN uchun qo'llanmaydi.
+
+def _pages_user(env, username, role, pages, company="XTEST", password="to'g'ri"):
+    """Foydalanuvchi yaratib, unga bo'limlar ro'yxatini yozadi."""
+    st = env
+    uid = st.dashboard_user_add(username, *deps.hash_password(password),
+                                role=role, company=company)
+    st.dashboard_user_update(
+        uid, data=json.dumps({"pages": pages}) if pages is not None else "{}")
+    return uid
+
+
+def _login_hdr(env, username, password="to'g'ri"):
+    _, _, cookies = _login(env, username, password)
+    return {"Cookie": f"bm_session={cookies['bm_session']}"}
+
+
+def _json_hdr(env, username, password="to'g'ri"):
+    return {**_login_hdr(env, username, password),
+            "Content-Type": "application/json"}
+
+
+def _post_users(env, hdr, payload):
+    body = json.dumps(payload).encode()
+    return _request(env, "/api/dashboard-users", method="POST",
+                    headers={**hdr, "Content-Length": str(len(body))},
+                    body=body)
+
+
+def test_admin_creates_user_with_pages(env):
+    """CREATE'da bo'limlar saqlanadi va ro'yxatda qaytadi."""
+    st = env
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"), role="ADMIN")
+    hdr = _json_hdr(env, "root")
+    status, data, _ = _post_users(env, hdr, {
+        "action": "create", "username": "ali", "role": "MANAGER",
+        "company": "XTEST", "password": "1234", "pages": ["drivers", "video"]})
+    assert status == 200 and data.get("ok") is True
+    row = st.dashboard_user_get(username="ali")
+    assert json.loads(row["data"])["pages"] == ["drivers", "video"]
+    status, lst, _ = _request(env, "/api/dashboard-users",
+                              headers=_login_hdr(env, "root"))
+    users = {u["username"]: u for u in lst["users"]}
+    assert users["ali"]["pages"] == ["drivers", "video"]
+    assert users["root"]["pages"] is None            # ADMIN — cheklovsiz
+
+
+def test_me_returns_effective_pages(env):
+    """Sessiya egasi /api/me'da o'z bo'limlarini ko'radi (None = standart)."""
+    _pages_user(env, "ali", "MANAGER", ["drivers", "alerts"])
+    _pages_user(env, "vali", "MANAGER", None)
+    _, me1, _ = _request(env, "/api/me", headers=_login_hdr(env, "ali"))
+    assert me1["pages"] == ["drivers", "alerts"]
+    assert "overview" in (me1.get("pages_all") or [])
+    _, me2, _ = _request(env, "/api/me", headers=_login_hdr(env, "vali"))
+    assert me2["pages"] is None
+
+
+def test_pages_block_section_api(env):
+    """Ro'yxatda yo'q bo'lim API'si 403 (menyu yashirish bilan cheklanmaydi)."""
+    _pages_user(env, "ali", "MANAGER", ["drivers"])
+    hdr = _login_hdr(env, "ali")
+    status, data, _ = _request(env, "/api/electricity", headers=hdr)
+    assert status == 403
+    assert "ruxsat" in str(data.get("error") or "").lower()
+    status, _, _ = _request(env, "/api/drivers", headers=hdr)
+    assert status != 403
+
+
+def test_pages_allow_listed_section_api(env):
+    """Ro'yxatda bor bo'lim ochiq, boshqasi yopiq (ikkala tomon ham)."""
+    _pages_user(env, "ali", "MANAGER", ["electricity"])
+    hdr = _login_hdr(env, "ali")
+    status, _, _ = _request(env, "/api/electricity", headers=hdr)
+    assert status != 403
+    status, _, _ = _request(env, "/api/drivers", headers=hdr)
+    assert status == 403
+
+
+def test_admin_role_ignores_pages(env):
+    """ADMIN uchun per-user ro'yxat qo'llanmaydi (to'liq kirish)."""
+    _pages_user(env, "boss", "ADMIN", ["overview"], company="")
+    hdr = _login_hdr(env, "boss")
+    _, me, _ = _request(env, "/api/me", headers=hdr)
+    assert me["pages"] is None
+    status, _, _ = _request(env, "/api/electricity", headers=hdr)
+    assert status != 403
+
+
+def test_super_user_ignores_pages(env, monkeypatch):
+    """Super admin uchun ham cheklov qo'llanmaydi."""
+    st = env
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"),
+                          role="ADMIN", data='{"super": true}')
+    st.dashboard_user_update(st.dashboard_user_get(username="root")["id"],
+                             data=json.dumps({"super": True,
+                                              "pages": ["overview"]}))
+    hdr = _login_hdr(env, "root")
+    _, me, _ = _request(env, "/api/me", headers=hdr)
+    assert me["pages"] is None
+
+
+def test_unknown_page_key_rejected(env):
+    """Noma'lum bo'lim kaliti jimgina qabul qilinmaydi."""
+    st = env
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"), role="ADMIN")
+    status, data, _ = _post_users(env, _json_hdr(env, "root"), {
+        "action": "create", "username": "ali", "role": "MANAGER",
+        "company": "XTEST", "password": "1234",
+        "pages": ["drivers", "yoq-bolim"]})
+    assert data.get("ok") is False
+    assert "Noma'lum bo'lim" in str(data.get("error") or "")
+    assert st.dashboard_user_get(username="ali") is None
+
+
+def test_pages_null_clears_and_missing_key_preserves(env):
+    """`pages: null` — cheklov olib tashlanadi; kalit yuborilmasa — saqlanadi."""
+    st = env
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"), role="ADMIN")
+    uid = _pages_user(env, "ali", "MANAGER", ["drivers"])
+    hdr = _json_hdr(env, "root")
+    status, data, _ = _post_users(env, hdr, {
+        "action": "update", "username": "ali", "role": "MANAGER",
+        "company": "XTEST"})
+    assert status == 200 and data.get("ok") is True
+    assert json.loads(st.dashboard_user_get(row_id=uid)["data"])["pages"] == [
+        "drivers"]
+    status, data, _ = _post_users(env, hdr, {
+        "action": "update", "username": "ali", "pages": None})
+    assert status == 200 and data.get("ok") is True
+    assert "pages" not in json.loads(st.dashboard_user_get(row_id=uid)["data"])
+
+
+def test_pages_update_keeps_other_data_keys(env):
+    """`data` JSON'idagi boshqa kalitlar (masalan super bayrog'i) saqlanadi."""
+    st = env
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"), role="ADMIN")
+    uid = st.dashboard_user_add("ali", *deps.hash_password("to'g'ri"),
+                                role="MANAGER", company="XTEST")
+    st.dashboard_user_update(uid, data=json.dumps({"izoh": "test"}))
+    status, data, _ = _post_users(env, _json_hdr(env, "root"), {
+        "action": "update", "username": "ali", "pages": ["drivers"]})
+    assert status == 200 and data.get("ok") is True
+    saved = json.loads(st.dashboard_user_get(row_id=uid)["data"])
+    assert saved["izoh"] == "test"
+    assert saved["pages"] == ["drivers"]

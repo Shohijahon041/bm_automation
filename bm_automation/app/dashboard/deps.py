@@ -33,6 +33,44 @@ _PBKDF2_ITERATIONS = 120_000
 
 _ROLE_RANK = {"VIEWER": 0, "DISPATCHER": 1, "MANAGER": 2, "DIRECTOR": 3, "ADMIN": 4}
 
+# Sahifa (bo'lim) kalitlari — frontend'dagi `PAGE_ROLES` bilan BIR XIL bo'lishi
+# shart. Har bir dashboard foydalanuvchisiga shu kalitlardan iborat ro'yxat
+# biriktirilishi mumkin: ro'yxat bo'lsa — foydalanuvchi FAQAT shu bo'limlarni
+# ko'radi (rol beradigan imkoniyatlar ichidan qisqartiriladi, kengaytirilmaydi),
+# ro'yxat yo'q bo'lsa — faqat rol bo'yicha (eski xatti-harakat).
+PAGE_KEYS: tuple[str, ...] = (
+    "overview", "dispatch", "routes", "vehicles", "drivers", "appeals",
+    "alerts", "performance", "top-performance", "electricity", "rejects",
+    "brutto", "tariffs", "insights", "audit", "myai", "gps", "video",
+    "sms", "admin", "logs", "disk", "documents", "users", "settings",
+    "dusers",
+)
+
+# API prefiksi -> sahifa kaliti. Faqat sahifaga xos (1:1) endpointlar
+# kiritilgan: umumiy agregat endpointlar (`/api/summary`, `/api/routes`,
+# `/api/vehicles`, `/api/attendance`) bir nechta sahifaga xizmat qiladi,
+# ularni sahifa bo'yicha to'sish noto'g'ri bo'lardi.
+PAGE_API_PREFIXES: dict[str, str] = {
+    "/api/drivers": "drivers",
+    "/api/appeals": "appeals",
+    "/api/electricity": "electricity",
+    "/api/rejects": "rejects",
+    "/api/brutto": "brutto",
+    "/api/route-skm": "tariffs",
+    "/api/kmrate": "tariffs",
+    "/api/insights": "insights",
+    "/api/myai": "myai",
+    "/api/sms": "sms",
+    "/api/admin": "admin",
+    "/api/logs": "logs",
+    "/api/disk": "disk",
+    "/api/documents": "documents",
+    "/api/users": "users",
+    "/api/settings": "settings",
+    "/api/dashboard-users": "dusers",
+    "/api/video": "video",
+}
+
 _GET_ROLE_MIN: dict[str, int] = {
     "/api/users": 4, "/api/users/": 4, "/api/group-stats": 4,
     "/api/dispatchers": 4, "/api/disk": 4, "/api/backup": 4,
@@ -322,6 +360,67 @@ def is_super_username(username: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Foydalanuvchi bo'limlari (per-user ruxsatlar)
+# ---------------------------------------------------------------------------
+
+def page_for_path(path: str) -> str:
+    """API yo'li qaysi sahifaga tegishli (topilmasa '')."""
+    p = str(path or "")
+    for prefix, page in PAGE_API_PREFIXES.items():
+        if p.startswith(prefix):
+            return page
+    return ""
+
+
+def user_pages(username: str) -> list | None:
+    """Foydalanuvchi uchun aniq belgilangan bo'limlar (None = rol bo'yicha).
+
+    `dashboard_users.data` JSON'idagi `pages` ro'yxati o'qiladi. Ro'yxat
+    bo'lmasa yoki noto'g'ri bo'lsa — None (cheklov yo'q).
+    """
+    u = str(username or "").strip().lower()
+    if not u or is_super_username(u):
+        return None
+    try:
+        from ..db.storage import get_storage
+        row = get_storage().dashboard_user_get(username=u)
+    except Exception:  # noqa: BLE001
+        return None
+    if not row:
+        return None
+    try:
+        data = json.loads(str(row.get("data") or "{}"))
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    pages = data.get("pages")
+    if not isinstance(pages, list):
+        return None
+    return [str(p) for p in pages if str(p) in PAGE_KEYS]
+
+
+def effective_pages(scope: dict | None) -> list | None:
+    """Sessiya uchun amalda ishlaydigan bo'limlar (None = cheklovsiz)."""
+    if not scope or scope.get("is_admin"):
+        return None
+    if str(scope.get("role") or "").upper() == "ADMIN":
+        return None
+    pages = scope.get("pages")
+    if not isinstance(pages, list):
+        return None
+    return [str(p) for p in pages if str(p) in PAGE_KEYS]
+
+
+def page_allowed(scope: dict | None, page: str) -> bool:
+    """Sessiya shu bo'limga kira oladimi (rol + per-user ro'yxati)."""
+    if not scope or scope.get("is_admin"):
+        return True
+    pages = effective_pages(scope)
+    return pages is None or str(page) in pages
+
+
+# ---------------------------------------------------------------------------
 # Bootstrap admin
 # ---------------------------------------------------------------------------
 
@@ -409,6 +508,11 @@ async def resolve_scope(
     token = _session_token_from_request(request, creds)
     session = session_user(token) if token else None
     if session:
+        # Per-user bo'limlar ro'yxati har so'rovda o'qiladi: admin sozlamani
+        # o'zgartirsa darhol kuchga kiradi (sessiya qayta kirishni talab
+        # qilmaydi). ADMIN / super uchun cheklov yo'q.
+        session = dict(session)
+        session["pages"] = user_pages(session.get("username"))
         return session
 
     dt = _dashboard_token()
@@ -447,6 +551,13 @@ class Scope:
             rank = _ROLE_RANK.get(scope.get("role") or "VIEWER", 0)
             if rank < min_needed:
                 raise HTTPException(403, "Sizda bu bo'limga ruxsat yo'q")
+            # Per-user bo'limlar: foydalanuvchiga aniq ro'yxat berilgan bo'lsa,
+            # sahifaga xos API'lar ham yopiladi (faqat menyuni yashirish
+            # yetarli emas — to'g'ridan-to'g'ri so'rov ham bloklanadi).
+            page = page_for_path(path)
+            if page and not page_allowed(scope, page):
+                raise HTTPException(
+                    403, f"«{page}» bo'limiga ruxsat berilmagan")
         request.state.scope = scope
         return scope
 

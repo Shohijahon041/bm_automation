@@ -1349,7 +1349,7 @@ class Storage:
     def dashboard_user_update(self, row_id: int, username: str = None,
                               salt: str = None, password_hash: str = None,
                               role: str = None, company: str = None,
-                              active: int = None) -> bool:
+                              active: int = None, data: str = None) -> bool:
         """Foydalanuvchi ma'lumotlarini yangilaydi (None = o'zgartirilmaydi)."""
         if not self.enabled:
             return False
@@ -1384,6 +1384,10 @@ class Storage:
         if active is not None:
             sets.append(f"active = {self.db.ph}")
             params.append(1 if active else 0)
+        if data is not None:
+            # `data` — JSON (per-user bo'limlar ro'yxati, super bayrog'i va h.k.)
+            sets.append(f"data = {self.db.ph}")
+            params.append(str(data))
         if not sets:
             return False
         sets.append(f"updated_at = {self.db.ph}")

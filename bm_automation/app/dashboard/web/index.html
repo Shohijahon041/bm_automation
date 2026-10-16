@@ -2194,13 +2194,24 @@ body.auth-locked .auth-overlay { display: flex; }
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-bottom:10px">
               <input class="input" id="du-name" placeholder="Login *" autocomplete="off" spellcheck="false">
               <input class="input" id="du-pass" placeholder="Parol *" type="password" autocomplete="new-password">
-              <select class="select" id="du-role" onchange="syncUserCompanyState()">
+              <select class="select" id="du-role" onchange="syncUserCompanyState();duRoleChanged()">
                 <option value="DISPATCHER">Dispetcher</option>
                 <option value="MANAGER">Meneger</option>
                 <option value="DIRECTOR">Rahbar</option>
                 <option value="ADMIN">Admin</option>
               </select>
               <select class="select" id="du-company"><option value="">Barchasi</option></select>
+            </div>
+            <div id="du-pages-wrap" style="margin-bottom:10px">
+              <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+                <b style="font:600 11px 'IBM Plex Mono',monospace;color:var(--ink)">BO'LIMLAR</b>
+                <span class="hint" id="du-pages-hint">Rol bo'yicha standart (cheklovsiz)</span>
+                <span style="flex:1"></span>
+                <button class="button ghost" type="button" style="font-size:10px;padding:3px 8px" onclick="duPagesAll(true)">BARCHASI</button>
+                <button class="button ghost" type="button" style="font-size:10px;padding:3px 8px" onclick="duPagesAll(false)">HECH BIRI</button>
+                <button class="button ghost" type="button" style="font-size:10px;padding:3px 8px" onclick="duPagesReset()">STANDART</button>
+              </div>
+              <div id="du-pages" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:4px 12px;border:1px solid var(--line);border-radius:10px;padding:10px;max-height:220px;overflow:auto"></div>
             </div>
             <div style="display:flex;gap:10px;align-items:center;justify-content:flex-end">
               <span class="hint" id="du-status"></span>
@@ -2419,11 +2430,31 @@ const PAGE_ROLES = {
 };
 const ROLE_LABEL = {VIEWER:"Kuzatuvchi", DISPATCHER:"Dispetcher",
   MANAGER:"Meneger", DIRECTOR:"Rahbar", ADMIN:"Admin"};
+/* Bo'lim nomlari (Dashboard foydalanuvchilari formasida tanlanadi) */
+const PAGE_LABEL = {
+  overview:"Umumiy", dispatch:"Dispatch", routes:"Yo'nalishlar",
+  vehicles:"Avtobuslar", drivers:"Haydovchilar", appeals:"Murojaatlar",
+  alerts:"Ogohlantirishlar", performance:"Ko'rsatkichlar",
+  'top-performance':"Top natijalar", electricity:"Elektr",
+  rejects:"Qabul qilinmagan", brutto:"Brutto", tariffs:"Tariflar",
+  insights:"AI tahlil", audit:"Audit", myai:"MyAI", gps:"GPS",
+  video:"Video", sms:"SMS", admin:"Admin panel", logs:"Loglar",
+  disk:"Disk", documents:"Xujjatlar", users:"Xodimlar",
+  settings:"Sozlamalar", dusers:"Foydalanuvchilar"
+};
+const DU_PAGES = Object.keys(PAGE_ROLES);
 let me = null;
 let _mePromise = null;
 
 function myRank() { return ROLE_RANK[(me && me.role) || ""] || 0; }
-function hasPage(name) { const need = PAGE_ROLES[name]; return need === undefined || myRank() >= need; }
+function hasPage(name) {
+  const need = PAGE_ROLES[name];
+  if (need !== undefined && myRank() < need) return false;
+  // Per-user bo'limlar: foydalanuvchiga aniq ro'yxat berilgan bo'lsa faqat
+  // shu bo'limlar ishlaydi (rol — yuqori chegara, ro'yxat uni qisqartiradi).
+  if (me && Array.isArray(me.pages)) return me.pages.indexOf(name) >= 0;
+  return true;
+}
 function roleLabel(r) { return ROLE_LABEL[r] || r || ""; }
 async function refreshMe() {
   try {
@@ -4613,6 +4644,76 @@ function populateUserCompany() {
   }
   syncUserCompanyState();
 }
+/* ---- Dashboard foydalanuvchisi: bo'limlar (per-user ruxsat) ----
+   Rol — YUQORI chegara: tanlash mumkin bo'lgan bo'limlar faqat rol ruxsat
+   berganlari. "Standart" = cheklov yo'q (rol bo'yicha), "aniq tanlangan" =
+   foydalanuvchi faqat shu bo'limlarni ko'radi. */
+let duPagesMode = "default";
+function duRoleValue() {
+  const sel = document.getElementById("du-role");
+  return (sel && sel.value) || "DISPATCHER";
+}
+function duPagesHint() {
+  const el = document.getElementById("du-pages-hint");
+  if (!el) return;
+  const role = duRoleValue();
+  if (role === "ADMIN") { el.textContent = "Admin — barcha bo'limlar ochiq (cheklov qo'llanmaydi)"; return; }
+  if (duPagesMode === "default") { el.textContent = "Rol bo'yicha standart (cheklovsiz)"; return; }
+  const n = duPagesCollect().length;
+  el.textContent = n
+    ? "Aniq tanlangan: " + n + " bo'lim ishlaydi"
+    : "Hech bir bo'lim tanlanmagan (faqat Umumiy ochiladi)";
+}
+function renderDuPages(pages) {
+  const box = document.getElementById("du-pages");
+  if (!box) return;
+  const role = duRoleValue();
+  const roleRank = ROLE_RANK[role] || 0;
+  const isAdmin = role === "ADMIN";
+  const picked = Array.isArray(pages) ? pages.slice() : null;
+  duPagesMode = picked ? "explicit" : "default";
+  box.innerHTML = DU_PAGES.map(function (k) {
+    const need = PAGE_ROLES[k] === undefined ? 0 : PAGE_ROLES[k];
+    const locked = !isAdmin && roleRank < need;
+    const checked = isAdmin || (!locked && (!picked || picked.indexOf(k) >= 0));
+    const tip = locked
+      ? "Rol yetarli emas (min: " + (ROLE_LABEL[minRoleOf(need)] || need) + ")"
+      : "Bo'limga ruxsat";
+    return '<label title="' + esc(tip) + '" style="display:flex;align-items:center;gap:6px;font:11px \'IBM Plex Mono\',monospace;color:var(--ink);opacity:' + (locked ? ".45" : "1") + '">'
+      + '<input type="checkbox" data-page-key="' + k + '" ' + (checked ? "checked" : "")
+      + (locked || isAdmin ? " disabled" : "") + ' onchange="duPagesTouched()"> '
+      + esc(PAGE_LABEL[k] || k) + '</label>';
+  }).join("");
+  duPagesHint();
+}
+function minRoleOf(rank) {
+  return Object.keys(ROLE_RANK).find(function (r) { return ROLE_RANK[r] === rank; }) || "";
+}
+function duPagesCollect() {
+  const out = [];
+  document.querySelectorAll("#du-pages input[data-page-key]").forEach(function (el) {
+    if (el.checked) out.push(el.getAttribute("data-page-key"));
+  });
+  return out;
+}
+function duPagesTouched() { duPagesMode = "explicit"; duPagesHint(); }
+function duPagesAll(on) {
+  document.querySelectorAll("#du-pages input[data-page-key]").forEach(function (el) {
+    if (el.disabled) return;
+    el.checked = !!on;
+  });
+  duPagesMode = "explicit";
+  duPagesHint();
+}
+function duPagesReset() { renderDuPages(null); }
+function duRoleChanged() {
+  renderDuPages(duPagesMode === "explicit" ? duPagesCollect() : null);
+}
+function duPagesBadge(u) {
+  if (!Array.isArray(u.pages)) return '';
+  return ' <span style="color:var(--amber)">\u00b7 ' + u.pages.length + " bo'lim</span>";
+}
+
 function resetUserForm() {
   const f = document.getElementById("user-add-form");
   if (f) f.dataset.edit = "";
@@ -4628,6 +4729,7 @@ function resetUserForm() {
   if (status) status.textContent = "";
   populateUserRole();
   populateUserCompany();
+  renderDuPages(null);
 }
 function toggleUserForm() {
   const f = document.getElementById("user-add-form");
@@ -4663,6 +4765,9 @@ function editUser(idx) {
     role.disabled = true;
     role.value = u.role;
   }
+  // Bo'limlar: foydalanuvchida aniq ro'yxat bo'lsa — shu tanlangan holatda
+  // ko'rsatiladi, aks holda "standart" (rol bo'yicha cheklovsiz).
+  renderDuPages(Array.isArray(u.pages) ? u.pages : null);
   const status = document.getElementById("du-status");
   if (status) status.textContent = role ? (ROLE_LABEL[role.value] || role.value) + " — rol/kompaniyani o'zgartiring" : "";
   if (f) f.scrollIntoView({behavior: "smooth", block: "center"});
@@ -4727,7 +4832,7 @@ function renderDashboardUsers() {
     h += '<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--bg-deep)">'
       + '<div style="flex:1;min-width:0">'
       + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><b style="font:600 13px \'IBM Plex Mono\',monospace;color:var(--ink)">' + esc(u.username) + '</b>' + userStatusBadge(u) + superBadge(u) + '</div>'
-      + '<div style="font:11px \'IBM Plex Mono\',monospace;color:var(--muted)">' + esc(role) + ' &middot; ' + esc(company) + '</div>'
+      + '<div style="font:11px \'IBM Plex Mono\',monospace;color:var(--muted)">' + esc(role) + ' &middot; ' + esc(company) + duPagesBadge(u) + '</div>'
       + '</div>'
       + '<label style="font:10px \'IBM Plex Mono\',monospace;color:var(--muted);display:flex;align-items:center;gap:6px"><input type="checkbox" id="du-a-' + i + '" ' + (u.active ? 'checked' : '') + ' onchange="toggleUser(' + i + ', this.checked)"> Faol</label>'
       + buttons
@@ -4752,6 +4857,11 @@ async function addUserForm() {
   const payload = { action: edit ? "update" : "create", username, company };
   if (role) payload.role = role;
   if (password) payload.password = password;
+  // Bo'limlar: "aniq tanlangan" bo'lsa ro'yxat yuboriladi; "standart" bo'lsa
+  // null (cheklov olib tashlanadi). Rol o'zgartirilmaydigan holatda (yuqori
+  // rol egasini tahrirlashda) va standart rejimda — tegmaymiz.
+  if (duPagesMode === "explicit") payload.pages = duPagesCollect();
+  else if (role) payload.pages = null;
   const d = await postJSON("/api/dashboard-users", payload);
   if (!d.ok) { if (status) status.textContent = d.error || "Xatolik"; return; }
   if (status) status.textContent = "";

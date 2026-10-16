@@ -9,7 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from ..deps import (
-    Scope, client_ip, create_session, drop_session, hash_password,
+    PAGE_KEYS, Scope, client_ip, create_session, drop_session,
+    effective_pages, hash_password,
     is_super_username, login_allowed, login_fail, login_success,
     resolve_scope, session_user, super_admin_names, verify_password,
     _ROLE_RANK, _session_token_from_request, _dashboard_token,
@@ -19,6 +20,60 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 router = APIRouter(tags=["auth"])
 _bearer = HTTPBearer(auto_error=False)
+
+
+def _clean_pages(raw) -> tuple[list | None, str]:
+    """Payload'dagi `pages`ni tekshiradi -> (ro'yxat|None, xato).
+
+    None/'' -> (None, ''): rol bo'yicha standart (cheklovsiz, eski holat).
+    Noma'lum kalit bo'lsa xato qaytadi (jimgina tashlab yuborilmaydi).
+    """
+    if raw is None or raw == "":
+        return None, ""
+    if not isinstance(raw, list):
+        return None, "Bo'limlar ro'yxati (array) bo'lishi kerak"
+    out: list[str] = []
+    bad: list[str] = []
+    for item in raw:
+        key = str(item or "").strip()
+        if not key:
+            continue
+        if key not in PAGE_KEYS:
+            bad.append(key)
+        elif key not in out:
+            out.append(key)
+    if bad:
+        return None, "Noma'lum bo'lim: " + ", ".join(sorted(set(bad))[:5])
+    return out, ""
+
+
+def _pages_data(cur_data: str, pages: list | None) -> str:
+    """`data` JSON'ida `pages`ni yangilaydi (boshqa kalitlar saqlanadi)."""
+    try:
+        data = json.loads(str(cur_data or "{}"))
+    except (TypeError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    if pages is None:
+        data.pop("pages", None)
+    else:
+        data["pages"] = list(pages)
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _row_pages(row: dict) -> list | None:
+    """Qatordagi `data.pages` (None = rol bo'yicha standart)."""
+    try:
+        data = json.loads(str((row or {}).get("data") or "{}"))
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    pages = data.get("pages")
+    if not isinstance(pages, list):
+        return None
+    return [str(p) for p in pages if str(p) in PAGE_KEYS]
 
 
 class LoginRequest(BaseModel):
@@ -89,6 +144,11 @@ async def me(request: Request, scope: dict = Depends(Scope(min_role=0))):
             "routeVariantId": str((profile or {}).get("routeVariantId") or ""),
         },
         "companies": [str(p.get("name") or "") for p in all_profiles()],
+        # Per-user bo'limlar: None = rol bo'yicha cheklovsiz; ro'yxat = faqat
+        # shu bo'limlar ishlaydi (frontend shu bo'yicha menyu/sahifalarni
+        # yashiradi, server esa sahifaga xos API'larni to'sadi).
+        "pages": effective_pages(scope),
+        "pages_all": list(PAGE_KEYS),
     }
 
 
@@ -118,6 +178,8 @@ async def list_dashboard_users(request: Request, scope: dict = Depends(Scope()))
             "company_route": str((profile or {}).get("routeName") or ""),
             "active": int(u.get("active") or 0) == 1,
             "super": uname in super_names,
+            # None = rol bo'yicha standart; ro'yxat = aniq tanlangan bo'limlar.
+            "pages": _row_pages(u),
         })
 
     if caller_is_admin:
@@ -196,10 +258,16 @@ async def manage_dashboard_users(request: Request, scope: dict = Depends(Scope()
                 return {"ok": False, "error": "Bu login allaqachon mavjud"}
             if len(password) < 4:
                 return {"ok": False, "error": "Parol kamida 4 belgi"}
+            pages, perr = _clean_pages(payload.get("pages"))
+            if perr:
+                return {"ok": False, "error": perr}
+            if role == "ADMIN":
+                pages = None
             digest, salt = hash_password(password)
             uid = st.dashboard_user_add(
                 username=username, salt=salt, password_hash=digest,
-                role=role, company=company, active=1)
+                role=role, company=company, active=1,
+                data=_pages_data("{}", pages))
             return {"ok": bool(uid), "id": uid}
 
         cur = st.dashboard_user_get(row_id=row_id) if row_id else None
@@ -247,8 +315,19 @@ async def manage_dashboard_users(request: Request, scope: dict = Depends(Scope()
         if role == "ADMIN":
             target_company = ""
         active = int(payload.get("active") or 0) if payload.get("active") not in (None, "") else int(cur.get("active") or 0)
+        # Bo'limlar (per-user ruxsat): kalit yuborilmagan bo'lsa tegmaymiz,
+        # `pages: null` yuborilsa — cheklov olib tashlanadi (rol bo'yicha).
+        data_arg = None
+        if "pages" in payload:
+            pages, perr = _clean_pages(payload.get("pages"))
+            if perr:
+                return {"ok": False, "error": perr}
+            if role == "ADMIN":
+                pages = None
+            data_arg = _pages_data(str(cur.get("data") or ""), pages)
         ok = st.dashboard_user_update(row_id=row_id, username=username or None,
-                                      role=role, company=target_company, active=active)
+                                      role=role, company=target_company,
+                                      active=active, data=data_arg)
         if password:
             digest, salt = hash_password(password)
             st.dashboard_user_update(row_id=row_id, salt=salt, password_hash=digest)
