@@ -624,7 +624,8 @@ def _update_company_creds(payload: dict) -> dict:
 
 @router.get("/api/users")
 async def get_users(request: Request, scope: dict = Depends(Scope())):
-    from ...core.bot_users import get_users as _get_users, user_count
+    from ...core.bot_users import (get_pages as _get_pages,
+                                   get_users as _get_users, user_count)
     users = _get_users()
     try:
         from ...db.storage import get_storage
@@ -656,18 +657,57 @@ async def get_users(request: Request, scope: dict = Depends(Scope())):
                     u["resolved_role"] = role_label(resolve_role(cid))
                 except Exception:
                     pass
+                # Bo'limlar: None = rol bo'yicha cheklovsiz; ro'yxat = faqat
+                # shu bo'limlar ishlaydi (panel va bot uchun bir xil).
+                try:
+                    u["pages"] = _get_pages(cid)
+                except Exception:
+                    pass
     except Exception:
         pass
     return {"ok": True, "count": user_count(), "users": users}
+
+
+def _dashboard_link(chat_id: int) -> tuple[str, list | None]:
+    """Telegram chat_id qaysi panel foydalanuvchisiga bog'langan → (login, bo'limlar)."""
+    from ...db.storage import get_storage
+    st = get_storage()
+    if not st.enabled:
+        return "", None
+    want = str(int(chat_id))
+    for row in st.dashboard_users_list():
+        try:
+            data = json.loads(str(row.get("data") or "{}"))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if str(data.get("telegram_chat_id") or "").strip() != want:
+            continue
+        if not int(row.get("active") or 0):
+            continue
+        pages = data.get("pages")
+        return (str(row.get("username") or ""),
+                pages if isinstance(pages, list) else None)
+    return "", None
 
 
 @router.get("/api/users/{uid}")
 async def get_user_detail(uid: int, request: Request, scope: dict = Depends(Scope())):
     from ...core.bot_users import get_user
     user = get_user(uid)
-    if user:
-        return {"ok": True, "user": user}
-    raise HTTPException(404, "Foydalanuvchi topilmadi")
+    if not user:
+        raise HTTPException(404, "Foydalanuvchi topilmadi")
+    out = {"ok": True, "user": user}
+    # Panel akkaunti bog'langan bo'lsa — uning bo'limlari botda ham amal
+    # qiladi; panelda ko'rsatish uchun login va bo'limlar qaytariladi.
+    try:
+        name, pages = _dashboard_link(uid)
+        if name:
+            out["dashboard_user"] = {"username": name, "pages": pages}
+    except Exception:  # noqa: BLE001
+        pass
+    return out
 
 
 _PHOTO_TTL = 6 * 3600
@@ -727,6 +767,30 @@ async def set_user_role(uid: int, request: Request, scope: dict = Depends(Scope(
     if not role:
         return {"ok": False, "error": "Rol ko'rsatilmagan"}
     return {"ok": set_role(uid, role)}
+
+
+@router.post("/api/users/{uid}/pages")
+async def set_user_pages(uid: int, request: Request, scope: dict = Depends(Scope())):
+    """Telegram foydalanuvchisiga ishlaydigan bo'limlarni belgilaydi.
+
+    `pages: null` — cheklov olib tashlanadi (faqat rol bo'yicha);
+    `pages: [...]` — faqat shu bo'limlar (`core/sections.py` kalitlari).
+    """
+    from ...core.bot_users import set_pages
+    from ...core.sections import clean_sections
+    payload = await request.json()
+    if "pages" not in payload:
+        return {"ok": False, "error": "pages maydoni kerak"}
+    pages, err = clean_sections(payload.get("pages"))
+    if err:
+        return {"ok": False, "error": err}
+    try:
+        ok = set_pages(uid, pages)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if not ok:
+        return {"ok": False, "error": "Foydalanuvchi topilmadi"}
+    return {"ok": True, "pages": pages}
 
 
 @router.post("/api/users/{uid}/delete")

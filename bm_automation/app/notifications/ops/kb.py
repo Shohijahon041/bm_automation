@@ -327,6 +327,37 @@ def main_menu_kb(chat_id: int | None = None) -> dict:
         return [r for r in rows
                 if not any(w in str(t) for t in r for w in money)]
 
+    def _rows_allowed(rows):
+        """Per-user bo'limlar ro'yxatidan tashqari tugmalar olib tashlanadi.
+
+        Tugma matni → buyruq (dispatch.MENU_MAP) → bo'lim kaliti.
+        Ro'yxat berilmagan foydalanuvchida hech narsa o'zgarmaydi.
+        """
+        if chat_id is None:
+            return rows
+        try:
+            from . import dispatch as _dispatch  # aylanma importdan qochish
+            from .roles import section_allowed
+            from ...core.sections import section_for_command
+        except Exception:  # noqa: BLE001
+            return rows
+        out = []
+        for row in rows:
+            kept = []
+            for btn in row:
+                text = btn.get("text") if isinstance(btn, dict) else btn
+                cmd = _dispatch.MENU_MAP.get(str(text or "").strip().lower())
+                sec = section_for_command(cmd or "")
+                try:
+                    ok = not sec or section_allowed(chat_id, sec)
+                except Exception:  # noqa: BLE001
+                    ok = True
+                if ok:
+                    kept.append(btn)
+            if kept:
+                out.append(kept)
+        return out
+
     if is_driver:
         rows = [["📊 Dashboard", "📬 Murojaat"], ["⚙️ Settings", "❓ Yordam"]]
         ru_rows = [["📊 Дашборд", "📬 Обращение"], ["⚙️ Настройки", "❓ Помощь"]]
@@ -338,7 +369,7 @@ def main_menu_kb(chat_id: int | None = None) -> dict:
             except Exception:  # noqa: BLE001 - til aniqlanmasa o'zbekcha qoladi
                 pass
         return {
-            "keyboard": rows,
+            "keyboard": _rows_allowed(rows),
             "resize_keyboard": True,
             "one_time_keyboard": False,
         }
@@ -347,7 +378,7 @@ def main_menu_kb(chat_id: int | None = None) -> dict:
             from ...core.bot_settings import lang
             if lang(chat_id) == "ru":
                 kb_ = {
-                    "keyboard": _rows_no_finance(MAIN_MENU_RU_ROWS),
+                    "keyboard": _rows_allowed(_rows_no_finance(MAIN_MENU_RU_ROWS)),
                     "resize_keyboard": True,
                     "one_time_keyboard": False,
                 }
@@ -359,7 +390,7 @@ def main_menu_kb(chat_id: int | None = None) -> dict:
         except Exception:  # noqa: BLE001 - til aniqlanmasa o'zbekcha qoladi
             pass
     kb_ = {
-        "keyboard": _rows_no_finance(MAIN_MENU_ROWS),
+        "keyboard": _rows_allowed(_rows_no_finance(MAIN_MENU_ROWS)),
         "resize_keyboard": True,
         "one_time_keyboard": False,
     }

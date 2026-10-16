@@ -23,10 +23,12 @@ VIEWER faqat ko'rish.
 
 from __future__ import annotations
 
+import json
 import threading
 from enum import Enum
 
 from ...config.settings import telegram_settings
+from ...core.sections import sections_allowed
 
 
 class Role(str, Enum):
@@ -255,6 +257,94 @@ def can(role: Role, action: str) -> bool:
     if allowed is None:
         return True
     return role in allowed
+
+
+# ---------------------------------------------------------------------------
+# Bo'limlar (per-user ruxsatlar)
+# ---------------------------------------------------------------------------
+
+def bot_pages(chat_id: int | None) -> list | None:
+    """bot_users.json da admin belgilagan bo'limlar (None = cheklovsiz)."""
+    if chat_id is None:
+        return None
+    try:
+        from ...core import bot_users
+        return bot_users.get_pages(int(chat_id))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def linked_dashboard_pages(chat_id: int | None) -> list | None:
+    """Telegram akkaunti panel foydalanuvchisiga bog'langan bo'lsa — uning
+    bo'limlari (panelda berilgan ruxsat botda ham amal qiladi).
+
+    Bog'lanish `dashboard_users.data.telegram_chat_id` orqali saqlanadi.
+    ``super``/o'chirilgan akkauntlar hisobga olinmaydi.
+    """
+    if chat_id is None:
+        return None
+    try:
+        from ...db.storage import get_storage
+        st = get_storage()
+        if not st.enabled:
+            return None
+        want = str(int(chat_id))
+        for row in st.dashboard_users_list():
+            try:
+                data = json.loads(str(row.get("data") or "{}"))
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            if str(data.get("telegram_chat_id") or "").strip() != want:
+                continue
+            if not int(row.get("active") or 0):
+                continue
+            pages = data.get("pages")
+            if isinstance(pages, list):
+                return [str(p) for p in pages]
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def pages_for(chat_id: int | None) -> list | None:
+    """Amaldagi bo'limlar ro'yxati (`None` = faqat rol bo'yicha cheklovsiz).
+
+    Ustunlik: bot foydalanuvchisiga berilgan ro'yxat → panel
+    foydalanuvchisiga bog'langan ro'yxat → cheklov yo'q.
+    """
+    pages = bot_pages(chat_id)
+    if pages is not None:
+        return pages
+    return linked_dashboard_pages(chat_id)
+
+
+def section_allowed(chat_id: int | None, section: str,
+                    role: "Role | None" = None) -> bool:
+    """chat_id shu bo'lim buyruq/bo'limidan foydalana oladimi.
+
+    ADMIN har doim ruxsatli; ro'yxat berilmagan bo'lsa — faqat rol amal
+    qiladi (eski xatti-harakat).
+    """
+    if not section:
+        return True
+    try:
+        role = role if role is not None else resolve_role(chat_id)
+    except Exception:  # noqa: BLE001
+        role = None
+    if role is Role.ADMIN:
+        return True
+    try:
+        return sections_allowed(pages_for(chat_id), section)
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def sections_of(chat_id: int | None) -> list[str] | None:
+    """Foydalanuvchiga ochiq bo'limlar (None = cheklovsiz)."""
+    return pages_for(chat_id)
 
 
 def require_role(chat_id: int, action: str) -> Role | None:

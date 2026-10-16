@@ -76,9 +76,21 @@ def _reload_if_changed() -> None:
 
 
 def _save() -> None:
+    """Keshni diskka yozadi va mtime/size'ni yangilaydi.
+
+    mtime/size yangilanmasa, keyingi `_reload_if_changed()` faylni "tashqi
+    o'zgarish" deb hisoblab, xotiradagi hali saqlanmagan o'zgarishlarni
+    yo'qotib qo'yardi (masalan `set_pages`).
+    """
+    global _LAST_MTIME, _LAST_SIZE
     try:
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(STATE_FILE, json.dumps(_CACHE, ensure_ascii=False, indent=2))
+        try:
+            st = STATE_FILE.stat()
+            _LAST_MTIME, _LAST_SIZE = st.st_mtime, st.st_size
+        except OSError:
+            pass
     except Exception as exc:
         print(f"Bot foydalanuvchilari saqlanmadi: {exc}")
 
@@ -160,6 +172,46 @@ def set_role(chat_id: int, role: str) -> bool:
         record_activity(chat_id, "role_changed", f"Yangi rol: {role}")
         _save()
     return True
+
+
+def set_pages(chat_id: int, pages: list | None) -> bool:
+    """Foydalanuvchining bo'limlar ro'yxatini o'rnatadi (None = cheklovsiz).
+
+    Ro'yxat berilsa — bot faqat shu bo'limlar buyruqlarini bajaradi
+    (`app/core/sections.py` kalitlari). Ro'yxat `None` bo'lsa cheklov olib
+    tashlanadi (faqat rol bo'yicha ishlaydi).
+    """
+    from .sections import clean_sections
+    if pages is not None:
+        pages, err = clean_sections(list(pages))
+        if err:
+            raise ValueError(err)
+    key = str(chat_id)
+    with _LOCK:
+        _load()
+        user = _CACHE.get(key)
+        if not user:
+            return False
+        if pages is None:
+            user.pop("pages", None)
+        else:
+            user["pages"] = list(pages)
+        detail = "Barcha bo'limlar (cheklovsiz)" if pages is None else \
+            f"Bo'limlar: {', '.join(pages) if pages else 'hech biri'}"
+        record_activity(chat_id, "pages_changed", detail)
+        _save()
+    return True
+
+
+def get_pages(chat_id: int) -> list | None:
+    """Foydalanuvchiga aniq belgilangan bo'limlar (None = cheklovsiz)."""
+    user = get_user(chat_id)
+    if not user:
+        return None
+    pages = user.get("pages")
+    if not isinstance(pages, list):
+        return None
+    return [str(p) for p in pages]
 
 
 def remove_user(chat_id: int) -> bool:

@@ -2202,6 +2202,11 @@ body.auth-locked .auth-overlay { display: flex; }
               </select>
               <select class="select" id="du-company"><option value="">Barchasi</option></select>
             </div>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+              <b style="font:600 11px 'IBM Plex Mono',monospace;color:var(--ink)">TELEGRAM ID</b>
+              <input class="input" id="du-tg" placeholder="Masalan: 123456789" autocomplete="off" spellcheck="false" style="max-width:220px;padding:5px 10px;font-size:12px">
+              <span class="hint">Bot shu Telegram akkauntga shu foydalanuvchining bo'limlarini qo'llaydi</span>
+            </div>
             <div id="du-pages-wrap" style="margin-bottom:10px">
               <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
                 <b style="font:600 11px 'IBM Plex Mono',monospace;color:var(--ink)">BO'LIMLAR</b>
@@ -4709,9 +4714,76 @@ function duPagesReset() { renderDuPages(null); }
 function duRoleChanged() {
   renderDuPages(duPagesMode === "explicit" ? duPagesCollect() : null);
 }
+function duTgBadge(u) {
+  const tg = (u && u.telegram_chat_id) || "";
+  if (!tg) return '';
+  return ' <span style="color:var(--teal-text)">\u00b7 TG ' + esc(tg) + '</span>';
+}
 function duPagesBadge(u) {
   if (!Array.isArray(u.pages)) return '';
   return ' <span style="color:var(--amber)">\u00b7 ' + u.pages.length + " bo'lim</span>";
+}
+function buPagesBadge(u) { return duPagesBadge(u); }
+
+/* ---- Bot foydalanuvchisi: bo'limlar (per-user ruxsat) ----
+   Rol chegarasi saqlanadi — bu ro'yxat faqat qo'shimcha toraytiradi.
+   Panel akkaunti bog'langan bo'lsa bo'limlar o'shandan olinadi. */
+let buPagesMode = "default";
+let buPagesChatId = 0;
+function buPagesHint() {
+  const el = document.getElementById("bu-pages-hint");
+  if (!el) return;
+  if (buPagesMode === "default") { el.textContent = "Rol bo'yicha standart (cheklovsiz)"; return; }
+  const n = buPagesCollect().length;
+  el.textContent = n ? ("Aniq tanlangan: " + n + " bo'lim ishlaydi")
+                     : "Hech bir bo'lim tanlanmagan";
+}
+function renderBuPages(pages, chatId) {
+  const box = document.getElementById("bu-pages");
+  if (!box) return;
+  if (chatId !== undefined && chatId !== null && chatId !== 0) buPagesChatId = chatId;
+  const picked = Array.isArray(pages) ? pages.slice() : null;
+  buPagesMode = picked ? "explicit" : "default";
+  box.innerHTML = DU_PAGES.map(function (k) {
+    const checked = picked ? picked.indexOf(k) >= 0 : true;
+    return '<label title="' + esc(PAGE_LABEL[k] || k) + '" style="display:flex;align-items:center;gap:6px;font:11px \'IBM Plex Mono\',monospace;color:var(--ink)">'
+      + '<input type="checkbox" data-page-key="' + escAttr(k) + '" ' + (checked ? "checked" : "") + ' onchange="buPagesTouched()"> '
+      + esc(PAGE_LABEL[k] || k) + '</label>';
+  }).join("");
+  buPagesHint();
+}
+function buPagesTouched() { buPagesMode = "explicit"; buPagesHint(); }
+function buPagesCollect() {
+  const out = [];
+  document.querySelectorAll("#bu-pages input[data-page-key]").forEach(function (el) {
+    if (el.checked) out.push(el.getAttribute("data-page-key"));
+  });
+  return out;
+}
+function buPagesAll(on) {
+  document.querySelectorAll("#bu-pages input[data-page-key]").forEach(function (el) {
+    el.checked = !!on;
+  });
+  buPagesMode = "explicit";
+  buPagesHint();
+}
+function buPagesReset() { renderBuPages(null, buPagesChatId); }
+async function saveBotUserPages(chatId) {
+  const status = document.getElementById("bu-pages-status");
+  const cid = chatId || buPagesChatId;
+  if (!cid) { if (status) status.textContent = "Foydalanuvchi aniqlanmadi"; return; }
+  const payload = { pages: buPagesMode === "explicit" ? buPagesCollect() : null };
+  if (status) status.textContent = "Saqlanmoqda...";
+  try {
+    const d = await postJSON("/api/users/" + cid + "/pages", payload);
+    if (!d.ok) { if (status) status.textContent = d.error || "Xatolik"; return; }
+    if (status) status.textContent = payload.pages === null
+      ? "Standart saqlandi (rol bo'yicha)"
+      : ("Saqlandi: " + payload.pages.length + " bo'lim");
+    loadBotUsers();
+  } catch (e) {
+    if (status) status.textContent = e.message || "Xatolik";
+  }
 }
 
 function resetUserForm() {
@@ -4727,6 +4799,8 @@ function resetUserForm() {
   if (submit) submit.textContent = "QO'SHISH";
   const status = document.getElementById("du-status");
   if (status) status.textContent = "";
+  const tg = document.getElementById("du-tg");
+  if (tg) tg.value = "";
   populateUserRole();
   populateUserCompany();
   renderDuPages(null);
@@ -4768,6 +4842,8 @@ function editUser(idx) {
   // Bo'limlar: foydalanuvchida aniq ro'yxat bo'lsa — shu tanlangan holatda
   // ko'rsatiladi, aks holda "standart" (rol bo'yicha cheklovsiz).
   renderDuPages(Array.isArray(u.pages) ? u.pages : null);
+  const tg = document.getElementById("du-tg");
+  if (tg) tg.value = u.telegram_chat_id || "";
   const status = document.getElementById("du-status");
   if (status) status.textContent = role ? (ROLE_LABEL[role.value] || role.value) + " — rol/kompaniyani o'zgartiring" : "";
   if (f) f.scrollIntoView({behavior: "smooth", block: "center"});
@@ -4832,7 +4908,7 @@ function renderDashboardUsers() {
     h += '<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--bg-deep)">'
       + '<div style="flex:1;min-width:0">'
       + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><b style="font:600 13px \'IBM Plex Mono\',monospace;color:var(--ink)">' + esc(u.username) + '</b>' + userStatusBadge(u) + superBadge(u) + '</div>'
-      + '<div style="font:11px \'IBM Plex Mono\',monospace;color:var(--muted)">' + esc(role) + ' &middot; ' + esc(company) + duPagesBadge(u) + '</div>'
+      + '<div style="font:11px \'IBM Plex Mono\',monospace;color:var(--muted)">' + esc(role) + ' &middot; ' + esc(company) + duPagesBadge(u) + duTgBadge(u) + '</div>'
       + '</div>'
       + '<label style="font:10px \'IBM Plex Mono\',monospace;color:var(--muted);display:flex;align-items:center;gap:6px"><input type="checkbox" id="du-a-' + i + '" ' + (u.active ? 'checked' : '') + ' onchange="toggleUser(' + i + ', this.checked)"> Faol</label>'
       + buttons
@@ -4862,6 +4938,10 @@ async function addUserForm() {
   // rol egasini tahrirlashda) va standart rejimda — tegmaymiz.
   if (duPagesMode === "explicit") payload.pages = duPagesCollect();
   else if (role) payload.pages = null;
+  // Telegram akkaunt (ixtiyoriy): bot shu akkauntga shu bo'limlarni qo'llaydi.
+  // Faqat o'zgargan bo'lsa yuboriladi — tegilmagan maydon serverda saqlanadi.
+  const tgEl = document.getElementById("du-tg");
+  if (tgEl) payload.telegram_chat_id = (tgEl.value || "").trim();
   const d = await postJSON("/api/dashboard-users", payload);
   if (!d.ok) { if (status) status.textContent = d.error || "Xatolik"; return; }
   if (status) status.textContent = "";
@@ -5855,7 +5935,7 @@ function renderBotUsers() {
       + '<td class="mono" style="font-size:12px">' + esc(String(u.chat_id || '')) + '</td>'
       + '<td><b>' + esc(u.first_name || '—') + '</b></td>'
       + '<td style="color:var(--muted)">' + (u.username ? '@' + esc(u.username) : '<span style="color:var(--muted-3)">yo\'q</span>') + '</td>'
-      + '<td>' + roleBadge + '</td>'
+      + '<td>' + roleBadge + buPagesBadge(u) + '</td>'
       + '<td style="font-size:11px">'
       + (u.linked
           ? '<span style="color:var(--teal-text);font-weight:600"><i class="ic sm">' + featherIcon("truck") + '</i>' + esc(u.driver_name || '—') + '</span>'
@@ -6529,6 +6609,8 @@ async function openUserDetail(chatId) {
     const u = d.user || {};
     const activity = Array.isArray(u.activity) ? u.activity : [];
 
+    const dashboardUser = d.dashboard_user || null;
+
     // Haydovchi bog'langanligini tekshirish
     let driverInfo = null;
     try {
@@ -6573,6 +6655,25 @@ async function openUserDetail(chatId) {
     html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">';
     html += '<div style="padding:10px;background:var(--bg-deep);border-radius:8px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">BIRINCHI MARTA</div><div style="font-size:12px;margin-top:4px">' + esc(u.first_seen || '—') + '</div></div>';
     html += '<div style="padding:10px;background:var(--bg-deep);border-radius:8px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">OXIRGI MARTA</div><div style="font-size:12px;margin-top:4px">' + esc(u.last_seen || '—') + '</div></div>';
+    html += '</div>';
+
+    // Bo'limlar (per-user ruxsat): bot buyruqlari shu ro'yxat bilan yopiladi
+    html += '<div style="margin-bottom:16px;padding:12px;background:var(--bg-deep);border-radius:8px;border:1px solid var(--line)">';
+    html += '<div style="font-size:12px;font-weight:700;margin-bottom:8px;color:var(--muted-2)">BO\'LIMLAR (BOT RUXSATI)</div>';
+    if (d.dashboard_user && d.dashboard_user.username) {
+      html += '<div class="hint" style="margin-bottom:6px;color:var(--amber)">Panel akkaunti bog\'langan: <b>' + esc(d.dashboard_user.username) + '</b> — bo\'limlar o\'sha akkauntdan olinadi.</div>';
+    }
+    html += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">';
+    html += '<b style="font:600 11px \'IBM Plex Mono\',monospace;color:var(--ink)">BO\'LIMLAR</b>';
+    html += '<span class="hint" id="bu-pages-hint"></span><span style="flex:1"></span>';
+    html += '<button class="button ghost" type="button" style="font-size:10px;padding:3px 8px" onclick="buPagesAll(true)">BARCHASI</button>';
+    html += '<button class="button ghost" type="button" style="font-size:10px;padding:3px 8px" onclick="buPagesAll(false)">HECH BIRI</button>';
+    html += '<button class="button ghost" type="button" style="font-size:10px;padding:3px 8px" onclick="buPagesReset()">STANDART</button>';
+    html += '<button class="button" type="button" style="font-size:10px;padding:4px 10px" onclick="saveBotUserPages(' + u.chat_id + ')">SAQLASH</button>';
+    html += '</div>';
+    html += '<div id="bu-pages" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:4px 12px;border:1px solid var(--line);border-radius:10px;padding:10px;max-height:200px;overflow:auto"></div>';
+    html += '<div class="hint" style="margin-top:6px">Ro\'yxat faqat toraytiradi — rol imkoniyatlari saqlanadi (moliyaviy buyruqlar baribir MANAGER+ uchun).</div>';
+    html += '<div class="hint" id="bu-pages-status" style="margin-top:6px"></div>';
     html += '</div>';
 
     // Role buttons
@@ -6627,6 +6728,11 @@ async function openUserDetail(chatId) {
     html += '</div>';
 
     content.innerHTML = html;
+
+    // Bo'limlar checklist'i (bot ruxsati)
+    renderBuPages(dashboardUser && Array.isArray(dashboardUser.pages)
+      ? dashboardUser.pages : (Array.isArray(u.pages) ? u.pages : null),
+      u.chat_id);
 
     // Haydovchilar ro'yxatini yuklash
     populateDriverSelect(driverInfo ? driverInfo.driver_id : '');

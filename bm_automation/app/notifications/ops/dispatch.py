@@ -16,12 +16,14 @@ from typing import Any
 from ...db.models import TripStatus
 from ...db.storage import get_storage
 from ...core import bot_settings
+from ...core.sections import section_denied_text, section_for_command
 from ...utils.logger import get_logger
 from ...utils.names import short_name
 from ...utils.tgformat import esc
 from ..telegram import telegram_call
 from . import assistant, context, driver_entry, kb, legacy, planning, reg, render
-from .roles import Role, can, resolve_role, driver_id_for_chat
+from .roles import (Role, can, resolve_role, driver_id_for_chat,
+                    section_allowed)
 from .text import (DENIED_TEXT, DRIVER_HELP_TEXT, HELP_TEXT, SYNC_STARTED, SYNC_MONTHLY_STARTED, WELCOME_TEXT)
 
 log = get_logger("bm_automation.bot")
@@ -1685,6 +1687,19 @@ def handle_message(chat_id: int, text: str) -> None:
         reply(chat_id, DENIED_TEXT)
         return
 
+    # Bo'limlar (per-user ruxsat): foydalanuvchiga aniq bo'limlar ro'yxati
+    # berilgan bo'lsa (bot foydalanuvchisi yoki panel akkaunti orqali), shu
+    # ro'yxatdan tashqaridagi buyruqlar bajarilmaydi. Ro'yxat yo'q bo'lsa —
+    # faqat rol amal qiladi (eski xatti-harakat).
+    # Haydovchi buyruqlari (today/settings/murojaat/passport) — shaxsiy oqim,
+    # bo'lim ro'yxati ularni to'smaydi (ular yuqorida allaqachon qat'iy
+    # ro'yxat bilan cheklangan).
+    _sec = section_for_command(cmd)
+    if _sec and role is not Role.DRIVER and \
+            not section_allowed(chat_id, _sec, role=role):
+        reply(chat_id, section_denied_text(_sec))
+        return
+
     if cmd in ("passport", "passports"):
         _start_passport_flow(chat_id)
         return
@@ -1852,6 +1867,10 @@ def handle_message(chat_id: int, text: str) -> None:
         return
     if cmd == "top":
         metric = parts[1].lower() if len(parts) > 1 else "km"
+        # Moliyaviy ko'rsatkich (netto) faqat `salary` huquqi borlarga.
+        if metric == "net" and not can(role, "salary"):
+            reply(chat_id, DENIED_TEXT)
+            return
         reply(chat_id, *render.leaderboard(f, metric=metric, chat_id=chat_id))
         return
     if cmd == "distance":
@@ -2270,6 +2289,12 @@ def handle_callback(chat_id: int, cq: dict, data: str) -> None:
             answer(cq, "Sizga bu bo'lim yopiq")
             reply(chat_id, DENIED_TEXT)
             return
+        # Per-user bo'limlar: navigatsiya tugmalari ham to'siladi.
+        _nav_sec = section_for_command(target)
+        if _nav_sec and not section_allowed(chat_id, _nav_sec, role=role):
+            answer(cq, "Sizga bu bo'lim yopiq")
+            reply(chat_id, section_denied_text(_nav_sec))
+            return
         if target == "sync":
             if not can(role, "sync"):
                 answer(cq, "Huquq yo'q")
@@ -2566,8 +2591,12 @@ def handle_callback(chat_id: int, cq: dict, data: str) -> None:
         return
 
     if data.startswith("top:"):
+        if data[4:].strip().lower() == "net" and not can(role, "salary"):
+            answer(cq, "Huquq yo'q")
+            reply(chat_id, DENIED_TEXT)
+            return
         answer(cq)
-        reply(chat_id, *render.leaderboard(f, metric=data[4:]))
+        reply(chat_id, *render.leaderboard(f, metric=data[4:], chat_id=chat_id))
         return
 
     if data.startswith("dl:"):

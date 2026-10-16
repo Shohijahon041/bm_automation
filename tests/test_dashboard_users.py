@@ -1975,3 +1975,143 @@ def test_pages_update_keeps_other_data_keys(env):
     saved = json.loads(st.dashboard_user_get(row_id=uid)["data"])
     assert saved["izoh"] == "test"
     assert saved["pages"] == ["drivers"]
+
+
+# ------------------------------------------------ Telegram akkaunt bog'lash
+
+def test_dashboard_user_telegram_link_round_trip(env):
+    """Telegram chat_id CREATE'da saqlanadi, ro'yxatda va /api/me'da qaytadi."""
+    st = env
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"), role="ADMIN")
+    hdr = _json_hdr(env, "root")
+    status, data, _ = _post_users(env, hdr, {
+        "action": "create", "username": "ali", "role": "MANAGER",
+        "company": "XTEST", "password": "1234",
+        "pages": ["overview"], "telegram_chat_id": "123456"})
+    assert status == 200 and data.get("ok") is True
+    saved = json.loads(st.dashboard_user_get(username="ali")["data"])
+    assert saved["telegram_chat_id"] == "123456"
+    assert saved["pages"] == ["overview"]
+
+    status, data, _ = _request(env, "/api/dashboard-users?action=list",
+                               headers=_login_hdr(env, "root"))
+    row = [u for u in data["users"] if u["username"] == "ali"][0]
+    assert row["telegram_chat_id"] == "123456"
+
+    # Foydalanuvchining o'zi ham bog'langan Telegram ID'ni ko'radi.
+    _, me, _ = _request(env, "/api/me", headers=_login_hdr(env, "ali", "1234"))
+    assert me.get("telegram_chat_id") == "123456"
+
+    # Noto'g'ri ID rad etiladi, saqlangan qiymat o'zgarmaydi.
+    status, data, _ = _post_users(env, hdr, {
+        "action": "update", "username": "ali", "telegram_chat_id": "abc"})
+    assert data.get("ok") is False
+    saved = json.loads(st.dashboard_user_get(username="ali")["data"])
+    assert saved["telegram_chat_id"] == "123456"
+
+    # Bo'sh qiymat — bog'lanish olib tashlanadi.
+    status, data, _ = _post_users(env, hdr, {
+        "action": "update", "username": "ali", "telegram_chat_id": ""})
+    assert status == 200 and data.get("ok") is True
+    saved = json.loads(st.dashboard_user_get(username="ali")["data"])
+    assert "telegram_chat_id" not in saved
+
+
+def test_telegram_link_change_keeps_pages(env):
+    """Faqat Telegram ID yangilanganda bo'limlar saqlanib qoladi."""
+    st = env
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"), role="ADMIN")
+    hdr = _json_hdr(env, "root")
+    st.dashboard_user_add("ali", *deps.hash_password("1234"),
+                          role="MANAGER", company="XTEST",
+                          data=json.dumps({"pages": ["drivers"]}))
+    status, data, _ = _post_users(env, hdr, {
+        "action": "update", "username": "ali", "telegram_chat_id": "777"})
+    assert status == 200 and data.get("ok") is True
+    saved = json.loads(st.dashboard_user_get(username="ali")["data"])
+    assert saved["pages"] == ["drivers"]
+    assert saved["telegram_chat_id"] == "777"
+
+
+# ------------------------------------- bot foydalanuvchisi bo'limlari (API)
+
+def _bot_user(monkeypatch, tmp_path, chat_id, pages=None):
+    from bm_automation.app.core import bot_users
+    monkeypatch.setattr(bot_users, "STATE_FILE", tmp_path / "bot_users.json")
+    with bot_users._LOCK:
+        bot_users._CACHE = {}
+        bot_users._LOADED = False
+    bot_users.record_user(chat_id, first_name=f"User{chat_id}")
+    if pages is not None:
+        bot_users.set_pages(chat_id, pages)
+    return bot_users
+
+
+def test_admin_sets_bot_user_pages(env, monkeypatch, tmp_path):
+    """POST /api/users/{uid}/pages — bo'limlar belgilanadi va olib tashlanadi."""
+    bu = _bot_user(monkeypatch, tmp_path, 556, ["overview"])
+    st = env
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"), role="ADMIN")
+    hdr = _json_hdr(env, "root")
+
+    body = json.dumps({"pages": ["drivers", "video"]}).encode()
+    status, data, _ = _request(
+        env, "/api/users/556/pages", method="POST",
+        headers={**hdr, "Content-Length": str(len(body))}, body=body)
+    assert status == 200 and data.get("ok") is True
+    assert bu.get_pages(556) == ["drivers", "video"]
+
+    body = json.dumps({"pages": None}).encode()
+    status, data, _ = _request(
+        env, "/api/users/556/pages", method="POST",
+        headers={**hdr, "Content-Length": str(len(body))}, body=body)
+    assert status == 200 and data.get("ok") is True
+    assert bu.get_pages(556) is None
+
+    # Noma'lum bo'lim jimgina saqlanmaydi — xato qaytadi.
+    body = json.dumps({"pages": ["yoq-bolim"]}).encode()
+    status, data, _ = _request(
+        env, "/api/users/556/pages", method="POST",
+        headers={**hdr, "Content-Length": str(len(body))}, body=body)
+    assert data.get("ok") is False and data.get("error")
+    assert bu.get_pages(556) is None
+
+
+def test_bot_user_pages_requires_admin(env, monkeypatch, tmp_path):
+    _bot_user(monkeypatch, tmp_path, 557)
+    st = env
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
+                          role="DISPATCHER", company="XTEST")
+    hdr = _json_hdr(env, "disp")
+    body = json.dumps({"pages": ["overview"]}).encode()
+    status, _, _ = _request(
+        env, "/api/users/557/pages", method="POST",
+        headers={**hdr, "Content-Length": str(len(body))}, body=body)
+    assert status == 403
+
+
+def test_users_list_exposes_pages(env, monkeypatch, tmp_path):
+    _bot_user(monkeypatch, tmp_path, 558, ["overview", "routes"])
+    st = env
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"), role="ADMIN")
+    status, data, _ = _request(env, "/api/users",
+                               headers=_login_hdr(env, "root"))
+    assert status == 200
+    row = [u for u in data["users"] if int(u["chat_id"]) == 558][0]
+    assert row["pages"] == ["overview", "routes"]
+
+
+def test_user_detail_shows_dashboard_link(env, monkeypatch, tmp_path):
+    """Bog'langan panel akkaunti va uning bo'limlari /api/users/{uid}da qaytadi."""
+    _bot_user(monkeypatch, tmp_path, 559)
+    st = env
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"), role="ADMIN")
+    st.dashboard_user_add("ali", *deps.hash_password("1234"),
+                          role="MANAGER", company="XTEST",
+                          data=json.dumps({"pages": ["drivers"],
+                                           "telegram_chat_id": "559"}))
+    status, data, _ = _request(env, "/api/users/559",
+                               headers=_login_hdr(env, "root"))
+    assert status == 200
+    assert data["dashboard_user"]["username"] == "ali"
+    assert data["dashboard_user"]["pages"] == ["drivers"]

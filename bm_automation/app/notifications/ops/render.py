@@ -749,10 +749,13 @@ _TOP_METRICS = {
 def leaderboard(filters: dict | None = None, metric: str = "km",
                 limit: int = 10, chat_id: int | None = None) -> tuple[str, dict]:
     """Haydovchilar reytingi — tanlangan ko'rsatkich bo'yicha top-10."""
-    from .roles import Role, resolve_role
-    is_driver = chat_id is not None and resolve_role(chat_id) is Role.DRIVER
+    from .roles import Role, can, resolve_role
+    role = resolve_role(chat_id) if chat_id is not None else Role.ADMIN
+    is_driver = role is Role.DRIVER
     metric = (metric or "km").lower()
-    if is_driver and metric == "net":
+    # Moliyaviy ko'rsatkich (netto/to'lov) faqat `salary` huquqi bor rollarga;
+    # qolganlar uchun masofa bo'yicha reyting ko'rsatiladi.
+    if metric == "net" and not can(role, "salary"):
         metric = "km"
     label, key, dec = _TOP_METRICS.get(metric, _TOP_METRICS["km"])
     f = _default_month(parse_filters(filters or {}), filters or {})

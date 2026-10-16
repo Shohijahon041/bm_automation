@@ -8,9 +8,10 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
+from ...core.sections import clean_sections
 from ..deps import (
     PAGE_KEYS, Scope, client_ip, create_session, drop_session,
-    effective_pages, hash_password,
+    effective_pages, hash_password, user_tg,
     is_super_username, login_allowed, login_fail, login_success,
     resolve_scope, session_user, super_admin_names, verify_password,
     _ROLE_RANK, _session_token_from_request, _dashboard_token,
@@ -22,44 +23,67 @@ router = APIRouter(tags=["auth"])
 _bearer = HTTPBearer(auto_error=False)
 
 
+_UNSET = object()
+
+
 def _clean_pages(raw) -> tuple[list | None, str]:
     """Payload'dagi `pages`ni tekshiradi -> (ro'yxat|None, xato).
 
     None/'' -> (None, ''): rol bo'yicha standart (cheklovsiz, eski holat).
     Noma'lum kalit bo'lsa xato qaytadi (jimgina tashlab yuborilmaydi).
     """
-    if raw is None or raw == "":
-        return None, ""
-    if not isinstance(raw, list):
-        return None, "Bo'limlar ro'yxati (array) bo'lishi kerak"
-    out: list[str] = []
-    bad: list[str] = []
-    for item in raw:
-        key = str(item or "").strip()
-        if not key:
-            continue
-        if key not in PAGE_KEYS:
-            bad.append(key)
-        elif key not in out:
-            out.append(key)
-    if bad:
-        return None, "Noma'lum bo'lim: " + ", ".join(sorted(set(bad))[:5])
-    return out, ""
+    return clean_sections(raw)
 
 
-def _pages_data(cur_data: str, pages: list | None) -> str:
-    """`data` JSON'ida `pages`ni yangilaydi (boshqa kalitlar saqlanadi)."""
+def _clean_tg(raw) -> tuple[str, str]:
+    """Telegram chat_id'ni tekshiradi -> (qiymat, xato).
+
+    Bo'sh qiymat = bog'lanishni olib tashlash. Faqat raqamlar (ixtiyoriy
+    '-100...' guruh ID'si ham) qabul qilinadi.
+    """
+    tg = str(raw or "").strip()
+    if not tg:
+        return "", ""
+    digits = tg[1:] if tg.startswith("-") else tg
+    if not digits.isdigit():
+        return "", "Telegram chat ID faqat raqamlardan iborat bo'lishi kerak"
+    return tg, ""
+
+
+def _user_data(cur_data: str, pages=_UNSET, tg_id=_UNSET) -> str:
+    """`data` JSON'ida `pages`/`telegram_chat_id`ni yangilaydi.
+
+    Faqat yuborilgan maydonlar o'zgaradi, boshqa kalitlar saqlanadi.
+    """
     try:
         data = json.loads(str(cur_data or "{}"))
     except (TypeError, ValueError):
         data = {}
     if not isinstance(data, dict):
         data = {}
-    if pages is None:
-        data.pop("pages", None)
-    else:
-        data["pages"] = list(pages)
+    if pages is not _UNSET:
+        if pages is None:
+            data.pop("pages", None)
+        else:
+            data["pages"] = list(pages)
+    if tg_id is not _UNSET:
+        tg = str(tg_id or "").strip()
+        if tg:
+            data["telegram_chat_id"] = tg
+        else:
+            data.pop("telegram_chat_id", None)
     return json.dumps(data, ensure_ascii=False)
+
+
+def _row_tg(row: dict) -> str:
+    """Qatordagi `data.telegram_chat_id` (bog'langan Telegram akkaunt)."""
+    try:
+        data = json.loads(str((row or {}).get("data") or "{}"))
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("telegram_chat_id") or "")
 
 
 def _row_pages(row: dict) -> list | None:
@@ -149,6 +173,9 @@ async def me(request: Request, scope: dict = Depends(Scope(min_role=0))):
         # yashiradi, server esa sahifaga xos API'larni to'sadi).
         "pages": effective_pages(scope),
         "pages_all": list(PAGE_KEYS),
+        # Telegram akkaunt bog'lanishi (admin panelda kiritadi) — bot shu
+        # akkauntga shu foydalanuvchining bo'lim ruxsatlarini qo'llaydi.
+        "telegram_chat_id": user_tg(scope),
     }
 
 
@@ -180,6 +207,7 @@ async def list_dashboard_users(request: Request, scope: dict = Depends(Scope()))
             "super": uname in super_names,
             # None = rol bo'yicha standart; ro'yxat = aniq tanlangan bo'limlar.
             "pages": _row_pages(u),
+            "telegram_chat_id": _row_tg(u),
         })
 
     if caller_is_admin:
@@ -263,11 +291,14 @@ async def manage_dashboard_users(request: Request, scope: dict = Depends(Scope()
                 return {"ok": False, "error": perr}
             if role == "ADMIN":
                 pages = None
+            tg_id, tg_err = _clean_tg(payload.get("telegram_chat_id"))
+            if tg_err:
+                return {"ok": False, "error": tg_err}
             digest, salt = hash_password(password)
             uid = st.dashboard_user_add(
                 username=username, salt=salt, password_hash=digest,
                 role=role, company=company, active=1,
-                data=_pages_data("{}", pages))
+                data=_user_data("{}", pages=pages, tg_id=tg_id))
             return {"ok": bool(uid), "id": uid}
 
         cur = st.dashboard_user_get(row_id=row_id) if row_id else None
@@ -318,13 +349,21 @@ async def manage_dashboard_users(request: Request, scope: dict = Depends(Scope()
         # Bo'limlar (per-user ruxsat): kalit yuborilmagan bo'lsa tegmaymiz,
         # `pages: null` yuborilsa — cheklov olib tashlanadi (rol bo'yicha).
         data_arg = None
-        if "pages" in payload:
-            pages, perr = _clean_pages(payload.get("pages"))
-            if perr:
-                return {"ok": False, "error": perr}
-            if role == "ADMIN":
-                pages = None
-            data_arg = _pages_data(str(cur.get("data") or ""), pages)
+        if "pages" in payload or "telegram_chat_id" in payload:
+            pages: list | None | object = _UNSET
+            if "pages" in payload:
+                pages, perr = _clean_pages(payload.get("pages"))
+                if perr:
+                    return {"ok": False, "error": perr}
+                if role == "ADMIN":
+                    pages = None
+            tg_id: str | object = _UNSET
+            if "telegram_chat_id" in payload:
+                tg_id, tg_err = _clean_tg(payload.get("telegram_chat_id"))
+                if tg_err:
+                    return {"ok": False, "error": tg_err}
+            data_arg = _user_data(str(cur.get("data") or ""),
+                                  pages=pages, tg_id=tg_id)
         ok = st.dashboard_user_update(row_id=row_id, username=username or None,
                                       role=role, company=target_company,
                                       active=active, data=data_arg)

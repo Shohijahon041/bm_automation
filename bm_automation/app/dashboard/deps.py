@@ -20,6 +20,7 @@ from typing import Any
 from fastapi import Depends, HTTPException, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from ..core.sections import SECTION_KEYS
 from ..utils.logger import get_logger
 
 log = get_logger("bm_automation.dashboard.deps")
@@ -33,18 +34,13 @@ _PBKDF2_ITERATIONS = 120_000
 
 _ROLE_RANK = {"VIEWER": 0, "DISPATCHER": 1, "MANAGER": 2, "DIRECTOR": 3, "ADMIN": 4}
 
-# Sahifa (bo'lim) kalitlari — frontend'dagi `PAGE_ROLES` bilan BIR XIL bo'lishi
-# shart. Har bir dashboard foydalanuvchisiga shu kalitlardan iborat ro'yxat
-# biriktirilishi mumkin: ro'yxat bo'lsa — foydalanuvchi FAQAT shu bo'limlarni
-# ko'radi (rol beradigan imkoniyatlar ichidan qisqartiriladi, kengaytirilmaydi),
-# ro'yxat yo'q bo'lsa — faqat rol bo'yicha (eski xatti-harakat).
-PAGE_KEYS: tuple[str, ...] = (
-    "overview", "dispatch", "routes", "vehicles", "drivers", "appeals",
-    "alerts", "performance", "top-performance", "electricity", "rejects",
-    "brutto", "tariffs", "insights", "audit", "myai", "gps", "video",
-    "sms", "admin", "logs", "disk", "documents", "users", "settings",
-    "dusers",
-)
+# Sahifa (bo'lim) kalitlari — `app/core/sections.py` dan olinadi (bot va
+# panel bir xil nomlardan foydalanadi). Har bir dashboard foydalanuvchisiga
+# shu kalitlardan iborat ro'yxat biriktirilishi mumkin: ro'yxat bo'lsa —
+# foydalanuvchi FAQAT shu bo'limlarni ko'radi (rol beradigan imkoniyatlar
+# ichidan qisqartiriladi, kengaytirilmaydi), ro'yxat yo'q bo'lsa — faqat rol
+# bo'yicha (eski xatti-harakat).
+PAGE_KEYS: tuple[str, ...] = SECTION_KEYS
 
 # API prefiksi -> sahifa kaliti. Faqat sahifaga xos (1:1) endpointlar
 # kiritilgan: umumiy agregat endpointlar (`/api/summary`, `/api/routes`,
@@ -400,6 +396,32 @@ def user_pages(username: str) -> list | None:
     return [str(p) for p in pages if str(p) in PAGE_KEYS]
 
 
+def user_tg(scope: dict | None) -> str:
+    """Sessiya egasining bog'langan Telegram chat_id'si ('' = bog'lanmagan).
+
+    Admin panelda foydalanuvchi akkauntiga Telegram ID biriktirilishi mumkin:
+    o'sha Telegram akkaunt uchun bot ham shu foydalanuvchining bo'lim
+    ruxsatlarini qo'llaydi (`roles.pages_for`).
+    """
+    u = str((scope or {}).get("username") or "").strip().lower()
+    if not u:
+        return ""
+    try:
+        from ..db.storage import get_storage
+        row = get_storage().dashboard_user_get(username=u)
+    except Exception:  # noqa: BLE001
+        return ""
+    if not row:
+        return ""
+    try:
+        data = json.loads(str(row.get("data") or "{}"))
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("telegram_chat_id") or "")
+
+
 def effective_pages(scope: dict | None) -> list | None:
     """Sessiya uchun amalda ishlaydigan bo'limlar (None = cheklovsiz)."""
     if not scope or scope.get("is_admin"):
@@ -434,13 +456,16 @@ def ensure_bootstrap_admin() -> None:
         st = get_storage()
         if not st.enabled:
             return
-        if st.dashboard_users_count() > 0:
-            return
+        existing = st.dashboard_user_get(username=username.lower())
         digest, salt = hash_password(password)
-        st.dashboard_user_add(username=username.lower(), salt=salt,
-                              password_hash=digest, role="ADMIN",
-                              company="", active=1, data='{"super": true}')
-        log.info("Bootstrap SUPER ADMIN akkaunt yaratildi: %s", username.lower())
+        if not existing:
+            st.dashboard_user_add(username=username.lower(), salt=salt,
+                                  password_hash=digest, role="ADMIN",
+                                  company="", active=1, data='{"super": true}')
+            log.info("Bootstrap SUPER ADMIN akkaunt yaratildi: %s", username.lower())
+        elif not verify_password(password, str(existing.get("salt") or ""), str(existing.get("password_hash") or "")):
+            st.dashboard_user_update(int(existing["id"]), salt=salt, password_hash=digest, active=1)
+            log.info("Bootstrap SUPER ADMIN paroli .env dan yangilandi: %s", username.lower())
     except Exception:  # noqa: BLE001
         log.warning("Bootstrap ADMIN yaratilmadi (DB mavjud emas?)")
 
