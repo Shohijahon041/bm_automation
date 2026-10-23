@@ -256,9 +256,10 @@ def test_check_and_send_targets_once_per_day(sr_mod, monkeypatch):
     st, sent = sr_mod
     monkeypatch.setattr(self_review, "_hour", lambda: 0)
     self_review.check_and_send()
-    assert len(sent) == 2
-    ids = sorted(int(s["chat_id"]) for s in sent)
-    assert ids == [111, 222]  # VIEWER (333) olmaydi
+    # Tizim tahlili — faqat ADMIN (multi-company): DISPATCHER/VIEWER olmaydi.
+    assert len(sent) == 1
+    ids = [int(s["chat_id"]) for s in sent]
+    assert ids == [111]
     for s in sent:
         kb = s["reply_markup"]["inline_keyboard"]
         datas = [b["callback_data"] for row in kb for b in row]
@@ -270,7 +271,7 @@ def test_check_and_send_targets_once_per_day(sr_mod, monkeypatch):
     # Kunning ikkinchi chaqiruvi — holat fayl tufayli qayta yuborilmaydi
     self_review.time.now[0] += 1000  # interval chegarasidan o'tamiz
     self_review.check_and_send()
-    assert len(sent) == 2
+    assert len(sent) == 1
 
 
 def test_check_and_send_disabled(sr_mod, monkeypatch):

@@ -28,14 +28,14 @@ def _parse_qs(request: Request) -> dict:
 # ---------------------------------------------------------------------------
 
 @router.get("/api/health")
-async def api_health(request: Request, scope: dict = Depends(Scope())):
+def api_health(request: Request, scope: dict = Depends(Scope())):
     from .. import metrics as m
     sys_info = m.Metrics().system()
     return {"ok": True, "uptime_s": int(time.time() - _STARTED), "system": sys_info}
 
 
 @router.get("/api/disk")
-async def api_disk(request: Request, scope: dict = Depends(Scope())):
+def api_disk(request: Request, scope: dict = Depends(Scope())):
     return _disk_usage()
 
 
@@ -136,7 +136,7 @@ def _read_tagged(source: str, n: int) -> list[str]:
 
 
 @router.get("/api/logs")
-async def api_logs(request: Request, scope: dict = Depends(Scope())):
+def api_logs(request: Request, scope: dict = Depends(Scope())):
     params = _parse_qs(request)
     source = (params.get("source") or "bm").strip().lower()
     if source not in LOG_SOURCES:
@@ -208,39 +208,41 @@ async def api_logs_stream(request: Request, scope: dict = Depends(Scope())):
             while True:
                 if await request.is_disconnected():
                     return
-                # ... (loop)
+                new: list[str] = []
+                for key, entry in list(handles.items()):
+                    tag, path, fh = entry
+                    try:
+                        if path.stat().st_size < fh.tell():
+                            fh.close()
+                            fh = open(path, "rb")
+                            entry[2] = fh
+                    except OSError:
+                        continue
+                    try:
+                        data = fh.read()
+                    except Exception:  # noqa: BLE001
+                        data = b""
+                    if not data:
+                        continue
+                    for line in data.decode("utf-8", errors="replace").splitlines():
+                        new.append(_prefix(tag, line, multi))
+                if source == "gps":
+                    new = [l for l in new if ".gps" in l]
+                new = _apply_filters(new, level_filter, search)
+                if new:
+                    idle = 0
+                    yield "data: " + json.dumps({"lines": new}) + "\n\n"
+                else:
+                    idle += 1
+                    if idle % 25 == 0:
+                        yield ": keepalive\n\n"
+                await asyncio.sleep(0.6)
         finally:
             for entry in handles.values():
-                entry[2].close()
-            new: list[str] = []
-            for key, entry in list(handles.items()):
-                tag, path, fh = entry
                 try:
-                    if path.stat().st_size < fh.tell():
-                        fh.close()
-                        fh = open(path, "rb")
-                        entry[2] = fh
-                except OSError:
-                    pass
-                try:
-                    data = fh.read()
+                    entry[2].close()
                 except Exception:  # noqa: BLE001
-                    data = b""
-                if not data:
-                    continue
-                for line in data.decode("utf-8", errors="replace").splitlines():
-                    new.append(_prefix(tag, line, multi))
-            if source == "gps":
-                new = [l for l in new if ".gps" in l]
-            new = _apply_filters(new, level_filter, search)
-            if new:
-                idle = 0
-                yield "data: " + json.dumps({"lines": new}) + "\n\n"
-            else:
-                idle += 1
-                if idle % 25 == 0:
-                    yield ": keepalive\n\n"
-            await asyncio.sleep(0.6)
+                    pass
 
     return StreamingResponse(
         gen(),
@@ -251,7 +253,7 @@ async def api_logs_stream(request: Request, scope: dict = Depends(Scope())):
 
 
 @router.get("/api/insights")
-async def api_insights(request: Request, scope: dict = Depends(Scope())):
+def api_insights(request: Request, scope: dict = Depends(Scope())):
     from ...notifications.ops import self_review, openrouter
     params = _parse_qs(request)
     days = params.get("days")
@@ -320,8 +322,8 @@ async def api_sync(request: Request, scope: dict = Depends(Scope())):
 
 
 @router.get("/api/sync/status")
-async def sync_status(request: Request, scope: dict = Depends(Scope())):
-    return _sync_bg_status(_DAILY_SYNC_BG)
+def sync_status(request: Request, scope: dict = Depends(Scope())):
+    return _sync_bg_status(_DAILY_SYNC_BG, scope)
 
 
 @router.post("/api/sync/monthly")
@@ -331,8 +333,8 @@ async def sync_monthly(request: Request, scope: dict = Depends(Scope())):
 
 
 @router.get("/api/sync/monthly/status")
-async def sync_monthly_status(request: Request, scope: dict = Depends(Scope())):
-    return _sync_bg_status(_MONTHLY_SYNC_BG)
+def sync_monthly_status(request: Request, scope: dict = Depends(Scope())):
+    return _sync_bg_status(_MONTHLY_SYNC_BG, scope)
 
 
 def _fmt_date(ds: str) -> str:
@@ -343,11 +345,22 @@ def _fmt_date(ds: str) -> str:
         return ds
 
 
-def _sync_bg_status(st: dict) -> dict:
-    """Fon holatini javobga aylantiradi (running → progress, tugagan → natija)."""
+def _sync_bg_status(st: dict, scope: dict | None = None) -> dict:
+    """Fon holatini javobga aylantiradi (running → progress, tugagan → natija).
+
+    Natija (yo'nalishlar, `profiles/<nom>` satrlari, hisoblar) boshqa
+    kompaniya ma'lumotini oshkor qilmasligi uchun faqat adminlarga yoki
+    sinxronni boshlagan foydalanuvchiga to'liq qaytariladi.
+    """
+    scope = scope or {}
+    owner = str(st.get("owner") or "")
+    user = str(scope.get("username") or "")
+    full = bool(scope.get("is_admin")) or (bool(owner) and owner == user)
     if st["running"]:
-        return {"ok": True, "running": True, "progress": st["progress"]}
-    if st["result"]:
+        if full:
+            return {"ok": True, "running": True, "progress": st["progress"]}
+        return {"ok": True, "running": True, "progress": ""}
+    if full and st["result"]:
         return {"ok": True, "running": False, **st["result"]}
     return {"ok": True, "running": False}
 
@@ -383,6 +396,19 @@ def _sync_interval_ok() -> dict | None:
     with _SYNC_LOCK:
         if time.monotonic() - _last_sync_at < _SYNC_MIN_INTERVAL_S:
             return {"ok": False, "error": "Sync juda tez-tez chaqirildi — kutib turing"}
+    return None
+
+
+def _sync_busy(error: str = "Sinxronlash davom etmoqda") -> dict | None:
+    """Kunlik yoki oylik sync ishlayotgan bo'lsa — band xabari.
+
+    Ikki oqim birga BM API'ga urilmasligi kerak: login/token va DB
+    yozuvlari chalkashib ketmasin.
+    """
+    for st in (_DAILY_SYNC_BG, _MONTHLY_SYNC_BG):
+        if st.get("running"):
+            return {"ok": False, "error": error,
+                    "progress": st.get("progress") or ""}
     return None
 
 
@@ -422,12 +448,16 @@ def _parse_days(payload: dict, default_from: str = "") -> tuple[list[str] | None
 
 
 def _start_sync_bg(bg: dict, storage, days: list[str],
-                   routes: list[str]) -> None:
+                   routes: list[str], client=None, owner: str = "") -> None:
     """Fon oqimida sync ishga tushiradi (bloklamaydi — login 1-3 daqiqa).
 
     Oldin `sync_routes` (yo'nalishlar daraxti), so'ng har bir kun
     `db_sync.sync_days` orqali (retry bilan). Tugagach natija `bg["result"]`
     ga yoziladi va `_last_sync_at` yangilanadi (20s cooldown).
+
+    `client` berilsa o'sha (masalan, kompaniyaning O'Z tokeni bilan qurilgan)
+    client ishlatiladi — yangi kompaniya onboarding'ida asosiy token boshqa
+    firma yo'nalishini ko'rmaydi.
     """
     def _bg():
         global _last_sync_at
@@ -435,13 +465,15 @@ def _start_sync_bg(bg: dict, storage, days: list[str],
             from ...api.client import BMClient
             from ...db import sync as db_sync
 
-            bg["progress"] = "Token olinmoqda..."
-            client = BMClient()
-            client.login()
+            cl = client
+            if cl is None:
+                bg["progress"] = "Token olinmoqda..."
+                cl = BMClient()
+                cl.login()
 
-            results = [db_sync.sync_routes(storage, client).as_dict()]
+            results = [db_sync.sync_routes(storage, cl).as_dict()]
             results += db_sync.sync_days(
-                storage, client, days, routes=routes,
+                storage, cl, days, routes=routes,
                 progress_cb=_sync_progress_cb(bg))
 
             ok = not any(r.get("error") for r in results)
@@ -458,7 +490,33 @@ def _start_sync_bg(bg: dict, storage, days: list[str],
     bg["running"] = True
     bg["progress"] = "Login..."
     bg["result"] = None
+    bg["owner"] = str(owner or "")
     threading.Thread(target=_bg, daemon=True).start()
+
+
+def start_company_sync(client, storage, routes: list[str],
+                       days: list[str] | None = None) -> dict:
+    """Yangi kompaniya uchun kunlik sinxronni fon rejimida boshlaydi.
+
+    Onboarding (`/api/admin/companies/onboard`) shu yordamchidan foydalanadi:
+    kompaniyaning O'Z tokeni bilan sinxron qilinadi, holat esa mavjud
+    `/api/sync/status` orqali kuzatiladi (alohida oqim yaratilmaydi).
+
+    Qaytadi: `_run_sync` bilan bir xil shaklda dict (ok/started/error).
+    """
+    busy = _sync_busy("Sinxronlash davom etmoqda — keyinroq urinib ko'ring")
+    if busy:
+        return busy
+    err = _sync_interval_ok()
+    if err:
+        return err
+    clean = [str(r).strip() for r in (routes or []) if str(r).strip()]
+    if not clean:
+        return {"ok": False, "error": "Yo'nalish ko'rsatilmagan"}
+    day_list = [str(d) for d in (days or []) if str(d).strip()] or [date.today().isoformat()]
+    _start_sync_bg(_DAILY_SYNC_BG, storage, day_list, clean, client=client)
+    return {"ok": True, "started": True, "routes": clean,
+            "from": day_list[0], "to": day_list[-1], "days": len(day_list)}
 
 
 def _run_sync(payload: dict, scope: dict) -> dict:
@@ -468,9 +526,9 @@ def _run_sync(payload: dict, scope: dict) -> dict:
     qiladi. Natijalar `/api/sync/status` orqali olinadi. Barcha tekshiruv
     xatolari JSON dict — endpoint hech qachon 500 qaytarmaydi.
     """
-    if _DAILY_SYNC_BG["running"]:
-        return {"ok": False, "error": "Sinxronlash davom etmoqda",
-                "progress": _DAILY_SYNC_BG["progress"]}
+    busy = _sync_busy()
+    if busy:
+        return busy
     err = _sync_interval_ok()
     if err:
         return err
@@ -486,16 +544,17 @@ def _run_sync(payload: dict, scope: dict) -> dict:
     if not storage.enabled:
         return {"ok": False, "error": "DB rejimi o'chirilgan"}
 
-    _start_sync_bg(_DAILY_SYNC_BG, storage, days, routes)
+    _start_sync_bg(_DAILY_SYNC_BG, storage, days, routes,
+                   owner=str(scope.get("username") or ""))
     return {"ok": True, "started": True, "routes": routes,
             "from": days[0], "to": days[-1], "days": len(days)}
 
 
 def _run_sync_monthly(payload: dict, scope: dict) -> dict:
     """Oylik (from/to oralig'i) sinxronlash — fon oqimida."""
-    if _MONTHLY_SYNC_BG["running"]:
-        return {"ok": False, "error": "Sinxronlash davom etmoqda",
-                "progress": _MONTHLY_SYNC_BG["progress"]}
+    busy = _sync_busy()
+    if busy:
+        return busy
     err = _sync_interval_ok()
     if err:
         return err
@@ -511,7 +570,8 @@ def _run_sync_monthly(payload: dict, scope: dict) -> dict:
     if not storage.enabled:
         return {"ok": False, "error": "DB rejimi o'chirilgan"}
 
-    _start_sync_bg(_MONTHLY_SYNC_BG, storage, days, routes)
+    _start_sync_bg(_MONTHLY_SYNC_BG, storage, days, routes,
+                   owner=str(scope.get("username") or ""))
     return {"ok": True, "started": True, "routes": routes,
             "from": days[0], "to": days[-1], "days": len(days)}
 
@@ -580,7 +640,7 @@ async def myai_task_create(request: Request, scope: dict = Depends(Scope())):
 
 
 @router.get("/api/myai/tasks")
-async def myai_tasks(request: Request, scope: dict = Depends(Scope())):
+def myai_tasks(request: Request, scope: dict = Depends(Scope())):
     from ...myai.state import list_tasks, count_tasks
     params = _parse_qs(request)
     try:
@@ -596,7 +656,7 @@ async def myai_tasks(request: Request, scope: dict = Depends(Scope())):
 
 
 @router.get("/api/myai/task/{task_id}")
-async def myai_task_detail(task_id: str, request: Request, scope: dict = Depends(Scope())):
+def myai_task_detail(task_id: str, request: Request, scope: dict = Depends(Scope())):
     from ...myai.state import get_task, get_logs
     task = get_task(task_id)
     if not task:
@@ -606,7 +666,7 @@ async def myai_task_detail(task_id: str, request: Request, scope: dict = Depends
 
 
 @router.get("/api/myai/task/{task_id}/logs")
-async def myai_task_logs(task_id: str, request: Request, scope: dict = Depends(Scope())):
+def myai_task_logs(task_id: str, request: Request, scope: dict = Depends(Scope())):
     from ...myai.state import get_logs
     return {"ok": True, "logs": get_logs(task_id, limit=50)}
 
@@ -666,7 +726,7 @@ async def myai_task_resume(request: Request, scope: dict = Depends(Scope())):
 
 
 @router.get("/api/myai/status")
-async def myai_status(request: Request, scope: dict = Depends(Scope())):
+def myai_status(request: Request, scope: dict = Depends(Scope())):
     try:
         from ...myai.providers.factory import get_provider
         from ...myai.state import get_stats
@@ -679,13 +739,13 @@ async def myai_status(request: Request, scope: dict = Depends(Scope())):
 
 
 @router.get("/api/myai/registry")
-async def myai_registry(request: Request, scope: dict = Depends(Scope())):
+def myai_registry(request: Request, scope: dict = Depends(Scope())):
     from ...myai.registry import all_agents
     return {"ok": True, "agents": all_agents()}
 
 
 @router.get("/api/myai/activity")
-async def myai_activity(request: Request, scope: dict = Depends(Scope())):
+def myai_activity(request: Request, scope: dict = Depends(Scope())):
     from ...myai.events import get_event_bus
     params = _parse_qs(request)
     try:

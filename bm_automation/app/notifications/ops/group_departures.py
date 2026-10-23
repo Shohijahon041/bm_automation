@@ -9,11 +9,13 @@ Manba: joriy kun ``schedules`` (BM duty grafikalar — data'dagi
   - START / BETWEEN  -> "reys chiqishi": departureTime asos olinadi;
   - LUNCH            -> obed (tanaffus): arriveTime (yetib kelish) asos.
 
-Yuborish vaqti: reys chiqishidan (yoki obed yetib kelishidan) ~40
-SONIYA KEYIN. Tekshiruv sikli 40s, lekin getUpdates long-poll (50s) uni
-kechiktirishi mumkin — shuning uchun oyna 5 daqiqa (o'tib ketgan hodisalar
-ham `sent` belgisi tufayli bir marta yuboriladi). Kun rejasi kuniga bir
-marta (silent refresh token bilan) API'dan yuklanib
+Yuborish vaqti dashboard'dan boshqariladi: reys chiqishidan (yoki obed
+yetib kelishidan) necha daqiqa OLDIN / KEYIN yoxud aynan o'z vaqtida
+(`state/bot_settings.json`: `departure_offset_min`; manfiy — oldin,
+0 — o'z vaqtida, musbat — keyin). Tekshiruv sikli 40s, lekin getUpdates
+long-poll (50s) uni kechiktirishi mumkin — shuning uchun oyna 5 daqiqa
+(o'tib ketgan hodisalar ham `sent` belgisi tufayli bir marta yuboriladi).
+Kun rejasi kuniga bir marta (silent refresh token bilan) API'dan yuklanib
 `state/group_departures.json` ga saqlanadi; har bir eslatma holat faylida
 belgilanadi — restart'da takroriy spam bo'lmaydi.
 
@@ -40,6 +42,7 @@ from html import escape
 from pathlib import Path
 
 from ...config.settings import telegram_settings
+from ...core import bot_settings
 from ...db.storage import get_storage
 from ...utils.io import atomic_write
 from ...utils.names import short_name
@@ -114,12 +117,18 @@ def set_chat_reminders(chat_id, enabled: bool) -> None:
     _mutate_state(_apply)
 
 
+def _bound_chats() -> set:
+    """Firmaga bog'langan guruh chat ID'lari (profiles.json `company_groups`)."""
+    return {str(c) for ccs in _profile_route_chats().values() for c in ccs}
+
+
 def chat_enabled(chat_id) -> bool:
     """Guruh uchun eslatma yoqilganmi?
 
     Guruh uchun aniq on/off global kalitdan ustun turadi:
       - `/chiqish_on` qilingan -> True (global `off` bo'lsa ham);
       - `/chiqish_off` qilingan -> False (global `on` bo'lsa ham);
+      - firmaga bog'langan guruh -> True (standart yoqilgan);
       - boshqa guruhlar -> global `GROUP_DEPARTURE_NOTIFY`.
     """
     chat_id = str(chat_id or "").strip()
@@ -127,6 +136,8 @@ def chat_enabled(chat_id) -> bool:
     if chat_id in off:
         return False
     if chat_id in on:
+        return True
+    if chat_id in _bound_chats():
         return True
     return enabled()
 
@@ -136,7 +147,9 @@ def _any_target_enabled() -> bool:
     on, _ = _chat_state()
     if on:
         return True
-    return enabled()
+    if enabled():
+        return True
+    return bool(_bound_chats())
 
 
 def _targets() -> list[str]:
@@ -150,7 +163,7 @@ def _targets() -> list[str]:
     return []
 
 
-def _route_chats() -> dict:
+def _env_route_chats() -> dict:
     """route_id -> [chat_id] xaritasi (TG_DRIVER_ROUTE_CHATS).
 
     Format: "route_id:chat1,chat2;route_id:chat3". Bo'sh bo'lsa {}.
@@ -170,35 +183,54 @@ def _route_chats() -> dict:
     return out
 
 
-def _targets_for(route_id: str) -> list[str]:
-    """Yo'nalish uchun guruh(lar) — xaritada bo'lsa o'zi, aks holda umumiy."""
-    if route_id:
-        mapped = _route_chats().get(route_id)
-        if mapped:
-            return mapped
-    return _targets()
+def _profile_route_chats() -> dict:
+    """route_id -> [chat_id] — firmaga bog'langan guruhlardan.
 
-
-def _route_targets(route_id: str, chat_id=None) -> list[str]:
-    """Yo'nalish yuboriladigan guruh(lar)i ro'yxati.
-
-    `TG_DRIVER_ROUTE_CHATS` (``route_id:chat1,chat2;route_id:chat3``) —
-    har yo'nalish FAQAT o'z guruhiga yuboriladi. Xaritada bo'lmagan
-    yo'nalish uchun:
-      - ``chat_id`` jo'natuvchi guruh bo'lsa — shu guruhga;
-      - lekin u BOSHQA yo'nalishga biriktirilgan (nomlangan) guruh bo'lsa
-        — [] qaytadi: boshqa yo'nalish grafigi o'sha guruhga yuborilmaydi;
-      - ``chat_id`` bo'lmasa — env'dagi umumiy guruh(lar), biriktirilgan
-        guruhlar chiqarib tashlanadi.
+    Har bir profil (firma) `routeVariantId` bilan bitta yo'nalishni bildiradi;
+    firma nomi bo'yicha bog'langan Telegram guruh(lar)i (`profiles.json`
+    `company_groups`) shu yo'nalishga biriktiriladi. Bir nechta bir xil nomli
+    profil (bitta firmaning bir necha yo'nalishi) — hammasi bir guruhga.
     """
-    chats = _route_chats()
-    mapped = chats.get(route_id)
-    if mapped:
-        return mapped
-    owned = {str(c) for ccs in chats.values() for c in ccs}
-    if chat_id:
-        return [] if str(chat_id) in owned else [str(chat_id)]
-    return [t for t in _targets() if t not in owned]
+    try:
+        from ...core.profiles import all_profiles, company_group_ids
+    except Exception:  # noqa: BLE001 - import muammosi funksiyani ishlamasin
+        return {}
+    out: dict[str, list[str]] = {}
+    for p in all_profiles():
+        rid = str(p.get("routeVariantId") or "").strip()
+        if not rid:
+            continue
+        groups = company_group_ids(p.get("name"))
+        if not groups:
+            continue
+        bucket = out.setdefault(rid, [])
+        for g in groups:
+            if g not in bucket:
+                bucket.append(g)
+    return out
+
+
+def _route_chats() -> dict:
+    """route_id -> [chat_id] — firma guruhlari + env xaritasi (birlashtirilgan)."""
+    out = _env_route_chats()
+    for rid, chats in _profile_route_chats().items():
+        bucket = out.setdefault(rid, [])
+        for c in chats:
+            if c not in bucket:
+                bucket.append(c)
+    return out
+
+
+def _targets_for(route_id: str) -> list[str]:
+    """Yo'nalish uchun guruh(lar): faqat o'z firmasining guruhi.
+
+    Xaritada yo'q yo'nalish uchun BO'SH ro'yxat — boshqa firma yoki umumiy
+    guruhga oqib ketmaydi. Umumiy guruh(lar) faqat yo'nalishsiz (`route_id`
+    bo'sh) hodisalar uchun ishlatiladi.
+    """
+    if route_id:
+        return list(_route_chats().get(route_id) or [])
+    return _targets()
 
 
 def _today() -> str:
@@ -315,7 +347,7 @@ def _classify_slots(slots: list) -> list[dict]:
     START/BETWEEN -> "reys" (chiqish vaqti = departureTime),
     LUNCH -> "obed" (tanaffus — vaqt sifatida arriveTime olinadi,
     chunki haydovchi oshxonaga yetib kelgan payt tanaffus boshlanadi).
-    ``sec`` = kunning boshidan soniya (40 soniyadan keyin yuborish uchun).
+    ``sec`` = kunning boshidan soniya (eslatma siljishi shundan hisoblanadi).
     """
     events: list[dict] = []
     for s in slots or []:
@@ -453,19 +485,33 @@ def _plan_for(storage) -> dict:
     return _load_state()
 
 
-def _due_items(plan: dict, now_sec: int) -> dict[str, list[dict]]:
-    """Chiqish (reys) yoki yetib kelish (obed) vaqtidan ~40 SONIYA KEYIN.
+def _departure_offset_sec() -> int:
+    """Dashboard'dan o'rnatilgan eslatma siljishi (soniya).
 
-    Haydovchilar ketish vaqtidan 40 soniya keyin ogohlantiriladi. Tekshiruv
-    siklidan (40s) tashqari getUpdates long-poll (50s) kechiktirishi mumkin,
-    shuning uchun oyna `_DUE_WINDOW_S` (5 daqiqa) — o'tib ketgan, lekin hali
-    `sent`da yo'q hodisalar ham qamrab olinadi (takror yuborilmaydi).
-
-    Qaytish: chiqish daqiqasi (HH:MM) -> o'sha daqiqadagi elementlar.
+    Har tekshiruvda qayta o'qiladi — sozlama o'zgarsa bot restart
+    qilinmasdan keyingi sikldan qo'llanadi.
     """
+    try:
+        return int(bot_settings.departure_offset_min()) * 60
+    except Exception:  # noqa: BLE001 - sozlama o'qilmasa o'z vaqtida
+        return 0
+
+
+def _due_items(plan: dict, now_sec: int) -> dict[str, list[dict]]:
+    """Eslatma vaqti kelgan reys/obed elementlarini ajratadi.
+
+    Trigger = belgilangan vaqt + `departure_offset_min` daqiqa (manfiy —
+    oldin, 0 — o'z vaqtida, musbat — keyin). Tekshiruv sikli (40s) va
+    getUpdates long-poll (50s) kechiktirishi mumkin, shuning uchun oyna
+    `_DUE_WINDOW_S` (5 daqiqa) — o'tib ketgan, lekin hali `sent`da yo'q
+    hodisalar ham qamrab olinadi (takror yuborilmaydi).
+
+    Qaytish: reys daqiqasi (HH:MM) -> o'sha daqiqadagi elementlar.
+    """
+    offset = _departure_offset_sec()
     by_hhmm: dict[str, list[dict]] = {}
     for it in plan.get("items", []):
-        trigger = (it.get("sec") or 0) + 40  # asosiydan 40 soniya keyin
+        trigger = (it.get("sec") or 0) + offset
         if 0 <= now_sec - trigger <= _DUE_WINDOW_S:
             by_hhmm.setdefault(it.get("hhmm") or "", []).append(it)
     return by_hhmm
@@ -489,8 +535,7 @@ def _build_message(kind: str, hhmm: str, items: list[dict]) -> str:
 
 
 def _send_once() -> None:
-    tg_all = _targets()
-    if not tg_all or not _any_target_enabled():
+    if not _any_target_enabled():
         return
     storage = get_storage()
     if not storage or not getattr(storage, "enabled", False):
@@ -527,8 +572,6 @@ def _send_once() -> None:
                 by_route.setdefault(rid, []).append(it)
             for rid, ritems in by_route.items():
                 chat_ids = _targets_for(None if rid == "__all__" else rid)
-                if not chat_ids:
-                    chat_ids = tg_all
                 chat_ids = [c for c in chat_ids if chat_enabled(c)]
                 if not chat_ids:
                     continue

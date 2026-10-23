@@ -18,14 +18,15 @@ from ..config.settings import Config, get_config
 from .tokens import company_tokens_path
 from .profiles import get_profile
 
-__all__ = ["client_for_profile", "client_for_name", "company_token_path"]
+__all__ = ["client_for_profile", "client_for_name", "company_token_path",
+           "own_client", "route_accessible"]
 
 
 def company_token_path(name: str):
     return company_tokens_path(name)
 
 
-def _own_client(profile: dict) -> "object":
+def _own_client(profile: dict, auto_relogin: bool = True) -> "object":
     """Kompaniyaning o'z kredensiallari bilan client quriladi."""
     from ..api.client import BMClient
 
@@ -37,15 +38,34 @@ def _own_client(profile: dict) -> "object":
         organization=str(profile.get("name") or ""),
     )
     client = BMClient(cfg, token_path=str(company_token_path(profile["name"])))
+    client.auto_relogin = auto_relogin
     client.login()
     return client
 
 
-def _admin_client(profile: dict) -> "object":
+def own_client(profile: dict):
+    """Kompaniyaning O'Z kredensiallari bilan client (fallbacksiz).
+
+    `client_for_profile`dan farqli — admin tokeniga qaytmaydi: onboarding
+    paytida `bmUsername`/`bmPassword` haqiqatan ishlashini tekshirish uchun.
+    """
+    if not (str(profile.get("username") or "").strip()
+            and str(profile.get("password") or "").strip()):
+        raise ValueError("Kompaniya kredensiallari yo'q")
+    return _own_client(profile)
+
+
+def route_accessible(client, route_id: str) -> bool:
+    """Token berilgan yo'nalishga kira oladimi (boshqa firma route'i 500/403)."""
+    return _detect_via_route(client, str(route_id or "").strip())
+
+
+def _admin_client(profile: dict, auto_relogin: bool = True) -> "object":
     """Adminning asosiy tokeni; profileId bo'lsa shu profilga o'tiladi."""
     from ..api.client import BMClient
 
     client = BMClient()
+    client.auto_relogin = auto_relogin
     client.login()
     pid = str(profile.get("profileId") or "").strip()
     if pid:
@@ -53,12 +73,14 @@ def _admin_client(profile: dict) -> "object":
     return client
 
 
-def client_for_profile(profile: dict):
+def client_for_profile(profile: dict, auto_relogin: bool = True):
     """Profil (kompaniya) uchun authenticated client qaytaradi.
 
     Kompaniyaning o'z kredensiallari bo'lsa, avval o'z clienti + tokeni
     sinab ko'riladi (brauzer orqali oldindan login qilingan bo'lsa);
     ishlamasa admin tokeni (profileId bo'lsa shu profil bilan).
+    `auto_relogin=False` — OneID brauzer loginiga tushmaslik uchun
+    (fon/onboarding vazifalarida).
     """
     name = str(profile.get("name") or "").strip()
     if not name:
@@ -68,10 +90,10 @@ def client_for_profile(profile: dict):
     try:
         if own:
             try:
-                return _own_client(profile)
+                return _own_client(profile, auto_relogin=auto_relogin)
             except Exception:
-                return _admin_client(profile)
-        return _admin_client(profile)
+                return _admin_client(profile, auto_relogin=auto_relogin)
+        return _admin_client(profile, auto_relogin=auto_relogin)
     except Exception as exc:
         raise type(exc)(f"[{name}] client qurish xatosi: {exc}") from exc
 

@@ -445,11 +445,19 @@ class BMClient:
         return f"{base_url}{path}"
 
     def _send(self, method: str, url: str, *, params=None, json=None,
-              timeout=None, cid: str | None = None, stream: bool = False) -> requests.Response:
-        """Bitta so'rovni correlation ID header bilan jo'natadi."""
-        headers = {"X-Correlation-ID": cid or self._new_cid()}
+              timeout=None, cid: str | None = None, stream: bool = False,
+              headers: Optional[dict] = None) -> requests.Response:
+        """Bitta so'rovni correlation ID header bilan jo'natadi.
+
+        `headers` berilsa session'dagi sukut headerlar USTIGA qo'shiladi
+        (masalan rasm yuklashda `Accept: */*` — aks holda backend
+        `produces=image/*` route'ini tanlamaydi).
+        """
+        merged = {"X-Correlation-ID": cid or self._new_cid()}
+        if headers:
+            merged.update(headers)
         return self.session.request(method, url, params=params, json=json,
-                                    timeout=timeout, headers=headers, stream=stream)
+                                    timeout=timeout, headers=merged, stream=stream)
 
     def _monitor(self, *, cid, method, url, status=None, duration_ms=None, error=None) -> None:
         """Har bir response: status, response time, endpoint, success/failure."""
@@ -550,6 +558,7 @@ class BMClient:
         json: Any = None,
         retries: int = MAX_RETRIES,
         timeout: float | tuple | None = None,
+        headers: Optional[dict] = None,
     ) -> Any:
         """Asosiy so'rov metodi.
 
@@ -578,7 +587,8 @@ class BMClient:
             cid = self._new_cid()
             start = time.monotonic()
             try:
-                resp = self._send(method, url, params=params, json=json, timeout=timeout, cid=cid)
+                resp = self._send(method, url, params=params, json=json, timeout=timeout, cid=cid,
+                                  headers=headers)
             except (requests.RequestException, ConnectionError) as exc:
                 duration_ms = (time.monotonic() - start) * 1000
                 self._monitor(cid=cid, method=method, url=url,
@@ -653,9 +663,14 @@ class BMClient:
 
         raise BMApiError(status or 500, message="so'rov yakuniy muvaffaqiyatsiz")
 
-    def download(self, path: str, out_file: str, params: Optional[dict] = None,
-                 timeout: float | tuple | None = None, retries: int = MAX_RETRIES) -> str:
-        """Faylni stream bilan yuklab oladi (Excel/hisobot).
+    def download(self, path: str, out_file: str | None = None,
+                 params: Optional[dict] = None,
+                 timeout: float | tuple | None = None, retries: int = MAX_RETRIES,
+                 headers: Optional[dict] = None) -> str | bytes:
+        """Faylni stream bilan yuklab oladi (Excel/hisobot/rasm).
+
+        `out_file` berilsa faylga yoziladi va yo'l qaytadi; `None` bo'lsa
+        baytlar (`bytes`) qaytariladi (masalan haydovchi fotosi uchun).
 
         Tarmoq xatosi (ulanish uzilishi) va 5xx'da exponential backoff bilan
         qayta urinadi — jadval/hisobot yuklab olishda server barqaror bo'lmagan
@@ -672,7 +687,8 @@ class BMClient:
             cid = self._new_cid()
             start = time.monotonic()
             try:
-                resp = self._send("GET", url, params=params, timeout=timeout, cid=cid, stream=True)
+                resp = self._send("GET", url, params=params, timeout=timeout, cid=cid, stream=True,
+                                  headers=headers)
             except requests.RequestException as exc:
                 duration_ms = (time.monotonic() - start) * 1000
                 self._monitor(cid=cid, method="GET", url=url,
@@ -701,10 +717,17 @@ class BMClient:
                 raise BMApiError(status, detail=f"yuklab olish muvaffaqiyatsiz: {status}")
 
             try:
-                with open(out_file, "wb") as fh:
-                    for chunk in resp.iter_content(chunk_size=65536):
-                        if chunk:
-                            fh.write(chunk)
+                if out_file:
+                    with open(out_file, "wb") as fh:
+                        for chunk in resp.iter_content(chunk_size=65536):
+                            if chunk:
+                                fh.write(chunk)
+                    return out_file
+                buf = bytearray()
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        buf.extend(chunk)
+                return bytes(buf)
             except (requests.RequestException, ConnectionError, OSError) as exc:
                 if attempt < retries:
                     self._monitor(cid=cid, method="GET", url=url,
@@ -714,15 +737,16 @@ class BMClient:
                     attempt += 1
                     continue
                 raise BMApiError(0, message=f"yuklab olish to'xtadi: {type(exc).__name__}") from exc
-            return out_file
 
         raise BMApiError(status or 500, message="yuklab olish yakuniy muvaffaqiyatsiz")
 
     # ===================== CONVENIENCE =====================
 
     def get(self, path: str, params: Optional[dict] = None,
-            retries: int = MAX_RETRIES, timeout: float | tuple | None = None) -> Any:
-        return self.request("GET", path, params=params, retries=retries, timeout=timeout)
+            retries: int = MAX_RETRIES, timeout: float | tuple | None = None,
+            headers: Optional[dict] = None) -> Any:
+        return self.request("GET", path, params=params, retries=retries,
+                            timeout=timeout, headers=headers)
 
     def post(self, path: str, json: Any = None, params: Optional[dict] = None,
              timeout: float | tuple | None = None) -> Any:

@@ -212,6 +212,87 @@ def _notify_new_user(chat_id: int) -> None:
         pass
 
 
+def _handle_group_bind(chat_id, arg: str, srole) -> None:
+    """`/guruh` — joriy guruhni firmaga bog'laydi/uzadi/holatini ko'rsatadi.
+
+    - `/guruh`             — bu guruh qaysi firmaga bog'langanini ko'rsatadi;
+    - `/guruh <firma>`     — joriy guruhni firmaga bog'laydi (ADMIN);
+    - `/guruh off`         — guruhni firmadan uzadi (ADMIN).
+    Bog'langandan so'ng eslatmalar avtomatik yoqilgan hisoblanadi (chiqish
+    va reys vaqtlari shu guruhga keladi; `/chiqish_off` bilan o'chiriladi).
+    """
+    from html import escape
+
+    from ...core import profiles as pf
+
+    text = str(chat_id)
+    bound = [name for name, ids in pf.company_group_map().items()
+             if text in [str(x) for x in ids]]
+
+    if not arg:
+        if bound:
+            names = ", ".join(f"<b>{escape(n)}</b>" for n in bound)
+            send_message(f"🔗 Bu guruh firmaga bog'langan: {names}\n\n"
+                         "<i>/guruh off</i> — uzish.",
+                         chat_id=chat_id, parse_mode="HTML")
+        else:
+            send_message("ℹ️ Bu guruh hech qaysi firmaga bog'lanmagan.\n\n"
+                         "<i>/guruh &lt;firma nomi&gt;</i> — bog'lash,\n"
+                         "<i>/guruh</i> — holat, <i>/guruh off</i> — uzish.",
+                         chat_id=chat_id, parse_mode="HTML")
+        return
+
+    if srole != Role.ADMIN:
+        send_message("⛔ Guruhni firmaga faqat ADMIN bog'lay oladi.",
+                     chat_id=chat_id, parse_mode="HTML")
+        return
+
+    low = arg.strip().lower()
+    if low in ("off", "o'chirish", "ochirish", "uzish", "-", "none"):
+        removed = pf.remove_company_group(chat_id)
+        send_message("✅ Guruh firmadan uzildi." if removed
+                     else "ℹ️ Bu guruh hech qaysi firmaga bog'lanmagan.",
+                     chat_id=chat_id, parse_mode="HTML")
+        return
+
+    names: list[str] = []
+    for p in pf.all_profiles():
+        n = str(p.get("name") or "").strip()
+        if n and n.lower() not in [x.lower() for x in names]:
+            names.append(n)
+
+    exact = [n for n in names if n.lower() == low]
+    if exact:
+        matches = exact
+    else:
+        matches = [n for n in names
+                   if low in n.lower()
+                   or low in str((pf.get_profile(n) or {}).get("routeName")
+                                 or "").lower()]
+    if not matches:
+        send_message(f"⚠️ «{escape(arg)}» nomli firma topilmadi.",
+                     chat_id=chat_id, parse_mode="HTML")
+        return
+    if len(matches) > 1:
+        lst = ", ".join(escape(m) for m in matches)
+        send_message(f"⚠️ Bir nechta firma mos keldi: {lst}\n"
+                     "Aniqroq nom yozing.",
+                     chat_id=chat_id, parse_mode="HTML")
+        return
+
+    name = matches[0]
+    try:
+        pf.add_company_group(name, chat_id)
+    except ValueError as exc:
+        send_message(f"⚠️ {escape(str(exc))}",
+                     chat_id=chat_id, parse_mode="HTML")
+        return
+    send_message(f"✅ Bu guruh <b>{escape(name)}</b> firmasiga bog'landi.\n"
+                 "Chiqish/reys eslatmalari shu guruhga keladi "
+                 "(o'chirish: <i>/chiqish_off</i>).",
+                 chat_id=chat_id, parse_mode="HTML")
+
+
 def _handle_group_update(upd: dict, chat_id: int) -> None:
     """Guruh chat'idan kelgan update'ni qisqa javob bilan ishlaydi.
 
@@ -224,6 +305,7 @@ def _handle_group_update(upd: dict, chat_id: int) -> None:
         matn qaytariladi (guruh spamini oldini olish uchun).
       • `/chiqish[_on|_off]` — shu guruh uchun chiqish (reys/obed)
         eslatmasini yoqadi/o'chiradi/holatini ko'rsatadi.
+      • `/guruh [nom|off]` — shu guruhni firmaga bog'laydi/uzadi (ADMIN).
       • Qolgan buyruqlar guruhda ishlamaydi (jim).
     """
     msg = upd.get("message") or upd.get("edited_message") or \
@@ -299,6 +381,15 @@ def _handle_group_update(upd: dict, chat_id: int) -> None:
                              chat_id=chat_id, parse_mode="HTML")
         except Exception as exc:  # noqa: BLE001
             print(f"Guruh /chiqish xatosi: {exc}")
+        return
+
+    if cmd == "guruh":
+        try:
+            rest = text.split(maxsplit=1)
+            arg = rest[1].strip() if len(rest) > 1 else ""
+            _handle_group_bind(chat_id, arg, srole)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Guruh /guruh xatosi: {exc}")
         return
 
     if _bot_mentioned(upd) and not is_command:

@@ -14,6 +14,14 @@ import bm_automation.app.core.bot_settings as bot_settings
 
 
 @pytest.fixture(autouse=True)
+def _isolate_env_file(monkeypatch, tmp_path):
+    """Testlar haqiqiy `.env`ga yozmasin (bootstrap admin parol sinxroni uchun)."""
+    from bm_automation.app.dashboard import deps as _dash_deps
+    monkeypatch.setattr(_dash_deps, "_env_file",
+                        lambda: tmp_path / ".env-test-mavjud-emas")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_bot_settings(monkeypatch, tmp_path):
     """Jonli bot sozlamalaridan (fayldan o'qiladi) testlarni izolyatsiya qiladi."""
     monkeypatch.setattr(bot_settings, "STATE_FILE", tmp_path / "bot_settings_test.json")

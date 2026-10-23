@@ -225,7 +225,46 @@ ROUTES = [
      r"AND_ECO_E17", "E-17", 4),
     ("D-4", "591a9148-b3ca-4b8c-9a88-b5c9b23c762d",
      r"AND_ECO_D4", "D-4", 5),
+    ("12-YO'NALISH", "3accca4a-cca5-4415-8964-ee1d3b49f9a6",
+     r"DEMAND_TRANS", "12-YO'NALISH", 6),
 ]
+
+
+def _slug(text: str) -> str:
+    s = re.sub(r"[^0-9A-Za-z]+", "_", str(text or "").strip()).strip("_")
+    return s.upper()[:24] or "ROUTE"
+
+
+def _route_from_profile(p: dict) -> tuple:
+    """Profil yozuvidan grafik yo'nalishi (qo'lda ro'yxatga tushmaganlar)."""
+    rid = str(p.get("routeVariantId") or "").strip()
+    label = (str(p.get("routeName") or "").strip()
+             or str(p.get("name") or "").strip() or rid[:8]).upper()
+    img_dir = f"{_slug(p.get('name'))}_{rid[:8]}"
+    return (label, rid, img_dir, label, 0)
+
+
+def get_routes() -> list[tuple]:
+    """Grafik yo'nalishlari: qo'lda sozlangan `ROUTES` + profillardagi qolgani.
+
+    Yangi kompaniya profiles.json'ga (`routeVariantId` bilan) qo'shilganda
+    hech qanday qo'lda tahrirsiz avtomatik kiradi — grafik "ishlamay qolmaydi".
+    `ROUTES`dagi yozuvlar ustuvor (chiroyli label/papka nomi saqlanadi).
+    """
+    routes = list(ROUTES)
+    known = {r[1] for r in routes}
+    try:
+        from bm_automation.app.core.profiles import all_profiles
+        profiles = all_profiles()
+    except Exception:  # noqa: BLE001 - profillar o'qilmasa statik ro'yxat
+        return routes
+    for p in profiles:
+        rid = str(p.get("routeVariantId") or "").strip()
+        if not rid or rid in known:
+            continue
+        known.add(rid)
+        routes.append(_route_from_profile(p))
+    return routes
 
 
 def day_type(d: datetime.date) -> str:
@@ -425,14 +464,13 @@ def _bot_targets(rid: str, chat_id) -> list[str]:
 
     Grafik endi yo'nalish guruhlariga umuman yuborilmaydi:
       - ``chat_id`` (tugma bosilgan shaxsiy chat) bo'lsa — faqat shu chat;
-      - aks holda (avtomatik oqim) — ADMIN/DISPATCHER chatlari.
+      - aks holda (avtomatik oqim) — shu ``rid`` egasi kompaniya chatlari
+        (ADMIN + o'z dispetcher/egasi); profil topilmasa faqat ADMIN'lar.
 
-    Kanonik qoida — ``grafik_sms.bot_targets``. ``rid`` faqat chaqiruv
-    joylari bir xil ko'rinishda qolishi uchun (qoida yo'nalishga bog'liq
-    emas).
+    Kanonik qoida — ``grafik_sms.bot_targets``.
     """
     from bm_automation.app.notifications.ops.grafik_sms import bot_targets
-    return bot_targets(chat_id)
+    return bot_targets(rid, chat_id)
 
 
 def _grafik_sent_state() -> dict:
@@ -597,7 +635,8 @@ def _mark_wait_notified(rid: str, date_str: str) -> bool:
 
 def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word,
                    retry_until_published: bool = True,
-                   resend_if_sent: bool = False):
+                   resend_if_sent: bool = False,
+                   notify: bool = True):
     """Bitta yo'nalish: takrorlanishni to'sib, ishni himoyalangan bajaradi.
 
     - grafik allaqachon yuborilgan bo'lsa -> ("already", label, True);
@@ -638,13 +677,15 @@ def _process_route(route_tuple, client, d, profiles_map, chat_id, title_word,
 
     try:
         return _process_route_run(route_tuple, client, d, profiles_map,
-                                  chat_id, title_word, retry_until_published)
+                                  chat_id, title_word, retry_until_published,
+                                  notify)
     finally:
         _release_route(rid, date_str)
 
 
 def _process_route_run(route_tuple, client, d, profiles_map, chat_id,
-                       title_word, retry_until_published: bool = True):
+                       title_word, retry_until_published: bool = True,
+                       notify: bool = True):
     """Bitta yo'nalish uchun Excel + rasmni parallel bajaradi (claim ostida)."""
     from bm_automation.app.services.export_service import build_export
     from bm_automation.app.services.driver_sheet_service import run as run_sheet
@@ -696,21 +737,26 @@ def _process_route_run(route_tuple, client, d, profiles_map, chat_id,
 
     # Grafika tayyor — telefon raqami yozilgan haydovchilarga SMS yuboriladi
     # (Android SMS Gateway). Xato bo'lsa grafik yuborish to'xtamaydi.
-    try:
-        from bm_automation.app.db.storage import get_storage
-        from bm_automation.app.notifications.sms_notify import send_sms_for_graphs
-        sms_res = send_sms_for_graphs(get_storage(), graphs, rid, date_str,
-                                      route_name=label)
-        extra = []
-        if not sms_res.get("errors") and sms_res.get("sent") == 0 \
-                and sms_res.get("skipped") == 0:
-            extra.append("(SMS sozlanmagan)")
-        print(f"  [{label}] SMS: sent={sms_res['sent']} skipped={sms_res['skipped']} "
-              f"failed={sms_res['failed']} invalid={sms_res['invalid']} "
-              f"removed={sms_res['removed']} "
-              f"{' '.join(extra)}")
-    except Exception as exc:
-        print(f"  [{label}] SMS xatolik: {exc}")
+    # Qo'lda (bot) so'rovida `notify=False` — takroriy SMS ketmaydi; SMS
+    # faqat avtomatik 18:00 oqimi va 15-daqiqalik kuzatuv orqali yuboriladi.
+    if notify:
+        try:
+            from bm_automation.app.db.storage import get_storage
+            from bm_automation.app.notifications.sms_notify import \
+                send_sms_for_graphs
+            sms_res = send_sms_for_graphs(get_storage(), graphs, rid, date_str,
+                                          route_name=label)
+            extra = []
+            if not sms_res.get("errors") and sms_res.get("sent") == 0 \
+                    and sms_res.get("skipped") == 0:
+                extra.append("(SMS sozlanmagan)")
+            print(f"  [{label}] SMS: sent={sms_res['sent']} "
+                  f"skipped={sms_res['skipped']} "
+                  f"failed={sms_res['failed']} invalid={sms_res['invalid']} "
+                  f"removed={sms_res['removed']} "
+                  f"{' '.join(extra)}")
+        except Exception as exc:
+            print(f"  [{label}] SMS xatolik: {exc}")
 
     excel_file = None
     try:
@@ -728,6 +774,8 @@ def _process_route_run(route_tuple, client, d, profiles_map, chat_id,
             desc = "🚏 ASL SUNDAY B-80 yo'nalishi"
         elif "FERGANATEX" in (profiles_map.get(rid) or {}).get("name", ""):
             desc = "🚏 10-YO'NALISH (FERGANATEX)"
+        elif "DEMAND" in (profiles_map.get(rid) or {}).get("name", "").upper():
+            desc = "🚏 12-YO'NALISH (DEMAND TRANS)"
         for t in targets:
             send_document(str(excel_file),
                           caption=f"{excel_file.stem}\n{desc} — {title_word} grafigi",
@@ -868,6 +916,8 @@ def _process_route_resend(route_tuple, client, d, profiles_map, chat_id,
             desc = "🚏 ASL SUNDAY B-80 yo'nalishi"
         elif "FERGANATEX" in prof.get("name", ""):
             desc = "🚏 10-YO'NALISH (FERGANATEX)"
+        elif "DEMAND" in prof.get("name", "").upper():
+            desc = "🚏 12-YO'NALISH (DEMAND TRANS)"
         for t in targets:
             send_document(str(excel_file),
                           caption=f"{prefix}{excel_file.stem}\n{desc} — "
@@ -991,13 +1041,16 @@ def _send_summary(chat_id, results, d: datetime.date, day_word: str) -> None:
 def main(chat_id: str | None = None,
          route_ids: list[str] | None = None,
          day_offset: int = 1,
-         resend_if_sent: bool = False):
+         resend_if_sent: bool = False,
+         notify: bool = True):
     """Grafik yuborish.
 
     route_ids — faqat shu route_id'lar uchun yuboradi (bo'sa = hammasi).
     day_offset — qaysi kun grafigi (0=bugun, 1=ertaga, -1=kechagi).
     resend_if_sent — allaqachon yuborilgan bo'lsa ham Excel+rasm qayta
     yuboriladi (tugma so'rovi; o'zgargan bo'lsa yangilangan holda).
+    notify — False bo'lsa haydovchilarga SMS yuborilmaydi (bot/qo'lda
+    so'rovida SMS takrorlanmasligi uchun).
     Parallel: barcha yo'nalishlar bir vaqtda (Excel + rasm).
     """
     today = datetime.date.today()
@@ -1013,9 +1066,9 @@ def main(chat_id: str | None = None,
     # o'tkazib yuboriladi.
     retry_until_published = d > today
 
-    active_routes = ROUTES
+    active_routes = get_routes()
     if route_ids:
-        active_routes = [r for r in ROUTES if r[1] in route_ids]
+        active_routes = [r for r in active_routes if r[1] in route_ids]
         if not active_routes:
             send_message("⚠️ Sizga tegishli yo'nalish grafigi topilmadi.",
                          chat_id=chat_id)
@@ -1036,7 +1089,7 @@ def main(chat_id: str | None = None,
         futures = {
             pool.submit(_process_route, route, client, d,
                         profiles_map, chat_id, title_word,
-                        retry_until_published, resend_if_sent): route
+                        retry_until_published, resend_if_sent, notify): route
             for route in active_routes
         }
         for future in as_completed(futures):

@@ -89,6 +89,8 @@ _RAW_TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("license_number", "TEXT NOT NULL DEFAULT ''"),
         ("license_category", "TEXT NOT NULL DEFAULT ''"),
         ("license_expiry", "TEXT NOT NULL DEFAULT ''"),
+        # Jins (BM API `gender`: MAN/WOMAN) — saytdan avtomatik to'ldiriladi.
+        ("gender", "TEXT NOT NULL DEFAULT ''"),
         ("passport_front_path", "TEXT NOT NULL DEFAULT ''"),
         ("passport_back_path", "TEXT NOT NULL DEFAULT ''"),
         ("license_front_path", "TEXT NOT NULL DEFAULT ''"),
@@ -391,7 +393,7 @@ TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = _build_table_columns()
 # Jadval -> UNIQUE indeks ustunlari (upsert `ON CONFLICT` kalitlari).
 UNIQUE_KEYS: dict[str, list[str]] = {
     "companies": ["slug"],
-    "profiles": ["name"],
+    "profiles": ["name", "route_id"],
     "routes": ["external_id"],
     "vehicles": ["external_id"],
     "drivers": ["external_id"],
@@ -427,6 +429,8 @@ EXTRA_INDEXES: dict[str, list[list[str]]] = {
     "avans": [["driver_id"], ["pay_date"]],
     "staff": [["company"], ["position"]],
     "driver_appeals": [["driver_id"], ["status"]],
+    # Panel foydalanuvchilari korxona bo'yicha filtrlanadi (tenant scope).
+    "dashboard_users": [["company"]],
 }
 
 # Tenant filtri uchun indekslar: har bir biznes jadvalda `company_id`
@@ -489,10 +493,14 @@ def extra_index_sql(table: str, keys: list[str]) -> str:
 
 # Eski bazalarni yangilash uchun idempotent migratsiyalar.
 _MIGRATIONS: list[str] = [
+    # Bitta firmaning bir nechta yo'nalishi uchun alohida profiles qatori.
+    "DROP INDEX IF EXISTS uq_profiles_name",
     "ALTER TABLE trips ADD COLUMN IF NOT EXISTS "
     "distance_km REAL NOT NULL DEFAULT 0",
     "ALTER TABLE driver_profiles ADD COLUMN IF NOT EXISTS "
     "photo_path TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE driver_profiles ADD COLUMN IF NOT EXISTS "
+    "gender TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE driver_profiles ADD COLUMN IF NOT EXISTS "
     "telegram_chat_id TEXT NOT NULL DEFAULT ''",
     "CREATE INDEX IF NOT EXISTS idx_driver_profiles_tg_chat "

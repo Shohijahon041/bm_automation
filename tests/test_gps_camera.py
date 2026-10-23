@@ -4,7 +4,7 @@ Kamera joyi xarita/nazoratda ishlatilmaydi — faqat yordamchi:
 qaysi avtobusda ekanini aniqlash (taklif) va joy farqini (drift) ko'rish.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -18,7 +18,9 @@ _DEV_SCHEMA = (
     "model TEXT DEFAULT 'FMB920', kind TEXT DEFAULT 'teltonika', "
     "last_seen TEXT, last_lat REAL, last_lng REAL, "
     "last_speed INTEGER DEFAULT 0, last_ignition INTEGER DEFAULT 0, "
-    "last_satellites INTEGER DEFAULT 0, enabled INTEGER DEFAULT 1)"
+    "last_satellites INTEGER DEFAULT 0, enabled INTEGER DEFAULT 1, "
+    "count_in INTEGER DEFAULT 0, count_out INTEGER DEFAULT 0, "
+    "count_updated_at TEXT)"
 )
 
 
@@ -34,13 +36,15 @@ def cam_env(monkeypatch, tmp_path):
     return st, db
 
 
-def _dev(db, imei, vehicle_id, lat=None, lng=None, kind="teltonika"):
+def _dev(db, imei, vehicle_id, lat=None, lng=None, kind="teltonika",
+         age_s=0):
+    """Qator yozadi; age_s — `last_seen` qancha sekund oldin bo'lsin."""
+    seen = datetime.now(timezone.utc) - timedelta(seconds=age_s)
     db.execute(
         "INSERT OR REPLACE INTO gps_devices "
         "(imei, vehicle_id, kind, last_seen, last_lat, last_lng) "
         "VALUES (?,?,?,?,?,?)",
-        (imei, vehicle_id, kind,
-         datetime.now(timezone.utc).isoformat(), lat, lng),
+        (imei, vehicle_id, kind, seen.isoformat(), lat, lng),
     )
 
 
@@ -118,6 +122,79 @@ def test_assist_threshold_env_override(cam_env, monkeypatch):
     assert camera.assist()[0]["status"] == "drift"
     monkeypatch.setattr(gstorage.config, "GPS_CAMERA_MATCH_M", 5000)
     assert camera.assist()[0]["status"] == "ok"
+
+
+def test_stale_camera_gps_is_not_compared(cam_env):
+    """Kamera joyi eski -> taqqoslanmaydi (soxta "drift" chiqmasin).
+
+    Kamera GPS'ni faqat ulangan sessiyada yuboradi, avtobus esa doim
+    harakatda: eski kamera koordinatasini hozirgi Teltonika joyi bilan
+    solishtirish har doim katta farq (drift) beradi.
+    """
+    st, db = cam_env
+    _dev(db, "111", "v1", 41.3000, 69.2500)                    # Teltonika
+    _dev(db, "555", "v1", 40.0000, 69.0000, kind="camera",
+         age_s=gstorage.config.GPS_CAMERA_FRESH_S + 120)
+    r = camera.assist()[0]
+    assert r["status"] == "stale"
+    assert r["dist_m"] is None                # masofa hisoblanmagan
+    assert r["tel_last_seen_s"] is not None
+
+
+def test_teltonika_offline_is_not_compared(cam_env):
+    """Teltonika ham eskirgan bo'lsa (avtobus aloqasi yo'q) taqqoslanmaydi."""
+    st, db = cam_env
+    _dev(db, "111", "v1", 40.0000, 69.0000,
+         age_s=gstorage.config.GPS_CAMERA_FRESH_S + 60)
+    _dev(db, "555", "v1", 41.3000, 69.2500, kind="camera")
+    r = camera.assist()[0]
+    assert r["status"] == "teltonika_offline"
+    assert r["dist_m"] is None
+
+
+def test_freshest_teltonika_used_per_vehicle(cam_env):
+    """Bir avtobusda 2 Teltonika: o'lik (eski joyli) qurilma ishlatilmaydi."""
+    st, db = cam_env
+    _dev(db, "111", "v1", 40.0000, 69.0000,
+         age_s=gstorage.config.GPS_CAMERA_FRESH_S + 3600)       # o'lik
+    _dev(db, "999", "v1", 41.3000, 69.2500)                    # yangi joy
+    _dev(db, "555", "v1", 41.3001, 69.2501, kind="camera")
+    r = camera.assist()[0]
+    assert r["status"] == "ok"
+    assert r["dist_m"] is not None and r["dist_m"] < 100
+
+
+def test_unbound_camera_ignores_stale_teltonika(cam_env):
+    """Tavsiya faqat YANGI joyli avtobus uchun beriladi."""
+    st, db = cam_env
+    _dev(db, "111", "v1", 41.3001, 69.2501,
+         age_s=gstorage.config.GPS_CAMERA_FRESH_S + 300)
+    _dev(db, "777", "", 41.3000, 69.2500, kind="camera")
+    r = camera.assist()[0]
+    assert r["status"] == "unbound"
+    assert r["suggest_vehicle_id"] == ""
+
+
+def test_fresh_window_env_override(cam_env, monkeypatch):
+    """GPS_CAMERA_FRESH_S=0 -> yosh tekshirilmaydi (eski xatti-harakat)."""
+    st, db = cam_env
+    monkeypatch.setattr(gstorage.config, "GPS_CAMERA_FRESH_S", 0)
+    _dev(db, "111", "v1", 41.3000, 69.2500)
+    _dev(db, "555", "v1", 40.0000, 69.0000, kind="camera", age_s=7200)
+    assert camera.assist()[0]["status"] == "drift"
+
+
+def test_list_camera_devices_sets_online(cam_env):
+    """Kamera qatorida ham `online`/`last_seen_s` hisoblanishi kerak."""
+    st, db = cam_env
+    _dev(db, "555", "v1", 41.3, 69.25, kind="camera")
+    _dev(db, "666", "v1", 41.3, 69.25, kind="camera",
+         age_s=gstorage.config.GPS_ONLINE_WINDOW_S + 60)
+    rows = {r["imei"]: r for r in gstorage.list_camera_devices()}
+    assert rows["555"]["online"] is True
+    assert rows["666"]["online"] is False
+    assert rows["555"]["last_seen_s"] != ""
+    assert rows["555"]["kind"] == "camera"
 
 
 def test_migrate_marks_12_digit_imei_as_camera(cam_env):

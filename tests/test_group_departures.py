@@ -54,12 +54,18 @@ def _seed(st, day=DAY):
 
 
 def _wire(monkeypatch, st, tmp_path, targets=("-100500",),
-          client_ok=True, slots=None):
+          client_ok=True, slots=None, route_chats=None):
     slots = SLOTS if slots is None else slots
     monkeypatch.setattr(group_departures, "STATE_FILE", tmp_path / "gd.json")
     monkeypatch.setattr(group_departures, "get_storage", lambda: st)
     monkeypatch.setattr(group_departures, "_targets", lambda: list(targets))
     monkeypatch.setattr(group_departures, "enabled", lambda: True)
+    # firma/env xaritalari izolyatsiya qilinadi (standart: r1 -> targets).
+    monkeypatch.setattr(group_departures, "_profile_route_chats", lambda: {})
+    if route_chats is None:
+        route_chats = {"r1": list(targets)} if targets else {}
+    monkeypatch.setattr(group_departures, "_route_chats",
+                        lambda: {k: list(v) for k, v in route_chats.items()})
     monkeypatch.setattr(group_departures, "_fresh_client",
                         lambda: object() if client_ok else None)
     calls = []
@@ -210,8 +216,8 @@ def test_departure_minute_sends_grouped(monkeypatch, tmp_path):
     monkeypatch.setattr(group_departures, "send_message",
                         lambda text, chat_id=None: sent.append((chat_id, text)))
     monkeypatch.setattr(group_departures, "_today", lambda: DAY)
-    # 06:00 reysdan 40 soniya keyin (06:00:40) yuboriladi.
-    _at(monkeypatch, "06:00:40")
+    # Standart: o'z vaqtida — 06:00 da yuboriladi.
+    _at(monkeypatch, "06:00:00")
 
     group_departures._send_once()
     assert len(sent) == 2  # bitta chiqish, ikkala guruhga
@@ -230,8 +236,8 @@ def test_departure_minute_sends_grouped(monkeypatch, tmp_path):
     assert len(sent) == 2
 
 
-def test_departure_after_trigger_window(monkeypatch, tmp_path):
-    """Chiqishdan 40 soniya keyingi oyna (40-85 s) ichida yuboriladi."""
+def test_departure_on_time_not_before(monkeypatch, tmp_path):
+    """Standart (0 daqiqa): reys vaqtidan oldin yuborilmaydi."""
     st = _storage(tmp_path)
     _seed(st)
     sent = []
@@ -239,18 +245,102 @@ def test_departure_after_trigger_window(monkeypatch, tmp_path):
     monkeypatch.setattr(group_departures, "send_message",
                         lambda text, chat_id=None: sent.append((chat_id, text)))
     monkeypatch.setattr(group_departures, "_today", lambda: DAY)
-    # 06:00 reys: 30 soniyada hali emas, 90 soniyada o'tib ketgan.
-    _at(monkeypatch, "06:00:30")
+    _at(monkeypatch, "05:59:59")
     group_departures._send_once()
     assert sent == []
 
-    _at(monkeypatch, "06:00:40")
+    _at(monkeypatch, "06:00:00")
     group_departures._send_once()
     assert len(sent) == 1
 
-    _at(monkeypatch, "06:01:30")  # 90 s — oyna tugagan, dublikat ham yo'q
+    _at(monkeypatch, "06:00:30")  # dublikat yo'q
     group_departures._send_once()
     assert len(sent) == 1
+
+
+def test_departure_offset_before_sends_early(monkeypatch, tmp_path):
+    """-10 daqiqa: 06:00 reysi uchun eslatma 05:50 da yuboriladi."""
+    from bm_automation.app.core import bot_settings
+
+    st = _storage(tmp_path)
+    _seed(st)
+    sent = []
+    _wire(monkeypatch, st, tmp_path)
+    monkeypatch.setattr(group_departures, "send_message",
+                        lambda text, chat_id=None: sent.append((chat_id, text)))
+    monkeypatch.setattr(group_departures, "_today", lambda: DAY)
+    bot_settings.set_departure_offset_min(-10)
+
+    _at(monkeypatch, "05:49:59")
+    group_departures._send_once()
+    assert sent == []
+
+    _at(monkeypatch, "05:50:00")
+    group_departures._send_once()
+    assert len(sent) == 1
+    assert "CHIQISH VAQTI" in sent[0][1]
+    assert "· 06:00" in sent[0][1]
+
+
+def test_departure_offset_after_sends_late(monkeypatch, tmp_path):
+    """+5 daqiqa: 06:00 reysi uchun eslatma 06:05 da yuboriladi."""
+    from bm_automation.app.core import bot_settings
+
+    st = _storage(tmp_path)
+    _seed(st)
+    sent = []
+    _wire(monkeypatch, st, tmp_path)
+    monkeypatch.setattr(group_departures, "send_message",
+                        lambda text, chat_id=None: sent.append((chat_id, text)))
+    monkeypatch.setattr(group_departures, "_today", lambda: DAY)
+    bot_settings.set_departure_offset_min(5)
+
+    _at(monkeypatch, "06:04:59")
+    group_departures._send_once()
+    assert sent == []
+
+    _at(monkeypatch, "06:05:00")
+    group_departures._send_once()
+    assert len(sent) == 1
+
+
+def test_lunch_offset_applies(monkeypatch, tmp_path):
+    """Siljish obed eslatmasiga ham qo'llanadi (09:51 - 5 daq = 09:46)."""
+    from bm_automation.app.core import bot_settings
+
+    st = _storage(tmp_path)
+    _seed(st)
+    sent = []
+    _wire(monkeypatch, st, tmp_path)
+    monkeypatch.setattr(group_departures, "send_message",
+                        lambda text, chat_id=None: sent.append((chat_id, text)))
+    monkeypatch.setattr(group_departures, "_today", lambda: DAY)
+    bot_settings.set_departure_offset_min(-5)
+
+    _at(monkeypatch, "09:46:00")
+    group_departures._send_once()
+    assert len(sent) == 1
+    assert "OBED VAQTI" in sent[0][1]
+
+
+def test_due_items_offset_and_window(monkeypatch):
+    """`_due_items`: siljish va 5 daqiqalik oyna chegaralari."""
+    from bm_automation.app.core import bot_settings
+
+    plan = {"items": [{"hhmm": "06:00", "sec": 6 * 3600, "kind": "reys"}]}
+    base = 6 * 3600
+    assert group_departures._due_items(plan, base - 1) == {}
+    assert "06:00" in group_departures._due_items(plan, base)
+    assert "06:00" in group_departures._due_items(plan, base + 300)
+    assert group_departures._due_items(plan, base + 301) == {}
+
+    bot_settings.set_departure_offset_min(-10)
+    assert group_departures._due_items(plan, base - 601) == {}
+    assert "06:00" in group_departures._due_items(plan, base - 600)
+
+    bot_settings.set_departure_offset_min(5)
+    assert group_departures._due_items(plan, base + 299) == {}
+    assert "06:00" in group_departures._due_items(plan, base + 300)
 
 
 def test_lunch_minute_sends_obed_message(monkeypatch, tmp_path):
@@ -261,8 +351,8 @@ def test_lunch_minute_sends_obed_message(monkeypatch, tmp_path):
     monkeypatch.setattr(group_departures, "send_message",
                         lambda text, chat_id=None: sent.append((chat_id, text)))
     monkeypatch.setattr(group_departures, "_today", lambda: DAY)
-    # obed arrive vaqtiga asoslanadi: 09:51 (arrive) + 40s = 09:51:40.
-    _at(monkeypatch, "09:51:40")
+    # obed arrive vaqtiga asoslanadi: 09:51 (arrive), o'z vaqtida.
+    _at(monkeypatch, "09:51:00")
 
     group_departures._send_once()
     assert len(sent) == 1
@@ -297,7 +387,7 @@ def test_state_resets_on_new_day(monkeypatch, tmp_path):
     monkeypatch.setattr(group_departures, "send_message",
                         lambda text, chat_id=None: sent.append((chat_id, text)))
     monkeypatch.setattr(group_departures, "_today", lambda: DAY)
-    _at(monkeypatch, "06:00:40")
+    _at(monkeypatch, "06:00:00")
     group_departures._send_once()
     assert len(sent) == 1
 
@@ -452,6 +542,7 @@ def test_targets_parse_comma_groups(monkeypatch):
 
 
 def test_route_chats_parse(monkeypatch):
+    monkeypatch.setattr(group_departures, "_profile_route_chats", lambda: {})
     monkeypatch.setattr(
         group_departures, "telegram_settings",
         lambda: {"driver_route_chats": "r1:-1001,-1002;r2:-1003"})
@@ -460,13 +551,15 @@ def test_route_chats_parse(monkeypatch):
 
 
 def test_targets_for_route_mapping(monkeypatch):
+    monkeypatch.setattr(group_departures, "_profile_route_chats", lambda: {})
     monkeypatch.setattr(
         group_departures, "telegram_settings",
         lambda: {"driver_route_chats": "r1:-1001",
                  "driver_chat_id": "-2000"})
     assert group_departures._targets_for("r1") == ["-1001"]
-    # Xaritada bo'lmagan yo'nalish — umumiy guruh(lar).
-    assert group_departures._targets_for("r9") == ["-2000"]
+    # Xaritada bo'lmagan yo'nalish — hech qayerga (boshqa firmaga oqmasligi).
+    assert group_departures._targets_for("r9") == []
+    # Yo'nalishsiz hodisa — umumiy guruh(lar).
     assert group_departures._targets_for("") == ["-2000"]
 
 
@@ -478,11 +571,8 @@ def test_send_splits_by_route(monkeypatch, tmp_path):
     slots = dict(SLOTS)
     slots["sgx"] = [{"slotType": "START", "departureTime": "06:00:00"}]
     sent = []
-    _wire(monkeypatch, st, tmp_path, slots=slots)
-    monkeypatch.setattr(
-        group_departures, "telegram_settings",
-        lambda: {"driver_route_chats": "r1:-1001;r2:-1002",
-                 "driver_chat_id": "-2000"})
+    _wire(monkeypatch, st, tmp_path, slots=slots,
+          route_chats={"r1": ["-1001"], "r2": ["-1002"]})
     monkeypatch.setattr(group_departures, "send_message",
                         lambda text, chat_id=None: sent.append((chat_id, text)))
     monkeypatch.setattr(group_departures, "_today", lambda: DAY)

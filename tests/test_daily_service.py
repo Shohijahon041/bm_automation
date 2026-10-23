@@ -33,7 +33,13 @@ def _sheet_env(monkeypatch, tmp_path, admin_targets):
     from bm_automation.app.services import driver_sheet_service as dss
 
     sent = []
-    monkeypatch.setattr(gs, "_targets", lambda: list(admin_targets))
+
+    def _fake_targets(rid, chat_id):
+        if chat_id and not str(chat_id).startswith("-"):
+            return [str(chat_id)]
+        return list(admin_targets)
+
+    monkeypatch.setattr(gs, "bot_targets", _fake_targets)
     monkeypatch.setattr(dss, "SENT_STATE", tmp_path / "daily_sheet_sent.json")
     monkeypatch.setattr(tg, "send_photo",
                         lambda f, caption="", chat_id=None, **kw:

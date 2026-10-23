@@ -52,7 +52,7 @@ def _strip_finance(items: list | None, scope: dict) -> list | None:
 
 
 @router.get("/api/summary")
-async def api_summary(request: Request, scope: dict = Depends(Scope())):
+def api_summary(request: Request, scope: dict = Depends(Scope())):
     from .. import metrics as m
     params = _parse_qs(request)
     params = force_route(scope, "/api/summary", params)
@@ -63,7 +63,7 @@ async def api_summary(request: Request, scope: dict = Depends(Scope())):
 
 
 @router.get("/api/routes")
-async def api_routes(request: Request, scope: dict = Depends(Scope())):
+def api_routes(request: Request, scope: dict = Depends(Scope())):
     from .. import metrics as m
     routes = m.route_options()
     if not scope.get("is_admin"):
@@ -74,7 +74,7 @@ async def api_routes(request: Request, scope: dict = Depends(Scope())):
 
 
 @router.get("/api/month")
-async def api_month(request: Request, scope: dict = Depends(Scope())):
+def api_month(request: Request, scope: dict = Depends(Scope())):
     from .. import metrics as m
     params = _parse_qs(request)
     params = force_route(scope, "/api/month", params)
@@ -82,7 +82,7 @@ async def api_month(request: Request, scope: dict = Depends(Scope())):
 
 
 @router.get("/api/attendance")
-async def api_attendance(request: Request, scope: dict = Depends(Scope())):
+def api_attendance(request: Request, scope: dict = Depends(Scope())):
     from .. import metrics as m
     params = _parse_qs(request)
     params = force_route(scope, "/api/attendance", params)
@@ -90,7 +90,7 @@ async def api_attendance(request: Request, scope: dict = Depends(Scope())):
 
 
 @router.get("/api/brutto")
-async def api_brutto(request: Request, scope: dict = Depends(Scope())):
+def api_brutto(request: Request, scope: dict = Depends(Scope())):
     from .. import metrics as m
     params = _parse_qs(request)
     params = force_route(scope, "/api/brutto", params)
@@ -98,7 +98,7 @@ async def api_brutto(request: Request, scope: dict = Depends(Scope())):
 
 
 @router.get("/api/brutto/master")
-async def api_brutto_master(request: Request, scope: dict = Depends(Scope())):
+def api_brutto_master(request: Request, scope: dict = Depends(Scope())):
     from .. import metrics as m
     from ...brutto.master import master_report
     params = _parse_qs(request)
@@ -123,7 +123,7 @@ async def api_brutto_master(request: Request, scope: dict = Depends(Scope())):
 
 
 @router.get("/api/rejects")
-async def api_rejects(request: Request, scope: dict = Depends(Scope())):
+def api_rejects(request: Request, scope: dict = Depends(Scope())):
     from .. import metrics as m
     params = _parse_qs(request)
     params = force_route(scope, "/api/rejects", params)
@@ -133,7 +133,7 @@ async def api_rejects(request: Request, scope: dict = Depends(Scope())):
 
 
 @router.get("/api/rejects/tariff")
-async def api_rejects_tariff(request: Request, scope: dict = Depends(Scope())):
+def api_rejects_tariff(request: Request, scope: dict = Depends(Scope())):
     from ...core.bot_settings import route_tariff
     params = _parse_qs(request)
     params = force_route(scope, "/api/rejects/tariff", params)
@@ -166,7 +166,7 @@ async def api_rejects_tariff_set(request: Request, scope: dict = Depends(Scope()
 
 
 @router.get("/api/electricity")
-async def api_electricity(request: Request, scope: dict = Depends(Scope())):
+def api_electricity(request: Request, scope: dict = Depends(Scope())):
     from .. import metrics as m
     params = _parse_qs(request)
     params = force_route(scope, "/api/electricity", params)
@@ -174,7 +174,7 @@ async def api_electricity(request: Request, scope: dict = Depends(Scope())):
 
 
 @router.get("/api/electricity/price")
-async def api_electricity_price(request: Request, scope: dict = Depends(Scope())):
+def api_electricity_price(request: Request, scope: dict = Depends(Scope())):
     from ...core.bot_settings import elec_price, ELEC_KWH_PER_KM
     return {"ok": True, "rate": elec_price(), "kwh_per_km": ELEC_KWH_PER_KM}
 
@@ -242,7 +242,7 @@ def api_export(request: Request, scope: dict = Depends(Scope())):
 
 
 @router.get("/api/salary")
-async def api_salary(request: Request, scope: dict = Depends(Scope())):
+def api_salary(request: Request, scope: dict = Depends(Scope())):
     from ..export import salary_export, salary_filename, content_type
     params = _parse_qs(request)
     params = force_route(scope, "/api/salary", params)
@@ -262,7 +262,7 @@ async def api_salary(request: Request, scope: dict = Depends(Scope())):
 
 
 @router.get("/api/route-skm")
-async def api_route_skm(request: Request, scope: dict = Depends(Scope())):
+def api_route_skm(request: Request, scope: dict = Depends(Scope())):
     from ...core.bot_settings import route_skm
     params = _parse_qs(request)
     params = force_route(scope, "/api/route-skm", params)
@@ -292,7 +292,7 @@ async def api_route_skm_set(request: Request, scope: dict = Depends(Scope())):
 
 
 @router.get("/api/kmrate")
-async def api_kmrate(request: Request, scope: dict = Depends(Scope())):
+def api_kmrate(request: Request, scope: dict = Depends(Scope())):
     from ...core.bot_settings import route_km
     params = _parse_qs(request)
     params = force_route(scope, "/api/kmrate", params)
@@ -322,7 +322,7 @@ async def api_kmrate_set(request: Request, scope: dict = Depends(Scope())):
 
 
 @router.get("/api/appeals")
-async def api_appeals(request: Request, scope: dict = Depends(Scope())):
+def api_appeals(request: Request, scope: dict = Depends(Scope())):
     from .. import metrics as m
     from ...db.storage import get_storage
     params = _parse_qs(request)

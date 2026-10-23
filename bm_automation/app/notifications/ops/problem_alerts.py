@@ -1,4 +1,4 @@
-"""Muammo alertlari — davriy tekshiruv va ADMIN/DISPATCHER'ga bildirishnoma.
+"""Muammo alertlari — davriy tekshiruv va kompaniya bo'yicha bildirishnoma.
 
 Bot poll-tsikli har iteratsiyada `check_and_notify()` chaqiradi; u har
 `_CHECK_INTERVAL_S` da aktiv kundagi (bugun; bo'sh bo'lsa oxirgi reysli kun)
@@ -12,9 +12,9 @@ Holat `state/problem_alerts.json` faylida saqlanadi:
   - kun almashganda ham jimgina yangi bazaviy holat yoziladi (kechagi
     raqamlar bilan solishtirib soxta "kamaydi" xabari chiqmasin).
 
-Bildirishnomalar faqat ADMIN / DISPATCHER chat'lariga boradi
-(`configured_roles`). Rol sozlanmagan bo'lsa (ochiq rejim) — hech kimga
-yuborilmaydi.
+Global holat faqat ADMIN'larga, har kompaniya holati esa o'z chatlariga
+boradi (`configured_roles` + `ownerChatIds`). Rol sozlanmagan bo'lsa
+(ochiq rejim) — hech kimga yuborilmaydi.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from ...dashboard.metrics import Metrics, parse_filters
 from ...db.storage import get_storage
 from ...utils.io import atomic_write
 from ..telegram import send_message
-from . import kb
+from . import context, kb
 from .roles import Role, configured_roles
 
 STATE_FILE = Path("state") / "problem_alerts.json"
@@ -70,9 +70,9 @@ def _save(state: dict) -> None:
 
 
 def _targets() -> list[int]:
+    """Global (barcha kompaniyalar) holat — faqat ADMIN'lar."""
     roles = configured_roles()
-    return [cid for cid, role in roles.items()
-            if role in (Role.ADMIN, Role.DISPATCHER)]
+    return [cid for cid, role in roles.items() if role is Role.ADMIN]
 
 
 def _changes(old: dict, new: dict) -> dict:
@@ -101,11 +101,63 @@ def _fmt_day(value: str) -> str:
         return str(value or "")
 
 
+def _counts_for(company: str = "") -> tuple[str, dict]:
+    """(kun, kategoriya bo'yicha muammolar soni) — kompaniya doirasida."""
+    f = parse_filters({"company": company} if company else {})
+    day = str(f.get("date") or f.get("to") or datetime.now().date().isoformat())
+    counts = {k: int(v) for k, v in
+              Metrics().problems(f, limit=_PROBLEM_ROW_LIMIT)["counts"].items()}
+    return day, counts
+
+
+def _next_state(prev: dict, day: str, counts: dict, now: datetime,
+                company: str = "") -> tuple[dict | None, str | None]:
+    """Yangi holat va (agar bo'lsa) xabar matni.
+
+    Holat `None` — o'zgarish yo'q (yozish shart emas).
+    """
+    last = prev.get("last") or {}
+    last_at = prev.get("at") or ""
+    total = sum(counts.values())
+
+    # Muammo yo'q — bazaviy holatni tozalaymiz (keyingi paydo bo'lishi xabar).
+    if total == 0:
+        if last or str(prev.get("date") or "") != day:
+            return {"last": {}, "at": "", "date": day}, None
+        return None, None
+
+    # Kun almashdi yoki birinchi aniqlash: jimgina eslab qolamiz
+    # (kechagi raqamlar bilan solishtirib soxta farq chiqmasin).
+    if str(prev.get("date") or "") != day or not last:
+        return {"last": counts, "at": now.isoformat(timespec="seconds"),
+                "date": day}, None
+
+    changes = _changes(last, counts)
+    if not any(changes.values()):
+        return None, None
+
+    diff_txt = ", ".join(
+        f"{_LABELS[k]}: {'+' if v > 0 else ''}{v}"
+        for k, v in changes.items() if v)
+    title = "⚠️ <b>MUAMMO HOLATI O'ZGARDI</b>"
+    if company:
+        title += f"\n🏢 {company}"
+    text = (
+        f"{title}\n\n"
+        f"📅 {_fmt_day(day)} · Jami: {total} ta\n"
+        f"{_summary(counts)}\n"
+        f"O'zgarish: {diff_txt}\n\n"
+        f"🕒 {now:%H:%M} · oxirgi holat {last_at or '—'}"
+    )
+    return {"last": counts, "at": now.isoformat(timespec="seconds"),
+            "date": day}, text
+
+
 def check_and_notify() -> None:
     """Joriy kun muammo sonini tekshiradi, o'zgarish bo'lsa xabar yuboradi.
 
-    Interval geytidan o'tmagan chaqiruvlar darhol qaytadi — poll-tsikl
-    har iteratsiyada bemalol chaqirishi mumkin.
+    Global holat ADMIN'larga, har kompaniya holati esa faqat o'z chatlariga
+    boradi. Interval geytidan o'tmagan chaqiruvlar darhol qaytadi.
     """
     global _LAST_CHECK_AT
     if not get_storage().enabled:
@@ -117,56 +169,56 @@ def check_and_notify() -> None:
         _LAST_CHECK_AT = now.timestamp()
 
         state = _load()
-        last = state.get("last") or {}
-        last_at = state.get("at") or ""
+        admins = _targets()
+        touched = False
+
         try:
-            # Sana filteri majburiy: filtrsiz LIMIT-oyna butun tarixdan
-            # tasodifiy qatorlar olib, raqamlar har tekshiruvda sakrardi.
-            f = parse_filters({})
-            day = str(f.get("date") or f.get("to") or now.date().isoformat())
-            counts = {k: int(v) for k, v in
-                      Metrics().problems(f, limit=_PROBLEM_ROW_LIMIT)["counts"].items()}
+            day, counts = _counts_for()
         except Exception as exc:  # noqa: BLE001 - DB xatosi xabar emas
             print(f"Muammo tekshiruvi xatosi: {exc}")
             return
 
-        total = sum(counts.values())
+        new, text = _next_state(
+            {"last": state.get("last") or {}, "at": state.get("at") or "",
+             "date": str(state.get("date") or "")}, day, counts, now)
+        if new is not None:
+            state.update(new)
+            touched = True
+        if text:
+            for cid in admins:
+                try:
+                    send_message(text, chat_id=str(cid),
+                                 reply_markup=kb.problems_kb({"counts": counts}))
+                except Exception as exc:  # noqa: BLE001
+                    print(f"Muammo alert yuborilmadi [{cid}]: {exc}")
 
-        # Muammo yo'q — bazaviy holatni tozalaymiz (keyingi paydo bo'lishi xabar).
-        if total == 0:
-            if last or str(state.get("date") or "") != day:
-                _save({"last": {}, "at": "", "date": day})
-            return
-
-        # Kun almashdi yoki birinchi aniqlash: jimgina eslab qolamiz
-        # (kechagi raqamlar bilan solishtirib soxta farq chiqmasin).
-        if str(state.get("date") or "") != day or not last:
-            _save({"last": counts, "at": now.isoformat(timespec="seconds"),
-                   "date": day})
-            return
-
-        changes = _changes(last, counts)
-        if not any(changes.values()):
-            return
-
-        diff_txt = ", ".join(
-            f"{_LABELS[k]}: {'+' if v > 0 else ''}{v}"
-            for k, v in changes.items() if v)
-        text = (
-            "⚠️ <b>MUAMMO HOLATI O'ZGARDI</b>\n\n"
-            f"📅 {_fmt_day(day)} · Jami: {total} ta\n"
-            f"{_summary(counts)}\n"
-            f"O'zgarish: {diff_txt}\n\n"
-            f"🕒 {now:%H:%M} · oxirgi holat {last_at or '—'}"
-        )
-        _save({"last": counts, "at": now.isoformat(timespec="seconds"),
-               "date": day})
-        for cid in _targets():
+        companies_state = dict(state.get("companies") or {})
+        for name in context.company_names():
+            chats = [c for c in context.chats_for_company(name)
+                     if c not in admins]
+            if not chats:
+                continue
             try:
-                send_message(text, chat_id=str(cid),
-                             reply_markup=kb.problems_kb({"counts": counts}))
+                cday, ccounts = _counts_for(name)
             except Exception as exc:  # noqa: BLE001
-                print(f"Muammo alert yuborilmadi [{cid}]: {exc}")
+                print(f"Muammo tekshiruvi xatosi [{name}]: {exc}")
+                continue
+            new, ctext = _next_state(
+                companies_state.get(name) or {}, cday, ccounts, now, name)
+            if new is not None:
+                companies_state[name] = new
+                touched = True
+            if ctext:
+                for cid in chats:
+                    try:
+                        send_message(ctext, chat_id=str(cid),
+                                     reply_markup=kb.problems_kb(
+                                         {"counts": ccounts}))
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"Muammo alert yuborilmadi [{cid}]: {exc}")
+        state["companies"] = companies_state
+        if touched:
+            _save(state)
 
 
 def status_text() -> str:

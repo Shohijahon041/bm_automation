@@ -186,21 +186,29 @@ def test_bot_targets_bot_only(monkeypatch):
     """`_bot_targets`: grafik FAQAT bot ichida — guruhlarga hech qachon.
 
     Qoida: shaxsiy chat_id -> o'sha chat; aks holda (chat_id yo'q yoki
-    guruh) -> ADMIN/DISPATCHER chatlari (`grafik_sms._targets`).
+    guruh) -> shu yo'nalish egasi kompaniyaning chatlari; profil topilmasa
+    faqat ADMIN'lar.
     """
-    from bm_automation.app.notifications.ops import grafik_sms as gs
+    from bm_automation.app.notifications.ops import context, grafik_sms as gs
+    from bm_automation.app.notifications.ops.roles import Role
     from daily_grafik import _bot_targets
 
-    monkeypatch.setattr(gs, "_targets", lambda: ["-100main", "-100adm"])
+    monkeypatch.setattr(
+        context, "chats_for_route", lambda rid: ["-100main", "-100adm"])
     # Shaxsiy chat (tugma bosilgan joy) -> faqat shu chat.
     assert _bot_targets("r1", "777") == ["777"]
     assert _bot_targets("r1", 12345) == ["12345"]
-    # chat_id yo'q (avtomatik oqim) -> ADMIN/DISPATCHER chatlari.
+    # chat_id yo'q (avtomatik oqim) -> yo'nalish kompaniyasi chatlari.
     assert _bot_targets("r1", None) == ["-100main", "-100adm"]
-    # Guruh chat_id -> guruhga EMAS, ADMIN/DISPATCHER'ga.
+    # Guruh chat_id -> guruhga EMAS, kompaniya chatlariga.
     assert _bot_targets("r1", "-100GROUP") == ["-100main", "-100adm"]
-    # ADMIN/DISPATCHER ham sozlanmagan -> [] (hech qayerga yuborilmaydi).
-    monkeypatch.setattr(gs, "_targets", lambda: [])
+    # Profilda yo'nalish yo'q -> faqat ADMIN'lar.
+    monkeypatch.setattr(context, "chats_for_route", lambda rid: [])
+    monkeypatch.setattr(gs, "configured_roles", lambda: {1: Role.ADMIN})
+    assert _bot_targets("r1", None) == ["1"]
+    assert _bot_targets("r1", "-100GROUP") == ["1"]
+    # ADMIN ham sozlanmagan -> [] (hech qayerga yuborilmaydi).
+    monkeypatch.setattr(gs, "configured_roles", lambda: {})
     assert _bot_targets("r1", None) == []
     assert _bot_targets("r1", "-100GROUP") == []
 

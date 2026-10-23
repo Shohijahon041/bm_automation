@@ -17,6 +17,7 @@ import json
 import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from urllib.parse import quote
 
 from ..config.settings import km_rate_for, telegram_settings
@@ -70,6 +71,7 @@ def parse_filters(params: dict | None) -> dict:
         "vehicle": (p.get("vehicle") or "").strip(),
         "driver": (p.get("driver") or "").strip(),
         "status": (p.get("status") or "").strip().upper(),
+        "company": (p.get("company") or "").strip(),
     }
     if not filters["date"] and not filters["from"]:
         filters["date"] = _last_active_date()
@@ -80,6 +82,19 @@ def parse_filters(params: dict | None) -> dict:
     for _k, _v in p.items():
         if _k not in filters and _v:
             filters[_k] = _v
+    # Firma (kompaniya) filtri: nom -> kompaniyaning BARCHA yo'nalishlari
+    # (route IN ...). Faqat `route` berilmagan bo'lsa qo'llanadi — non-admin
+    # uchun `force_route` route'ni oldindan o'rnatadi, shu sababli bu yerda
+    # firma kengaytira olmaydi (xavfsiz).
+    if filters.get("company") and not filters.get("route"):
+        try:
+            from ..core.tenant import company_routes
+            rts = [str(x).strip() for x in company_routes(filters["company"])
+                   if str(x).strip()]
+            if rts:
+                filters["route"] = ",".join(rts)
+        except Exception:  # noqa: BLE001
+            pass
     return filters
 
 
@@ -894,7 +909,9 @@ class Metrics:
         avtobus, haydovchi. Natija: BARCHA ishlagan haydovchilar `rows`
         va `totals` hamda davr `period` (qabul qilinmagan reysi 0 bo'lganlar
         ham chiqadi). `totals` barcha haydovchilarni qamrab oladi — sayt
-        bruto-route yig'indisiga mos bo'lishi uchun.
+        bruto-route yig'indisiga mos bo'lishi uchun. Haydovchiga bog'lanmagan
+        ish kunlari `rows`ga sun'iy haydovchi bo'lib qo'shilmaydi; ular
+        `unattributed`da alohida qaytadi.
         """
         f = f or {}
         frm, to = self._month_bounds(f)
@@ -1026,7 +1043,7 @@ class Metrics:
 
         # --- Yetim ish kunlari: wd=1, lekin na schedules, na trips (haydovchi
         # aniqlab bo'lmaydi). Jami jadvalga to'liq mos bo'lishi uchun bunday
-        # kunlar "Atribut qilinmagan" haydovchiga kiritiladi.
+        # kunlar alohida `unattributed` hisobiga kiritiladi, `rows`ga emas.
         orph = "_atribut_qilinmagan_"
         for d, v, acc in [(k[0], k[1], a) for k, a in daily_by_key.items()]:
             if (d, v) in claimed or (d, v) in per[orph]["days"]:
@@ -1085,11 +1102,10 @@ class Metrics:
         # Tartib: avval muammolilar (kamayish), keyin reyslar bo'yicha.
         rows = []
         for did, d in per.items():
-            name = dnames.get(did, did)
-            if did == "_atribut_qilinmagan_":
-                name = "— Atribut qilinmagan —"
+            if did == orph:
+                continue
             rows.append({
-                "name": name,
+                "name": dnames.get(did, did),
                 "plan_reys": d["plan_reys"],
                 "fact_reys": d["fact_reys"],
                 "qabul_qilinmagan": max(0, d["plan_reys"] - d["fact_reys"]),
@@ -1100,6 +1116,18 @@ class Metrics:
                 "diff": round(max(0.0, d["plan_km"] - d["fact_km"]), 2),
             })
         rows.sort(key=lambda r: (-r["qabul_qilinmagan"], -r["fact_reys"]))
+
+        od = per.get(orph) or {"plan_reys": 0, "fact_reys": 0, "days": set(),
+                              "plan_km": 0.0, "fact_km": 0.0}
+        unattributed = {
+            "days": len({k[0] for k in od["days"]}),
+            "plan_reys": od["plan_reys"],
+            "fact_reys": od["fact_reys"],
+            "qabul_qilinmagan": max(0, od["plan_reys"] - od["fact_reys"]),
+            "plan_km": round(od["plan_km"], 2),
+            "fact_km": round(od["fact_km"], 2),
+            "diff": round(max(0.0, od["plan_km"] - od["fact_km"]), 2),
+        }
 
         # JAMI — qatorlar yig'indisiga mos (ortiqcha ishlaganlar 0 ko'rsatadi).
         totals = {
@@ -1126,6 +1154,10 @@ class Metrics:
             r["sum_vat"] = round(r["diff"] * tar["vat"], 2)
         totals["sum_no_vat"] = round(totals["diff"] * tar["no_vat"], 2)
         totals["sum_vat"] = round(totals["diff"] * tar["vat"], 2)
+        unattributed["sum_no_vat"] = round(
+            unattributed["diff"] * tar["no_vat"], 2)
+        unattributed["sum_vat"] = round(
+            unattributed["diff"] * tar["vat"], 2)
 
         rnames = self._route_names()
         companies = self._companies()
@@ -1137,6 +1169,7 @@ class Metrics:
             "tariff": tar,
             "rows": rows,
             "totals": totals,
+            "unattributed": unattributed,
         }
 
     # --------------------------------------------------------------- schedule
@@ -1249,10 +1282,18 @@ class Metrics:
 
     @staticmethod
     def _photo_url(driver_id: str, profile: dict) -> str:
-        """Profilga rasm yuklangan bo'lsa dashboard API manzilini qaytaradi."""
-        if profile.get("photo_path"):
-            return f"/api/drivers/{quote(driver_id)}/photo"
-        return ""
+        """Profilga rasm yuklangan va fayl mavjud bo'lsa API manzilini qaytaradi.
+
+        `?v=mtime` fayl yangilanganda brauzer keshini avtomatik buzadi.
+        """
+        path = str(profile.get("photo_path") or "").strip()
+        if not path:
+            return ""
+        try:
+            version = int(Path(path).stat().st_mtime)
+        except OSError:
+            return ""
+        return f"/api/drivers/{quote(driver_id)}/photo?v={version}"
 
     def _driver_logs(self, f: dict) -> dict[str, dict]:
         """Qo'lda kiritilgan km qaydlari (note != 'AVTO') — km/trips/sanalar.
@@ -1461,13 +1502,21 @@ class Metrics:
 
         # Haydovchi profili oldindan kiritilgan, biroq uning joriy davrda
         # reysi bo'lmasa ham reestrda ko'rinishi kerak.
+        #
+        # Route filtri berilganda QAT'IY kompaniya izolyatsiyasi: faqat joriy
+        # route'i shu ro'yxatda bo'lgan haydovchilar qoladi. Boshqa kompaniya
+        # yo'nalishida ishlagan o'rinbosar haydovchining profil/rasm/hujjati
+        # ko'rinmaydi (u boshqa kompaniyaning aktivi).
         route_ids = {t.strip() for t in
                      str(f.get("route") or "").replace(",", " ").split() if t.strip()}
         if route_ids:
-            active = set(per) | set(logs) | set(fines)
-            keep = lambda did: driver_routes.get(did, "") in route_ids or did in active
-            names = {k: v for k, v in names.items() if keep(k)}
-            profiles = {k: v for k, v in profiles.items() if keep(k)}
+            allowed = {did for did, rid in driver_routes.items() if rid in route_ids}
+            names = {k: v for k, v in names.items() if k in allowed}
+            profiles = {k: v for k, v in profiles.items() if k in allowed}
+            per = {k: v for k, v in per.items() if k in allowed}
+            logs = {k: v for k, v in logs.items() if k in allowed}
+            fines = {k: v for k, v in fines.items() if k in allowed}
+            route_km = {k: v for k, v in route_km.items() if k in allowed}
         ids = set(names) | set(profiles) | set(logs) | set(fines) | set(per)
         automatic_km: dict[str, float] = {
             did: round(d["km"], 2) for did, d in per.items()
@@ -1544,6 +1593,7 @@ class Metrics:
                 "blacklisted": bool(profile.get("blacklisted")),
                 "notification_enabled": bool(profile.get("notification_enabled")),
                 "phone": str(profile.get("phone") or ""),
+                "gender": str(profile.get("gender") or ""),
                 "has_passport": bool(profile.get("passport_number")),
                 "has_license": bool(profile.get("license_number")),
                 "photo_url": self._photo_url(driver_id, profile),
@@ -1789,6 +1839,7 @@ class Metrics:
             "rating": float(profile.get("rating") or 5),
             "blacklisted": bool(profile.get("blacklisted")),
             "notification_enabled": bool(profile.get("notification_enabled")),
+            "gender": str(profile.get("gender") or ""),
             "has_passport": bool(profile.get("passport_number")),
             "has_license": bool(profile.get("license_number")),
             "photo_url": self._photo_url(driver_id, profile),
@@ -1826,6 +1877,7 @@ class Metrics:
                       "fines": 0.0, "net_pay": 0.0, "rating": float(profile.get("rating") or 5),
                       "blacklisted": bool(profile.get("blacklisted")),
                       "notification_enabled": bool(profile.get("notification_enabled")),
+                      "gender": str(profile.get("gender") or ""),
                       "has_passport": bool(profile.get("passport_number")),
                       "has_license": bool(profile.get("license_number")),
                       "photo_url": self._photo_url(driver_id, profile)}
@@ -1848,6 +1900,15 @@ class Metrics:
         if f.get("to"):
             log_where += f" AND date <= {self.ph}"
             log_params.append(f["to"])
+        if f.get("route"):
+            route_where, route_params = self._route_filter(f["route"])
+            if route_where:
+                # Avtobusga bog'langan qaydlar joriy kompaniya yo'nalishida
+                # bo'lishi shart; avtobussiz qo'lda qayd haydovchining o'ziga tegishli.
+                log_where += (" AND (vehicle_id = '' OR vehicle_id IN "
+                              "(SELECT external_id FROM vehicles WHERE "
+                              + route_where + "))")
+                log_params.extend(route_params)
         logs = self.storage.query(
             "SELECT date, vehicle_id, distance_km, trip_count, note FROM driver_work_logs "
             f"WHERE {log_where} ORDER BY date DESC", tuple(log_params), limit=500)
@@ -1862,6 +1923,12 @@ class Metrics:
         if f.get("to"):
             fine_where += f" AND date <= {self.ph}"
             fine_params.append(f["to"])
+        if f.get("route"):
+            route_where, route_params = self._route_filter(f["route"])
+            if route_where:
+                fine_where += (" AND driver_id IN (SELECT external_id FROM drivers "
+                               "WHERE " + route_where + ")")
+                fine_params.extend(route_params)
         fines = self.storage.query(
             "SELECT id, date, amount, reason, status FROM driver_fines "
             f"WHERE {fine_where} ORDER BY date DESC, id DESC", tuple(fine_params), limit=500)
@@ -1885,8 +1952,20 @@ class Metrics:
             except Exception:
                 telegram_user = {"chat_id": int(tg_chat), "first_name": tg_chat}
 
+        month_rows = self.storage.query(
+            "SELECT DISTINCT substr(date, 1, 7) AS ym FROM ("
+            f"SELECT date FROM trips WHERE driver_id = {self.ph} AND date <> '' "
+            "UNION ALL "
+            f"SELECT date FROM driver_work_logs WHERE driver_id = {self.ph} "
+            "AND date <> ''"
+            ") m WHERE length(date) >= 7 ORDER BY ym DESC",
+            (driver_id, driver_id), limit=120)
+        worked_months = [str(r.get("ym") or "") for r in month_rows
+                         if str(r.get("ym") or "").strip()]
+
         return {"driver": driver, "profile": profile, "trips": trips,
                 "work_logs": logs, "fine_rows": fines, "filters": f,
+                "worked_months": worked_months,
                 # Haydovchining taklif va murojaatlari (eng yangisi birinchi)
                 "appeals": self.storage.appeals_list(driver_id=driver_id, limit=200),
                 # Faqat faol (ACTIVE) jarimalar yig'indisi — ish haqidagi

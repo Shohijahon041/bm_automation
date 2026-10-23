@@ -61,7 +61,7 @@ def muxer_env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(jt1078.subprocess, "Popen", fake_popen)
     for table in (jt1078._MUXERS, jt1078._STREAMS, jt1078._DIAG,
-                  jt1078._MUXER_SRC):
+                  jt1078._MUXER_SRC, jt1078._SUPPRESS, jt1078._PLAYBACK):
         table.clear()
     yield state
     for m in list(jt1078._MUXERS.values()):
@@ -70,13 +70,15 @@ def muxer_env(tmp_path, monkeypatch):
         except Exception:  # noqa: BLE001
             pass
     for table in (jt1078._MUXERS, jt1078._STREAMS, jt1078._DIAG,
-                  jt1078._MUXER_SRC):
+                  jt1078._MUXER_SRC, jt1078._SUPPRESS, jt1078._PLAYBACK):
         table.clear()
 
 
 def test_write_does_not_block_and_drops_when_full(muxer_env, monkeypatch):
     """ffmpeg sekin bo'lsa write() darhol qaytadi va ortiqcha kadr tashlanadi."""
     monkeypatch.setattr(config, "JT1078_QUEUE_MAX", 2)
+    # Priming o'chirilgan — muxer qurilishdayoq ochiladi (navbat testi).
+    monkeypatch.setattr(config, "JT1078_LIVE_PRIME_MS", 0)
     muxer_env["delay"] = 0.3  # ffmpeg har kadrni 0.3s "yozadi"
     m = jt1078._Muxer("1234", 1, codec="h264")
     try:
@@ -95,6 +97,7 @@ def test_write_does_not_block_and_drops_when_full(muxer_env, monkeypatch):
 def test_write_reaches_ffmpeg_when_fast(muxer_env, monkeypatch):
     """ffmpeg ulgurganda kadrlar navbatdan o'tib ffmpeg'ga yetib boradi."""
     monkeypatch.setattr(config, "JT1078_QUEUE_MAX", 64)
+    monkeypatch.setattr(config, "JT1078_LIVE_PRIME_MS", 0)
     muxer_env["delay"] = 0.0
     m = jt1078._Muxer("1234", 1, codec="h264")
     try:
@@ -132,6 +135,9 @@ def test_playback_primes_and_uses_estimated_fps(muxer_env, monkeypatch):
     monkeypatch.setattr(config, "JT1078_PLAYBACK_PRIME_MS", 1000)
     monkeypatch.setattr(config, "JT1078_PLAYBACK_PRIME_MAX_AU", 10_000)
     monkeypatch.setattr(config, "JT1078_FPS_IN_PB", 13)
+    # Priming oynasi REAL vaqt bilan o'lchanadi — soatni har kadrda suramiz.
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(jt1078, "_now", lambda: clock["t"])
     m = jt1078._Muxer("777", 1, mode="playback", codec="h264")
     try:
         assert m._proc is None          # hali ishga tushmagan
@@ -139,10 +145,44 @@ def test_playback_primes_and_uses_estimated_fps(muxer_env, monkeypatch):
         # 26 kadr, 40ms oraliq -> 1000ms span -> 25 fps
         for i in range(26):
             m.write(b"z" * 100, ts=1000 + i * 40)
+            clock["t"] += 0.05          # 50ms real vaqt har kadrda
         assert muxer_env["popens"] == 1
         cmd = muxer_env["cmd"]
         idx = cmd.index("-framerate")
         assert cmd[idx + 1] == "25"
         assert m.bytes == 26 * 100
+    finally:
+        m.close()
+
+
+def test_explicit_live_start_clears_stop_suppression(muxer_env):
+    key = jt1078._muxer_key("123", 2, "live")
+    jt1078._mark_suppressed(key)
+    assert jt1078._is_suppressed(key) is True
+    jt1078.allow_stream("123", 2, "live")
+    assert jt1078._is_suppressed(key) is False
+
+
+def test_ffmpeg_spawn_failure_retries_on_next_frames(muxer_env, monkeypatch):
+    monkeypatch.setattr(config, "JT1078_LIVE_PRIME_MS", 0)
+    attempts = {"n": 0}
+
+    def flaky_popen(cmd, **kwargs):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise OSError("ffmpeg vaqtincha ochilmadi")
+        stdin = _FakeStdin()
+        muxer_env["stdin"] = stdin
+        return _FakeProc(stdin)
+
+    monkeypatch.setattr(jt1078.subprocess, "Popen", flaky_popen)
+    m = jt1078._Muxer("321", 1, codec="h264")
+    try:
+        assert m._started is False
+        for _ in range(4):
+            m.write(b"frame", ts=1000)
+        assert attempts["n"] == 2
+        assert m._started is True
+        assert m._proc is not None
     finally:
         m.close()

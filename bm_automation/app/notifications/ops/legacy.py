@@ -70,22 +70,49 @@ def start_resend(chat_id, name, routes=None) -> None:
 
 # ---------------------------------------------------------------- export
 
+def _scoped_profile(chat_id: int) -> dict | None:
+    """Chat doirasidagi kompaniya profili (tanlov bo'lmasa None)."""
+    from ...core.profiles import get_profile
+    from . import context
+
+    f = context.filters_for(chat_id)
+    name = str(f.get("profile") or "").strip()
+    if not name or name in ("__none__", "__deny__"):
+        return None
+    routes = [r.strip() for r in
+              str(f.get("route") or "").replace(",", " ").split() if r.strip()]
+    if len(routes) == 1:
+        return get_profile(name, route_id=routes[0]) or get_profile(name)
+    return get_profile(name)
+
+
+def _export_profile(chat_id: int) -> dict | None:
+    """Export uchun profil: ADMIN tanlovsiz bo'lsa faol/birinchi profil."""
+    profile = _scoped_profile(chat_id)
+    if profile:
+        return profile
+    from ...core.profiles import all_profiles, get_profile
+    from .roles import Role, resolve_role
+
+    if resolve_role(chat_id) is not Role.ADMIN:
+        return None
+    return get_profile() or (all_profiles() or [None])[0]
+
+
 def do_export(chat_id, date_arg) -> None:
     try:
         from uuid import uuid4
 
-        from ...core.profiles import get_profile
+        from ...core.companies import client_for_profile
         from ...services.export_service import build_export
 
-        profile = get_profile("FERGANATEX") or get_profile() or {}
+        profile = _export_profile(chat_id) or {}
         route = str(profile.get("routeVariantId") or "").strip()
         if not route:
-            _reply(chat_id, "Profilda routeVariantId ko'rsatilmagan.")
+            _reply(chat_id, "Kompaniya tanlanmagan yoki profilda "
+                            "routeVariantId ko'rsatilmagan.")
             return
-        pid = str(profile.get("profileId") or "").strip()
-        client = ensure_client()
-        if pid:
-            client.login_by_profile(pid)
+        client = client_for_profile(profile)
         date_str = date_arg
         if not date_str:
             from datetime import date as _date
@@ -157,20 +184,21 @@ def _download_to_temp(file_id: str, dest_dir: Path, filename: str) -> Path:
 
 def process_document(chat_id: int, file_id: str, filename: str) -> None:
     try:
-        from ...core.profiles import get_profile
+        from ...core.companies import client_for_profile
         from ...services.excel_fill_service import parse_plan_excel, run
 
-        parsed = parse_plan_excel(
-            str(_download_to_temp(file_id, Path("reports/plan"), filename)))
-        profile = get_profile() or {}
+        profile = _scoped_profile(chat_id)
+        if not profile:
+            _reply(chat_id, "Avval kompaniyani tanlang (Firmalar), "
+                            "so'ng faylni qayta yuboring.")
+            return
         route = str(profile.get("routeVariantId") or "").strip()
         if not route:
             _reply(chat_id, "Profilda routeVariantId ko'rsatilmagan.")
             return
-        pid = str(profile.get("profileId") or "").strip()
-        client = ensure_client()
-        if pid:
-            client.login_by_profile(pid)
+        parsed = parse_plan_excel(
+            str(_download_to_temp(file_id, Path("reports/plan"), filename)))
+        client = client_for_profile(profile)
         result = run(client, route, parsed["date"], parsed["rows"],
                      profile=profile, dry_run=False)
         name = profile.get("routeName") or profile.get("name") or route

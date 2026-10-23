@@ -383,6 +383,30 @@ def test_estimate_fps_rejects_bad_samples():
     assert jt1078.estimate_fps([1, 2, 3, 4, 100000]) is None  # juda sekin
 
 
+def test_estimate_fps_ignores_wild_jump():
+    """Yakka ts sakrashi bahoni buzmaydi (median) — maydonda jonli oqim
+    boshida 4 namunada 940s sakrash kuzatilgan; birinchi-oxirgi usulida
+    baho None bo'lib, standart fps'ga tushib qolardi."""
+    ts = [1000 + i * 40 for i in range(3)]     # eski baza (yozuv qoldig'i)
+    ts += [941120 + i * 40 for i in range(3)]  # sakrashdan keyingi baza
+    assert jt1078.estimate_fps(ts) == 25
+
+
+def test_estimate_fps_handles_reordered_b_frames():
+    """B-kadr tartibsizligi (ts kelish tartibida orqaga sakraydi) fps'ni
+    buzmasligi kerak — ffmpeg 'Increasing reorder buffer' shundan chiqardi."""
+    ts = [1000, 1120, 1040, 1160, 1080, 1200, 1120, 1240, 1160, 1280]
+    assert jt1078.estimate_fps(ts) == 25
+
+
+def test_estimate_fps_handles_interleaved_series():
+    """Ikki oqim aralashib kelganda ham haqiqiy oraliq topiladi."""
+    ts = []
+    for i in range(10):
+        ts += [5000 + i * 40, 900000 + i * 40]
+    assert jt1078.estimate_fps(ts) == 25
+
+
 def test_pacer_first_packet_no_wait():
     p = jt1078._Pacer(max_sleep=1.0)
     assert p.delay(1000, now=0.0) == 0.0
@@ -407,6 +431,107 @@ def test_pacer_ignores_invalid_ts():
     p = jt1078._Pacer()
     assert p.delay(0, now=0.0) == 0.0
     assert p.delay(None, now=0.0) == 0.0
+
+
+def test_pacer_tolerates_reordered_timestamps():
+    """Kichik orqaga qadam (B-kadr/qayta yuborish) bazani QAYTA O'RNATMAYDI.
+
+    Avvalgi xato: har qanday `ts < last` bazani nolga qaytarardi — natijada
+    pacing amalda ishlamay, yozuv real vaqtdan tez oqib ketardi."""
+    p = jt1078._Pacer(max_sleep=5.0)
+    assert p.delay(1000, now=0.0) == 0.0
+    assert p.delay(1080, now=0.02) == pytest.approx(0.06)
+    assert p.delay(1040, now=0.03) == pytest.approx(0.05)   # orqaga qadam
+    assert p.delay(1200, now=0.10) == pytest.approx(0.10)   # baza saqlangan
+    assert p.delay(1180, now=0.15) == pytest.approx(0.05)
+
+
+# ---------------------------------------------- jonli/yozuv priming (fps)
+
+def _priming_muxer(monkeypatch, tmp_path, mode="live"):
+    """Haqiqiy _Muxer, lekin ffmpeg o'rniga yozib oluvchi `_spawn`/`_enqueue`.
+
+    Qaytaradi: (muxer, spawned, sent). `spawned` — (fps_in, fps_out) lar,
+    `sent` — ffmpeg'ga ketgan AU'lar (bufer oqizilgandan keyin)."""
+    _registries_clear()
+    monkeypatch.setattr(jt1078.config, "HLS_DIR", str(tmp_path))
+    monkeypatch.setattr(jt1078.config, "JT1078_RAW_DUMP", False)
+    monkeypatch.setattr(jt1078, "ffmpeg_available", lambda: True)
+    spawned, sent = [], []
+
+    def fake_spawn(self, fi, fo):
+        self._started = True
+        self.fps_in, self.fps_out = fi, fo
+        spawned.append((fi, fo))
+
+    monkeypatch.setattr(jt1078._Muxer, "_spawn", fake_spawn)
+    monkeypatch.setattr(jt1078._Muxer, "_enqueue",
+                        lambda self, au: sent.append(au))
+    return jt1078._Muxer("123", 1, mode=mode), spawned, sent
+
+
+def test_live_priming_measures_fps(monkeypatch, tmp_path):
+    """Jonli oqim DARHOL ochilmaydi: REAL vaqt oynasi (600ms) to'lgach
+    o'lchangan fps bilan muxer ochiladi va buferlangan kadrlar oqiziladi."""
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(jt1078, "_now", lambda: clock["t"])
+    m, spawned, sent = _priming_muxer(monkeypatch, tmp_path, mode="live")
+    assert spawned == []                       # hali ochilmadi — bufer
+    # 25 fps (ts oraliq 40ms); har yozuvdan keyin real vaqt +45ms
+    for i in range(16):
+        m.write(b"au", ts=1000000 + i * 40)
+        clock["t"] += 0.045
+    assert spawned == [(25, 25)]               # o'lchandi — sekin/tez emas
+    assert len(sent) == 16                     # bufer oqizildi
+    assert m._pending == []
+
+
+def test_live_priming_wall_backup_when_ts_broken(monkeypatch, tmp_path):
+    """ts butunlay yaroqsiz bo'lsa (hammasi 0) jonli oqim REAL kelish
+    tezligidan baholanadi — aks holda qat'iy standart 20 da qolib ketardi."""
+    clock = {"t": 3000.0}
+    monkeypatch.setattr(jt1078, "_now", lambda: clock["t"])
+    m, spawned, _ = _priming_muxer(monkeypatch, tmp_path, mode="live")
+    for _ in range(16):
+        m.write(b"au", ts=0)                   # qurilma ts bermayapti
+        clock["t"] += 0.045
+    # 630ms real oraliqda 15 AU oqizilgan -> ~22 fps (standart 20 EMAS)
+    assert spawned == [(22, 22)]
+
+
+def test_live_priming_fallback_uses_config_fps(monkeypatch, tmp_path):
+    """Namuna yetmasa (juda sekin kamera) cap o'tgach standart fps bilan
+    ochiladi — oqim baribir boshlanishi shart."""
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(jt1078, "_now", lambda: clock["t"])
+    m, spawned, _ = _priming_muxer(monkeypatch, tmp_path, mode="live")
+    m.write(b"au", ts=1000)                    # 1 namuna — baholab bo'lmaydi
+    assert spawned == []
+    clock["t"] += jt1078.config.JT1078_LIVE_PRIME_CAP_S + 0.1
+    m.write(b"au", ts=1001)
+    want = int(jt1078.config.JT1078_FPS_IN)
+    assert spawned == [(want, want)]
+
+
+def test_live_priming_disabled_spawns_immediately(monkeypatch, tmp_path):
+    """GPS_JT1078_LIVE_PRIME_MS=0 — eski xatti-harakat qaytadi (darhol)."""
+    monkeypatch.setattr(jt1078.config, "JT1078_LIVE_PRIME_MS", 0)
+    _, spawned, _ = _priming_muxer(monkeypatch, tmp_path, mode="live")
+    assert spawned == [(jt1078.config.JT1078_FPS_IN,
+                        jt1078.config.JT1078_FPS_OUT)]
+
+
+def test_playback_priming_still_measures(monkeypatch, tmp_path):
+    """Yozuv (playback) priming avvalgidek ishlaydi (regressiya yo'q)."""
+    clock = {"t": 2000.0}
+    monkeypatch.setattr(jt1078, "_now", lambda: clock["t"])
+    m, spawned, sent = _priming_muxer(monkeypatch, tmp_path, mode="playback")
+    # 13 fps (ts oraliq 77ms): ~1500ms real oynada o'lchanadi
+    for i in range(21):
+        m.write(b"au", ts=2000000 + i * 77)
+        clock["t"] += 0.08
+    assert spawned == [(13, 13)]
+    assert len(sent) == 21
 
 
 # ---------------------------------------------------------------- persistence
@@ -457,6 +582,38 @@ def test_playback_mode_routes_to_separate_muxer(monkeypatch):
     sess.close()
     assert [m.key for m in _FakeMuxer.instances] == ["pb:123_1"]
     assert _FakeMuxer.instances[0].mode == "playback"
+
+
+def test_live_connection_not_rerouted_when_playback_starts(monkeypatch):
+    """Jonli ulanish ochilgandan keyin playback so'ralsa ham u JONLI qoladi.
+
+    Ilgari rejim har kadrda global `_playback_active` bo'yicha tanlanardi —
+    jonli va yozuv timestamp'lari bitta muxer'da aralashib, ffmpeg
+    'Increasing reorder buffer' berardi."""
+    _reset(monkeypatch)
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"L1", ts=1000)
+    jt1078.set_playback("123", 1, seconds=60)
+    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"L2", ts=1040)
+    sess.close()
+    assert [m.key for m in _FakeMuxer.instances] == ["123_1"]
+    assert _FakeMuxer.instances[0].mode == "live"
+    assert _FakeMuxer.instances[0].aus == [b"L1", b"L2"]
+
+
+def test_connection_switches_to_playback_on_backward_jump(monkeypatch):
+    """Bitta ulanishda yozuv oqimi boshlandi (ts katta orqaga sakradi)."""
+    _reset(monkeypatch)
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"L1", ts=10000000)
+    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"L2", ts=1000040)
+    jt1078.set_playback("123", 1, seconds=60)
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I", ts=1000000)
+    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"P", ts=1000040)
+    sess.close()
+    assert [m.mode for m in _FakeMuxer.instances] == ["live", "playback"]
+    assert _FakeMuxer.instances[0].aus == [b"L1"]
+    assert _FakeMuxer.instances[1].aus[0] == b"I"
 
 
 def test_playback_expiry_returns_to_live(monkeypatch):

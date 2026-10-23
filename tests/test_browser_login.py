@@ -77,7 +77,7 @@ def test_browser_login_uses_direct_sso(monkeypatch):
     monkeypatch.setattr(bl, "_direct_sso_code",
                         lambda u, p, h, t: called.update(code=1) or "CODE")
     monkeypatch.setattr(bl, "_exchange_code",
-                        lambda code, org: called.update(exchange=code) or {"access_token": "A"})
+                        lambda code, org, **kw: called.update(exchange=code) or {"access_token": "A"})
     cfg = type("C", (), {"username": "u", "password": "p", "organization": "",
                          "base_url": "https://bmapi.dtransport.uz"})()
     monkeypatch.setattr(bl, "get_config", lambda: cfg)

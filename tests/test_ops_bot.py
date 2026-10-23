@@ -402,6 +402,30 @@ def test_dashboard_settings_update_finance(monkeypatch, tmp_path):
     assert bot_settings.brutto_skm() == 17000.0
 
 
+def test_departure_offset_setting_roundtrip(monkeypatch, tmp_path):
+    from bm_automation.app.core import bot_settings
+    from fastapi.testclient import TestClient
+    from bm_automation.app.dashboard import deps
+    from bm_automation.app.dashboard.fastapi_app import app
+    bot_settings.STATE_FILE = tmp_path / "s.json"
+    bot_settings._reset()
+    assert bot_settings.departure_offset_min() == 0            # standart: o'z vaqtida
+    assert bot_settings.set_departure_offset_min(-10) == -10
+    assert bot_settings.departure_offset_min() == -10
+    assert bot_settings.set_departure_offset_min(500) == 180   # yuqori chegara
+    assert bot_settings.set_departure_offset_min(-500) == -180  # quyi chegara
+    assert bot_settings.set_departure_offset_min("nan") == 0    # noto'g'ri → 0
+    monkeypatch.setattr(deps, "_POST_MIN_INTERVAL_S", 0.0)
+    with deps._POST_LOCK:
+        deps._last_post_at.clear()
+    client = TestClient(app)
+    res = client.post("/api/settings", json={"departure_offset_min": 5}).json()
+    assert res["ok"] and "departure_offset_min" in res["changed"]
+    assert bot_settings.departure_offset_min() == 5
+    out = client.get("/api/settings").json()
+    assert out["global"]["departure_offset_min"] == 5
+
+
 def test_dashboard_settings_update_bad_values(monkeypatch, tmp_path):
     from bm_automation.app.core import bot_settings
     from fastapi.testclient import TestClient
@@ -417,6 +441,8 @@ def test_dashboard_settings_update_bad_values(monkeypatch, tmp_path):
     assert not res["ok"]
     res2 = client.post("/api/settings", json={"brutto_skm": "abc"}).json()
     assert not res2["ok"]
+    res3 = client.post("/api/settings", json={"departure_offset_min": "abc"}).json()
+    assert not res3["ok"]
 
 
 def test_settings_audit_csv(admin, monkeypatch):
@@ -468,10 +494,11 @@ def test_settings_reload_from_disk_when_file_changes(tmp_path, monkeypatch):
     f = tmp_path / "s2.json"
     bot_settings.STATE_FILE = f
     bot_settings._reset()
+    assert bot_settings.show_driver_salary() is False  # standart: botda yashirin
     assert bot_settings.set_show_driver_salary(True) is True
     assert bot_settings.show_driver_salary() is True
     # Dashboard alohida jarayonda faylni to'g'ridan-to'g'ri yozadi.
-    f.write_text(json.dumps({"show_driver_salary": False}), encoding="utf-8")
+    f.write_text(json.dumps({"bot_driver_salary": False}), encoding="utf-8")
     bot_settings._CACHE_MTIME = 0  # fayl mtime o'zgarganini simulyatsiya qilamiz
     assert bot_settings.show_driver_salary() is False
     assert bot_settings.show_driver_salary() is False
@@ -767,6 +794,115 @@ def test_dispatch_callback_sync_denied_viewer(viewer):
     assert viewer[-1]["text"] == DENIED_TEXT
 
 
+# ------------------------------------------------------ sync guard/scope
+
+def test_sync_scope_routes(monkeypatch):
+    monkeypatch.setattr(dispatch, "resolve_role", lambda cid: Role.ADMIN)
+    assert dispatch._sync_scope_routes(1) is None
+
+    monkeypatch.setattr(dispatch, "resolve_role", lambda cid: Role.DISPATCHER)
+    monkeypatch.setattr(dispatch.context, "filters_for",
+                        lambda cid: {"route": "r1 r2"})
+    assert dispatch._sync_scope_routes(1) == ["r1", "r2"]
+
+    # Yo'nalish biriktirilmagan — bo'sh ro'yxat (sync taqiqlanadi).
+    monkeypatch.setattr(dispatch.context, "filters_for",
+                        lambda cid: {"route": "__deny__"})
+    assert dispatch._sync_scope_routes(1) == []
+
+
+def test_spawn_sync_single_flight():
+    import threading
+    import time
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def _job():
+        started.set()
+        release.wait(2)
+
+    assert dispatch._spawn_sync(_job) is True
+    assert started.wait(2)
+    # Ikkinchi sync birinchisi tugaguncha boshlanmaydi.
+    assert dispatch._spawn_sync(_job) is False
+    release.set()
+    deadline = time.time() + 2
+    while dispatch._SYNC_GUARD.locked() and time.time() < deadline:
+        time.sleep(0.01)
+    assert not dispatch._SYNC_GUARD.locked()
+
+
+def test_start_sync_busy_reply(admin, monkeypatch):
+    monkeypatch.setattr(dispatch, "_sync_scope_routes", lambda cid: None)
+    assert dispatch._SYNC_GUARD.acquire(blocking=False)
+    try:
+        dispatch.start_sync(111)
+    finally:
+        dispatch._SYNC_GUARD.release()
+    assert "davom etmoqda" in admin[-1]["text"]
+
+
+def test_start_sync_denied_without_scope(admin, monkeypatch):
+    monkeypatch.setattr(dispatch, "_sync_scope_routes", lambda cid: [])
+    dispatch.start_sync(111)
+    assert "yo'nalish biriktirilmagan" in admin[-1]["text"]
+
+
+def test_do_sync_scoped_routes(admin, monkeypatch):
+    """Non-admin /sync faqat o'z yo'nalishlari bo'yicha ishlaydi."""
+    from bm_automation.app.db import sync as dsync
+
+    calls = {"days": [], "all": 0}
+    monkeypatch.setattr(dispatch, "_sync_scope_routes", lambda cid: ["r1"])
+    monkeypatch.setattr(dsync, "sync_statuses", lambda st: "S")
+    monkeypatch.setattr(dsync, "sync_profiles", lambda st: "P")
+    monkeypatch.setattr(dsync, "sync_routes", lambda st, cl: "R")
+    monkeypatch.setattr(
+        dsync, "sync_days",
+        lambda st, cl, days, routes=None:
+            calls["days"].append((list(days), list(routes or []))) or [])
+
+    def _all(*args, **kwargs):
+        calls["all"] += 1
+        return []
+
+    monkeypatch.setattr(dsync, "sync_all_profiles", _all)
+    monkeypatch.setattr(dispatch.legacy, "ensure_client", lambda: object())
+
+    dispatch._do_sync(111)
+
+    assert calls["all"] == 0
+    assert calls["days"] and all(r == ["r1"] for _, r in calls["days"])
+    assert "Sinxronlash tugadi" in admin[-1]["text"]
+
+
+def test_do_sync_admin_all_profiles(admin, monkeypatch):
+    from bm_automation.app.db import sync as dsync
+
+    calls = {"days": 0, "all": 0}
+    monkeypatch.setattr(dispatch, "_sync_scope_routes", lambda cid: None)
+    monkeypatch.setattr(dsync, "sync_statuses", lambda st: "S")
+    monkeypatch.setattr(dsync, "sync_profiles", lambda st: "P")
+    monkeypatch.setattr(dsync, "sync_routes", lambda st, cl: "R")
+
+    def _days(*args, **kwargs):
+        calls["days"] += 1
+        return []
+
+    def _all(*args, **kwargs):
+        calls["all"] += 1
+        return []
+
+    monkeypatch.setattr(dsync, "sync_days", _days)
+    monkeypatch.setattr(dsync, "sync_all_profiles", _all)
+    monkeypatch.setattr(dispatch.legacy, "ensure_client", lambda: object())
+
+    dispatch._do_sync(111)
+
+    assert calls["days"] == 0 and calls["all"] >= 1
+
+
 # ------------------------------------------------------ AI self-review
 
 def test_dispatch_insights_command(admin, monkeypatch):
@@ -849,7 +985,9 @@ def test_render_driver_card_hides_salary_for_driver(patch_met, storage,
 def test_render_driver_card_self_shows_salary_when_on(patch_met, storage,
                                                       monkeypatch):
     """Haydovchi o'z kartasida oylikni ko'radi (show_driver_salary=ON)."""
+    import bm_automation.app.core.bot_settings as bot_settings
     from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE
+    monkeypatch.setattr(bot_settings, "show_driver_salary", lambda: True)
     _DRIVER_CHAT_CACHE.clear()
     _seed_driver_extras(storage)
     storage.link_driver_telegram("d1", 999)
@@ -1565,6 +1703,7 @@ def daily_env(monkeypatch, tmp_path):
         lambda: types.SimpleNamespace(enabled=True))
     monkeypatch.setattr(
         daily_summary, "configured_roles", lambda: {111: Role.ADMIN})
+    monkeypatch.setattr(daily_summary.context, "company_names", lambda: [])
     monkeypatch.setattr(daily_summary, "send_message", fake_send)
     monkeypatch.setattr(daily_summary.assistant, "daily_summary",
                         lambda: "🌅 <b>TEST XULOSA</b>")

@@ -19,6 +19,7 @@ from . import metrics as m
 
 def _kv(f: dict) -> list:
     return [("sana", f.get("date") or f.get("from", "")),
+            ("firma", f.get("company", "") or "barchasi"),
             ("route", f.get("route", "") or "barchasi"),
             ("vehicle", f.get("vehicle", "") or "barchasi"),
             ("driver", f.get("driver", "") or "barchasi"),
@@ -99,9 +100,12 @@ def _data_for(scope: str, met: m.Metrics, f: dict) -> tuple[str, list, list[list
         return "Bugungi ko'rsatkichlar", cols, rows
 
     if scope == "routes":
-        cols = ["route_id", "nom", "planned", "actual", "accepted",
+        _comps = met._companies()
+        cols = ["route_id", "nom", "firma", "planned", "actual", "accepted",
                 "not_accepted", "rejected", "zero_mileage", "performance %"]
-        rows = [[r["route_id"], r["name"], r["planned"], r["actual"],
+        rows = [[r["route_id"], r["name"],
+                 (_comps.get(r["route_id"]) or {}).get("company", ""),
+                 r["planned"], r["actual"],
                  r["accepted"], r["not_accepted"], r["rejected"],
                  r["zero_mileage"], r["performance"]] for r in met.routes(f)]
         return "Yo'nalishlar", cols, rows
@@ -116,13 +120,12 @@ def _data_for(scope: str, met: m.Metrics, f: dict) -> tuple[str, list, list[list
 
     if scope == "drivers":
         cols = ["driver_id", "ism", "reyslar", "ish kunlari", "km", "km narxi",
-                "brutto", "soliq (12%)", "jarima", "netto (qo'liga)", "rating",
-                "qora ro'yxat", "davomat %"]
+                "brutto", "soliq (12%)", "jarima", "netto (so'm)", "reyting",
+                "qora ro'yxat", "davomat %", "firma"]
         rows = [[d["driver_id"], d["name"], d["trips"], d["working_days"],
                  d["km"], d["km_rate"], d["gross_pay"], d["tax"], d["fines"],
                  d["net_pay"], d["rating"], "ha" if d["blacklisted"] else "yo'q",
-                 d["attendance"]]
-                for d in met.drivers(f)]
+                 d["attendance"], d.get("company") or ""] for d in met.drivers(f)]
         return "Haydovchilar", cols, rows
 
     if scope == "distance":
@@ -276,6 +279,51 @@ def _data_for(scope: str, met: m.Metrics, f: dict) -> tuple[str, list, list[list
                          _n(a.get("elektr_kwt")), _n(a.get("elektr_summ"))])
         label = f" ({pcare})" if pcare else ""
         return f"Brutto-shartnoma to'lovi{label}", cols, rows
+
+    if scope == "companies":
+        drivers = met.drivers(f)
+        cols = ["firma", "yo'nalishlar", "haydovchilar", "reyslar", "km",
+                "brutto (so'm)", "soliq (so'm)", "jarima (so'm)",
+                "sof to'lov (so'm)", "davomat %"]
+        agg: dict[str, dict] = {}
+        for d in drivers:
+            c = d.get("company") or "—"
+            g = agg.setdefault(c, {"routes": set(), "drivers": 0, "trips": 0,
+                                   "km": 0.0, "gross": 0.0, "tax": 0.0,
+                                   "fines": 0.0, "net": 0.0, "att": []})
+            if d.get("route_id"):
+                g["routes"].add(str(d["route_id"]))
+            g["drivers"] += 1
+            g["trips"] += int(d.get("trips") or 0)
+            g["km"] += float(d.get("km") or 0)
+            g["gross"] += float(d.get("gross_pay") or 0)
+            g["tax"] += float(d.get("tax") or 0)
+            g["fines"] += float(d.get("fines") or 0)
+            g["net"] += float(d.get("net_pay") or 0)
+            g["att"].append(float(d.get("attendance") or 0))
+        tot = {"routes": set(), "drivers": 0, "trips": 0, "km": 0.0,
+               "gross": 0.0, "tax": 0.0, "fines": 0.0, "net": 0.0, "att": []}
+        rows = []
+        for c in sorted(agg):
+            g = agg[c]
+            rows.append([c, len(g["routes"]), g["drivers"], g["trips"],
+                         round(g["km"], 2), round(g["gross"], 2),
+                         round(g["tax"], 2), round(g["fines"], 2),
+                         round(g["net"], 2),
+                         round(sum(g["att"]) / len(g["att"]), 1) if g["att"] else 0])
+            tot["routes"] |= g["routes"]
+            for k in ("drivers", "trips"):
+                tot[k] += g[k]
+            for k in ("km", "gross", "tax", "fines", "net"):
+                tot[k] += g[k]
+            tot["att"] += g["att"]
+        rows.append(["JAMI", len(tot["routes"]), tot["drivers"], tot["trips"],
+                     round(tot["km"], 2), round(tot["gross"], 2),
+                     round(tot["tax"], 2), round(tot["fines"], 2),
+                     round(tot["net"], 2),
+                     round(sum(tot["att"]) / len(tot["att"]), 1)
+                     if tot["att"] else 0])
+        return "Firma kesimi (yig'ma)", cols, rows
 
     # trips (default)
     cols = ["id", "date", "route_id", "vehicle_id", "driver_id",
@@ -562,18 +610,38 @@ def export_xlsx(filters: dict, scope: str = "trips", allow_financial: bool = Tru
 
     if scope == "all":
         scopes = _filter_financial(
-            ["today", "routes", "vehicles", "drivers", "trips", "distance",
-             "schedule", "attendance", "rating", "electricity", "rejects",
-             "tabel"], allow_financial)
+            ["today", "routes", "vehicles", "drivers", "companies", "trips",
+             "distance", "schedule", "attendance", "rating", "electricity",
+             "rejects", "tabel"], allow_financial)
     else:
         scopes = [scope]
 
-    for sc in scopes:
-        title, cols, rows = _data_for(sc, met, f)
-        sheet = wb.create_sheet(title[:31])
-        sheet.append(cols)
-        for r in rows:
-            sheet.append(r)
+    split = str(f.get("split") or "").lower()
+    if split == "company" and scope != "all":
+        raw_routes = [x.strip() for x in
+                      str(f.get("route") or "").split(",") if x.strip()]
+        allowed = set(raw_routes)
+        source = {rid: info for rid, info in met._companies().items()
+                  if not allowed or str(rid) in allowed}
+        firm_routes: dict[str, list] = {}
+        for rid, info in source.items():
+            firm_routes.setdefault(info.get("company") or "—", []).append(str(rid))
+        for i, firm in enumerate(sorted(firm_routes), 1):
+            f2 = dict(f)
+            f2["route"] = ",".join(firm_routes[firm])
+            f2["company"] = firm
+            title, cols, rows = _data_for(scope, met, f2)
+            sheet = wb.create_sheet(f"{i}. {firm}"[:31])
+            sheet.append(cols)
+            for r in rows:
+                sheet.append(r)
+    else:
+        for sc in scopes:
+            title, cols, rows = _data_for(sc, met, f)
+            sheet = wb.create_sheet(title[:31])
+            sheet.append(cols)
+            for r in rows:
+                sheet.append(r)
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -706,11 +774,12 @@ def filename(fmt: str, scope: str, date_str: str) -> str:
 _VALID_FORMATS = {"csv", "xls", "xlsx", "pdf"}
 _VALID_SCOPES = {"trips", "today", "routes", "vehicles", "drivers", "all",
                  "distance", "schedule", "attendance", "rating", "electricity",
-                 "rejects", "tabel", "settings", "tariffs", "brutto"}
+                 "rejects", "tabel", "settings", "tariffs", "brutto",
+                 "companies"}
 
 # Moliyaviy/cheklangan bo'limlar — DISPATCHER (rank < 2) ko'ra olmaydi.
 _FINANCIAL_SCOPES = {"drivers", "brutto", "tariffs", "settings",
-                     "electricity", "rejects"}
+                     "electricity", "rejects", "companies"}
 
 
 def _filter_financial(scopes: list[str], allow_financial: bool) -> list[str]:
@@ -739,7 +808,8 @@ def run_export(params: dict, allow_financial: bool = True) -> dict:
         return {"error": "Sizda bu bo'limga ruxsat yo'q", "status": 403}
     try:
         filters = {k: p[k] for k in ("date", "from", "to", "month", "route",
-                                     "vehicle", "driver", "status") if p.get(k)}
+                                     "vehicle", "driver", "status", "company",
+                                     "split") if p.get(k)}
         data = build_export(filters, fmt, scope, allow_financial=allow_financial)
     except Exception as exc:  # noqa: BLE001
         return {"error": str(exc), "status": 400}

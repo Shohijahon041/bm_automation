@@ -74,6 +74,7 @@ def client():
 @pytest.fixture
 def seeded_storage(monkeypatch, tmp_path):
     """SQLite'ga urug'langan Storage'ni singleton sifatida o'rnatadi."""
+    deps.invalidate_super_cache()
     db = SQLiteDatabase(str(tmp_path / "bm_test.db"))
     st = storage_for(db)
     st.save_route(external_id="r1", name="10-yo'nalish", entity_type="ROUTE")
@@ -123,6 +124,18 @@ def test_core_routes_registered(client):
         assert p in paths, f"yo'qolgan yo'l: {p}"
 
 
+def test_docs_disabled_without_test_mode(monkeypatch):
+    """Productionda OpenAPI/docs yopiq bo'lishi kerak."""
+    monkeypatch.delenv("BM_TEST_MODE", raising=False)
+    monkeypatch.delenv("DASHBOARD_DOCS", raising=False)
+    from fastapi.testclient import TestClient
+    from bm_automation.app.dashboard.fastapi_app import create_app
+    app = create_app()
+    c = TestClient(app)
+    assert c.get("/api/openapi.json").status_code == 404
+    assert c.get("/api/docs").status_code == 404
+
+
 def test_openapi_schema_shape(client):
     schema = client.app.openapi()
     assert schema["openapi"].startswith("3.")
@@ -131,11 +144,24 @@ def test_openapi_schema_shape(client):
     assert "/api/summary" in schema["paths"]
 
 
+def test_openapi_alias_redirects_to_live_spec(monkeypatch):
+    """Docs yoqilganda eski `/openapi.json` jonli sxemaga yo'naltiriladi."""
+    monkeypatch.setenv("BM_TEST_MODE", "1")
+    from fastapi.testclient import TestClient
+    from bm_automation.app.dashboard.fastapi_app import create_app
+    client = TestClient(create_app())
+    r = client.get("/openapi.json", follow_redirects=False)
+    assert r.status_code in (307, 308)
+    assert r.headers.get("location") == "/api/openapi.json"
+
+
 def test_security_headers_present(client):
     r = client.get("/api/me")
     assert r.status_code == 200
     assert r.headers.get("x-frame-options") == "DENY"
     assert r.headers.get("x-content-type-options") == "nosniff"
+    assert r.headers.get("cache-control") == "no-store"
+    assert r.headers.get("x-robots-tag") == "noindex, nofollow"
 
 
 def test_spa_served_at_root(client):
@@ -406,3 +432,65 @@ def test_fine_save_and_telegram_unlink(client, seeded_storage,
 
     r = client.post("/api/users/555/link-driver", json={"driver_id": ""})
     assert r.status_code == 200 and r.json()["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# BM'dan haydovchi to'ldirish (bm-sync)
+# ---------------------------------------------------------------------------
+
+def test_bm_sync_routes_registered(client):
+    paths = {getattr(r, "path", "") for r in client.app.routes}
+    assert "/api/drivers/{driver_id}/bm-sync" in paths
+    assert "/api/drivers/bm-sync" in paths
+
+
+def test_driver_bm_sync_calls_refresh(client, seeded_storage,
+                                      no_post_rate_limit, monkeypatch):
+    """Haydovchi karta tugmasi `refresh_driver_from_bm`ni chaqiradi."""
+    from bm_automation.app.db import sync as db_sync
+    calls: dict = {}
+
+    def fake_refresh(storage, client_arg, driver_id, **kwargs):
+        calls["driver_id"] = driver_id
+        calls["with_photo"] = kwargs.get("with_photo")
+        return {"ok": True, "driver_id": driver_id, "updated": True, "photo": True}
+
+    monkeypatch.setattr(db_sync, "refresh_driver_from_bm", fake_refresh)
+    r = client.post("/api/drivers/d1/bm-sync")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["photo"] is True
+    assert calls["driver_id"] == "d1"
+    assert calls["with_photo"] is True
+
+
+def test_driver_bm_sync_photo_disabled(client, seeded_storage,
+                                       no_post_rate_limit, monkeypatch):
+    """`?photo=0` bilan rasm yuklab olinmaydi."""
+    from bm_automation.app.db import sync as db_sync
+    calls: dict = {}
+
+    def fake_refresh(storage, client_arg, driver_id, **kwargs):
+        calls["with_photo"] = kwargs.get("with_photo")
+        return {"ok": True, "driver_id": driver_id, "updated": True, "photo": False}
+
+    monkeypatch.setattr(db_sync, "refresh_driver_from_bm", fake_refresh)
+    r = client.post("/api/drivers/d1/bm-sync?photo=0")
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert calls["with_photo"] is False
+
+
+def test_driver_bm_sync_error_is_reported(client, seeded_storage,
+                                          no_post_rate_limit, monkeypatch):
+    """BM'da haydovchi topilmasa xato matni qaytariladi (200 bilan)."""
+    from bm_automation.app.db import sync as db_sync
+
+    def fake_refresh(storage, client_arg, driver_id, **kwargs):
+        return {"ok": False, "driver_id": driver_id, "error": "haydovchi BM'da topilmadi"}
+
+    monkeypatch.setattr(db_sync, "refresh_driver_from_bm", fake_refresh)
+    r = client.post("/api/drivers/d1/bm-sync")
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+    assert "topilmadi" in r.json()["error"]

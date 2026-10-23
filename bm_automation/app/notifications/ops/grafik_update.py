@@ -34,24 +34,25 @@ _THREAD: threading.Thread | None = None
 _LAST_CHECK_AT = 0.0
 
 
-def _notify(reports: list[str]) -> None:
-    """ADMIN/DISPATCHER'ga yangilanish xulosasini yuboradi."""
+def _notify(reports: list[tuple[str, str]]) -> None:
+    """Har yo'nalish xulosasini faqat o'z kompaniyasi chatlariga yuboradi."""
     try:
         from ..telegram import send_message
-        from .grafik_sms import _targets
-        tg = _targets()
-        if not tg:
-            return
-        lines = ["♻️ <b>GRAFIK YANGILANDI</b>",
-                 "Grafik ma'lumoti o'zgargani uchun yangilangan "
-                 "nusxa yuborildi:", ""]
-        lines.extend(f"• {r}" for r in reports[:8])
-        text = "\n".join(lines)
-        for cid in tg:
-            try:
-                send_message(text, chat_id=str(cid))
-            except Exception as exc:  # noqa: BLE001
-                print(f"Grafik yangilash xulosasi yuborilmadi [{cid}]: {exc}")
+        from .grafik_sms import bot_targets
+        by_route: dict[str, list[str]] = {}
+        for rid, text in reports:
+            by_route.setdefault(rid, []).append(text)
+        for rid, items in by_route.items():
+            lines = ["♻️ <b>GRAFIK YANGILANDI</b>",
+                     "Grafik ma'lumoti o'zgargani uchun yangilangan "
+                     "nusxa yuborildi:", ""]
+            lines.extend(f"• {r}" for r in items[:8])
+            text = "\n".join(lines)
+            for cid in bot_targets(rid, None):
+                try:
+                    send_message(text, chat_id=str(cid))
+                except Exception as exc:  # noqa: BLE001
+                    print(f"Grafik yangilash xulosasi yuborilmadi [{cid}]: {exc}")
     except Exception as exc:  # noqa: BLE001
         print(f"Grafik yangilash xulosasi xatosi: {exc}")
 
@@ -146,10 +147,10 @@ def _run_once() -> None:
         today = date.today()
         valid_dates = {today.isoformat(),
                        (today + timedelta(days=1)).isoformat()}
-        routes = {r[1]: r for r in dg.ROUTES}
+        routes = {r[1]: r for r in dg.get_routes()}
 
         state = dg._grafik_sent_state()
-        reports: list[str] = []
+        reports: list[tuple[str, str]] = []
         for key, entry in list(state.items()):
             if "|" not in key or key.startswith(("notfound|", "error|")):
                 continue
@@ -191,8 +192,9 @@ def _run_once() -> None:
                 dg._mark_grafik_sent(rid, date_str, hash=total_hash,
                                      drivers=driver_hashes)
                 _d = date.fromisoformat(date_str)
-                reports.append(f"{label}: {_d:%d.%m.%Y} grafigi yangilandi "
-                               f"({len(changed)} haydovchi o'zgardi)")
+                reports.append(
+                    (rid, f"{label}: {_d:%d.%m.%Y} grafigi yangilandi "
+                          f"({len(changed)} haydovchi o'zgardi)"))
                 print(f"[{label}] yangilangan grafik qayta yuborildi")
 
         if reports:

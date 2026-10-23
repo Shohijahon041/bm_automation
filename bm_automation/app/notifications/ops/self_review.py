@@ -2,7 +2,7 @@
 
 Bot poll-tsikli har iteratsiyada `check_and_send()` chaqiradi; u kuniga bir
 marta (soat `AI_SELFREVIEW_HOUR`, standart 9) log/xatolar manbasini tahlil
-qiladi va ADMIN/DISPATCHER'ga tavsiyalar yuboradi. Qo'lda ko'rish: `/insights`,
+qiladi va ADMIN'ga tavsiyalar yuboradi. Qo'lda ko'rish: `/insights`,
 CLI: `python -m bm_automation insights`.
 
 Tahlil manbalari:
@@ -81,9 +81,9 @@ def _days() -> int:
 
 
 def _targets() -> list[int]:
+    """Tizim darajasidagi tahlil — faqat ADMIN'lar (multi-company)."""
     roles = configured_roles()
-    return [cid for cid, role in roles.items()
-            if role in (Role.ADMIN, Role.DISPATCHER)]
+    return [cid for cid, role in roles.items() if role is Role.ADMIN]
 
 
 def _load() -> dict:

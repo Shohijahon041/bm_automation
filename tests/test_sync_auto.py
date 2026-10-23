@@ -221,17 +221,38 @@ def test_sync_interval_guard(sync_bg, storage, monkeypatch):
     assert d["ok"] is False and "tez-tez" in d["error"]
 
 
+def test_sync_monthly_blocked_while_daily_running(sync_bg):
+    daily, _ = sync_bg
+    daily["running"] = True
+    daily["progress"] = "Login..."
+    d = system_mod._run_sync_monthly({}, {"is_admin": True})
+    assert d["ok"] is False and "davom etmoqda" in d["error"]
+    assert d["progress"] == "Login..."
+
+
+def test_sync_daily_blocked_while_monthly_running(sync_bg):
+    _, monthly = sync_bg
+    monthly["running"] = True
+    d = system_mod._run_sync({}, {"is_admin": True})
+    assert d["ok"] is False and "davom etmoqda" in d["error"]
+
+
 def test_sync_status_shapes(sync_bg):
     daily, _ = sync_bg
     assert system_mod._sync_bg_status(daily) == {"ok": True, "running": False}
     daily["running"] = True
     daily["progress"] = "01.10.2026 (1/2)"
+    # Scope yo'q — xavfsiz standart: progress faqat admin/egasiga ko'rinadi.
     out = system_mod._sync_bg_status(daily)
+    assert out["running"] is True and out["progress"] == ""
+    out = system_mod._sync_bg_status(daily, {"is_admin": True})
     assert out["running"] is True and out["progress"] == "01.10.2026 (1/2)"
     daily["running"] = False
     daily["result"] = {"ok": True, "days": 2}
-    out = system_mod._sync_bg_status(daily)
+    out = system_mod._sync_bg_status(daily, {"is_admin": True})
     assert out == {"ok": True, "running": False, "days": 2}
+    assert system_mod._sync_bg_status(daily, {"username": "boshqa"}) == {
+        "ok": True, "running": False}
 
 
 def test_fmt_date():

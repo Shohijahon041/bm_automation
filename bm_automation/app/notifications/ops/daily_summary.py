@@ -1,8 +1,9 @@
-"""Ertalabki AI-xulosa — kuniga bir marta ADMIN/DISPATCHER'ga xabar.
+"""Ertalabki AI-xulosa — kuniga bir marta, kompaniya bo'yicha xabar.
 
 Bot poll-tsikli har iteratsiyada `check_and_send()` chaqiradi; u kuniga
-bir marta (soat `AI_DAILY_SUMMARY_HOUR`, standart 8) ruxsat etilgan
-chat'larga `assistant.daily_summary()` yuboradi. OpenRouter sozlangan
+bir marta (soat `AI_DAILY_SUMMARY_HOUR`, standart 8) ADMIN'larga global,
+har kompaniya chatlariga esa faqat o'z ko'rsatkichlari bilan
+`assistant.daily_summary()` yuboradi. OpenRouter sozlangan
 bo'lsa xulosa LLM orqali jonlantiriladi, aks holda lokal qoidaviy matn.
 
 Holat `state/daily_summary.json`:
@@ -23,7 +24,7 @@ from ...config.settings import telegram_settings
 from ...db.storage import get_storage
 from ...utils.io import atomic_write
 from ..telegram import send_message
-from . import assistant, kb
+from . import assistant, context, kb
 from .roles import Role, configured_roles
 
 STATE_FILE = Path("state") / "daily_summary.json"
@@ -49,9 +50,9 @@ def _hour() -> int:
 
 
 def _targets() -> list[int]:
+    """Global (barcha kompaniyalar) xulosa — faqat ADMIN'lar."""
     roles = configured_roles()
-    return [cid for cid, role in roles.items()
-            if role in (Role.ADMIN, Role.DISPATCHER)]
+    return [cid for cid, role in roles.items() if role is Role.ADMIN]
 
 
 def _load() -> dict:
@@ -73,15 +74,22 @@ def _save(state: dict) -> None:
         print(f"Ertalabki xulosa holati saqlanmadi: {exc}")
 
 
-def _build_text() -> str | None:
-    """Kunlik xulosa matni (LLM sozlangan bo'lsa jonlantiriladi)."""
+def _build_text(filters: dict | None = None, llm: bool = True) -> str | None:
+    """Kunlik xulosa matni; `filters` bo'lsa — faqat shu kompaniya/yo'nalish.
+
+    Per-kompaniya matnlar uchun LLM chaqirilmaydi (narx/kechikish), lokal
+    qoidaviy matn ishlatiladi.
+    """
     if not get_storage().enabled:
         return None
     try:
-        local_text = assistant.daily_summary()
+        local_text = assistant.daily_summary(filters) if filters \
+            else assistant.daily_summary()
     except Exception as exc:  # noqa: BLE001
         print(f"Ertalabki xulosa tayyorlanmadi: {exc}")
         return None
+    if not llm:
+        return local_text
     return assistant._maybe_llm("", local_text, "Ertalabki xulosa tayyorlang")
 
 
@@ -95,29 +103,43 @@ def check_and_send() -> None:
     _LAST_CHECK_AT = time.time()
     if time.localtime().tm_hour < _hour():
         return
-    targets = _targets()
-    if not targets:
+    admins = _targets()
+    if not admins and not context.company_names():
         return
     with _LOCK:
         today = date.today().isoformat()
         if _load().get("date") == today:
             return
         text = _build_text()
-        if not text:
+        if not text and not admins:
             return
         _save({"date": today})
-        for cid in targets:
+        for cid in admins:
             try:
                 send_message(text, chat_id=str(cid),
                              reply_markup=kb.nav_kb("nav:settings"))
             except Exception as exc:  # noqa: BLE001
                 print(f"Ertalabki xulosa yuborilmadi [{cid}]: {exc}")
+        # Har kompaniya faqat o'z raqamlarini ko'radi (boshqa firmaga oqmaydi).
+        for name in context.company_names():
+            chats = [c for c in context.chats_for_company(name)
+                     if c not in admins]
+            if not chats:
+                continue
+            ctext = _build_text({"company": name}, llm=False)
+            if not ctext:
+                continue
+            for cid in chats:
+                try:
+                    send_message(ctext, chat_id=str(cid))
+                except Exception as exc:  # noqa: BLE001
+                    print(f"Ertalabki xulosa yuborilmadi [{cid}]: {exc}")
 
 
-def send_now() -> str:
-    """Qo'lda yuborish (`/daily`) — so'rovchi chat'iga matn qaytaradi."""
+def send_now(filters: dict | None = None) -> str:
+    """Qo'lda yuborish (`/daily`) — so'rovchi doirasidagi matnni qaytaradi."""
     with _LOCK:
-        text = _build_text()
+        text = _build_text(filters or None)
         if not text:
             return "⚠️ Xulosa tayyorlanmadi (DB o'chirilgan bo'lishi mumkin)."
         _save({"date": date.today().isoformat()})

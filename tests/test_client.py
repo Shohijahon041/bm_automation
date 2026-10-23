@@ -621,3 +621,44 @@ def test_keepalive_403_on_verify_relogins(client, tmp_path, monkeypatch):
     assert client.keepalive() == "relogin"
     assert called.get("force") is True
     assert [c["method"] for c in client.session.calls] == ["POST", "GET", "GET"]
+
+
+# ---------- download: qo'shimcha header + bytes ----------
+
+_JPG = b"\xff\xd8\xff\xe0fakejpeg"
+
+
+def test_download_merges_extra_headers(client):
+    """`Accept: */*` kabi qo'shimcha header correlation ID bilan saqlanadi."""
+    client.session = FakeSession([FakeResponse(200, content=_JPG)])
+    client.download("/photo", params={"driverId": "d1"},
+                    headers={"Accept": "*/*"}, retries=0)
+    call = client.session.calls[0]
+    assert call["headers"]["Accept"] == "*/*"
+    assert call["headers"]["X-Correlation-ID"]
+    assert call["params"] == {"driverId": "d1"}
+
+
+def test_download_returns_bytes_without_out_file(client):
+    """out_file=None bo'lsa baytlar qaytariladi (haydovchi fotosi uchun)."""
+    client.session = FakeSession([FakeResponse(200, content=_JPG)])
+    got = client.download("/photo", headers={"Accept": "*/*"}, retries=0)
+    assert got == _JPG
+
+
+def test_download_writes_file_when_out_file(client, tmp_path):
+    """out_file berilsa faylga yoziladi va yo'l qaytariladi."""
+    client.session = FakeSession([FakeResponse(200, content=_JPG)])
+    target = tmp_path / "photo.png"
+    got = client.download("/photo", str(target), headers={"Accept": "*/*"}, retries=0)
+    assert got == str(target)
+    assert target.read_bytes() == _JPG
+
+
+def test_download_4xx_raises_without_retry(client):
+    """Rasm bo'lmasa (400/404) — takrorlashsiz xato qaytariladi."""
+    client.session = FakeSession([FakeResponse(400, text="bad")])
+    with pytest.raises(BMApiError) as ei:
+        client.download("/photo", headers={"Accept": "*/*"}, retries=3)
+    assert ei.value.status == 400
+    assert len(client.session.calls) == 1

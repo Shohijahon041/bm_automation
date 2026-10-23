@@ -29,15 +29,15 @@ from .roles import Role, can, configured_roles, resolve_role, role_label
 
 log = get_logger("bm_automation.bot")
 
-# Ish haqi (salary) faqat ADMIN/MANAGER'ga ko'rinadi. Haydovchi o'z
-# oyligini `show_driver_salary=ON` bo'lganda ko'radi (dashboarddagidek).
+# Ish haqi (salary) ADMIN/MANAGER'ga doim ko'rinadi. Haydovchi esa faqat
+# O'Z kartasida va `show_driver_salary=ON` bo'lganda ko'radi; dashboardda
+# summalar sozlamadan qat'i nazar har doim ko'rinadi.
 def _can_view_salary(chat_id: int | None, driver_id: str = "") -> bool:
     if chat_id is None:
         return True  # ichki/skeduler chaqiruvlar uchun boshqaruv rejimi
     role = resolve_role(chat_id)
     if can(role, "salary"):
         return True
-    # Haydovchi faqat o'z kartasida oylikni ko'radi (setting bo'lsa).
     if role is Role.DRIVER:
         if not driver_id:
             return False

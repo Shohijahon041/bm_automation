@@ -263,8 +263,13 @@ def parse_location(body: bytes) -> dict:
 
 # ---------------------------------------------------------------- javoblar
 
-def parse_resource_list(body: bytes) -> list:
-    """0x1205 tanasi (JT/T 1078-2016 Table 23): [SN(2)+jami(4)] + N yozuv.
+def _iso_norm(value) -> str:
+    """ISO/`YYYY-MM-DD HH:MM:SS` matnini solishtirish uchun bir xil ko'rinishga."""
+    return str(value or "").strip().replace(" ", "T")[:19]
+
+
+def parse_resource_page(body: bytes) -> dict:
+    """0x1205 tanasi: yozuvlar + sarlavha (jami soni va formati).
 
     Yozuv (28 bayt): kanal(1)+start[6]+end[6]+alarm(8)+resurs_turi(1)+
     oqim_turi(1)+xotira_turi(1)+hajm(4).  Alarm — 64-bit (8 bayt).
@@ -274,12 +279,16 @@ def parse_resource_list(body: bytes) -> list:
     (00 08 00 0N) blok sarlavhasi, birinchi paketda esa 10 bayt bo'ladi.
     Shu sababli yozuvlar boshlanishi qat'iy 6 emas, balki tana uzunligiga
     qarab `len(body) % 28` bilan aniqlanadi (standart 6-baytli sarlavha
-    uchun ham to'g'ri natija beradi)."""
+    uchun ham to'g'ri natija beradi). `jami` maydoni sarlavhaning oxirgi
+    4 baytida turadi (6 baytda [2:6], 10 baytda [6:10]), 4 baytli
+    paketlarda esa umuman yo'q — u holda None.
+    """
     item_len = 28
     if len(body) < item_len:
         raise Jt808Error("resurs ro'yxati qisqa")
-    i = len(body) % item_len
+    head = len(body) % item_len
     items = []
+    i = head
     while i + item_len <= len(body):
         start = bcd6_to_iso(body[i + 1:i + 7])
         end = bcd6_to_iso(body[i + 7:i + 13])
@@ -297,17 +306,77 @@ def parse_resource_list(body: bytes) -> list:
             "size": struct.unpack(">I", body[i + 24:i + 28])[0],
         })
         i += item_len
-    return items
+    total = None
+    if head >= 6:
+        cand = struct.unpack(">I", body[head - 4:head])[0]
+        # paketdagi yozuvlar sonidan kichik qiymat "jami" bo'la olmaydi
+        if len(items) <= cand <= 100000:
+            total = cand
+    return {"total": total, "header_len": head,
+            "header_hex": body[:head].hex(), "items": items}
 
 
-def resources(phone: str) -> dict:
-    """Oxirgi 0x1205 javobi: {"at": epoch|0, "items": [...]}."""
+def parse_resource_list(body: bytes) -> list:
+    """0x1205 yozuvlari ro'yxati (sarlavha tashlab yuboriladi)."""
+    return parse_resource_page(body)["items"]
+
+
+def _resources_prune(phone: str) -> dict:
     r = _RESOURCES.get(phone) or {}
     at = r.get("at", 0)
     if at and (datetime.now(timezone.utc).timestamp() - at) > _RESOURCES_TTL:
         _RESOURCES.pop(phone, None)
-        return {"at": 0, "items": []}
-    return {"at": at, "items": list(r.get("items") or [])}
+        return {}
+    return r
+
+
+def resources(phone: str) -> dict:
+    """Oxirgi 0x1205 javobi: {"at": epoch|0, "items": [...]}."""
+    r = _resources_prune(phone)
+    return {"at": r.get("at", 0), "items": list(r.get("items") or [])}
+
+
+def resources_info(phone: str) -> dict:
+    """Ro'yxat holati: so'rov parametrlari, qabul qilingan/jami, tayyorligi."""
+    r = _resources_prune(phone)
+    now = datetime.now(timezone.utc).timestamp()
+    items = list(r.get("items") or [])
+    total = r.get("total")
+    requested_at = r.get("requested_at", 0) or 0
+    at = r.get("at", 0) or 0
+    complete = bool(total is not None and len(items) >= int(total))
+    return {
+        "at": at,
+        "requested_at": requested_at,
+        "items": items,
+        "received": len(items),
+        "total": total,
+        "complete": complete,
+        "packets": int(r.get("packets") or 0),
+        "request": dict(r.get("request") or {}),
+        "age_s": round(now - requested_at, 1) if requested_at else 0.0,
+        "since_last_s": round(now - at, 1) if at else 0.0,
+    }
+
+
+def begin_resources(phone: str, channel: int = 0,
+                    start: str = "", end: str = "") -> None:
+    """Yangi 0x9205 so'rovi: eski natijani tozalab, so'rov chegarasini yozish.
+
+    Kelayotgan 0x1205 paketlari shu kanal/oraliq bo'yicha filtrlanadi —
+    turli so'rovlar (boshqa kun, boshqa kanal) bir-biriga aralashmaydi.
+    """
+    if len(_RESOURCES) >= _RESOURCES_MAX_PHONES and phone not in _RESOURCES:
+        _RESOURCES.pop(next(iter(_RESOURCES)), None)
+    _RESOURCES[phone] = {
+        "at": 0,
+        "requested_at": datetime.now(timezone.utc).timestamp(),
+        "items": [],
+        "total": None,
+        "packets": 0,
+        "request": {"channel": int(channel or 0),
+                    "start": _iso_norm(start), "end": _iso_norm(end)},
+    }
 
 
 def clear_resources(phone: str) -> None:
@@ -641,12 +710,25 @@ async def _dispatch(writer: asyncio.StreamWriter, m: dict) -> None:
     elif mid == MSG_TERM_AV_RESOURCE_LIST:
         try:
             # Qurilma ro'yxatni bir nechta 0x1205 paketda yuborishi mumkin —
-            # barchasini merge qilamiz (dublikatlarni olib tashlab).
-            items = parse_resource_list(body)
+            # barchasini merge qilamiz (dublikatlarni olib tashlab). Faqat
+            # JORIY so'rov kanali/oralig'iga tegishli yozuvlar olinadi.
+            page = parse_resource_page(body)
             prev = _RESOURCES.get(phone) or {}
+            req = prev.get("request") or {}
+            req_ch = int(req.get("channel") or 0)
+            req_start = _iso_norm(req.get("start"))
+            req_end = _iso_norm(req.get("end"))
             seen = set()
             merged = []
-            for it in list(prev.get("items") or []) + items:
+            for it in list(prev.get("items") or []) + page["items"]:
+                if req_ch and it.get("channel") != req_ch:
+                    continue
+                it_start = _iso_norm(it.get("start"))
+                it_end = _iso_norm(it.get("end"))
+                if req_start and it_end and it_end < req_start:
+                    continue
+                if req_end and it_start and it_start > req_end:
+                    continue
                 k = (it.get("channel"), it.get("start"), it.get("end"),
                      it.get("size"))
                 if k in seen:
@@ -656,14 +738,28 @@ async def _dispatch(writer: asyncio.StreamWriter, m: dict) -> None:
             merged.sort(key=lambda x: (x.get("start") or "", x.get("channel") or 0))
             if len(merged) > _RESOURCES_MAX_ITEMS:
                 merged = merged[-_RESOURCES_MAX_ITEMS:]
+            total = prev.get("total")
+            if page.get("total") is not None:
+                total = max(int(total or 0), int(page["total"]))
+            if total is not None and total < len(merged):
+                total = len(merged)
+            packets = int(prev.get("packets") or 0) + 1
             if len(_RESOURCES) >= _RESOURCES_MAX_PHONES and phone not in _RESOURCES:
                 _RESOURCES.pop(next(iter(_RESOURCES)), None)
             _RESOURCES[phone] = {
                 "at": datetime.now(timezone.utc).timestamp(),
+                "requested_at": prev.get("requested_at") or 0,
+                "request": req,
                 "items": merged,
+                "total": total,
+                "packets": packets,
             }
-            log.info("JT808: resurs ro'yxati phone=%s -> %s paket, jami %s yozuv",
-                     phone, len(items), len(merged))
+            log.info("JT808: resurs ro'yxati phone=%s -> paket %s, %s yozuv"
+                     " (jami %s%s) sarlavha=%s",
+                     phone, packets, len(merged),
+                     total if total is not None else "?",
+                     "" if (total is None or len(merged) >= total) else " hali",
+                     page["header_hex"] or "-")
         except Jt808Error as exc:
             log.warning("JT808: resurs ro'yxati parse xato (%s): %s",
                         phone, exc)
@@ -883,11 +979,18 @@ def send_playback(phone: str, host: str, tcp_port: int,
 
 def send_resource_list(phone: str, channel: int, start_bcd: bytes,
                        end_bcd: bytes, resource_type: int = 0,
-                       stream_type: int = 0, memory_type: int = 0) -> bool:
-    clear_resources(phone)  # yangi so'rov: eski natija aralashmasin
-    return bool(_run_coro(
+                       stream_type: int = 0, memory_type: int = 0,
+                       request_start: str = "",
+                       request_end: str = "") -> bool:
+    # Yangi so'rov: eski natija aralashmasin, kelayotgan paketlar shu
+    # kanal/oraliq bo'yicha filtrlanadi.
+    begin_resources(phone, channel, request_start, request_end)
+    ok = bool(_run_coro(
         request_av_resource_list(phone, channel, start_bcd, end_bcd,
                                  resource_type, stream_type, memory_type)))
+    if not ok:
+        clear_resources(phone)
+    return ok
 
 
 def send_playback_control(phone: str, channel: int, control: int,

@@ -80,6 +80,13 @@ ROUTE_LEARN_SIMPLIFY_M = int(os.environ.get("GPS_ROUTE_LEARN_SIMPLIFY_M", "40"))
 # bog'lanmagan kamera shu radius ichida avtobus topilsa bog'lash tavsiya
 # etiladi. Kamera GPS xaritaga/kuzatuvga chiqarilmaydi.
 GPS_CAMERA_MATCH_M = int(os.environ.get("GPS_CAMERA_MATCH_M", "300"))
+# Kamera (va Teltonika) joyi shu sekunddan eski bo'lsa solishtirish
+# MA'NOSIZ: kamera GPS'ni faqat ulangan sessiyada yuboradi, avtobus esa
+# doim harakatda. Eski koordinatani hozirgi Teltonika joyi bilan
+# taqqoslash soxta "drift" (o'rnatish xatosi) beradi. Shu muddatdan eski
+# joy uchun holat "stale"/"teltonika_offline" deb belgilanadi.
+# 0 = yoshni tekshirmaslik (eski xatti-harakat).
+GPS_CAMERA_FRESH_S = int(os.environ.get("GPS_CAMERA_FRESH_S", "900"))
 # 4G kamera kanallar soni (UI kanal tugmalari va "Barcha kanallar" uchun).
 # Fleet standarti: BD-T8008V2 MDVR = 8 kanalli (avtobusda 8 kamera). Env
 # (JT_CAMERA_CHANNELS) orqali boshqa qurilmalar uchun o'zgartiriladi.
@@ -105,9 +112,11 @@ JT1078_PLAYBACK_WINDOW_S = int(
 # tezligiga MOS bo'lishi kerak. Aks holda ffmpeg har AU'ni noto'g'ri vaqt
 # oralig'ida belgilab, videoni sekinlashtiradi/tezlashtiradi.
 # 2026-10-14 da 4-vCPU serverda /api/video/jt-streams diagnostikasi
-# (frames/uptime_s) bilan qayta o'lchandi: jonli (0x9101) ~18-22 AU/s
-# (kanalga qarab), yozuv/playback (0x9201) ~13 AU/s. Shu sababli alohida.
-# Qiymatlar env orqali joyida sozlanadi (kod o'zgartirmasdan).
+# (frames/uptime_s) bilan qayta o'lchandi: jonli (0x9101) ~15-22 AU/s
+# (kanalga/signalga qarab), yozuv/playback (0x9201) ~13 AU/s.
+# 2026-10-15: endi JONLI oqim ham kirish fps'ni qurilma ts'idan o'lchaydi
+# (LIVE_PRIME_*) — quyidagi qiymatlar faqat o'lchov imkonsiz bo'lganda
+# ishlatiladigan FALLBACK. Qiymatlar env orqali joyida sozlanadi.
 JT1078_FPS_IN = os.environ.get("GPS_JT1078_FPS_IN", "20")
 JT1078_FPS_OUT = os.environ.get("GPS_JT1078_FPS_OUT", "20")
 JT1078_FPS_IN_PB = os.environ.get("GPS_JT1078_FPS_IN_PB", "13")
@@ -134,6 +143,24 @@ JT1078_PLAYBACK_PRIME_MS = int(
 # O'lchash tugamasa ham shu sondan keyin muxer ishga tushadi (fallback).
 JT1078_PLAYBACK_PRIME_MAX_AU = int(
     os.environ.get("GPS_JT1078_PLAYBACK_PRIME_MAX_AU", "60")
+)
+# Jonli (0x9101) uchun ham kirish fps qurilma ts'idan o'lchanadi: qurilma
+# 4G signaliga qarab turli fps yuboradi (o'lchandi ~15, sozlamada 20 edi —
+# video 0.75x sekin ko'rinardi). Oyna kichik (start tez bo'lsin): shu ms
+# REAL vaqt o'tgach muxer o'lchangan fps bilan ochiladi (ts sakrashiga
+# chidamli median baho; maydonda ts 4 namunada 940s sakrashi kuzatilgan).
+# 0 = o'lchamaymiz (qat'iy FPS_IN/OUT ishlatiladi).
+JT1078_LIVE_PRIME_MS = int(
+    os.environ.get("GPS_JT1078_LIVE_PRIME_MS", "600")
+)
+# Namuna shu sondan ko'p bo'lsa ham o'lchovni yakunlaymiz (yuqori fps).
+JT1078_LIVE_PRIME_MAX_AU = int(
+    os.environ.get("GPS_JT1078_LIVE_PRIME_MAX_AU", "30")
+)
+# O'lchov yetarli bo'lmasa ham shu sekunddan keyin standart fps bilan
+# ochamiz — oqim baribir boshlanishi shart (juda sekin kamera holati).
+JT1078_LIVE_PRIME_CAP_S = float(
+    os.environ.get("GPS_JT1078_LIVE_PRIME_CAP_S", "2.0")
 )
 # ffmpeg stdin'iga yozuvchi navbat hajmi (access-unit soni). ffmpeg ulgurmasa
 # (kuchsiz VPS) navbat to'ladi va eng eski kadr tashlanadi — event loop

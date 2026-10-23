@@ -58,6 +58,74 @@ _DAY_SEND_STATUSES = (_SENT_STATUSES | {"PENDING", "PROCESSED", "UNKNOWN",
                                         "ANNULLED", "REMOVED", "OFF",
                                         "FAILED", "CANCELLED"})
 
+# Bitta SMS segmenti (GSM-7) belgilar soni. Matn shu chegaraga sig'ishi
+# kerak — aks holda gateway uni 2-3 ta SMS deb sanaydi (balans ko'p ketadi).
+_SMS_SINGLE_LIMIT = 160
+
+# GSM-7 asosiy va kengaytirilgan belgilar to'plami. Asosiy belgi 1, kengay-
+# tirilgani 2 birlik hisoblanadi; shuning uchun matnda faqat asosiylari
+# qoldiriladi (kengaytirilganlar almashtiriladi).
+_GSM7_BASIC = set(
+    "@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞ\x1bÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?"
+    "¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà"
+)
+# Tipografik va ba'zi belgilarni GSM-7'ga mos belgilarga almashtirish.
+_GSM7_MAP = {
+    "–": "-", "—": "-", "―": "-", "−": "-",
+    "‘": "'", "’": "'", "‚": "'", "`": "'", "´": "'",
+    "“": '"', "”": '"', "„": '"', "«": '"', "»": '"',
+    "…": "...", " ": " ", " ": " ", " ": " ", "\t": " ",
+    "€": "EUR", "№": "N", "°": " ", "→": "->", "←": "<-",
+    "[": "(", "]": ")", "{": "(", "}": ")", "\\": "/", "~": "-",
+    "^": "-", "|": "/",
+}
+# Kirill alifbosini lotin (o'zbek/rus) ko'rinishiga o'girish jadvali —
+# haydovchi/yo'nalish nomlari kirillcha bo'lsa ham SMS GSM-7 bo'lib qoladi.
+_GSM7_CYRILLIC = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo",
+    "ж": "j", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "x", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sh", "ъ": "",
+    "ы": "i", "ь": "", "э": "e", "ю": "yu", "я": "ya", "ў": "o", "қ": "q",
+    "ғ": "g", "ҳ": "h", "ј": "j",
+}
+_GSM7_CYRILLIC.update({k.upper(): v.capitalize()
+                       for k, v in list(_GSM7_CYRILLIC.items()) if v})
+
+
+def _to_gsm7(text: str) -> str:
+    """Matnni GSM-7 (160 belgi/segment) ko'rinishiga keltiradi.
+
+    Tipografik/kirill belgilari almashtiriladi, GSM-7'da mavjud bo'lmagan
+    belgilar olib tashlanadi — natijada matn har doim 1 segmentga sig'dirish
+    mumkin bo'ladi (UCS-2 ga o'tib ketmaydi).
+    """
+    out: list[str] = []
+    for ch in str(text or ""):
+        if ch in _GSM7_BASIC:
+            out.append(ch)
+        elif ch in _GSM7_MAP:
+            out.append(_GSM7_MAP[ch])
+        elif ch in _GSM7_CYRILLIC:
+            out.append(_GSM7_CYRILLIC[ch])
+    return "".join(out)
+
+
+def _gsm7_sms(text: str, limit: int = _SMS_SINGLE_LIMIT) -> str:
+    """Matnni bitta SMS segmentiga sig'adigan qilib qaytaradi.
+
+    GSM-7'ga o'giriladi va kerak bo'lsa so'z o'rtasidan uzmasdan qisqarti-
+    riladi (oxirgi bo'sh joygacha kesib, oxiriga ``...`` qo'shiladi).
+    """
+    text = _to_gsm7(text)
+    if len(text) <= limit:
+        return text
+    cut = text[:limit - 3]
+    sp = cut.rfind(" ")
+    if sp >= limit - 30:
+        cut = cut[:sp]
+    return cut.rstrip() + "..."
+
 
 def _state_value(state) -> str:
     """Gateway ProcessState enum'ini toza status qatoriga keltiradi.
@@ -132,35 +200,27 @@ def _normalize_phone(raw: str) -> str:
 
 
 def _detail_lines(rows: list[dict], route_name: str = "") -> list[str]:
-    """Smena tafsilotlari qatorlari (sana/yo'nalish + har reys)."""
-    starts = [_hhmm(r.get("start_time")) for r in rows if _hhmm(r.get("start_time"))]
-    ends = [_hhmm(r.get("end_time")) for r in rows if _hhmm(r.get("end_time"))]
+    """Smena tafsilotlari — qisqa (bitta SMS'ga sig'adigan) qatorlar."""
     total_trips = sum(int(r.get("trip_count") or 0) for r in rows)
 
     lines: list[str] = []
-    if starts:
-        lines.append(f"Boshlash: {min(starts)}")
-    if ends:
-        lines.append(f"Tugatish: {max(ends)}")
-    if total_trips:
-        lines.append(f"Qatnovlar: {total_trips}")
-    if route_name:
-        lines.append(f"Yo'nalish: {route_name}")
-
-    lines.append("-----")
+    multi = len(rows) > 1
     for i, row in enumerate(rows, 1):
-        bus = str(row.get("vehicle") or "avtobus belgilanmagan")
+        bus = str(row.get("vehicle") or "?")
         graph = str(row.get("graph_name") or "grafik")
         shift = str(row.get("shift_name") or "")
         busy = _fmt_busy(row.get("start_time"), row.get("end_time"))
-        trips = int(row.get("trip_count") or 0)
-        line = f"{i}) {busy}"
-        if shift:
-            line += f" {shift}"
-        lines.append(line)
-        lines.append(f"   {graph} / {bus}")
-        if trips:
-            lines.append(f"   qatnov: {trips}")
+        bits = [b for b in (busy, shift, graph, bus) if b]
+        prefix = f"{i}) " if multi else ""
+        lines.append(prefix + " - ".join(bits))
+
+    summary = []
+    if total_trips:
+        summary.append(f"Qatnov: {total_trips}")
+    if route_name:
+        summary.append(str(route_name))
+    if summary:
+        lines.append(" - ".join(summary))
     return lines
 
 
@@ -175,51 +235,45 @@ def _dispatcher_phone(storage: Storage, route_id: str) -> str:
 
 
 def _contact_line(d_phone: str = "") -> str:
-    if d_phone:
-        return f"Savollar bo'lsa dispetcherga murojaat qiling. Tel: {d_phone}"
-    return "Savollar bo'lsa dispetcherga murojaat qiling."
+    return f"Tel: {d_phone}" if d_phone else ""
+
+
+def _short_date(schedule_date: str) -> str:
+    """Sanani qisqa DD.MM.YYYY ko'rinishida qaytaradi (SMS uchun)."""
+    try:
+        d = date.fromisoformat(schedule_date)
+        return f"{d.day:02d}.{d.month:02d}.{d.year}"
+    except Exception:  # noqa: BLE001 - noto'g'ri sana bo'lsa o'zini qaytaramiz
+        return str(schedule_date or "")
+
+
+def _build_body(name: str, rows: list[dict], route_name: str,
+                d_phone: str) -> list[str]:
+    """Xabar tanasi: ism + smena qatorlari + aloqa (qisqa)."""
+    lines: list[str] = []
+    if name:
+        lines.append(name)
+    lines.extend(_detail_lines(rows, route_name=route_name))
+    tail = _contact_line(d_phone)
+    if tail:
+        lines.append(tail)
+    return lines
 
 
 def _message(name: str, schedule_date: str, rows: list[dict],
              route_name: str = "", d_phone: str = "") -> str:
-    """SMS uchun qisqa oddiy matn (HTML'siz, ~450 belgi)."""
-    date_label = _date_label(schedule_date)
-
-    lines = [
-        "BM AVTOMATSION: ISHGA CHIQISH",
-        "",
-        f"Assalomu alaykum, {name}!",
-        f"Sizning {date_label} kungi smenangiz tayyor:",
-    ]
-    lines.extend(_detail_lines(rows, route_name=route_name))
-    lines.extend([
-        "-----",
-        "Iltimos, ishga o'z vaqtida chiqing!",
-        _contact_line(d_phone),
-    ])
-    text = "\n".join(lines)
-    return text[:500]
+    """Smena xabari — bitta SMS segmentiga sig'adigan qisqa matn."""
+    lines = [f"BM GRAFIK {_short_date(schedule_date)}", "-----"]
+    lines.extend(_build_body(name, rows, route_name, d_phone))
+    return _gsm7_sms("\n".join(lines))
 
 
 def _update_message(name: str, schedule_date: str, rows: list[dict],
                     route_name: str = "", d_phone: str = "") -> str:
-    """Grafik o'zgargan haydovchiga yuboriladigan tuzatish matni."""
-    date_label = _date_label(schedule_date)
-
-    lines = [
-        "BM AVTOMATSION: SMENANGIZ O'ZGARTIRILDI",
-        "",
-        f"Assalomu alaykum, {name}!",
-        f"{date_label} kuni smenangiz o'zgartirildi. Yangi grafik:",
-    ]
-    lines.extend(_detail_lines(rows, route_name=route_name))
-    lines.extend([
-        "-----",
-        "Iltimos, yangi grafik bo'yicha ishga chiqing!",
-        _contact_line(d_phone),
-    ])
-    text = "\n".join(lines)
-    return text[:500]
+    """Smena o'zgargani haqidagi tuzatish xabari (bitta SMS segmenti)."""
+    lines = [f"BM GRAFIK {_short_date(schedule_date)} - O'ZGARDI", "-----"]
+    lines.extend(_build_body(name, rows, route_name, d_phone))
+    return _gsm7_sms("\n".join(lines))
 
 
 def _gateway_client():
@@ -633,15 +687,18 @@ def _annulled_before(storage: Storage, schedule_date: str, route_id: str,
 
 
 def _removal_message(name: str, schedule_date: str, d_phone: str = "") -> str:
-    """Grafikdan chiqarilgan haydovchiga yuboriladigan xabar."""
-    date_label = _date_label(schedule_date)
+    """Grafikdan chiqarilgan haydovchiga yuboriladigan qisqa xabar."""
     name_part = f"{name}, " if name else ""
-    return (
-        f"Assalomu alaykum, {name_part}BM AVTOMATSION tizimi.\n"
-        f"Siz {date_label} kungi grafikdan chiqarildingiz — o'rningizga "
-        f"boshqa haydovchi qo'yilgan. Ertaga ishga chiqishingiz shart emas.\n"
-        + _contact_line(d_phone)
-    )[:500]
+    lines = [
+        f"BM GRAFIK {_short_date(schedule_date)}",
+        "-----",
+        f"{name_part}grafikdan chiqarildingiz.",
+        "Ertaga ishga chiqmaysiz.",
+    ]
+    tail = _contact_line(d_phone)
+    if tail:
+        lines.append(tail)
+    return _gsm7_sms("\n".join(lines))
 
 
 def _notify_removed_tg(storage: Storage, schedule_date: str, route_id: str,
@@ -1319,11 +1376,13 @@ def sms_route_set(storage: Storage | None = None, route_id: str = "",
     return {"ok": False, "error": "route_id yoki enabled kerak"}
 
 
-def retry_failed_sms(storage: Storage | None = None, limit: int = 50) -> dict:
+def retry_failed_sms(storage: Storage | None = None, limit: int = 50,
+                     routes: set[str] | list[str] | None = None) -> dict:
     """``FAILED``/``INVALID`` va stale ``PENDING`` SMS'larni qayta yuboradi.
 
     Dashboard tugmasi. PENDING/PROCESSED — gateway tasdiqlashi kelmayan
     (qotib qolgan) yozuvlar: qayta urinish ularni hal qiladi (SENT/FAILED).
+    `routes` berilsa (None = cheklovsiz) — faqat shu yo'nalishlar.
     """
     st = storage or get_storage()
     result = {"sent": 0, "failed": 0, "skipped": 0, "errors": [],
@@ -1336,13 +1395,23 @@ def retry_failed_sms(storage: Storage | None = None, limit: int = 50) -> dict:
         return result
 
     ph = st.db.ph
+    route_sql = ""
+    params: list = ["FAILED", "INVALID", "CANCELLED", "PENDING", "PROCESSED"]
+    if routes is not None:
+        rids = sorted({str(r).strip() for r in routes if str(r).strip()})
+        if not rids:
+            result["errors"].append("Yo'nalishlar topilmadi")
+            return result
+        marks = ", ".join(ph for _ in rids)
+        route_sql = f" AND route_id IN ({marks})"
+        params.extend(rids)
     # Diqqat: o'zi `_sent_before`ga murojaat qilmaydi — PENDING yozuvning
     # o'zi blok qo'yib, hech narsani qayta yubormaslikka olib kelardi.
     # FAILED/INVALID + stale PENDING/PROCESSED to'g'ridan-to'g'ri qayta uriniladi.
     rows = st.query(
         f"SELECT * FROM sms_log WHERE status IN ({ph}, {ph}, {ph}, {ph}, {ph}) "
-        f"ORDER BY id DESC LIMIT {max(int(limit or 50), 1)}",
-        ("FAILED", "INVALID", "CANCELLED", "PENDING", "PROCESSED"),
+        f"{route_sql} ORDER BY id DESC LIMIT {max(int(limit or 50), 1)}",
+        tuple(params),
     )
     for row in reversed(rows):
         row_id = int(row.get("id") or 0)

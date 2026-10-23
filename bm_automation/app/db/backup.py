@@ -93,7 +93,9 @@ def _sync_table(
 
     try:
         # Manba bazadan barcha yozuvlarni olish
-        rows = source.fetch_all(f"SELECT * FROM {table}")
+        # (`Database` API: query(sql, params) -> list[dict]; fetch_all/fetch_one
+        #  nomlari bu modulda mavjud emas)
+        rows = source.query(f"SELECT * FROM {table}")
         if not rows:
             return 0, 0
 
@@ -110,7 +112,7 @@ def _sync_table(
             )
             key_values = tuple(data.get(k) for k in key_cols)
 
-            existing = target.fetch_one(
+            existing = target.query(
                 f"SELECT 1 FROM {table} WHERE {key_conditions}",
                 key_values,
             )

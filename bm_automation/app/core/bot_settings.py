@@ -335,26 +335,28 @@ def set_route_tariff(route_id: str, no_vat: float | None,
 # ------------------------------------------------------------- haydovchi summasi
 
 def show_driver_salary() -> bool:
-    """Dashboard'da haydovchilarning oylik summalari ko'rsatilsinmi.
+    """Haydovchi botda o'z oylik summalarini ko'rsinmi.
 
-    Standart: ha (True). O'chirilsa dashboard `/api/drivers` javobidan
-    moliyaviy maydonlarni olib tashlaydi va frontend ularni yashirmaydi.
+    Standart: yo'q (False) — botda haydovchiga oylik ko'rsatilmaydi.
+    Dashboard oylik summalarni har doim ko'rsatadi; bu sozlama faqat
+    botga tegishli. Yoqilsa haydovchi botdagi O'Z kartasida brutto,
+    soliq va netto qatorlarini ko'radi (boshqalarnikini emas).
     """
     try:
-        val = _load().get("show_driver_salary")
+        val = _load().get("bot_driver_salary")
     except Exception:
         val = None
-    return True if val is None else bool(val)
+    return False if val is None else bool(val)
 
 
 def set_show_driver_salary(value: bool | None) -> bool:
-    """Haydovchi oylik summalarini ko'rsatishni yoqadi/o'chiradi."""
+    """Botda haydovchi oyligini ko'rsatishni yoqadi/o'chiradi."""
     with _LOCK:
         _load()
         old = show_driver_salary()
         on = bool(value)
-        _CACHE["show_driver_salary"] = on
-        _audit("show_driver_salary", old, on)
+        _CACHE["bot_driver_salary"] = on
+        _audit("bot_driver_salary", old, on)
         _save()
     return on
 
@@ -407,6 +409,46 @@ def set_auto_sync_interval_min(value: int | None) -> int:
             v = 10
         _CACHE["auto_sync_interval_min"] = v
         _audit("auto_sync_interval_min", old, v)
+        _save()
+    return v
+
+
+# ------------------------------------------------- chiqish eslatmasi vaqti
+
+# Reys/obed eslatmasi belgilangan vaqtdan necha daqiqa oldin yoki keyin
+# yuborilishi mumkin (manfiy — oldin, musbat — keyin).
+DEPARTURE_OFFSET_MIN_MAX = 180
+
+
+def departure_offset_min() -> int:
+    """Chiqish (reys/obed) eslatmasi vaqt siljishi, daqiqada.
+
+    Manfiy — belgilangan vaqtdan oldin, 0 — o'z vaqtida (standart),
+    musbat — keyin. Dashboard'dagi sozlama bot restart qilmasdan
+    qo'llanadi (fayl mtime bo'yicha qayta o'qiladi).
+    """
+    try:
+        v = int(_load().get("departure_offset_min", 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return max(-DEPARTURE_OFFSET_MIN_MAX, min(DEPARTURE_OFFSET_MIN_MAX, v))
+
+
+def set_departure_offset_min(value) -> int:
+    """Eslatma vaqt siljishini o'rnatadi (daqiqa, -180..+180)."""
+    with _LOCK:
+        _load()
+        old = departure_offset_min()
+        try:
+            f = float(value)
+            if not math.isfinite(f):
+                f = 0.0
+            v = int(f)
+        except (TypeError, ValueError, OverflowError):
+            v = 0
+        v = max(-DEPARTURE_OFFSET_MIN_MAX, min(DEPARTURE_OFFSET_MIN_MAX, v))
+        _CACHE["departure_offset_min"] = v
+        _audit("departure_offset_min", old, v)
         _save()
     return v
 

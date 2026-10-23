@@ -39,6 +39,7 @@ def _patch_common(monkeypatch, tmp_path, fines_rows=None):
     monkeypatch.setattr(fines_report, "build_text",
                         lambda month="": "⚠️ HISOBOT" if month or month == "" else None)
     monkeypatch.setattr(fines_report, "_targets", lambda: [111, 222])
+    monkeypatch.setattr(fines_report.context, "company_names", lambda: [])
     monkeypatch.setattr(fines_report, "send_message",
                         lambda text, **kw: sent.append(text))
     return sent

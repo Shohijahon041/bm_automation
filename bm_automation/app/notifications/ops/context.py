@@ -22,7 +22,7 @@ from pathlib import Path
 
 from ...core.profiles import all_profiles, get_profile, owner_chat_ids
 from ...utils.io import atomic_write
-from .roles import Role, resolve_role
+from .roles import Role, configured_roles, resolve_role
 
 STATE_FILE = Path("state") / "company.json"
 
@@ -90,6 +90,66 @@ def allowed_names(chat_id: int) -> list[str]:
              if chat_id in owner_chat_ids(p)]
     names.extend(assigned_profile_names(chat_id))
     return list(dict.fromkeys(n for n in names if n.strip()))
+
+
+def company_names() -> list[str]:
+    """Profilllardagi noyob kompaniya nomlari (tartib saqlanadi)."""
+    return list(dict.fromkeys(
+        str(p.get("name") or "").strip() for p in all_profiles()
+        if str(p.get("name") or "").strip()))
+
+
+def companies_for_route(route_id: str) -> list[str]:
+    """Berilgan yo'nalishga ega kompaniya nom(lar)i."""
+    rid = str(route_id or "").strip()
+    if not rid:
+        return []
+    out: list[str] = []
+    for p in all_profiles():
+        rids = [t.strip() for t in
+                str(p.get("routeVariantId") or "").replace(",", " ").split()
+                if t.strip()]
+        name = str(p.get("name") or "").strip()
+        if rid in rids and name and name not in out:
+            out.append(name)
+    return out
+
+
+def chats_for_company(name: str) -> list[int]:
+    """Kompaniya ma'lumotini ko'ra oladigan chatlar.
+
+    ADMIN'lar + shu kompaniyaga egalik qiluvchi/biriktirilgan
+    DISPATCHER/MANAGER chatlari + profil `ownerChatIds`. Boshqa
+    kompaniyaning dispetcheri hech qachon kirmaydi.
+    """
+    name = str(name or "").strip()
+    if not name:
+        return []
+    out: list[int] = []
+    for cid, role in configured_roles().items():
+        if role is Role.ADMIN:
+            out.append(cid)
+        elif role in (Role.DISPATCHER, Role.MANAGER) \
+                and name in allowed_names(cid):
+            out.append(cid)
+    target = name.lower()
+    for p in all_profiles():
+        if str(p.get("name") or "").strip().lower() != target:
+            continue
+        for cid in owner_chat_ids(p):
+            if cid not in out:
+                out.append(cid)
+    return out
+
+
+def chats_for_route(route_id: str) -> list[int]:
+    """Yo'nalish egasi bo'lgan kompaniya chatlari (boshqa firmaga oqmaydi)."""
+    out: list[int] = []
+    for name in companies_for_route(route_id):
+        for cid in chats_for_company(name):
+            if cid not in out:
+                out.append(cid)
+    return out
 
 
 def can_view(chat_id: int, name: str) -> bool:

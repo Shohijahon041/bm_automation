@@ -29,6 +29,8 @@ STATUS_TEXT = {
     "unbound": "Avtobusga bog'lanmagan",
     "no_camera_gps": "Kamera GPS yubormayapti",
     "no_teltonika": "Avtobusda Teltonika GPS yo'q",
+    "teltonika_offline": "Avtobus GPS'i eskirgan (Teltonika aloqasi yo'q)",
+    "stale": "Kamera joyi eskirgan — yangi joy kutilmoqda",
     "no_position": "Joy ma'lum emas",
 }
 
@@ -68,6 +70,21 @@ def _age_s(row: dict) -> float | None:
         return None
 
 
+def _fresh(row: dict) -> bool:
+    """Joy ishonchli (yetarlicha yangi) mi?
+
+    Kamera GPS'ni faqat ulangan sessiyada yuboradi, avtobus esa doim
+    harakatda — bir necha soat oldingi kamera koordinatasini hozirgi
+    Teltonika joyi bilan taqqoslash soxta ``drift`` beradi. Shu sababli
+    ``GPS_CAMERA_FRESH_S`` dan eski joyni solishtirmaymiz.
+    """
+    limit = int(config.GPS_CAMERA_FRESH_S)
+    if limit <= 0:          # tekshirish o'chirilgan
+        return True
+    age = _age_s(row)
+    return age is not None and age <= limit
+
+
 def _teltonika_rows() -> list:
     """Haqiqiy GPS qurilmalari (kind='teltonika'), joyi ma'lum bo'lganlari."""
     try:
@@ -85,9 +102,14 @@ def assist(threshold_m: int | None = None) -> list[dict]:
 
     ``phone``, ``vehicle_id``, ``plate``, ``last_seen_s``, ``online``,
     ``lat``/``lng`` (kamera joyi), ``tel_lat``/``tel_lng`` (Teltonika joyi),
-    ``dist_m`` (ikonkalar orasi), ``status`` (yuqoridagi kalitlar),
-    ``status_text``, ``suggest_vehicle_id``/``suggest_plate`` (bog'lanmagan
-    kamera yaqin avtobus topilsa).
+    ``tel_last_seen_s`` (Teltonika joyi yoshi), ``dist_m`` (ikonkalar orasi),
+    ``status`` (yuqoridagi kalitlar), ``status_text``,
+    ``suggest_vehicle_id``/``suggest_plate`` (bog'lanmagan kamera yaqin
+    avtobus topilsa).
+
+    Joy eskirgan bo'lsa (``GPS_CAMERA_FRESH_S``) masofa HISOBLANMAYDI —
+    ``stale`` / ``teltonika_offline`` qaytadi, aks holda soxta ``drift``
+    ogohlantirishlari chiqadi.
     """
     thr = int(threshold_m if threshold_m is not None
               else config.GPS_CAMERA_MATCH_M)
@@ -98,9 +120,16 @@ def assist(threshold_m: int | None = None) -> list[dict]:
         return []
     trows = _teltonika_rows()
 
-    # Bog'langan avtobus → uning Teltonika qurilmasi
+    # Bog'langan avtobus → uning Teltonika qurilmasi. Bitta avtobusda bir
+    # nechta qurilma bo'lishi mumkin (almashtirilgani ro'yxatda qoladi) —
+    # eng YANGI joy yuborganini olamiz, aks holda o'lik qurilma bilan
+    # taqqoslab soxta "drift" chiqadi.
+    def _age_key(r: dict) -> float:
+        a = _age_s(r)
+        return float("inf") if a is None else a
+
     by_vehicle: dict[str, dict] = {}
-    for t in trows:
+    for t in sorted(trows, key=_age_key):
         vid = str(t.get("vehicle_id") or "")
         if vid and vid not in by_vehicle:
             by_vehicle[vid] = t
@@ -126,23 +155,41 @@ def assist(threshold_m: int | None = None) -> list[dict]:
             "suggest_vehicle_id": "",
             "suggest_plate": "",
             "suggest_dist_m": None,
+            "tel_last_seen_s": None,
         }
         t = by_vehicle.get(vid) if vid else None
         if t:
             rec["tel_lat"], rec["tel_lng"] = _latlng(t)
+            rec["tel_last_seen_s"] = _age_s(t)
+        cam_fresh = bool(cll) and _fresh(c)
 
         if not cll:
             status = "no_camera_gps" if vid else "no_position"
         elif vid and t:
-            dist = _haversine(cll[0], cll[1], rec["tel_lat"], rec["tel_lng"])
-            rec["dist_m"] = round(dist, 1)
-            status = "ok" if dist <= thr else "drift"
+            if not cam_fresh:
+                # Kamera joyi eski: avtobus shu vaqt ichida boshqa joyda
+                # bo'lishi tabiiy — taqqoslash soxta "drift" beradi.
+                status = "stale"
+            elif not _fresh(t):
+                # Teltonika ham eskirgan (aloqa yo'q) — avtobus joyi
+                # ishonchsiz, taqqoslamaymiz.
+                status = "teltonika_offline"
+            else:
+                dist = _haversine(cll[0], cll[1], rec["tel_lat"],
+                                  rec["tel_lng"])
+                rec["dist_m"] = round(dist, 1)
+                status = "ok" if dist <= thr else "drift"
         elif vid and not t:
             status = "no_teltonika"
+        elif not cam_fresh:
+            status = "stale"
         else:
-            # Bog'lanmagan: eng yaqin Teltonika qurilmasini qidiramiz.
+            # Bog'lanmagan: eng yaqin YANGI Teltonika qurilmasini qidiramiz
+            # (eski joyli qurilma tavsiya uchun ham yaroqsiz).
             best, best_d = None, None
             for cand in trows:
+                if not _fresh(cand):
+                    continue
                 cll2 = _latlng(cand)
                 d = _haversine(cll[0], cll[1], cll2[0], cll2[1])
                 if best_d is None or d < best_d:
@@ -152,6 +199,7 @@ def assist(threshold_m: int | None = None) -> list[dict]:
                 rec["suggest_plate"] = str(best.get("plate_number") or "")
                 rec["suggest_dist_m"] = round(best_d, 1)
                 rec["tel_lat"], rec["tel_lng"] = _latlng(best)
+                rec["tel_last_seen_s"] = _age_s(best)
                 status = "suggest"
             else:
                 status = "unbound"

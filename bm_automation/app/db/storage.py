@@ -90,6 +90,15 @@ class Storage:
                     bootstrap_tenancy(self)
                 except Exception:  # noqa: BLE001
                     log.warning("Tenant bootstrap bajarilmadi (davom etiladi)")
+            # JSHSHR unikalligi: avval mavjud dublikatlar birlashtiriladi, keyin
+            # unikal indeks yaratiladi. Bitta marta, sync yozuvlaridan oldin.
+            if not getattr(self, "_tin_unique_ready", False):
+                self._tin_unique_ready = True
+                try:
+                    from .driver_identity import ensure_drivers_tin_unique
+                    ensure_drivers_tin_unique(self)
+                except Exception:  # noqa: BLE001
+                    log.warning("JSHSHR unikalligi ta'minlanmadi (davom etiladi)")
         return True
 
     # ------------------------------------------------------------ low level
@@ -263,7 +272,7 @@ class Storage:
                      route_id: str = "", profile_id: str = "",
                      route_name: str = "", start1: str = "", start2: str = "",
                      data: dict | None = None) -> str:
-        return self.upsert("profiles", ["name"], {
+        return self.upsert("profiles", ["name", "route_id"], {
             "external_id": str(external_id or ""),
             "name": str(name or ""),
             "route_id": str(route_id or ""),
@@ -298,14 +307,175 @@ class Storage:
             "data": json_dumps(data),
         })
 
+    def find_driver_by_tin(self, tin: str) -> dict | None:
+        """JSHSHR (tin) bo'yicha haydovchi qatorini qaytaradi."""
+        tin = str(tin or "").strip()
+        if not self.enabled or not tin:
+            return None
+        rows = self.query(
+            f"SELECT * FROM drivers WHERE TRIM(tin)={self.db.ph} LIMIT 1", (tin,))
+        return rows[0] if rows else None
+
+    def canonical_driver_id(self, external_id: str = "", tin: str = "") -> str:
+        """BM id'sini kanonik (JSHSHR bo'yicha birlashtirilgan) id'ga aylantiradi."""
+        external_id = str(external_id or "").strip()
+        hit = self.find_driver_by_tin(tin) if tin else None
+        if hit:
+            return str(hit.get("external_id") or "") or external_id
+        if external_id:
+            from .driver_identity import driver_aliases
+            row = self.find("drivers", external_id=external_id) or {}
+            if row:
+                return external_id
+            try:
+                rows = self.query(
+                    "SELECT external_id, data FROM drivers WHERE data LIKE "
+                    f"{self.db.ph}", (f"%{external_id}%",), limit=500)
+            except Exception:  # noqa: BLE001
+                rows = []
+            for r in rows or []:
+                if external_id in driver_aliases(r):
+                    return str(r.get("external_id") or "") or external_id
+        return external_id
+
     def save_driver(self, external_id: str, full_name: str = "",
                     tin: str = "", route_id: str = "",
                     data: dict | None = None) -> str:
-        return self.upsert("drivers", ["external_id"], {
-            "external_id": str(external_id or ""),
-            "full_name": str(full_name or ""),
-            "tin": str(tin or ""),
-            "route_id": str(route_id or ""),
+        """Haydovchini saqlaydi — JSHSHR (tin) birlashtirilgan holda.
+
+        JSHSHR shaxsning barqaror unikal identifikatori (pasport/guvohnoma
+        almashsa ham o'zgarmaydi): bitta JSHSHR → bitta qator. Boshqa BM id
+        ostida kelgan bir shaxs alohida qatordan iborat bo'lib qolmaydi — u
+        kanonik qator ustiga yoziladi va kelayotgan id alias sifatida
+        ``data['_aliases']`` da saqlanadi.
+
+        Bo'sh ``tin`` mavjud qiymatni O'CHIRMAYDI: BM ro'yxat (list)
+        payload'ida PINFL maskalanadi/siz bo'lgani uchun ``sync_drivers`` uni
+        o'chirib yubormasin (clobber).
+        """
+        if not self.enabled:
+            return "updated"
+        orig = str(external_id or "").strip()
+        eid = orig
+        tin = str(tin or "").strip()
+        cur: dict = {}
+        if tin:
+            hit = self.find_driver_by_tin(tin)
+            if hit:
+                can = str(hit.get("external_id") or "").strip()
+                if can:
+                    eid = can  # bir shaxs = bitta kanonik qator
+                cur = hit
+        if not cur:
+            # Alias bo'yicha ham kanoniklashtiramiz: BM bir shaxsni boshqa id
+            # ostida qaytarsa (ro'yxat payload'ida JSHSHR maskalangan bo'lsa),
+            # yangi qator yaratilmasin — mavjud kanonik qatorga yo'naltiriladi.
+            eid = self.canonical_driver_id(eid) or eid
+            cur = self.find("drivers", external_id=eid) or {}
+        if not tin:
+            tin = str(cur.get("tin") or "").strip()
+        values = {
+            "external_id": eid,
+            "full_name": str(full_name or "").strip()
+                         or str(cur.get("full_name") or ""),
+            "tin": tin,
+            "route_id": str(route_id or "").strip()
+                        or str(cur.get("route_id") or ""),
+        }
+        if data is not None:
+            values["data"] = json_dumps(data)
+        else:
+            values["data"] = str(cur.get("data") or "{}")
+        return self._upsert_driver_row(values, tin=tin, orig=orig, eid=eid)
+
+    @staticmethod
+    def _is_tin_conflict(exc: Exception) -> bool:
+        """`uq_drivers_tin` unikal indeksi konflikti (dublikat JSHSHR)."""
+        msg = str(exc).lower()
+        return "uq_drivers_tin" in msg or ("unique" in msg and "tin" in msg)
+
+    def _savepoint_release(self, name: str) -> None:
+        try:
+            self.db.execute(f"RELEASE SAVEPOINT {name}", ())
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _savepoint_rollback(self, name: str) -> None:
+        try:
+            self.db.execute(f"ROLLBACK TO SAVEPOINT {name}", ())
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _upsert_driver_row(self, values: dict, tin: str = "",
+                           orig: str = "", eid: str = "") -> str:
+        """`drivers` qatorini yozadi — JSHSHR indeksi konfliktini xavfsiz boshqaradi.
+
+        `uq_drivers_tin` bo'yicha dublikat (masalan ikkita yagona sinxron
+        tranzaksiyasi bir xil JSHSHR bilan urinishi) BUTUN tranzaksiyani
+        buzmasin: faqat shu yozuv savepoint orqali bekor qilinadi va qator
+        JSHSHR egasi (kanonik) qatorga qo'shiladi.
+        """
+        conn = None
+        try:
+            conn = self.db._current_conn()
+        except Exception:  # noqa: BLE001
+            conn = None
+        sp = "bm_save_driver" if (
+            conn is not None and getattr(self.db, "driver", "") == "postgres") else ""
+        if sp:
+            try:
+                self.db.execute(f"SAVEPOINT {sp}", ())
+            except Exception:  # noqa: BLE001
+                sp = ""
+        try:
+            status = self.upsert("drivers", ["external_id"], values)
+        except Exception as exc:  # noqa: BLE001 - unikal indeks konflikti
+            if sp:
+                self._savepoint_rollback(sp)
+            if not tin or not self._is_tin_conflict(exc):
+                raise
+            holder = self.find_driver_by_tin(tin) or {}
+            can = str(holder.get("external_id") or "").strip()
+            if not can or can == eid:
+                raise
+            status = self.upsert("drivers", ["external_id"],
+                                 {**values, "external_id": can})
+            if sp:
+                self._savepoint_release(sp)
+            if orig and orig != can:
+                self.save_driver_alias(can, orig)
+            return status
+        if sp:
+            self._savepoint_release(sp)
+        if orig and orig != eid:
+            # Birlashtirilgan boshqa BM id'sini alias sifatida saqlaymiz —
+            # keyingi `canonical_driver_id` shuni ko'rib uniqtga yo'naltiradi.
+            self.save_driver_alias(eid, orig)
+        return status
+
+    def save_driver_alias(self, external_id: str, alias: str) -> None:
+        """Boshqa BM id'sini kanonik haydovchiga alias sifatida qo'shadi."""
+        alias = str(alias or "").strip()
+        eid = str(external_id or "").strip()
+        if not self.enabled or not eid or not alias or eid == alias:
+            return
+        row = self.find("drivers", external_id=eid) or {}
+        if not row:
+            return
+        try:
+            data = json_loads(row.get("data")) or {}
+        except Exception:  # noqa: BLE001
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        aliases = {str(a) for a in (data.get("_aliases") or []) if str(a)}
+        aliases.add(alias)
+        data["_aliases"] = sorted(aliases)
+        self.upsert("drivers", ["external_id"], {
+            "external_id": eid,
+            "full_name": str(row.get("full_name") or ""),
+            "tin": str(row.get("tin") or ""),
+            "route_id": str(row.get("route_id") or ""),
             "data": json_dumps(data),
         })
 
@@ -318,7 +488,7 @@ class Storage:
         """
         allowed = {
             "phone", "passport_number", "passport_issued_by", "passport_expiry",
-            "license_number", "license_category", "license_expiry",
+            "license_number", "license_category", "license_expiry", "gender",
             "passport_front_path", "passport_back_path", "license_front_path",
             "license_back_path", "photo_path", "rating", "blacklisted",
             "blacklist_reason", "km_rate", "notification_enabled",
@@ -344,7 +514,8 @@ class Storage:
         defaults = {
             "phone": "", "passport_number": "", "passport_issued_by": "",
             "passport_expiry": "", "license_number": "", "license_category": "",
-            "license_expiry": "", "passport_front_path": "", "passport_back_path": "",
+            "license_expiry": "", "gender": "", "passport_front_path": "",
+            "passport_back_path": "",
             "license_front_path": "", "license_back_path": "", "photo_path": "",
             "rating": 5.0,
             "blacklisted": 0, "blacklist_reason": "", "km_rate": 0.0,

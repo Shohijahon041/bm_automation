@@ -6,6 +6,9 @@ yo'nalishlar) `app/services/driver_sheet_service` da amalga oshiriladi.
 
 from __future__ import annotations
 
+import os
+import threading
+import time
 from datetime import date
 from pathlib import Path
 
@@ -18,6 +21,42 @@ from matplotlib.patches import FancyBboxPatch  # noqa: E402
 from ..utils.text import title_case
 
 __all__ = ["make_sheet_image", "make_personal_sheet_image"]
+
+_TMP_LOCK = threading.Lock()
+_TMP_SEQ = 0
+
+
+def _save_fig(fig, out_file: str) -> None:
+    """PNG'ni atomik yozadi: vaqtinchalik fayl -> os.replace.
+
+    Bitta rasmni bir vaqtda bir nechta oqim (qo'lda qayta yuborish va
+    `grafik_update` kuzatuvi) yozishi mumkin. To'g'ridan-to'g'ri yozishda
+    o'quvchi yarim/bo'sh faylni ko'rib, Telegram "file must be non-empty"
+    xatosini beradi. os.replace o'quvchiga faqat to'liq faylni ko'rsatadi.
+    """
+    global _TMP_SEQ
+    out = Path(out_file)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with _TMP_LOCK:
+        _TMP_SEQ += 1
+        seq = _TMP_SEQ
+    tmp = out.with_name(f".{out.name}.{os.getpid()}.{seq}.tmp.png")
+    try:
+        fig.savefig(str(tmp), bbox_inches="tight", facecolor=BG, format="png")
+        # Windows'da fayl ochiq bo'lsa replace bir zum xato berishi mumkin.
+        for attempt in range(6):
+            try:
+                os.replace(tmp, out)
+                break
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                time.sleep(0.05)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 # Chizma ranglari
 BG = "#F4F6FB"
@@ -63,7 +102,8 @@ def _draw_panel(ax, x, y_top, width, direction, title, rows, theme, row_h=0.92, 
     label = "CHIQISH 1" if direction == "UP" else "CHIQISH 2"
     ax.text(x + 0.22, y_top - hdr_h / 2, label, ha="left", va="center", fontsize=F(13),
             color=TEXT_WHITE, fontweight="bold")
-    ax.text(x + width - 0.22, y_top - hdr_h / 2, title_case(title), ha="right", va="center",
+    ax.text(x + width - 0.22, y_top - hdr_h / 2,
+            title_case(title) if title else "—", ha="right", va="center",
             fontsize=F(16), color=TEXT_WHITE, fontweight="bold")
 
     y = y_top - hdr_h
@@ -163,13 +203,15 @@ def make_sheet_image(data: dict, out_file: str, width_in: float = 15.0) -> str:
     for d_, x, t in (("UP", x1, data["konechka"]["UP"]), ("DOWN", x2, data["konechka"]["DOWN"])):
         _draw_panel(ax, x, top, half, d_, t, groups[d_], PANEL[d_], row_h=row_h, scale=scale)
 
-    # Pastki qismda konechka tushuntirishi
-    ax.text(0.25, 0.35, f"1-chiqish - {title_case(data['konechka']['UP'])}", ha="left",
+    # Pastki qismda konechka tushuntirishi (aniqlanmagan bo'lsa — "—")
+    up_name = title_case(data["konechka"]["UP"]) or "—"
+    down_name = title_case(data["konechka"]["DOWN"]) or "—"
+    ax.text(0.25, 0.35, f"1-chiqish - {up_name}", ha="left",
             va="center", fontsize=11, color=TEXT_MUTED)
-    ax.text(width_in - 0.25, 0.35, f"2-chiqish - {title_case(data['konechka']['DOWN'])}",
+    ax.text(width_in - 0.25, 0.35, f"2-chiqish - {down_name}",
             ha="right", va="center", fontsize=11, color=TEXT_MUTED)
 
-    fig.savefig(out_file, bbox_inches="tight", facecolor=BG)
+    _save_fig(fig, out_file)
     fig.clear()
     return str(Path(out_file))
 
@@ -317,6 +359,6 @@ def make_personal_sheet_image(row: dict, out_file: str, date_str: str = "",
                 f"Reja reys: {plan_tr}",
                 ha="right", va="center", fontsize=11, color=TEXT_MUTED)
 
-    fig.savefig(out_file, bbox_inches="tight", facecolor=BG)
+    _save_fig(fig, out_file)
     fig.clear()
     return str(Path(out_file))

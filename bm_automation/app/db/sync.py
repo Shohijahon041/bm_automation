@@ -11,9 +11,11 @@ bazaga yozadi (upsert):
 
 from __future__ import annotations
 
+import re
 import traceback as _tb
 import uuid
 from datetime import date as _date, timedelta
+from pathlib import Path
 from typing import Callable
 
 from ..api.client import BMClient
@@ -44,6 +46,17 @@ def _get(data: dict, *keys: str, default: str = "") -> str:
     return default
 
 
+def _full_pinfl(value) -> str:
+    """Faqat to'liq 14-xonali JSHSHR/PINFL qaytaradi (maskalangan ro'yxatni rad etadi).
+
+    BM ro'yxat (list) API'sida PINFL maskalanadi (masalan ``3***********21``
+    yoki bo'sh) — bunday qiymat ``tin`` sifatida yozilmaydi, aks holda
+    ``sync_driver_profiles`` qo'ygan haqiqiy JSHSHR o'chib ketardi.
+    """
+    digits = re.sub(r"\D", "", str(value or ""))
+    return digits if len(digits) == 14 else ""
+
+
 def _safe_loop(storage: Storage, source: str, body: Callable[[], SyncResult]) -> SyncResult:
     """Funktsiyani xavfsiz bajaradi — xato SyncResult'da qayd qilinadi."""
     try:
@@ -64,6 +77,46 @@ def _warn_delete_blocked(storage: Storage, table: str, reason_source: str,
     storage.record_error(source=f"sync.{table}", message=msg, context={
         "table": table, "reason_source": reason_source, "reason": reason,
     })
+
+
+# ---------------------------------------------------------- haydovchi fotosi
+
+# Dashboard (routers/drivers.py) bilan bir xil papka — bitta rasm manbasi.
+PHOTO_DIR = Path("data") / "driver_photos"
+
+_PHOTO_SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (b"\xff\xd8\xff", ".jpg"),
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"RIFF", ".webp"),
+)
+
+
+def _photo_ext(raw: bytes) -> str:
+    """Rasm baytlaridan kengaytmani aniqlaydi (noma'lum bo'lsa '')."""
+    if raw[:4] == b"RIFF" and raw[8:12] != b"WEBP":
+        return ""
+    for sig, ext in _PHOTO_SIGNATURES:
+        if raw.startswith(sig):
+            return ext
+    return ""
+
+
+def save_driver_photo_bytes(driver_id: str, raw: bytes) -> str:
+    """Rasm baytlarini `data/driver_photos`ga saqlab, yo'lini qaytaradi.
+
+    Fayl nomi dashboard bilan bir xil (`<safe_id>_photo<ext>`) — shu tarzda
+    avtomatik sync va qo'lda yuklash bir faylni almashtiradi.
+    """
+    if not raw:
+        return ""
+    ext = _photo_ext(raw)
+    if not ext:
+        return ""
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", str(driver_id or ""))[:80] or "driver"
+    PHOTO_DIR.mkdir(parents=True, exist_ok=True)
+    target = PHOTO_DIR / f"{safe}_photo{ext}"
+    target.write_bytes(raw)
+    return target.as_posix()
 
 
 # -------------------------------------------------------------- entity sync
@@ -153,7 +206,7 @@ def sync_drivers(storage: Storage, client: BMClient, route_id: str,
                 status = storage.save_driver(
                     external_id=_get(d, "id", "driverId", "driverIdValue"),
                     full_name=_get(d, "fullName", "name", "driverName"),
-                    tin=_get(d, "tin", "tinNumber"),
+                    tin=_full_pinfl(_get(d, "pinfl", "tin", "tinNumber")),
                     route_id=route_id,
                     data=d,
                 )
@@ -167,15 +220,19 @@ def sync_drivers(storage: Storage, client: BMClient, route_id: str,
 
 
 def sync_driver_profiles(storage: Storage, client: BMClient, route_id: str,
-                         date_str: str, force: bool = False) -> SyncResult:
+                         date_str: str, force: bool = False,
+                         with_photo: bool = True) -> SyncResult:
     """Haydovchi profillarini saytdagi to'liq ma'lumot bilan to'ldiradi.
 
     Ro'yxat API'da telefon/PINFL maskalangan; to'liq qiymat uchun har bir
-    haydovchining detail'i (`GET /drivers/{id}`) so'raladi. Passport BM
+    haydovchining detail'i (`GET /drivers/{id}`) so'raladi. Jins (`gender`)
+    va rasm (`GET /drivers/photo`) ham saytdan olinadi. Passport BM
     API'da yo'q — u maydon o'zgarishsiz qoladi.
 
     ``force=False`` bo'lsa profilida telefon va guvohnoma allaqachon bor
     haydovchilar uchun detail so'ralmaydi (kunlik sync tezroq ishlaydi).
+    Rasm esa faqat hali yuklanmagan bo'lsa olinadi (takroriy og'ir yuklash
+    bo'lmasin).
     """
     result = SyncResult(entity="driver_profiles")
 
@@ -224,6 +281,7 @@ def sync_driver_profiles(storage: Storage, client: BMClient, route_id: str,
                     "license_number": _get(src, "licenseNumber"),
                     "license_category": _get(src, "category"),
                     "license_expiry": _get(src, "licenseExpiryDate"),
+                    "gender": _get(src, "gender"),
                     "km_rate": use_rate,
                     "data": detail or payload,
                 }
@@ -238,6 +296,9 @@ def sync_driver_profiles(storage: Storage, client: BMClient, route_id: str,
                     result.inserted += 1
                 else:
                     result.updated += 1
+                # Rasm saytdan faqat hali yo'q bo'lsa olinadi (og'ir so'rov).
+                if with_photo and not str(existing.get("photo_path") or ""):
+                    _download_driver_photo(storage, client, driver_id)
                 pinfl = _get(detail, "pinfl") if detail is not None else ""
                 if pinfl:
                     storage.save_driver(
@@ -258,6 +319,101 @@ def sync_driver_profiles(storage: Storage, client: BMClient, route_id: str,
         return result
 
     return _safe_loop(storage, "driver_profiles", _run)
+
+
+def _download_driver_photo(storage: Storage, client: BMClient, driver_id: str) -> str:
+    """BM'dan haydovchi fotosini yuklab, profilga biriktiradi (best-effort).
+
+    `Accept: */*` SHART — `application/json` bilan backend rasm route'ini
+    tanlamay `/drivers/{id}`ga tushib `400` beradi. Rasm yo'q/buzilgan bo'lsa
+    jim o'tib ketiladi.
+    """
+    try:
+        raw = client.download(
+            f"{DRIVERS}/photo", params={"driverId": driver_id},
+            headers={"Accept": "*/*"}, retries=0)
+    except Exception:  # noqa: BLE001 - rasm yo'q bo'lsa xato emas
+        return ""
+    if not isinstance(raw, (bytes, bytearray)):
+        return ""
+    path = save_driver_photo_bytes(driver_id, bytes(raw))
+    if path:
+        storage.save_driver_profile(driver_id, photo_path=path)
+    return path
+
+
+def refresh_driver_from_bm(storage: Storage, client: BMClient, driver_id: str,
+                           *, route_id: str = "", detail: dict | None = None,
+                           with_photo: bool = True) -> dict:
+    """Bitta haydovchi to'liq ma'lumotini BM'dan olib, profilni yangilaydi.
+
+    Jins, PINFL/JSHSHR, telefon, guvohnoma (raqam/toifa/muddat) va rasm
+    (mavjud bo'lsa) saytdan olinadi. Dashboard tugmasi hamda avtomatik sync
+    uchun umumiy funksiya. Xato ko'tarilmaydi — natija `dict`da qaytariladi
+    (dashboard'da foydalanuvchiga ko'rsatish uchun).
+    """
+    out = {"ok": False, "driver_id": str(driver_id or ""), "error": "",
+           "updated": False, "photo": False}
+    did = str(driver_id or "").strip()
+    if not did:
+        out["error"] = "driver_id ko'rsatilmagan"
+        return out
+    if detail is None:
+        try:
+            detail = client.get(f"{DRIVERS}/{did}")
+        except Exception as exc:  # noqa: BLE001
+            out["error"] = ("haydovchi BM'da topilmadi" if _not_found(exc)
+                            else f"{type(exc).__name__}: {exc}")
+            return out
+    if not isinstance(detail, dict) or not detail:
+        out["error"] = "BM javobi bo'sh"
+        return out
+
+    # JSHSHR (PINFL) shaxsning barqaror unikal identifikatori: pasport yoki
+    # guvohnoma almashsa ham o'zgarmaydi. BM ba'zan bir shaxsni ikki id ostida
+    # qaytaradi — profil shu id ostida ALOHIDA qator bo'lib qolmasligi uchun
+    # kanonik (JSHSHR bo'yicha birlashtirilgan) id'ga yo'naltiriladi.
+    pinfl = str(_get(detail, "pinfl") or "").strip()
+    canonical = storage.canonical_driver_id(did, pinfl)
+    alias = ""
+    if canonical and did and canonical != did:
+        alias = did
+        did = canonical
+        out["driver_id"] = did
+
+    existing = storage.find("driver_profiles", driver_id=did) or {}
+    base = storage.find("drivers", external_id=did) or {}
+    route = route_id or str(base.get("route_id") or "")
+
+    fields = {
+        "license_number": _get(detail, "licenseNumber"),
+        "license_category": _get(detail, "category"),
+        "license_expiry": _get(detail, "licenseExpiryDate"),
+        "gender": _get(detail, "gender"),
+        "phone": _get(detail, "phoneNumber"),
+        "data": detail,
+    }
+    # Mavjud shaxsiy km_rate saqlanib qoladi (sync uni ustiga yozmaydi).
+    try:
+        if existing.get("km_rate") and float(existing["km_rate"]) > 0:
+            fields["km_rate"] = float(existing["km_rate"])
+    except (TypeError, ValueError):
+        pass
+    storage.save_driver_profile(driver_id=did, **fields)
+    storage.save_driver(
+        external_id=did,
+        full_name=_get(detail, "fullName") or str(base.get("full_name") or ""),
+        tin=pinfl or str(base.get("tin") or ""),
+        route_id=route,
+        data=json_loads(base.get("data")) or {},
+    )
+    if alias:
+        storage.save_driver_alias(did, alias)
+    out["updated"] = True
+    if with_photo:
+        out["photo"] = bool(_download_driver_photo(storage, client, did))
+    out["ok"] = True
+    return out
 
 
 def sync_vehicles(storage: Storage, client: BMClient, route_id: str,

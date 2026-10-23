@@ -46,10 +46,10 @@ def resend_env(tmp_path, monkeypatch):
     monkeypatch.setattr(dg, "STATE_DIR", tmp_path / "state")
     monkeypatch.setattr(dg, "DutyRepository", _FakeRepo)
     # Manzillar FAQAT bot ichida (`_bot_targets` haqiqiy ishlaydi):
-    # ADMIN/DISPATCHER ro'yxati — guruh aralashmasligini tekshirish uchun.
+    # yo'nalish egasi kompaniya chatlari — guruh aralashmasligini tekshirish.
     monkeypatch.setattr(
-        "bm_automation.app.notifications.ops.grafik_sms._targets",
-        lambda: ["-100admin"])
+        "bm_automation.app.notifications.ops.context.chats_for_route",
+        lambda rid: ["-100admin"])
 
     png = tmp_path / "sheet.png"
     png.write_bytes(b"png")
@@ -206,6 +206,44 @@ def test_resend_404_returns_error(resend_env, monkeypatch):
 
     assert res == [("error", "B-80", False)]
     assert sent["docs"] == []
+
+
+def test_manual_request_skips_sms(resend_env, monkeypatch):
+    """notify=False — qo'lda/bot so'rovida haydovchilarga SMS ketmaydi."""
+    dg, sent = resend_env
+    _FakeRepo.duty = _duty()
+    calls = []
+    monkeypatch.setattr(
+        "bm_automation.app.notifications.sms_notify.send_sms_for_graphs",
+        lambda *a, **k: calls.append((a, k)) or {
+            "sent": 1, "skipped": 0, "failed": 0, "invalid": 0,
+            "removed": 0, "errors": []})
+
+    res = dg._process_route(ROUTE, None, DAY, {}, None, "ISH KUNI",
+                            retry_until_published=False, notify=False)
+
+    assert ("image", "B-80", True) in res
+    assert calls == []  # SMS chaqirilmadi
+
+
+def test_auto_flow_sends_sms(resend_env, monkeypatch):
+    """notify=True (avtomatik oqim) — SMS yuboriladi."""
+    dg, sent = resend_env
+    _FakeRepo.duty = _duty()
+    calls = []
+    monkeypatch.setattr(
+        "bm_automation.app.db.storage.get_storage", lambda: object())
+    monkeypatch.setattr(
+        "bm_automation.app.notifications.sms_notify.send_sms_for_graphs",
+        lambda *a, **k: calls.append((a, k)) or {
+            "sent": 1, "skipped": 0, "failed": 0, "invalid": 0,
+            "removed": 0, "errors": []})
+
+    res = dg._process_route(ROUTE, None, DAY, {}, None, "ISH KUNI",
+                            retry_until_published=False, notify=True)
+
+    assert ("image", "B-80", True) in res
+    assert len(calls) == 1
 
 
 def test_summary_text_has_resend_lines():

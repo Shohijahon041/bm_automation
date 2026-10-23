@@ -367,6 +367,45 @@ def test_drivers_route_filter_separates_firms(met):
     assert "dA" not in ids
 
 
+def test_drivers_route_filter_excludes_cross_company_substitute(met):
+    """Boshqa kompaniya yo'nalishida ishlagan o'rinbosar reestrda chiqmaydi.
+
+    Uning joriy route'i boshqa kompaniyada; rasmi/hujjati ham o'sha kompaniya
+    aktivi, shuning uchun faqat reysi bo'lgani uchun ko'rsatilmaydi.
+    """
+    storage = met.storage
+    storage.save_vehicle(external_id="v3", plate_number="03C789CC",
+                         garage_number="G3", model="MAN", route_id="r2")
+    storage.save_driver(external_id="dCross", full_name="O'rinbosar",
+                        route_id="r2")
+    storage.save_trip(TripRecord(date="2026-08-10", route_id="r1",
+                                 vehicle_id="v1", driver_id="dCross",
+                                 planned_time="08:00", actual_time="08:10",
+                                 status=TripStatus.ACCEPTED.value,
+                                 source=SyncSource.DUTY.value))
+    f = {"from": "2026-08-10", "to": "2026-08-10", "route": "r1"}
+    ids = {x["driver_id"] for x in met.drivers(f)}
+    assert "dCross" not in ids
+
+
+def test_driver_detail_excludes_other_route_history(met):
+    """Detailda boshqa kompaniya reyslari va avtobus qaydlari ko'rinmaydi."""
+    storage = met.storage
+    storage.save_vehicle(external_id="v3", plate_number="03C789CC",
+                         garage_number="G3", model="MAN", route_id="r2")
+    storage.save_trip(TripRecord(date="2026-08-10", route_id="r2",
+                                 vehicle_id="v3", driver_id="d1",
+                                 planned_time="09:00", actual_time="09:10",
+                                 status=TripStatus.ACCEPTED.value,
+                                 source=SyncSource.DUTY.value))
+    storage.save_driver_work_log("2026-08-10", "d1", "v3", 50.0, 1,
+                                 note="Boshqa firma")
+    f = {"from": "2026-08-10", "to": "2026-08-10", "route": "r1"}
+    det = met.driver_detail("d1", f)
+    assert all(t.get("route_id") != "r2" for t in det["trips"])
+    assert all(w.get("vehicle_id") != "v3" for w in det["work_logs"])
+
+
 def test_driver_fines_route_filter(met):
     """Jarimalar ham tanlangan firma bo'yicha chegaralanadi."""
     storage = met.storage
@@ -535,16 +574,20 @@ def test_system_cached(met, monkeypatch):
     assert len(calls) == 1
 
 
-def test_driver_photo_url(met):
-    """Haydovchi rasmi yuklangan bo'lsa photo_url qaytadi."""
+def test_driver_photo_url(met, tmp_path, monkeypatch):
+    """Haydovchi rasmi fayli mavjud bo'lsa versiyalangan photo_url qaytadi."""
+    monkeypatch.chdir(tmp_path)
     f = {"from": "2026-08-01", "to": "2026-08-11", "month": ""}
     by_id = {x["driver_id"]: x for x in met.drivers(f)}
     assert by_id["d1"]["photo_url"] == ""
+    photo = tmp_path / "data" / "driver_photos" / "d1.jpg"
+    photo.parent.mkdir(parents=True)
+    photo.write_bytes(b"\xff\xd8\xff")
     met.storage.save_driver_profile("d1", photo_path="data/driver_photos/d1.jpg")
     by_id = {x["driver_id"]: x for x in met.drivers(f)}
-    assert by_id["d1"]["photo_url"] == "/api/drivers/d1/photo"
+    assert by_id["d1"]["photo_url"].startswith("/api/drivers/d1/photo?v=")
     det = met.driver_detail("d1", f)
-    assert det["driver"]["photo_url"] == "/api/drivers/d1/photo"
+    assert det["driver"]["photo_url"].startswith("/api/drivers/d1/photo?v=")
     det2 = met.driver_detail("d3", {"month": "2026-08"})
     assert det2 is None or det2["driver"]["photo_url"] == ""
 
@@ -620,6 +663,49 @@ def test_export_brutto_scope(patch_storage):
                                 "xlsx", "brutto")
     assert xlsx[:2] == b"PK"
     assert dexport.filename("xlsx", "brutto", "2026-08").endswith("_202608.xlsx")
+
+
+_FIRMS = {"r1": {"company": "Firma A", "route_name": "10-yo'nalish"},
+          "r2": {"company": "Firma B", "route_name": "20-yo'nalish"}}
+
+
+def test_export_routes_firma_column(patch_storage, monkeypatch):
+    import bm_automation.app.dashboard.metrics as mmod
+    monkeypatch.setattr(mmod.Metrics, "_companies", lambda self: _FIRMS)
+    title, cols, rows = dexport._data_for(
+        "routes", mmod.Metrics(), {"from": "2026-08-01", "to": "2026-08-31"})
+    assert cols[2] == "firma"
+    assert any(r[2] == "Firma A" for r in rows)
+
+
+def test_export_drivers_firma_column(patch_storage, monkeypatch):
+    import bm_automation.app.dashboard.metrics as mmod
+    monkeypatch.setattr(mmod.Metrics, "_companies", lambda self: _FIRMS)
+    title, cols, rows = dexport._data_for("drivers", mmod.Metrics(),
+                                          {"month": "2026-08"})
+    assert cols[-1] == "firma"
+    assert any(r[-1] == "Firma A" for r in rows)
+
+
+def test_export_companies_summary(patch_storage, monkeypatch):
+    import bm_automation.app.dashboard.metrics as mmod
+    monkeypatch.setattr(mmod.Metrics, "_companies", lambda self: _FIRMS)
+    title, cols, rows = dexport._data_for("companies", mmod.Metrics(),
+                                          {"month": "2026-08"})
+    assert "firma" in cols and rows[-1][0] == "JAMI"
+    assert "Firma A" in [r[0] for r in rows[:-1]]
+
+
+def test_export_xlsx_split_by_company(patch_storage, monkeypatch):
+    import io
+    import bm_automation.app.dashboard.metrics as mmod
+    from openpyxl import load_workbook
+    monkeypatch.setattr(mmod.Metrics, "_companies", lambda self: _FIRMS)
+    data = dexport.export_xlsx({"month": "2026-08", "split": "company"}, "drivers")
+    assert data[:2] == b"PK"
+    titles = [ws.title for ws in load_workbook(io.BytesIO(data)).worksheets]
+    assert any("Firma A" in t for t in titles)
+    assert any("Firma B" in t for t in titles)
 
 
 def test_route_options_only_profiles(monkeypatch):
@@ -753,6 +839,22 @@ def test_api_logs_unknown_source_falls_back(tmp_path, monkeypatch):
     monkeypatch.setenv("BM_LOG_DIR", str(tmp_path))
     d = _get("/api/logs?source=yoq-manba&lines=5")
     assert d["ok"] is True and d["source"] == "bm"
+
+
+def test_media_path_containment_blocks_traversal(tmp_path, monkeypatch):
+    """Rasm/hujjat yo'li faqat ruxsat etilgan papka ichida bo'lishi kerak."""
+    from bm_automation.app.dashboard.routers import drivers as drv
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "data" / "driver_photos"
+    root.mkdir(parents=True)
+    inside = root / "a.jpg"
+    inside.write_bytes(b"x")
+    outside = tmp_path / "secret.txt"
+    outside.write_bytes(b"x")
+    assert drv._contained_media_path("data/driver_photos/a.jpg", root) == inside.resolve()
+    assert drv._contained_media_path("../secret.txt", root) is None
+    assert drv._contained_media_path(str(outside), root) is None
+    assert drv._contained_media_path("data/driver_photos/../secret.txt", root) is None
 
 
 def test_logs_stream_init_event(tmp_path, monkeypatch):
@@ -948,7 +1050,7 @@ def test_not_accepted_report_clamps_negative_diff(met):
 
 def test_not_accepted_report_unattributed_working_day(met):
     """wd=1 lekin na schedules, na trips bo'lgan kun jami sayt bilan mos
-    bo'lishi uchun 'Atribut qilinmagan' haydovchiga kiritiladi."""
+    bo'lishi uchun `unattributed`ga kiritiladi; sun'iy haydovchi chiqmaydi."""
     stor = met.storage
     stor.upsert("route_daily", ["date", "route_id", "vehicle_number"], {
         "date": "2026-08-16", "route_id": "r1", "vehicle_id": "v1",
@@ -956,11 +1058,13 @@ def test_not_accepted_report_unattributed_working_day(met):
         "trip_plan": 5, "trip_fact": 0, "distance_plan": 100.0,
         "distance_fact": 0.0})
     d = met.not_accepted_km_report({"from": "2026-08-01", "to": "2026-08-31"})
-    orph = next(r for r in d["rows"] if "Atribut qilinmagan" in r["name"])
-    assert orph["plan_reys"] == 5
-    assert orph["fact_reys"] == 0
-    assert orph["qabul_qilinmagan"] == 5
-    assert orph["days"] == 1
+    assert not d["rows"]
+    assert all("Atribut qilinmagan" not in r["name"] for r in d["rows"])
+    u = d["unattributed"]
+    assert u["plan_reys"] == 5
+    assert u["fact_reys"] == 0
+    assert u["qabul_qilinmagan"] == 5
+    assert u["days"] == 1
     assert d["totals"]["plan_reys"] == 5                      # sayt bilan mos
     assert d["totals"]["qabul_qilinmagan"] == 5
 
@@ -1194,6 +1298,18 @@ def test_appeals_report_with_driver_name(met):
     assert rep["appeals"][0]["driver_id"] == "d2"
 
 
+def test_driver_detail_includes_worked_months(met):
+    """Haydovchi kartasi ishlagan oylar tarixini (yangi -> eski) qaytaradi."""
+    st = met.storage
+    st.save_driver_work_log("2026-07-05", "d1", "v1", 100.0, 1)
+    st.save_trip(TripRecord(
+        date="2026-06-03", route_id="r1", vehicle_id="v1", driver_id="d1",
+        planned_time="06:00", status=TripStatus.ACCEPTED.value,
+        source=SyncSource.DUTY.value))
+    d = met.driver_detail("d1", {"month": "2026-08"})
+    assert d["worked_months"] == ["2026-08", "2026-07", "2026-06"]
+
+
 def test_driver_detail_includes_appeals(met):
     """Haydovchi kartasi murojaatlar ro'yxatini ham qaytaradi."""
     storage = met.storage
@@ -1213,3 +1329,21 @@ def test_api_appeals_endpoint(met, monkeypatch):
     assert d["ok"] is True
     assert d["total"] >= 1
     assert any(a["title"] == "Taklif" for a in d["appeals"])
+
+
+def test_sync_status_owner_only():
+    """Sync natijasi faqat admin yoki uni boshlagan foydalanuvchiga ko'rinadi."""
+    from bm_automation.app.dashboard.routers.system import _sync_bg_status
+    st = {"running": False, "progress": "", "owner": "ali",
+          "result": {"ok": True, "routes": ["r1"], "lines": ["x"]}}
+    admin = {"username": "root", "is_admin": True}
+    owner = {"username": "ali", "is_admin": False}
+    other = {"username": "vali", "is_admin": False}
+    assert _sync_bg_status(st, admin)["routes"] == ["r1"]
+    assert _sync_bg_status(st, owner)["routes"] == ["r1"]
+    hidden = _sync_bg_status(st, other)
+    assert hidden["ok"] is True and "routes" not in hidden and "lines" not in hidden
+    running = {"running": True, "progress": "01.10.2026 (1/2)",
+               "owner": "ali", "result": None}
+    assert _sync_bg_status(running, other)["progress"] == ""
+    assert _sync_bg_status(running, owner)["progress"].startswith("01.10.2026")

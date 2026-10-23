@@ -18,6 +18,23 @@ router = APIRouter(tags=["drivers"])
 
 DOCUMENT_DIR = Path("data") / "driver_documents"
 PHOTO_DIR = Path("data") / "driver_photos"
+
+
+def _contained_media_path(raw: str, root: Path) -> Path | None:
+    """DB'dagi yo'lni ruxsat etilgan katalog ichida ekanini tekshiradi."""
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    root_abs = root.resolve()
+    p = Path(text)
+    if not p.is_absolute():
+        p = Path.cwd() / p
+    try:
+        resolved = p.resolve()
+        resolved.relative_to(root_abs)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return resolved
 DOCUMENT_FIELDS = {
     "passport_front": "passport_front_path",
     "passport_back": "passport_back_path",
@@ -26,7 +43,6 @@ DOCUMENT_FIELDS = {
 }
 PHOTO_FIELD = "photo_path"
 DOCUMENT_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
-_DRIVER_MONEY_KEYS = ("gross_pay", "tax", "fines", "net_pay")
 
 
 def _parse_qs(request: Request) -> dict:
@@ -50,39 +66,24 @@ def _image_ext(data: bytes) -> str | None:
     return None
 
 
-def _driver_finance_visible() -> bool:
-    from ...core import bot_settings
-    return bot_settings.show_driver_salary()
-
-
-def _mask_driver_money(row: dict | None) -> None:
-    if row is None:
-        return
-    for key in _DRIVER_MONEY_KEYS:
-        if key in row:
-            row[key] = None
+def _driver_detail_response(storage, driver_id: str, scope: dict | None = None) -> dict:
+    """Haydovchi kartasi — dashboardda moliyaviy maydonlar doim ko'rinadi."""
+    from .. import metrics as m
+    params = force_route(scope or {}, "/api/drivers", {})
+    return m.Metrics().driver_detail(driver_id, params) or {}
 
 
 @router.get("/api/drivers")
-async def api_drivers(request: Request, scope: dict = Depends(Scope())):
+def api_drivers(request: Request, scope: dict = Depends(Scope())):
     from .. import metrics as m
     params = _parse_qs(request)
     params = force_route(scope, "/api/drivers", params)
     rep = m.Metrics().driver_directory(params)
-    show = _driver_finance_visible()
-    if not show:
-        for dr in rep.get("drivers") or []:
-            _mask_driver_money(dr)
-        totals = rep.get("totals") or {}
-        for key in _DRIVER_MONEY_KEYS:
-            if key in totals:
-                totals[key] = None
-        rep["show_driver_salary"] = False
     return {"ok": True, **rep}
 
 
 @router.get("/api/drivers/list")
-async def api_drivers_list(request: Request, scope: dict = Depends(Scope())):
+def api_drivers_list(request: Request, scope: dict = Depends(Scope())):
     from ...db.storage import get_storage
     storage = get_storage()
     if not storage.enabled:
@@ -103,22 +104,18 @@ async def api_drivers_list(request: Request, scope: dict = Depends(Scope())):
 
 
 @router.get("/api/drivers/{driver_id}")
-async def api_driver_detail(driver_id: str, request: Request, scope: dict = Depends(Scope())):
+def api_driver_detail(driver_id: str, request: Request, scope: dict = Depends(Scope())):
     from .. import metrics as m
     from ...db.storage import get_storage
     scopes = scope_routes(scope)
     if scopes is not None:
         if not _driver_in_scope(get_storage(), driver_id, scopes):
             raise HTTPException(404, "haydovchi topilmadi")
-    params = _parse_qs(request)
+    params = force_route(scope, "/api/drivers", _parse_qs(request))
     detail = m.Metrics().driver_detail(driver_id, params)
     if detail is None:
         return {"ok": False, "error": "Haydovchi topilmadi"}
-    show = _driver_finance_visible()
-    if not show:
-        _mask_driver_money(detail.get("driver"))
-        detail["fines_total"] = None
-    return {"ok": True, "show_driver_salary": show, **detail}
+    return {"ok": True, **detail}
 
 
 @router.post("/api/drivers")
@@ -129,7 +126,7 @@ async def api_driver_create(request: Request, scope: dict = Depends(Scope())):
         route = str(payload.get("route_id") or "").strip()
         if route not in scopes:
             raise HTTPException(404, "haydovchi topilmadi")
-    return _save_driver(payload, "")
+    return _save_driver(payload, "", scope)
 
 
 @router.post("/api/drivers/{driver_id}/profile")
@@ -144,7 +141,7 @@ async def api_driver_profile(driver_id: str, request: Request, scope: dict = Dep
         new_route = str(payload.get("route_id") or "").strip()
         if new_route and new_route not in scopes:
             raise HTTPException(404, "haydovchi topilmadi")
-    return _save_driver(payload, driver_id)
+    return _save_driver(payload, driver_id, scope)
 
 
 @router.post("/api/drivers/{driver_id}/photo")
@@ -157,8 +154,72 @@ async def api_driver_photo(driver_id: str, request: Request, scope: dict = Depen
     return _save_photo(driver_id, payload)
 
 
+@router.post("/api/drivers/{driver_id}/bm-sync")
+def api_driver_bm_sync(driver_id: str, request: Request, scope: dict = Depends(Scope())):
+    """Haydovchi ma'lumotlarini (jins, PINFL, telefon, guvohnoma, rasm) BM'dan oladi.
+
+    SYNC endpoint: bloklovchi BM HTTP so'rovlari — `async` bo'lmasligi kerak
+    (aks holda event loop bloklanadi).
+    """
+    from ...api.client import BMClient
+    from ...db import sync as db_sync
+    from ...db.storage import get_storage
+
+    storage = get_storage()
+    if not storage.enabled:
+        raise HTTPException(400, "DB rejimi o'chirilgan")
+    scopes = scope_routes(scope)
+    if scopes is not None and not _driver_in_scope(storage, driver_id, scopes):
+        raise HTTPException(404, "haydovchi topilmadi")
+    with_photo = str(request.query_params.get("photo", "1")).lower() not in (
+        "0", "false", "no", "off")
+    try:
+        result = db_sync.refresh_driver_from_bm(
+            storage, BMClient(), driver_id, with_photo=with_photo)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"BM'dan olib bo'lmadi: {exc}"}
+    if not result.get("ok"):
+        return {"ok": False, "error": result.get("error") or "Yangilanmadi"}
+    return {"ok": True, "photo": bool(result.get("photo")),
+            **_driver_detail_response(storage, driver_id, scope)}
+
+
+@router.post("/api/drivers/bm-sync")
+def api_drivers_bm_sync(request: Request, scope: dict = Depends(Scope())):
+    """Barcha (ruxsat etilgan) haydovchilarni BM'dan yangilaydi."""
+    from ...api.client import BMClient
+    from ...db import sync as db_sync
+    from ...db.storage import get_storage
+
+    storage = get_storage()
+    if not storage.enabled:
+        raise HTTPException(400, "DB rejimi o'chirilgan")
+    scopes = scope_routes(scope)
+    rows = storage.query("SELECT external_id, route_id FROM drivers")
+    if scopes is not None:
+        rows = [r for r in rows if str(r.get("route_id") or "") in scopes]
+    client = BMClient()
+    updated = photos = failed = 0
+    for r in rows:
+        did = str(r.get("external_id") or "").strip()
+        if not did:
+            continue
+        try:
+            res = db_sync.refresh_driver_from_bm(storage, client, did)
+        except Exception:  # noqa: BLE001 - biri buzilsa davom etamiz
+            failed += 1
+            continue
+        if res.get("ok"):
+            updated += 1
+            photos += 1 if res.get("photo") else 0
+        else:
+            failed += 1
+    return {"ok": True, "total": len(rows), "updated": updated,
+            "photos": photos, "failed": failed}
+
+
 @router.get("/api/drivers/{driver_id}/photo")
-async def api_driver_photo_get(driver_id: str, request: Request, scope: dict = Depends(Scope())):
+def api_driver_photo_get(driver_id: str, request: Request, scope: dict = Depends(Scope())):
     from ...db.storage import get_storage
     scopes = scope_routes(scope)
     if scopes is not None and not _driver_in_scope(get_storage(), driver_id, scopes):
@@ -166,12 +227,10 @@ async def api_driver_photo_get(driver_id: str, request: Request, scope: dict = D
     storage = get_storage()
     profile = storage.find("driver_profiles", driver_id=driver_id) or {}
     photo_path = str(profile.get(PHOTO_FIELD) or "")
-    if not photo_path:
+    p = _contained_media_path(photo_path, PHOTO_DIR)
+    if not p or not p.is_file():
         raise HTTPException(404, "Rasm topilmadi")
-    p = Path(photo_path)
-    if not p.exists():
-        raise HTTPException(404, "Rasm topilmadi")
-    return FileResponse(p)
+    return FileResponse(p, headers={"Cache-Control": "private, max-age=86400"})
 
 
 @router.post("/api/drivers/{driver_id}/document")
@@ -195,12 +254,10 @@ async def api_driver_document_get(driver_id: str, kind: str, request: Request, s
     storage = get_storage()
     profile = storage.find("driver_profiles", driver_id=driver_id) or {}
     doc_path = str(profile.get(DOCUMENT_FIELDS[kind]) or "")
-    if not doc_path:
+    p = _contained_media_path(doc_path, DOCUMENT_DIR)
+    if not p or not p.is_file():
         raise HTTPException(404, "Hujjat topilmadi")
-    p = Path(doc_path)
-    if not p.exists():
-        raise HTTPException(404, "Hujjat topilmadi")
-    return FileResponse(p)
+    return FileResponse(p, headers={"Cache-Control": "private, no-store"})
 
 
 @router.post("/api/drivers/{driver_id}/work-log")
@@ -243,10 +300,10 @@ async def api_driver_notification_test(driver_id: str, request: Request, scope: 
 
 
 @router.get("/api/vehicles/{vehicle_id}")
-async def api_vehicle_detail(vehicle_id: str, request: Request, scope: dict = Depends(Scope())):
+def api_vehicle_detail(vehicle_id: str, request: Request, scope: dict = Depends(Scope())):
     from .. import metrics as m
     from ...db.storage import get_storage
-    params = _parse_qs(request)
+    params = force_route(scope, "/api/vehicles", _parse_qs(request))
     vid = m.Metrics().resolve_vehicle(vehicle_id, params) or vehicle_id
     scopes = scope_routes(scope)
     if scopes is not None:
@@ -263,7 +320,8 @@ async def api_vehicle_detail(vehicle_id: str, request: Request, scope: dict = De
 # Ichki yordamchilar (eski server.py'dagi logika)
 # ---------------------------------------------------------------------------
 
-def _save_driver(payload: dict, driver_id: str = "") -> dict:
+def _save_driver(payload: dict, driver_id: str = "",
+                 scope: dict | None = None) -> dict:
     from ...db.models import json_loads
     from ...db.storage import get_storage
     from .. import metrics as m
@@ -307,14 +365,11 @@ def _save_driver(payload: dict, driver_id: str = "") -> dict:
             fields[key] = bool(payload[key])
     storage.save_driver_profile(did, **fields)
 
-    detail = m.Metrics().driver_detail(did, {})
+    params = force_route(scope or {}, "/api/drivers", {})
+    detail = m.Metrics().driver_detail(did, params)
     if detail is None:
         return {"ok": False, "error": "Haydovchi topilmadi"}
-    show = _driver_finance_visible()
-    if not show:
-        _mask_driver_money(detail.get("driver"))
-        detail["fines_total"] = None
-    return {"ok": True, "show_driver_salary": show, **detail}
+    return {"ok": True, **detail}
 
 
 def _save_photo(driver_id: str, payload: dict) -> dict:

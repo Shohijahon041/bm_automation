@@ -441,6 +441,24 @@ def test_retry_failed_resends_pending_rows(storage, fake_gateway, monkeypatch):
     assert fake_gateway[0]["phone"] == "+998901234567"
 
 
+def test_retry_failed_respects_route_scope(storage, fake_gateway,
+                                           monkeypatch):
+    """`routes` berilsa — faqat shu yo'nalish SMS'lari qayta yuboriladi."""
+    storage.record_sms(driver_id="D1", name="ALIYEV",
+                       phone="+998901234567", route_id=ROUTE,
+                       route_name="10-yo'nalish", schedule_date=DATE,
+                       message="eshik-teshik", status="PENDING")
+    monkeypatch.setattr(sms_notify, "_sent_success_elsewhere",
+                        lambda *a, **k: False)
+
+    blocked = sms_notify.retry_failed_sms(storage, limit=10,
+                                          routes={"boshqa-route"})
+    assert blocked["retried"] == [] and fake_gateway == []
+
+    res = sms_notify.retry_failed_sms(storage, limit=10, routes={ROUTE})
+    assert len(res["retried"]) == 1 and len(fake_gateway) == 1
+
+
 def test_retry_failed_skips_when_other_row_sent(storage, fake_gateway,
                                                 monkeypatch):
     """Boshqa yozuv allaqachon SENT bo'lsa — qayta yuborilmaydi (dublikat yo'q)."""
@@ -543,3 +561,47 @@ def test_retry_stale_pending_resolved_via_gateway(storage, fake_gateway,
     assert fake_gateway == []
     rows = storage.query("SELECT status FROM sms_log ORDER BY id")
     assert [r["status"] for r in rows] == ["DELIVERED"]
+
+
+# ------------------------------------------------ bitta SMS segmentiga sig'ish
+
+def _segments(text):
+    """SMS segmentlari soni: GSM-7 bo'lsa 160, aks holda 70 belgi/segment."""
+    gsm7 = all(c in sms_notify._GSM7_BASIC for c in text)
+    per = 160 if gsm7 else 70
+    return (len(text) + per - 1) // per
+
+
+def test_messages_fit_single_sms_segment():
+    rows = [dict(_row(), trip_count=8, vehicle="01A123AA")]
+    msgs = [
+        sms_notify._message("Aliyev Karim", DATE, rows,
+                            route_name="B-80", d_phone="+998 71 200-00-00"),
+        sms_notify._update_message("Aliyev Karim", DATE, rows,
+                                   route_name="10-yo'nalish",
+                                   d_phone="+998901234567"),
+        sms_notify._removal_message("Aliyev Karim", DATE, "+998901234567"),
+    ]
+    for m in msgs:
+        assert _segments(m) == 1, m
+
+
+def test_messages_single_segment_ascii_and_cyrillic():
+    rows = [dict(_row(), trip_count=6, vehicle="01A123AA")]
+    # Kirill + tipografik belgilar GSM-7'ga o'giriladi (bitta segment).
+    ascii_msg = sms_notify._message(
+        "Абдуллаев Абдулла", DATE, rows,
+        route_name="Ҳайдаркон йўналиши", d_phone="+998901234567")
+    assert all(c in sms_notify._GSM7_BASIC for c in ascii_msg)
+    assert _segments(ascii_msg) == 1
+    # Em dash (-) ham ASCII bo'lib qoladi.
+    removal = sms_notify._removal_message("Aliyev — test", DATE, "")
+    assert "—" not in removal
+    assert _segments(removal) == 1
+
+
+def test_gsm7_sms_truncates_long_text():
+    long_text = "A" * 400
+    out = sms_notify._gsm7_sms(long_text)
+    assert len(out) <= sms_notify._SMS_SINGLE_LIMIT
+    assert out.endswith("...")

@@ -14,8 +14,8 @@ Faol davr: soat 17:00 dan ertalabgi 06:00 gacha (ertasi kunga qadar).
 Tokenlar fayldan o'qiladi; eskirgan bo'lsa faqat silent refresh (OneID
 brauzer oqimi bu yerda ishga tushmaydi — jarayon bloklanmasligi uchun).
 
-O'zgarish yuz bersa (yuborilgan/chiqarilgan/failed) ADMIN/DISPATCHER
-rollariga qisqa Telegram xulosa yuboriladi.
+O'zgarish yuz bersa (yuborilgan/chiqarilgan/failed) o'sha yo'nalish egasi
+kompaniya chatlariga (ADMIN + o'z dispetcherlari) qisqa xulosa yuboriladi.
 """
 
 from __future__ import annotations
@@ -23,6 +23,8 @@ from __future__ import annotations
 import threading
 import time
 from datetime import date, timedelta
+
+from .roles import Role, configured_roles
 
 _CHECK_INTERVAL_S = 900.0  # 15 daqiqa
 _ACTIVE_START_H = 17  # faol: 17:00 dan ...
@@ -74,43 +76,58 @@ def _targets() -> list[int]:
             if role in (Role.ADMIN, Role.DISPATCHER)]
 
 
-def bot_targets(chat_id) -> list[str]:
+def bot_targets(route_id, chat_id) -> list[str]:
     """Grafik yuboriladigan manzillar — FAQAT bot ichida (guruhlarga hech qachon).
 
     Qoida: shaxsiy ``chat_id`` (tugma bosilgan chat) bo'lsa — faqat shu chat;
-    aks holda (avtomatik oqim yoki guruh chat_id) — ADMIN/DISPATCHER chatlari.
-    Yo'nalish guruhlariga grafik umuman yuborilmaydi.
+    aks holda (avtomatik oqim yoki guruh chat_id) — shu YO'NALISH egasi
+    kompaniyaning chatlari (ADMIN + o'z dispetcher/egasi). Boshqa firma
+    dispetcheriga grafik oqib ketmaydi. Profilda yo'nalish topilmasa —
+    faqat ADMIN'lar.
     """
     if chat_id and not str(chat_id).startswith("-"):
         return [str(chat_id)]
-    return [str(t) for t in _targets()]
+    try:
+        from .context import chats_for_route
+        targets = chats_for_route(route_id)
+    except Exception:  # noqa: BLE001 - scope aniqlanmasa xavfsiz tomonga
+        targets = []
+    if not targets:
+        targets = [cid for cid, role in configured_roles().items()
+                   if role is Role.ADMIN]
+    return [str(t) for t in targets]
 
 
-def _notify_summary(total: dict, reports: list[str], date_str: str) -> None:
+def _summary_text(total: dict, reports: list[str], date_str: str) -> str | None:
+    bits = []
+    for k in ("sent", "updated", "removed", "failed", "invalid"):
+        v = total.get(k, 0)
+        if v:
+            label = {"sent": "yuborildi", "updated": "tuzatildi",
+                     "removed": "chiqarildi",
+                     "failed": "xato", "invalid": "noaniq"}[k]
+            bits.append(f"{label}: {v}")
+    if not bits:
+        return None
+    lines = [f"📋 <b>Grafik kuzatuvi</b> · {date_str}",
+             "  · ".join(bits), ""]
+    lines.extend(f"• {r}" for r in reports[:8])
+    return "\n".join(lines)
+
+
+def _notify_summary(totals: dict, reports: dict, date_str: str) -> None:
+    """Har yo'nalish xulosasini faqat o'z kompaniyasi chatlariga yuboradi."""
     try:
         from ..telegram import send_message
-        tg = _targets()
-        if not tg:
-            return
-        bits = []
-        for k in ("sent", "updated", "removed", "failed", "invalid"):
-            v = total.get(k, 0)
-            if v:
-                label = {"sent": "yuborildi", "updated": "tuzatildi",
-                         "removed": "chiqarildi",
-                         "failed": "xato", "invalid": "noaniq"}[k]
-                bits.append(f"{label}: {v}")
-        if not bits:
-            return
-        lines = [f"📋 <b>Grafik kuzatuvi</b> · {date_str}",
-                 "  · ".join(bits), ""]
-        lines.extend(f"• {r}" for r in reports[:8])
-        text = "\n".join(lines)
-        for cid in tg:
-            try:
-                send_message(text, chat_id=str(cid))
-            except Exception as exc:  # noqa: BLE001
-                print(f"Grafik kuzatuvi xulosasi yuborilmadi [{cid}]: {exc}")
+        for rid, total in totals.items():
+            text = _summary_text(total, reports.get(rid) or [], date_str)
+            if not text:
+                continue
+            for cid in bot_targets(rid, None):
+                try:
+                    send_message(text, chat_id=str(cid))
+                except Exception as exc:  # noqa: BLE001
+                    print(f"Grafik kuzatuvi xulosasi yuborilmadi [{cid}]: {exc}")
     except Exception as exc:  # noqa: BLE001
         print(f"Grafik kuzatuvi xulosasi xatosi: {exc}")
 
@@ -131,8 +148,8 @@ def _run_once() -> None:
             return
 
         date_str = (date.today() + timedelta(days=1)).isoformat()
-        total = {k: 0 for k in _SUMMARY_KEYS}
-        reports = []
+        totals: dict[str, dict] = {}
+        reports: dict[str, list[str]] = {}
 
         for p in all_profiles():
             rid = str(p.get("routeVariantId", "") or "").strip()
@@ -158,20 +175,20 @@ def _run_once() -> None:
             except Exception as exc:  # noqa: BLE001
                 print(f"[{label}] SMS kuzatuvi xatosi: {exc}")
                 continue
+            route_total = totals.setdefault(
+                rid, {k: 0 for k in _SUMMARY_KEYS})
             for k in _SUMMARY_KEYS:
-                total[k] += int(res.get(k) or 0)
+                route_total[k] += int(res.get(k) or 0)
             if res.get("sent") or res.get("updated") or res.get("removed") \
                     or res.get("failed"):
-                reports.append(
-                    f"{label}: +{res.get('sent', 0)} yuborildi, "
-                    f"{res.get('updated', 0)} tuzatildi, "
-                    f"{res.get('removed', 0)} chiqarildi, "
-                    f"{res.get('failed', 0)} xato")
+                item = (f"{label}: +{res.get('sent', 0)} yuborildi, "
+                        f"{res.get('updated', 0)} tuzatildi, "
+                        f"{res.get('removed', 0)} chiqarildi, "
+                        f"{res.get('failed', 0)} xato")
+                reports.setdefault(rid, []).append(item)
+                print(f"Grafik kuzatuvi: {item}")
 
-        if reports:
-            for r in reports:
-                print(f"Grafik kuzatuvi: {r}")
-        _notify_summary(total, reports, date_str)
+        _notify_summary(totals, reports, date_str)
     except Exception as exc:  # noqa: BLE001 - bot umuman to'xtamasligi uchun
         print(f"Grafik kuzatuvi xatosi: {exc}")
 

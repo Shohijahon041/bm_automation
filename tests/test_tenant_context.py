@@ -34,13 +34,17 @@ def _client() -> TestClient:
     return TestClient(app)
 
 
-def _mk_request(path: str, cookies: dict | None = None) -> Request:
+def _mk_request(path: str, cookies: dict | None = None,
+                headers: dict | None = None) -> Request:
     raw = "; ".join(f"{k}={v}" for k, v in (cookies or {}).items())
+    hdrs = [(b"cookie", raw.encode())] if raw else []
+    for k, v in (headers or {}).items():
+        hdrs.append((k.lower().encode(), str(v).encode()))
     scope = {
         "type": "http", "http_version": "1.1", "method": "GET",
         "scheme": "http", "path": path, "raw_path": path.encode(),
         "query_string": b"", "root_path": "",
-        "headers": [(b"cookie", raw.encode())] if raw else [],
+        "headers": hdrs,
         "server": ("testserver", 80), "client": ("127.0.0.1", 1234),
     }
     return Request(scope)
@@ -57,6 +61,11 @@ def tenv(monkeypatch, tmp_path):
         deps._sessions = {}
     with deps._POST_LOCK:
         deps._last_post_at.clear()
+    with deps._LOGIN_LOCK:
+        deps._login_fails.clear()
+        deps._login_blocked_until.clear()
+    deps.invalidate_super_cache()
+    deps.invalidate_user_access()
 
     db = SQLiteDatabase(str(tmp_path / "tenant.db"))
     st = storage_for(db)
@@ -113,6 +122,9 @@ def test_company_active_semantics():
     assert company_active({"status": "ACTIVE"}) is True
     assert company_active({"status": "blocked"}) is False
     assert company_active({"status": "suspended"}) is False
+    # Soft-delete/arxiv: korxona o'chirilgan bo'lsa ham bloklangan hisoblanadi.
+    assert company_active({"status": "deleted"}) is False
+    assert company_active({"status": "archived"}) is False
     assert company_active({"status": "", "subscription_expire_date":
                            "2020-01-01"}) is False   # muddati o'tgan
     assert company_active({"status": "", "subscription_expire_date":
@@ -239,7 +251,7 @@ def test_tenant_guard_blocks_inactive_company(tenv):
     assert req.state.tenant["company_id"] == ids["blockco-mchj"]
 
 
-def test_tenant_guard_allows_active_and_unknown(tenv):
+def test_tenant_guard_allows_active_blocks_unknown(tenv):
     ids = tenv["ids"]
     tok = deps.create_session({"username": "mgr", "id": 7,
                                "role": "MANAGER", "company": "OKCO TRANSPORT"})
@@ -247,11 +259,53 @@ def test_tenant_guard_allows_active_and_unknown(tenv):
     assert deps.tenant_guard(req) is None
     assert req.state.tenant["company_id"] == ids["okco-transport"]
 
-    # Noma'lum kompaniya — fail-open (soft nazorat).
+    # Noma'lum kompaniya — fail-closed (403).
     tok2 = deps.create_session({"username": "new", "id": 8,
                                 "role": "DISPATCHER", "company": "YANGI MCHJ"})
     req2 = _mk_request("/api/routes", cookies={"bm_session": tok2})
-    assert deps.tenant_guard(req2) is None
+    assert deps.tenant_guard(req2).status_code == 403
+
+    # Kompaniyasi yo'q non-admin ham bloklanadi.
+    tok3 = deps.create_session({"username": "nocompany", "id": 10,
+                                "role": "DISPATCHER", "company": ""})
+    assert deps.tenant_guard(
+        _mk_request("/api/routes", cookies={"bm_session": tok3})).status_code == 403
+
+    # ADMIN noma'lum/bo'sh kompaniya bilan ham o'tadi.
+    tok4 = deps.create_session({"username": "root", "id": 1,
+                                "role": "ADMIN", "company": "YANGI MCHJ"})
+    assert deps.tenant_guard(
+        _mk_request("/api/routes", cookies={"bm_session": tok4})) is None
+
+
+def test_tenant_guard_reads_bearer_session(tenv):
+    """Sessiya Bearer header'da bo'lsa ham tenant tekshiruvi ishlaydi."""
+    tok = deps.create_session({"username": "mgr", "id": 7,
+                               "role": "MANAGER", "company": "OKCO TRANSPORT"})
+    req = _mk_request("/api/routes",
+                      headers={"Authorization": f"Bearer {tok}"})
+    assert deps.tenant_guard(req) is None
+    assert req.state.tenant["company_id"] == tenv["ids"]["okco-transport"]
+
+    tok2 = deps.create_session({"username": "blocked", "id": 9,
+                                "role": "MANAGER", "company": "BLOCKCO MCHJ"})
+    req2 = _mk_request("/api/routes",
+                       headers={"Authorization": f"Bearer {tok2}"})
+    resp = deps.tenant_guard(req2)
+    assert resp is not None and resp.status_code == 403
+
+
+def test_tenant_guard_lookup_error_is_closed(tenv, monkeypatch):
+    """Tenant bazasi xato bersa — foydalanuvchi kiritilmaydi (fail-closed)."""
+    tok = deps.create_session({"username": "mgr", "id": 7,
+                               "role": "MANAGER", "company": "OKCO TRANSPORT"})
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(tenant_mod, "company_state", _boom)
+    req = _mk_request("/api/routes", cookies={"bm_session": tok})
+    assert deps.tenant_guard(req).status_code == 403
 
 
 def test_tenant_guard_skips(tenv, monkeypatch):
@@ -296,8 +350,114 @@ def test_blocked_company_api_returns_403(tenv):
     assert body.get("ok") is False
 
 
-def test_unknown_company_api_fail_open(tenv):
+def test_unknown_company_api_fail_closed(tenv):
     tok = deps.create_session({"username": "new", "id": 8,
                                "role": "DISPATCHER", "company": "YANGI MCHJ"})
     r = _client().get("/api/routes", cookies={"bm_session": tok})
-    assert r.status_code == 200
+    assert r.status_code == 403
+    assert r.json().get("ok") is False
+
+
+# ------------------------------------------------------- parse_filters company
+
+def test_parse_filters_company_expands_to_routes(tenv):
+    from bm_automation.app.dashboard.metrics import parse_filters
+    f = parse_filters({"company": "OKCO TRANSPORT"})
+    assert f["company"] == "OKCO TRANSPORT"
+    assert f["route"] == "ro1,ro2"
+
+
+def test_parse_filters_company_ignored_when_route_given(tenv):
+    from bm_automation.app.dashboard.metrics import parse_filters
+    f = parse_filters({"company": "OKCO TRANSPORT", "route": "ro2"})
+    assert f["route"] == "ro2"
+
+
+def test_parse_filters_unknown_company_keeps_route_empty(tenv):
+    from bm_automation.app.dashboard.metrics import parse_filters
+    f = parse_filters({"company": "Yo'q firma"})
+    assert f["route"] == ""
+
+
+# --------------------------------------------------- settings companies CRUD
+
+class _Req:
+    def __init__(self, payload):
+        self._p = payload
+
+    async def json(self):
+        return self._p
+
+
+def test_settings_companies_crud(tenv):
+    """`/api/settings/companies` — creds/add/delete ishlaydi va parol sizmaydi."""
+    import asyncio
+    from bm_automation.app.dashboard.routers import admin as admin_mod
+    from bm_automation.app.core import profiles as pmod
+
+    listed = admin_mod.get_companies(None)
+    assert listed["ok"]
+    assert all("password" not in c for c in listed["companies"])
+    assert all("has_credentials" in c for c in listed["companies"])
+
+    r = asyncio.run(admin_mod.update_companies(_Req(
+        {"action": "creds", "name": "OKCO TRANSPORT",
+         "username": "u1", "password": "p1"})))
+    assert r["ok"]
+    p = pmod.get_profile("OKCO TRANSPORT")
+    assert p.get("username") == "u1" and p.get("password") == "p1"
+
+    r = asyncio.run(admin_mod.update_companies(_Req(
+        {"action": "add", "name": "YANGI MCHJ", "routeVariantId": "ry1"})))
+    assert r["ok"]
+    assert pmod.get_profile("YANGI MCHJ")["routeVariantId"] == "ry1"
+
+    r = asyncio.run(admin_mod.update_companies(_Req(
+        {"action": "delete", "name": "YANGI MCHJ"})))
+    assert r["ok"]
+    assert pmod.get_profile("YANGI MCHJ") is None
+
+
+# ------------------------------------------------- company lifecycle (admin)
+
+def test_company_delete_closes_sessions_and_activate_restores(tenv):
+    """Soft-delete: sessiyalar yopiladi, login 403; activate qaytaradi."""
+    import asyncio
+    from bm_automation.app.dashboard.routers import admin as admin_mod
+
+    st, ids = tenv["st"], tenv["ids"]
+    cid = ids["okco-transport"]
+    st.dashboard_user_add("root", *deps.hash_password("Root12345"),
+                          role="ADMIN", data='{"super": true}')
+    st.dashboard_user_add("okco1", *deps.hash_password("Parol12345"),
+                          role="MANAGER", company="OKCO TRANSPORT")
+    st.dashboard_user_add("okco2", *deps.hash_password("Parol12345"),
+                          role="MANAGER", company="OKCO TRANSPORT")
+    deps.invalidate_super_cache()
+    tok = deps.create_session({"username": "okco1", "id": 11,
+                               "role": "MANAGER", "company": "OKCO TRANSPORT"})
+    assert deps.session_user(tok)
+    scope = {"username": "root", "is_admin": True}
+
+    r = asyncio.run(admin_mod.delete_company(cid, _Req({}), scope=scope))
+    assert r["ok"]
+    assert st.find("companies", id=cid)["status"] == "deleted"
+    # Mavjud sessiya darhol kuchini yo'qotadi.
+    assert deps.session_user(tok) is None
+    assert tenant_mod.company_active(
+        tenant_mod.company_state("OKCO TRANSPORT")) is False
+    # Parol to'g'ri bo'lsa ham o'chirilgan kompaniya akkaunti kira olmaydi.
+    resp = _client().post("/api/login",
+                          json={"username": "okco1", "password": "Parol12345"})
+    assert resp.status_code == 403
+
+    # Faollashtirish keshni yangilaydi va kirishni tiklaydi.
+    r = asyncio.run(admin_mod.activate_company(
+        cid, _Req({"days": 30}), scope=scope))
+    assert r["ok"]
+    assert st.find("companies", id=cid)["status"] == "active"
+    assert tenant_mod.company_active(
+        tenant_mod.company_state("OKCO TRANSPORT")) is True
+    resp = _client().post("/api/login",
+                          json={"username": "okco2", "password": "Parol12345"})
+    assert resp.status_code == 200 and resp.json().get("ok") is True

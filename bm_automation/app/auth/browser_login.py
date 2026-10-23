@@ -292,8 +292,12 @@ def _direct_sso_code(username: str, password: str, headless: bool, timeout: int)
     return code_box["code"]
 
 
-def _exchange_code(code: str, organization: str) -> dict:
-    """OneID `code`ni tokenlarga almashtiradi va tokens.json'ga saqlaydi."""
+def _exchange_code(code: str, organization: str, discover: bool = True) -> dict:
+    """OneID `code`ni tokenlarga almashtiradi va tokens.json'ga saqlaydi.
+
+    `discover=False` — aniqlangan profillarni `profiles.json`ga yozmaslik
+    (faqat natija qaytariladi, onboarding keyinroq qo'shadi).
+    """
     from ..api.client import BMClient
 
     client = BMClient()
@@ -314,13 +318,14 @@ def _exchange_code(code: str, organization: str) -> dict:
     for prof in profiles[:10]:
         print("   -", prof.get("organizationName") or prof.get("fullName"), "/",
               prof.get("role") or "", "/", prof.get("tin") or "")
-    if profiles:
+    if profiles and discover:
         from ..core.profiles import discover_from_oneid
 
         added = discover_from_oneid(profiles)
         if added:
             print(f"  profiles.json'ga saqlandi: {len(added)} profil")
-    return {"access_token": access, "refresh_token": refresh, "org": org}
+    return {"access_token": access, "refresh_token": refresh, "org": org,
+            "profiles": list(profiles)}
 
 
 def browser_login(
@@ -331,6 +336,7 @@ def browser_login(
     headless: bool = False,
     timeout: int = 240,
     force: bool = False,
+    discover: bool = True,
 ) -> dict:
     """Brauzer orqali OneID login bajarib tokenlarni qaytaradi.
 
@@ -345,7 +351,8 @@ def browser_login(
             )
     try:
         result = _browser_login_impl(
-            username, password, organization, interactive, headless, timeout
+            username, password, organization, interactive, headless, timeout,
+            discover=discover,
         )
     except Exception:
         _mark_failed()
@@ -361,6 +368,7 @@ def _browser_login_impl(
     interactive: bool = False,
     headless: bool = False,
     timeout: int = 240,
+    discover: bool = True,
 ) -> dict:
     """Brauzer orqali OneID login bajarib tokenlarni qaytaradi."""
     cfg = get_config()
@@ -374,7 +382,7 @@ def _browser_login_impl(
     if site == PROD_SITE and username and password:
         try:
             code = _direct_sso_code(username, password, headless, timeout)
-            return _exchange_code(code, organization)
+            return _exchange_code(code, organization, discover=discover)
         except Exception as exc:  # noqa: BLE001 - fallback ataylab
             print(f"  to'g'ridan-to'g'ri SSO ishlamadi ({exc}); /sign-in oqimiga o'tilmoqda")
 
@@ -463,13 +471,17 @@ def _browser_login_impl(
         print(f"  Profillar (agar ko'p bo'lsa): {len(captured)}")
         for prof in captured[:10]:
             print("   -", prof.get("organizationName") or prof.get("fullName"), "/", prof.get("role") or "", "/", prof.get("tin") or "")
-        if captured:
+        if captured and discover:
             from ..core.profiles import discover_from_oneid
 
             added = discover_from_oneid(captured)
             if added:
                 print(f"  profiles.json'ga saqlandi: {len(added)} profil")
-        return tokens
+        # Natijaga OneID profillari ham qo'shiladi (onboarding: korxona va
+        # yo'nalishlarni ro'yxatga olish uchun) — bu yerdan profile yozilmaydi.
+        result = dict(tokens)
+        result["profiles"] = list(captured)
+        return result
 
 
 def run(argv: list | None = None) -> int:

@@ -107,6 +107,10 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(gstorage, "get_storage", lambda: st)
     monkeypatch.setattr(gstorage, "list_devices", lambda: _FAKE_DEVICES)
     monkeypatch.setattr(gstorage, "list_cameras", lambda: _FAKE_CAMERAS)
+    monkeypatch.setattr(gstorage, "list_camera_devices", lambda: [
+        {"imei": "123", "vehicle_id": "v1", "plate_number": "01 A"},
+        {"imei": "456", "vehicle_id": "v2", "plate_number": "02 B"},
+    ])
     monkeypatch.setattr(gstorage, "list_geofences", lambda: _FAKE_FENCES)
     monkeypatch.setattr(gstorage, "list_alerts",
                         lambda limit=50, imei="": _FAKE_ALERTS)
@@ -224,6 +228,7 @@ def test_cameras_and_relay_scoped(env, monkeypatch):
                             headers=_auth(), scope=_SCOPE)
     assert status == 200
     assert [c["id"] for c in data["cameras"]] == [1]
+    assert "url" not in data["cameras"][0]
     # Relay ro'yxati ham o'z kameralari bilan cheklanadi.
     status, data = _request(monkeypatch, "/api/video/relay",
                             headers=_auth(), scope=_SCOPE)
@@ -252,6 +257,22 @@ def test_hls_camera_allowed(env, monkeypatch):
     # Admin uchun har qanday kamera ruxsat etiladi.
     monkeypatch.setattr(gps_api, "_user_scope", lambda _h: None)
     assert h._camera_allowed(2) is True
+
+
+def test_jt_hls_scoped_to_company(env, monkeypatch):
+    monkeypatch.setattr(
+        GpsHandler, "_serve_hls",
+        lambda self, fname: self._json({"ok": True, "file": fname}),
+    )
+    status, data = _request(monkeypatch, "/hls/jt_123_1.m3u8",
+                            headers=_auth(), scope=_SCOPE)
+    assert status == 200 and data["ok"] is True
+    status, _ = _request(monkeypatch, "/hls/jt_456_1.m3u8",
+                         headers=_auth(), scope=_SCOPE)
+    assert status == 404
+    status, _ = _request(monkeypatch, "/hls/jtpb_456_1.m3u8",
+                         headers=_auth(), scope=_SCOPE)
+    assert status == 404
 
 
 def test_company_without_routes_fail_closed(env, monkeypatch):
@@ -390,7 +411,8 @@ def test_write_ops_admin_only(env, monkeypatch):
              "is_admin": True, "routes": None}
     calls = []
     monkeypatch.setattr(gstorage, "register_device",
-                        lambda imei: calls.append(("reg", imei)))
+                        lambda imei, kind="teltonika":
+                        calls.append(("reg", imei, kind)))
     monkeypatch.setattr(gstorage, "bind_device",
                         lambda imei, vid, name: calls.append(
                             ("bind", imei, vid, name)))
@@ -398,14 +420,15 @@ def test_write_ops_admin_only(env, monkeypatch):
                          headers=_auth(), scope=admin,
                          body=b'{"imei":"999","vehicle_id":"v1"}')
     assert status == 200
-    assert calls == [("reg", "999"), ("bind", "999", "v1", "")]
+    assert calls == [("reg", "999", "teltonika"), ("bind", "999", "v1", "")]
 
 
 def test_admin_write_allowed(env, monkeypatch):
     """Master token (sessiyasiz) bilan qurilma ro'yxatga olinadi."""
     calls = []
     monkeypatch.setattr(gstorage, "register_device",
-                        lambda imei: calls.append(("reg", imei)))
+                        lambda imei, kind="teltonika":
+                        calls.append(("reg", imei, kind)))
     monkeypatch.setattr(gstorage, "bind_device",
                         lambda imei, vid, name: calls.append(
                             ("bind", imei, vid, name)))
@@ -414,7 +437,112 @@ def test_admin_write_allowed(env, monkeypatch):
                             body=b'{"imei":"999","vehicle_id":"v9","name":"X"}',
                             scope=None)
     assert status == 200 and data.get("ok") is True
-    assert calls == [("reg", "999"), ("bind", "999", "v9", "X")]
+    assert calls == [("reg", "999", "teltonika"), ("bind", "999", "v9", "X")]
+
+
+# ------------------------------------------- qurilma turlari (3 turdagi model)
+
+def test_post_device_kind_counter(env, monkeypatch):
+    """Avtobusdagi 3-qurilma modeli: sanagich (counter) ro'yxatga olinadi."""
+    calls = []
+    monkeypatch.setattr(gstorage, "register_device",
+                        lambda imei, kind="teltonika":
+                        calls.append(("reg", imei, kind)))
+    monkeypatch.setattr(gstorage, "bind_device",
+                        lambda imei, vid, name: calls.append(
+                            ("bind", imei, vid, name)))
+    status, data = _request(
+        monkeypatch, "/api/gps/devices", method="POST", headers=_auth(),
+        body=b'{"imei":"444555666777","kind":"counter","vehicle_id":"v2"}')
+    assert status == 200
+    assert data.get("kind") == "counter"
+    assert calls == [("reg", "444555666777", "counter"),
+                     ("bind", "444555666777", "v2", "")]
+
+
+def test_post_device_kind_camera_autodetect_12_digit(env, monkeypatch):
+    """12 xonali IMEI avtomatik 'camera' bo'ladi (JT808 BCD 6 bayt)."""
+    calls = []
+    monkeypatch.setattr(gstorage, "register_device",
+                        lambda imei, kind="teltonika":
+                        calls.append(("reg", imei, kind)))
+    monkeypatch.setattr(gstorage, "bind_device",
+                        lambda imei, vid, name: calls.append(
+                            ("bind", imei, vid, name)))
+    status, data = _request(
+        monkeypatch, "/api/gps/devices", method="POST", headers=_auth(),
+        body=b'{"imei":"123456789012","vehicle_id":"v1"}')
+    assert status == 200
+    assert data.get("kind") == "camera"
+    assert calls[0] == ("reg", "123456789012", "camera")
+
+
+def test_post_device_bad_kind_rejected(env, monkeypatch):
+    status, data = _request(
+        monkeypatch, "/api/gps/devices", method="POST", headers=_auth(),
+        body=b'{"imei":"1234567890123","kind":"satelit"}')
+    assert status == 400
+    assert "kind" in data.get("error", "")
+
+
+def test_patch_device_kind(env, monkeypatch):
+    """PATCH orqali qurilma turi o'zgartiriladi (mas. GPS -> sanagich)."""
+    seen = {}
+    monkeypatch.setattr(gstorage, "set_device_kind",
+                        lambda imei, kind: seen.setdefault(imei, kind) or True)
+    status, data = _request(
+        monkeypatch, "/api/gps/devices/111", method="PATCH", headers=_auth(),
+        body=b'{"kind":"counter"}')
+    assert status == 200
+    assert data.get("ok") is True
+    assert seen.get("111") == "counter"
+
+
+def test_post_counter_counts(env, monkeypatch):
+    """Sanagich kirish/chiqish hisobi yoziladi (sonlarga o'giriladi)."""
+    calls = []
+    monkeypatch.setattr(gstorage, "update_counter_counts",
+                        lambda imei, i, o: calls.append((imei, i, o)) or True)
+    status, data = _request(
+        monkeypatch, "/api/gps/counters", method="POST", headers=_auth(),
+        body=b'{"imei":"555","in_count":"7","out_count":"2"}')
+    assert status == 200 and data.get("ok") is True
+    assert calls == [("555", 7, 2)]
+
+
+def test_post_counter_bad_counts(env, monkeypatch):
+    status, data = _request(
+        monkeypatch, "/api/gps/counters", method="POST", headers=_auth(),
+        body=b'{"imei":"555","in_count":"ko\'p"}')
+    assert status == 400
+
+
+def test_post_counter_requires_imei(env, monkeypatch):
+    status, data = _request(
+        monkeypatch, "/api/gps/counters", method="POST", headers=_auth(),
+        body=b'{"in_count":1,"out_count":0}')
+    assert status == 400
+
+
+def test_get_devices_kind_all_includes_cameras(env, monkeypatch):
+    """Boshqaruv dialogi uchun ?kind=all barcha turlarni qaytaradi."""
+    mixed = list(_FAKE_DEVICES) + [
+        {"imei": "999999999999", "vehicle_id": "v1", "name": "kamera",
+         "kind": "camera", "online": True},
+        {"imei": "555", "vehicle_id": "", "name": "sanagich",
+         "kind": "counter", "online": False},
+    ]
+    monkeypatch.setattr(gstorage, "list_devices", lambda: list(mixed))
+    status, data = _request(monkeypatch, "/api/gps/devices?kind=all",
+                            headers=_auth(), scope=None)
+    assert status == 200
+    imes = [d["imei"] for d in data["devices"]]
+    assert "999999999999" in imes and "555" in imes
+    # Default so'rov — xarita uchun faqat Teltonika.
+    status, data = _request(monkeypatch, "/api/gps/devices",
+                            headers=_auth(), scope=None)
+    assert status == 200
+    assert [d["imei"] for d in data["devices"]] == ["111", "222", "333"]
 
 
 # --------------------------------------------------------------- token
@@ -616,22 +744,101 @@ def test_jt_live_start_and_stop(env, monkeypatch):
     assert data["closed"] is True
 
 
-def test_jt_live_requires_admin_and_phone(env, monkeypatch):
-    # Non-admin -> 403.
+def test_jt_live_uses_role_and_company_scope(env, monkeypatch):
+    audits = []
+    monkeypatch.setattr(gps_api.config, "JT1078_MEDIA_HOST", "1.2.3.4")
+    monkeypatch.setattr(gps_api.jt808, "send_live_request", lambda *a, **k: True)
+    monkeypatch.setattr(gps_api.jt1078, "allow_stream", lambda *a: None)
+    monkeypatch.setattr(gstorage, "log_video_audit",
+                        lambda *a, **k: audits.append((a, k)))
+
+    viewer = {**_SCOPE, "role": "VIEWER"}
     status, _ = _request(monkeypatch, "/api/video/jt-live", method="POST",
-                         headers=_auth(), scope=_SCOPE,
+                         headers=_auth(), scope=viewer,
                          body=b'{"phone":"123"}')
     assert status == 403
-    # phone yo'q -> 400.
+
+    dispatcher = {**_SCOPE, "role": "DISPATCHER"}
     status, data = _request(monkeypatch, "/api/video/jt-live", method="POST",
-                            headers=_auth(), scope=None, body=b'{}')
+                            headers=_auth(), scope=dispatcher,
+                            body=b'{"phone":"123"}')
+    assert status == 200 and data["ok"] is True
+    assert audits[-1][0][3] == "live_start"
+    assert audits[-1][1]["vehicle_id"] == "v1"
+
+    status, _ = _request(monkeypatch, "/api/video/jt-live", method="POST",
+                         headers=_auth(), scope=dispatcher,
+                         body=b'{"phone":"456"}')
+    assert status == 404
+
+    status, _ = _request(monkeypatch, "/api/video/jt-live", method="POST",
+                         headers=_auth(), scope=None, body=b'{}')
     assert status == 400
-    # media host belgilanmagan -> 400.
     monkeypatch.setattr(gps_api.config, "JT1078_MEDIA_HOST", "")
     status, data = _request(monkeypatch, "/api/video/jt-live", method="POST",
                             headers=_auth(), scope=None,
                             body=b'{"phone":"123"}')
     assert status == 400 and "host" in data["error"]
+
+
+def test_jt_inputs_are_validated(env, monkeypatch):
+    monkeypatch.setattr(gps_api.config, "JT1078_MEDIA_HOST", "1.2.3.4")
+    status, _ = _request(
+        monkeypatch, "/api/video/jt-live", method="POST", headers=_auth(),
+        scope=None, body=b'{"phone":"123","channel":0,"stream_type":9}',
+    )
+    assert status == 400
+    status, _ = _request(
+        monkeypatch, "/api/video/jt-files", method="POST", headers=_auth(),
+        scope=None,
+        body=b'{"phone":"123","channel":1,"start":"x","end":"y"}',
+    )
+    assert status == 400
+    status, _ = _request(
+        monkeypatch, "/api/video/jt-playback-control", method="POST",
+        headers=_auth(), scope=None,
+        body=b'{"phone":"123","channel":1,"control":9}',
+    )
+    assert status == 400
+
+
+def test_jt_files_listing_exposes_progress(env, monkeypatch):
+    """GET /api/video/jt-files: total/received/complete bilan ro'yxat holati."""
+    info = {
+        "at": 123.0, "requested_at": 100.0, "items": [{"channel": 1}],
+        "received": 1, "total": 3, "complete": False, "packets": 1,
+        "request": {"channel": 0, "start": "2026-10-12T02:00:00",
+                    "end": "2026-10-12T03:00:00"},
+        "age_s": 23.0, "since_last_s": 1.0,
+    }
+    monkeypatch.setattr(gps_api.jt808, "resources_info", lambda phone: info)
+    status, data = _request(
+        monkeypatch, "/api/video/jt-files?phone=123", headers=_auth(),
+        scope=None)
+    assert status == 200 and data["ok"] is True
+    assert data["received"] == 1 and data["total"] == 3
+    assert data["complete"] is False and data["packets"] == 1
+    assert data["request"]["channel"] == 0
+
+
+def test_jt_files_request_allows_channel_zero(env, monkeypatch):
+    """channel=0 — BARCHA kanallar ro'yxati (avval 1..255 bilan rad etilardi)."""
+    calls = []
+
+    def fake_send(phone, channel, start, end, **kw):
+        calls.append((phone, channel, kw))
+        return True
+
+    monkeypatch.setattr(gps_api.jt808, "send_resource_list", fake_send)
+    body = json.dumps({"phone": "123", "channel": 0,
+                       "start": "2026-10-12 02:00:00",
+                       "end": "2026-10-12 03:00:00"}).encode()
+    status, data = _request(monkeypatch, "/api/video/jt-files", method="POST",
+                            headers=_auth(), scope=None, body=body)
+    assert status == 200 and data["ok"] is True and data["sent"] is True
+    assert calls[-1][0] == "123" and calls[-1][1] == 0
+    assert calls[-1][2]["request_start"] == "2026-10-12 02:00:00"
+    assert calls[-1][2]["request_end"] == "2026-10-12 03:00:00"
 
 
 def test_jt_playback_endpoint(env, monkeypatch):
@@ -765,9 +972,10 @@ def test_relay_start_endpoint(env, monkeypatch):
     status, _ = _request(monkeypatch, "/api/video/relay", method="POST",
                          headers=_auth(), scope=None, body=body)
     assert status == 404
-    # Non-admin -> 403 (yozuv amali).
+    # VIEWER video amallarini bajara olmaydi.
+    viewer = {**_SCOPE, "role": "VIEWER"}
     status, _ = _request(monkeypatch, "/api/video/relay", method="POST",
-                         headers=_auth(), scope=_SCOPE, body=body)
+                         headers=_auth(), scope=viewer, body=body)
     assert status == 403
 
 
@@ -852,4 +1060,80 @@ def test_jt_streams_carries_bindings_and_assist(env, monkeypatch):
     assert data["camera_channels"] >= 1
     assert data["assist"][0]["status"] == "ok"
     assert data["assist_threshold_m"] == gps_api.config.GPS_CAMERA_MATCH_M
+
+
+def test_jt_streams_scoped_to_company(env, monkeypatch):
+    """Non-admin boshqa korxona kameralari/raqamlarini ko'rmasligi kerak.
+
+    Kamera telefon raqami, avtobus raqami va oqim manzili boshqa
+    korxonaga oid ma'lumot — qamrov qo'llanilishi shart.
+    """
+    monkeypatch.setattr(gps_api.config, "JT808_ENABLED", True)
+    monkeypatch.setattr(gps_api.jt1078, "ffmpeg_available", lambda: True)
+    monkeypatch.setattr(gps_api.jt1078, "streams", lambda: [
+        {"sim": "555", "channel": 1, "bytes": 1,
+         "hls": "/hls/jt_555_1.m3u8"},
+        {"sim": "666", "channel": 1, "bytes": 1,
+         "hls": "/hls/jt_666_1.m3u8"},
+    ])
+    monkeypatch.setattr(gps_api.jt1078, "recent_streams", lambda: [
+        {"sim": "555", "channel": 1, "last_error": "uzildi"},
+        {"sim": "666", "channel": 1, "last_error": "uzildi"},
+    ])
+    monkeypatch.setattr(gps_api.jt808, "connected_phones",
+                        lambda: ["555", "666"])
+    monkeypatch.setattr(gstorage, "list_camera_devices", lambda: [
+        {"imei": "555", "vehicle_id": "v1", "plate_number": "01.240-AAB",
+         "name": ""},
+        {"imei": "666", "vehicle_id": "v2", "plate_number": "01.300-BCD",
+         "name": ""},
+    ])
+    monkeypatch.setattr(gps_api.camera, "assist", lambda *a, **k: [
+        {"phone": "555", "vehicle_id": "v1", "status": "ok",
+         "status_text": "GPS mos"},
+        {"phone": "666", "vehicle_id": "v2", "status": "ok",
+         "status_text": "GPS mos"},
+        {"phone": "777", "vehicle_id": "", "status": "unbound",
+         "status_text": "Avtobusga bog'lanmagan",
+         "suggest_vehicle_id": "v2", "suggest_plate": "01.300-BCD",
+         "suggest_dist_m": 12.0},
+    ])
+    # ADMIN (sessiyasiz) — hammasi ko'rinadi
+    status, data = _request(monkeypatch, "/api/video/jt-streams",
+                            headers=_auth(), scope=None)
+    assert status == 200
+    assert set(data["bindings"]) == {"555", "666"}
+    assert [s["sim"] for s in data["streams"]] == ["555", "666"]
+    assert [s["sim"] for s in data["recent"]] == ["555", "666"]
+    assert data["devices"] == ["555", "666"]
+    assert len(data["assist"]) == 3
+    # DIRECTOR (r1 -> v1): faqat o'z korxonasi; bog'lanmagan kamera qoladi,
+    # lekin boshqa korxona avtobusiga tavsiya ko'rsatilmaydi
+    status, data = _request(monkeypatch, "/api/video/jt-streams",
+                            headers=_auth(), scope=_SCOPE)
+    assert status == 200
+    assert set(data["bindings"]) == {"555"}
+    assert [s["sim"] for s in data["streams"]] == ["555"]
+    assert [s["sim"] for s in data["recent"]] == ["555"]
+    assert data["devices"] == ["555"]
+    assert sorted(a["phone"] for a in data["assist"]) == ["555", "777"]
+    lone = [a for a in data["assist"] if a["phone"] == "777"][0]
+    assert lone["suggest_plate"] == ""
+
+
+def test_gps_video_token_matches_dashboard_verifier(env, monkeypatch):
+    """GPS API bergan token dashboard verifikatoridan o'tishi kerak.
+
+    Ilgari bu yerda alohida format (4 maydon) va ochiq `"dev-secret"`
+    kaliti ishlatilardi: bunday token hech qanday verifikatordan
+    o'tmasdi (dashboard 5 maydon kutadi).
+    """
+    from bm_automation.app.dashboard.routers.admin import _verify_video_token
+
+    class _H:
+        headers = {}
+
+    tok = GpsHandler._sign_video_token(_H(), 7, "grid", 300)
+    assert len(tok.split("|")) == 5
+    assert _verify_video_token(tok) == (7, 0, "grid")
 

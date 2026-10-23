@@ -11,6 +11,7 @@ ishlatiladi va asosiy hisobot jarayonlariga ta'sir qilmaydi.
 from __future__ import annotations
 
 import json
+import re
 import threading
 from collections import Counter
 from datetime import date, timedelta
@@ -26,16 +27,30 @@ from ..utils.text import normalize_uz
 __all__ = [
     "DEFAULT_KONECHKA",
     "build_rows",
+    "detect_profile_fields",
+    "detect_profile_route_name",
+    "detect_profile_starts",
+    "detect_route_starts",
     "graph_start_direction",
     "konechka_names",
     "run",
     "run_all",
+    "short_route_name",
+    "waybill_details",
 ]
 
+# Eski chaqiruvchilar uchun qoldirilgan; yangi oqimda ishlatilmaydi —
+# aks holda yangi yo'nalishga boshqa firmaning konechka nomlari tushadi.
 DEFAULT_KONECHKA = {
     "UP": "Temiryo'l kesishmasi-10",
     "DOWN": "FERGANA TEX SERVIS YURIY",
 }
+
+_ROUTE_SUFFIX = re.compile(
+    r"[\s\-–—]*(?:сонли|сон|sonli|son)(?=\s|$).*$"
+    r"|[\s\-–—]*(?:йўналиши|йўналиш|yo['’ʻ‘`]?nalishi|yo['’ʻ‘`]?nalish)(?=\s|$).*$",
+    re.IGNORECASE,
+)
 
 SENT_STATE = Path("state") / "daily_sheet_sent.json"
 _SENT_LOCK = threading.Lock()
@@ -111,24 +126,117 @@ def graph_start_direction(client: BMClient, shift_graph_id: str, start_time: str
     return None
 
 
-def konechka_names(client: BMClient, route_id: str, date_str: str) -> dict:
-    """Waybill'lardan har yo'nalish uchun eng ko'p uchragan startName (konechka)."""
-    names = dict(DEFAULT_KONECHKA)
+def _waybill_rows(client: BMClient, route_id: str, date_str: str) -> list:
+    """Waybill qatorlari: avval so'ralgan kun, bo'lmasa 7 kun orqaga.
+
+    Ertangi kun uchun waybill hali yaratilmagan bo'lishi mumkin — shunda
+    oldingi kunlardan ma'lumot qidiriladi. Topilmasa bo'sh ro'yxat.
+    """
     try:
-        data = WaybillRepository(client).report(route_id, date_str, date_str)
-    except Exception as exc:
-        print(f"  [konechka_names] waybill xatolik: {exc}")
-        return names
+        target = date.fromisoformat(date_str)
+    except ValueError:
+        target = date.today()
+    repo = WaybillRepository(client)
+    for offset in range(8):
+        day = (target - timedelta(days=offset)).isoformat()
+        try:
+            data = repo.report(route_id, day, day)
+        except Exception as exc:
+            print(f"  [waybill_rows] xatolik ({day}): {exc}")
+            continue
+        if data:
+            return data
+    return []
+
+
+def short_route_name(value) -> str:
+    """Yo'nalish nomini qisqa ko'rinishga keltiradi: "12-сонли" -> "12"."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    short = _ROUTE_SUFFIX.sub("", text).strip(" -–—")
+    return short or text
+
+
+def waybill_details(client: BMClient, route_id: str, date_str: str = "") -> dict:
+    """Waybill'dan konechka nomlari va yo'nalish nomini bir o'qishda oladi.
+
+    Qaytaradi faqat topilgan maydonlarni:
+    ``{"start1": ..., "start2": ..., "routeName": ...}``.
+    """
+    data = _waybill_rows(client, route_id, date_str or date.today().isoformat())
     counts = {"UP": Counter(), "DOWN": Counter()}
+    route_names: Counter = Counter()
     for wb in data or []:
         d = wb.get("direction")
         sn = wb.get("startName")
         if d in counts and sn:
             counts[d][normalize_uz(sn)] += 1
-    for d in ("UP", "DOWN"):
+        rn = wb.get("routeName")
+        if rn:
+            route_names[normalize_uz(rn)] += 1
+    out = {}
+    for d, key in (("UP", "start1"), ("DOWN", "start2")):
         if counts[d]:
-            names[d] = counts[d].most_common(1)[0][0]
-    return names
+            out[key] = counts[d].most_common(1)[0][0]
+    if route_names:
+        out["routeName"] = route_names.most_common(1)[0][0]
+    return out
+
+
+def konechka_names(client: BMClient, route_id: str, date_str: str) -> dict:
+    """Waybill'lardan har yo'nalish uchun eng ko'p uchragan startName (konechka).
+
+    Ma'lumot topilmasa nom bo'sh qoladi: boshqa yo'nalishning standart
+    nomlari ko'rsatilmaydi.
+    """
+    details = waybill_details(client, route_id, date_str)
+    return {"UP": details.get("start1") or "",
+            "DOWN": details.get("start2") or ""}
+
+
+def detect_route_starts(client: BMClient, route_id: str, date_str: str = "") -> dict:
+    """Waybill'lardan `start1`/`start2` (1-/2-chiqish konechkalari) ni aniqlaydi."""
+    details = waybill_details(client, route_id, date_str)
+    return {key: details[key] for key in ("start1", "start2") if details.get(key)}
+
+
+def detect_profile_fields(profile: dict, date_str: str = "") -> dict:
+    """Profil yo'nalishi bo'yicha waybill'dan nomlar (best-effort).
+
+    Qaytaradi ``{"routeName", "start1", "start2"}`` dan topilganlari.
+    Yangi kompaniya qo'shilganda va "BM'dan aniqlash" tugmasida ishlatiladi:
+    client qurilmasa yoki waybill topilmasa bo'sh dict. Testlarda tarmoqqa
+    chiqmaydi.
+    """
+    import os
+
+    if os.getenv("BM_TEST_MODE"):
+        return {}
+    from ..core.companies import client_for_profile
+
+    route_id = ""
+    for part in str(profile.get("routeVariantId") or "").replace(",", " ").split():
+        route_id = part
+        break
+    if not route_id:
+        return {}
+    client = client_for_profile(profile, auto_relogin=False)
+    found = waybill_details(client, route_id, date_str)
+    if found.get("routeName"):
+        found["routeName"] = short_route_name(found["routeName"])
+    return found
+
+
+def detect_profile_starts(profile: dict, date_str: str = "") -> dict:
+    """Profil yo'nalishi bo'yicha konechka nomlarini waybill'dan oladi."""
+    details = detect_profile_fields(profile, date_str)
+    return {key: details[key] for key in ("start1", "start2") if details.get(key)}
+
+
+def detect_profile_route_name(profile: dict, date_str: str = "") -> str:
+    """Profil yo'nalishi bo'yicha BM'dagi rasmiy yo'nalish nomini oladi."""
+    return str(detect_profile_fields(profile, date_str).get("routeName") or "")
 
 
 def build_rows(client: BMClient, route_id: str, date_str: str,
@@ -144,14 +252,18 @@ def build_rows(client: BMClient, route_id: str, date_str: str,
     duty = duty_data if duty_data is not None else DutyRepository(client).by_date(route_id, date_str)
     if not duty:
         raise ValueError(f"{date_str} uchun duty ma'lumoti topilmadi")
-    if profile and (profile.get("start1") or profile.get("start2")):
+    if profile:
         names = {
-            "UP": profile.get("start1") or DEFAULT_KONECHKA["UP"],
-            "DOWN": profile.get("start2") or DEFAULT_KONECHKA["DOWN"],
+            "UP": profile.get("start1") or "",
+            "DOWN": profile.get("start2") or "",
         }
         route_name = profile.get("routeName") or "Yo'nalish"
+        if not (names["UP"] and names["DOWN"]):
+            auto = konechka_names(client, route_id, date_str)
+            names["UP"] = names["UP"] or auto["UP"]
+            names["DOWN"] = names["DOWN"] or auto["DOWN"]
     else:
-        route_name = "10-yo'nalish"
+        route_name = "Yo'nalish"
         names = konechka_names(client, route_id, date_str)
 
     groups = {"UP": [], "DOWN": []}
@@ -256,9 +368,9 @@ def run(
         caption = (f"🚌 {data['routeName']} | {d:%d.%m.%Y} | "
                    f"Kunlik chiqish jadvali (grafik × haydovchi × avtobus)")
         # Guruhlarga hech qachon yuborilmaydi — bot ichida qoladi: tugma
-        # so'rovida so'rov chatiga, avtomatik oqimda ADMIN/DISPATCHER
-        # chatlariga (qoida: grafik_sms.bot_targets).
-        targets = bot_targets(chat_id)
+        # so'rovida so'rov chatiga, avtomatik oqimda shu yo'nalish egasi
+        # kompaniya chatlariga (qoida: grafik_sms.bot_targets).
+        targets = bot_targets(route_id, chat_id)
         manual = bool(chat_id) and not str(chat_id).startswith("-")
         if targets:
             # Avtomatik yuborishda (so'rov chatisiz) retry takror yubormaydi.

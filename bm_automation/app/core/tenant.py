@@ -25,8 +25,11 @@ from datetime import date, datetime
 _CACHE_TTL_S = 30.0
 
 # companies.status — shu qiymatlar kompaniyani to'xtatilgan hisoblaydi.
+# "deleted" ham shu yerda: soft-delete qilingan korxona foydalanuvchilari
+# tizimga kira olmaydi (avval bu holat "faol" hisoblanib qolgan edi).
 _INACTIVE_STATUSES = {"blocked", "suspended", "inactive", "disabled",
-                      "cancelled", "canceled", "expired"}
+                      "cancelled", "canceled", "expired", "deleted",
+                      "archived"}
 
 _LOCK = threading.RLock()
 _CACHE: dict = {

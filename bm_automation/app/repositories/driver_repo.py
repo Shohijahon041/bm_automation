@@ -18,6 +18,29 @@ class DriverRepository:
     def __init__(self, client: BMClient):
         self.client = client
 
+    def all_drivers(self, page_size: int = 200) -> list:
+        """Butun tashkilot haydovchilari ro'yxati (sahifalab yig'iladi)."""
+        try:
+            return self.client.list_all(DRIVERS, page_size=page_size)
+        except Exception:
+            return []
+
+    def by_id(self, driver_id: str) -> dict:
+        """Bitta haydovchi to'liq ma'lumoti (PINFL/telefon maskalanmagan)."""
+        data = self.client.get(f"{DRIVERS}/{driver_id}")
+        return data if isinstance(data, dict) else {}
+
+    def photo_bytes(self, driver_id: str) -> bytes:
+        """Haydovchi fotosi baytlari.
+
+        `Accept: */*` SHART — `application/json` bilan backend rasm route'ini
+        tanlamay `/drivers/{id}`ga tushib `400` qaytaradi.
+        """
+        raw = self.client.download(
+            f"{DRIVERS}/photo", params={"driverId": driver_id},
+            headers={"Accept": "*/*"}, retries=0)
+        return bytes(raw) if isinstance(raw, (bytes, bytearray)) else b""
+
     def by_route_variant(self, route_variant_id: str, date_str: str,
                          search: str = "") -> list:
         """Yo'nalish bo'yicha haydovchilar ro'yxati (sahifalangan)."""

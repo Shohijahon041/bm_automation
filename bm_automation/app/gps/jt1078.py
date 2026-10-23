@@ -33,6 +33,7 @@ import shutil
 import subprocess
 import threading
 import time
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -153,14 +154,17 @@ _LOOP = None
 FRAME_MAX_BYTES = 4 * 1024 * 1024
 
 
+def allow_stream(sim: str, channel: int, mode: str = "live") -> None:
+    """Foydalanuvchi yangi oqim so'raganda oldingi stop blokini bekor qiladi."""
+    _SUPPRESS.pop(_muxer_key(str(sim), int(channel), mode), None)
+
+
 def set_playback(sim: str, channel: int, seconds: int | None = None) -> None:
     """(sim, kanal) uchun kelayotgan oqimni yozuv (playback) deb belgilash."""
     secs = config.JT1078_PLAYBACK_WINDOW_S if seconds is None else seconds
     _PLAYBACK[f"{sim}_{channel}"] = _now() + max(1, int(secs))
-    # Yangi ixtiyoriy so'rov: avvalgi "to'xtatish" suppression'ini bekor qilamiz
-    # (aks holda TTL tugaguncha yozuv oqmi ochilmasligi mumkin edi).
-    _SUPPRESS.pop(_muxer_key(str(sim), int(channel), "playback"), None)
-    _SUPPRESS.pop(_muxer_key(str(sim), int(channel), "live"), None)
+    allow_stream(sim, channel, "playback")
+    allow_stream(sim, channel, "live")
     log.info("JT1078: playback rejimi yoqildi %s_%s (%ss)",
              sim, channel, secs)
 
@@ -210,17 +214,27 @@ def _now() -> float:
 def estimate_fps(samples, min_fps: float = 2.0, max_fps: float = 60.0):
     """Qurilma timestamp'lari (ms) ro'yxatidan real fps'ni baholaydi.
 
-    fps = (kadr soni - 1) / (ts oralig'i sekundda). Bu qurilma yozuvni
-    qanchalik tez yuborishidan QAT'I NAZAR to'g'ri (ts = kontent vaqti).
-    None qaytaradi — namuna yetarli/ishonchli bo'lmasa (chaqiruvchi standart
-    qiymatga tushadi)."""
-    ts = [t for t in samples if isinstance(t, int) and t > 0]
+    Qo'shni namunalar orasidagi MEDIAN oraliq asos qilinadi: qurilma vaqti-
+    vaqti bilan katta ts sakrashi yuboradi (masalan yozuvdan jonliga
+    o'tishda eski ts — maydonda 4 namunada 940s sakrash kuzatildi), yakka
+    sakrash birinchi-oxirgi usulida bahoni butunlay buzardi. Median esa
+    ozchilikdagi sakrashlarga chidamli. None qaytaradi — namuna
+    yetarli/ishonchli bo'lmasa (chaqiruvchi standart qiymatga tushadi)."""
+    ts = sorted({t for t in samples if isinstance(t, int) and t > 0})
     if len(ts) < 4:
         return None
-    span = ts[-1] - ts[0]
-    if span <= 0:
+    # Tartiblash SHART: H.264 B-kadrlar va qurilma qayta yuborishi sababli
+    # timestamp'lar kelish tartibida orqaga sakraydi (masalan 178703, 180183,
+    # 178743...). Kelish tartibidagi oraliqlar bu holatda yaroqsiz bo'lib,
+    # fps noto'g'ri chiqardi (ffmpeg "Increasing reorder buffer" shundan).
+    # Katta sakrashlar (yozuvdan jonliga o'tish) median uchun chetlab olinadi.
+    deltas = sorted(b - a for a, b in zip(ts, ts[1:]) if 0 < b - a <= 1000)
+    if len(deltas) < 3:
         return None
-    fps = (len(ts) - 1) * 1000.0 / span
+    med = deltas[len(deltas) // 2]
+    if med <= 0:
+        return None
+    fps = 1000.0 / med
     if fps < min_fps or fps > max_fps:
         return None
     return max(1, int(round(fps)))
@@ -244,13 +258,17 @@ class _Pacer:
         if self._base_ts is None:
             self._base_ts, self._base_wall, self._last_ts = ts, now, ts
             return 0.0
-        # ts orqaga ketdi (yangi bo'lak/qurilma) yoki katta sakrash — bazani
-        # qayta o'rnatamiz (noto'g'ri kutishdan saqlaydi).
-        if ts < self._last_ts or (ts - self._last_ts) > self._reset_gap:
+        delta = ts - self._last_ts
+        # Faqat KATTA sakrash (yangi bo'lak / qurilma qayta ishga tushdi)
+        # bazani yangilaydi. B-kadr tartibsizligidagi kichik orqaga qadamlar
+        # bazani buzmasligi kerak — aks holda pacing butunlay ishlamaydi.
+        if delta > self._reset_gap or delta < -self._reset_gap:
             self._base_ts, self._base_wall, self._last_ts = ts, now, ts
             return 0.0
-        self._last_ts = ts
-        target = self._base_wall + (ts - self._base_ts) / 1000.0
+        # Yuqori suv belgisi: ts orqaga ketsa ham maqsad vaqt kamaymaydi.
+        if ts > self._last_ts:
+            self._last_ts = ts
+        target = self._base_wall + (self._last_ts - self._base_ts) / 1000.0
         ahead = target - now
         if ahead <= 0:
             return 0.0
@@ -342,6 +360,9 @@ def _stream_view(key: str, st: dict, active: bool) -> dict:
         "active": bool(active),
         "codec": st.get("codec") or DEFAULT_VIDEO_CODEC,
         "codec_name": codec_name(st.get("codec")),
+        # Muxer ishlayotgan fps (jonli/yozuvda o'lchangan; standart ham bo'lishi
+        # mumkin) — tezlik to'g'riligini bilish uchun.
+        "fps": st.get("fps"),
         "hls": hls,
         "flv": flv,
         # Diagnostika: kadrlar va oxirgi kalit kadr
@@ -442,10 +463,19 @@ def close_stream(sim: str, channel: int, mode: str = "live") -> bool:
     try:
         fut = asyncio.run_coroutine_threadsafe(
             _aclose_stream(sim, channel, mode), loop)
-        return bool(fut.result(timeout=10))
     except Exception:  # noqa: BLE001
         log.exception("JT1078: close_stream media loop'iga yo'naltirilmadi")
         return _close_stream_direct(sim, channel, mode)
+    try:
+        return bool(fut.result(timeout=10))
+    except FutureTimeoutError:
+        fut.cancel()
+        log.error("JT1078: close_stream media loop'da vaqt tugadi (%s_%s_%s)",
+                  sim, channel, mode)
+        return False
+    except Exception:  # noqa: BLE001
+        log.exception("JT1078: close_stream media loop'da bajarilmadi")
+        return False
 
 
 def _prune_diag(ttl: float = DIAG_TTL, keep: int = DIAG_KEEP) -> None:
@@ -604,22 +634,30 @@ class _Muxer:
         self._in_q = None
         self._pump_thread = None
         self.dropped = 0
-        # Playback uchun kirish fps'ni qurilma ts'idan o'lchaymiz (priming):
-        # o'lchov tugagach muxer ishga tushadi. Jonli uchun darhol ishga
-        # tushadi (live fps allaqachon ~1x, o'lchash shart emas).
+        # Kirish fps'ni qurilma ts'idan o'lchaymiz (priming): o'lchov tugagach
+        # muxer ishga tushadi. Jonli ham, yozuv ham — qurilma fps'i signalga
+        # qarab o'zgaradi; qat'iy qiymat noto'g'ri bo'lsa ffmpeg ts oralig'ini
+        # xato belgilab, video sekin/tez ko'rinadi.
         self._pending = []      # [(au, ts)] — priming buferi
         self._sample_ts = []    # fps baholash uchun ts namunalari
         self._started = False
         self._prime_at = None
+        # Birinchi AU kelgan REAL vaqt — o'lchov oynasi shundan boshlanadi
+        # (muxer yaratilishi bilan birinchi kadr orasida tanaffus bo'lishi
+        # mumkin; ts'ga emas, real vaqtga tayanamiz — ts sakrashi oynani
+        # bir zumda "to'ldirib" qo'yardi).
+        self._first_au_at = None
         self.fps_in: int | None = None
         self.fps_out: int | None = None
         if not ffmpeg_available():
             return
         if self.mode == "playback" and config.JT1078_PLAYBACK_PRIME_MS > 0:
-            # Priming rejimi — birinchi kadrlarni ts bilan to'playmiz, keyin
-            # real fps'ni baholab muxerni ishga tushiramiz.
             self._prime_at = _now()
             return
+        if self.mode == "live" and config.JT1078_LIVE_PRIME_MS > 0:
+            self._prime_at = _now()
+            return
+        # Priming o'chirilgan (env=0) — darhol standart fps bilan boshlaymiz.
         self._spawn(
             config.JT1078_FPS_IN if self.mode == "live"
             else config.JT1078_FPS_IN_PB,
@@ -638,6 +676,11 @@ class _Muxer:
             return
         self._started = True
         self.fps_in, self.fps_out = fps_in, fps_out
+        # Diagnostika: /api/video/jt-streams da qaysi fps bilan ishlayotgani
+        # ko'rinsin (o'lchangan yoki standart).
+        st = _STREAMS.get(self.key)
+        if st is not None:
+            st["fps"] = fps_out
         zl = config.zlmediakit_enabled()
         out = Path(config.HLS_DIR) / f"{self.prefix}{self.sim}_{self.channel}.m3u8"
         cmd = [
@@ -707,24 +750,74 @@ class _Muxer:
             log.exception("JT1078: ffmpeg ishga tushmadi (%s)",
                           _src(_MUXER_SRC.get(self.key), self.key))
             self._proc = None
+            self._started = False
+            if self._prime_at is None:
+                self._prime_at = _now()
+            if self._errlog is not None:
+                try:
+                    self._errlog.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._errlog = None
             self.note(f"ffmpeg ishga tushmadi: {exc}")
 
     def _maybe_start_priming(self) -> None:
-        """Playback priming: yetarli namuna yig'ilgach fps'ni baholab muxerni
-        ishga tushiradi va buferlangan kadrlarni oqizadi."""
+        """Priming: oyna to'lgach fps'ni baholab muxerni ishga tushiradi va
+        buferlangan kadrlarni oqizadi (jonli + yozuv).
+
+        Oyna REAL vaqt bilan o'lchanadi (ts'ga emas): qurilma ts'i sakrasa
+        eski usul oynani bir zumda "to'ldirib", 4 namunada baho yaroqsiz
+        bo'lib qolardi. Jonli oynasi kichikroq (start tez bo'lsin), yozuvniki
+        kattaroq (pacing bilan mos, aniqroq). Namuna yetilmasa cap'da
+        standart fps."""
         if self._started:
             return
         n = len(self._pending)
-        span = (self._sample_ts[-1] - self._sample_ts[0]
-                if len(self._sample_ts) >= 2 else 0)
-        enough = (span >= config.JT1078_PLAYBACK_PRIME_MS
-                  or n >= config.JT1078_PLAYBACK_PRIME_MAX_AU
+        if self.mode == "live":
+            need_ms = config.JT1078_LIVE_PRIME_MS
+            need_n = config.JT1078_LIVE_PRIME_MAX_AU
+            cap_s = config.JT1078_LIVE_PRIME_CAP_S
+            fallback = int(config.JT1078_FPS_IN)
+        else:
+            need_ms = config.JT1078_PLAYBACK_PRIME_MS
+            need_n = config.JT1078_PLAYBACK_PRIME_MAX_AU
+            cap_s = 3.0
+            fallback = int(config.JT1078_FPS_IN_PB)
+        elapsed_ms = ((_now() - self._first_au_at) * 1000.0
+                      if self._first_au_at is not None else 0.0)
+        # Oynani faqat kamida 4 namuna (ts) yoki 4 AU bo'lganda yakunlaymiz —
+        # aks holda fps'ni umuman baholab bo'lmaydi (juda sekin kamera yoki
+        # ts bermayotgan qurilma) va cap kutamiz.
+        enough = ((elapsed_ms >= need_ms
+                   and (len(self._sample_ts) >= 4 or n >= 4))
+                  or n >= need_n
                   or (self._prime_at is not None
-                      and (_now() - self._prime_at) >= 3.0))
+                      and (_now() - self._prime_at) >= cap_s))
         if not enough:
             return
-        fps = estimate_fps(self._sample_ts) or int(config.JT1078_FPS_IN_PB)
+        measured = estimate_fps(self._sample_ts)
+        how = "o'lchandi:ts"
+        if measured is None and self.mode == "live" and n >= 4 \
+                and elapsed_ms >= need_ms:
+            # ts butunlay yaroqsiz bo'lsa (0/doimiy) — JONLI oqimda kelish
+            # tezligi real fps'ning o'zi (qurilma real vaqtda yuboradi).
+            # Yozuvda bunga tayanmaymiz: qurilma tez yuboradi, uni pacer
+            # sekinlashtiradi — kelish tezligi kontent tezligidan farq qiladi.
+            wf = (n - 1) * 1000.0 / elapsed_ms
+            if 2.0 <= wf <= 60.0:
+                measured = max(1, int(round(wf)))
+                how = "o'lchandi:wall"
+        fps = measured or fallback
+        log.info("JT1078: %s priming — fps=%s (%s), %s AU / wall=%sms",
+                 _src(_MUXER_SRC.get(self.key), self.key), fps,
+                 how if measured else "STANDART", n, int(elapsed_ms))
+        if not measured and self._sample_ts:
+            log.info("JT1078: %s priming namunalari (birinchi 8 ts): %s",
+                     _src(_MUXER_SRC.get(self.key), self.key),
+                     self._sample_ts[:8])
         self._spawn(fps, fps)
+        if not self._started:
+            return
         pending, self._pending = self._pending, []
         for au in pending:
             self._enqueue(au)
@@ -787,10 +880,12 @@ class _Muxer:
                 self._raw.write(au)
             except Exception:  # noqa: BLE001
                 pass
-        # Playback priming: muxer hali ishga tushmagan — kadrlarni ts bilan
-        # to'playmiz, yetarli bo'lgach fps'ni baholab muxerni ochamiz.
+        # Priming: muxer hali ishga tushmagan — kadrlarni ts bilan to'playmiz,
+        # yetarli bo'lgach fps'ni baholab muxerni ochamiz (jonli + yozuv).
         if not self._started:
-            if self.mode == "playback" and self._prime_at is not None:
+            if self._prime_at is not None:
+                if self._first_au_at is None:
+                    self._first_au_at = self.last_active
                 self._pending.append(au)
                 if isinstance(ts, int) and ts > 0:
                     self._sample_ts.append(ts)
@@ -850,6 +945,7 @@ class _Muxer:
             except Exception:  # noqa: BLE001
                 try:
                     self._proc.kill()
+                    self._proc.wait(timeout=3)
                 except Exception:  # noqa: BLE001
                     pass
             self._proc = None
@@ -944,6 +1040,7 @@ def _get_muxer(sim: str, channel: int, mode: str = "live",
             "bytes": 0, "since": m.since,
             "sim": sim, "channel": channel, "kind": mode,
             "codec": m.codec,
+            "fps": getattr(m, "fps_out", None),
             "frames": 0, "keyframes": 0, "last_keyframe_at": None,
             "restarts": m.restarts,
             "dropped": 0,
@@ -1047,6 +1144,45 @@ class _Session:
         self.frames: dict = {}
         self.primed: set = set()  # I-kadr ko'rilgan (sim,ch) — shundagina yozamiz
         self.codec: dict = {}     # (sim,ch) -> ffmpeg kirish kodeki (h264/hevc)
+        # (sim,ch) -> "live"|"playback". Rejim ULANISH darajasida qotiriladi:
+        # jonli oqim davom etayotib playback so'ralsa, `_playback_active`
+        # global belgisi jonli kadrlarni ham playback muxer'iga yo'naltirib,
+        # ikkala oqim timestamp'i aralashib ketardi — ffmpeg "Increasing
+        # reorder buffer" xabari va buzilgan tasvir shundan.
+        self.modes: dict = {}
+        self.last_ts: dict = {}
+
+    def mode_for(self, sim: str, ch: int) -> str | None:
+        """Shu ulanishda (sim,ch) uchun tanlangan rejim (hali yo'q bo'lsa None)."""
+        return self.modes.get((sim, ch))
+
+    def _mode(self, key, ts) -> str:
+        mode = self.modes.get(key)
+        active = _playback_active(key[0], key[1])
+        last = self.last_ts.get(key)
+        if mode is None:
+            mode = "playback" if active else "live"
+            self.modes[key] = mode
+        elif isinstance(ts, int) and ts > 0 and isinstance(last, int) and last > 0:
+            delta = ts - last
+            # Katta orqaga sakrash — shu ulanishda yozuv oqimi boshlandi.
+            if delta < -5000 and active and mode != "playback":
+                mode = "playback"
+            # Katta oldinga sakrash — yozuv tugab, jonli oqim qaytdi.
+            elif delta > 5000 and not active and mode != "live":
+                mode = "live"
+            if mode != self.modes.get(key):
+                self.modes[key] = mode
+                # Yangi rejim boshqa muxer'ga yoziladi — eski bufer va
+                # "I-kadr ko'rildi" belgisi yangi oqimga tegishli emas.
+                self.primed.discard(key)
+                cur = self.frames.get(key)
+                if cur is not None:
+                    cur["buf"] = bytearray()
+                    cur["open"] = False
+        if isinstance(ts, int) and ts > 0:
+            self.last_ts[key] = ts if last is None else max(last, ts)
+        return mode
 
     def on_packet(self, p: dict) -> None:
         typ = p["data_type"]
@@ -1062,6 +1198,9 @@ class _Session:
         # uchun ffmpeg kirish formati `hevc` bo'lishi kerak.
         codec = _codec_for_pt(p.get("pt"))
         self.codec[key] = codec
+        # Rejimni birinchi video paketdayoq qotiramiz — pacing ham shu
+        # ulanish rejimiga qarab ishlaydi (jonli oqim sekinlashtirilmaydi).
+        self._mode(key, p.get("ts"))
         payload = p["payload"]
         if not payload:
             return
@@ -1107,7 +1246,7 @@ class _Session:
             if typ != DT_VIDEO_I:
                 return
             self.primed.add(key)
-        mode = "playback" if _playback_active(key[0], key[1]) else "live"
+        mode = self._mode(key, ts)
         if mode == "playback":
             _touch_playback(key[0], key[1])
         m = _get_muxer(key[0], key[1], mode, codec=codec, peer=self.peer)
@@ -1135,8 +1274,10 @@ class _Session:
 
     def note(self, msg: str) -> None:
         """Diagnostika: ulanish darajasidagi xatoni shu sessiya oqimlariga yozish."""
-        for sim, ch in list(self.frames.keys()):
-            mode = "playback" if _playback_active(sim, ch) else "live"
+        for key in list(self.frames.keys()):
+            sim, ch = key
+            mode = self.modes.get(key) or (
+                "playback" if _playback_active(sim, ch) else "live")
             m = _MUXERS.get(_muxer_key(sim, ch, mode))
             fn = getattr(m, "note", None)
             if fn is not None:
@@ -1231,9 +1372,11 @@ async def handle_session(reader: asyncio.StreamReader,
                 sess.on_packet(p)
                 # Playback tezligini normallashtirish: qurilma yozuvni real
                 # vaqtdan tez yuborsa ham ts bo'yicha kutamiz (HLS real vaqt).
+                # Faqat SHU ULANISH yozuv rejimida bo'lsa — jonli oqimni
+                # sekinlashtirib qo'ymaslik uchun.
                 if (config.JT1078_PLAYBACK_PACE
                         and p["data_type"] in _VIDEO_TYPES
-                        and _playback_active(p["sim"], p["channel"])):
+                        and sess.mode_for(p["sim"], p["channel"]) == "playback"):
                     k = (p["sim"], p["channel"])
                     pc = pacers.get(k)
                     if pc is None:

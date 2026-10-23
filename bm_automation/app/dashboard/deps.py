@@ -30,7 +30,35 @@ log = get_logger("bm_automation.dashboard.deps")
 # ---------------------------------------------------------------------------
 
 _SESSION_MAX_AGE_S = 12 * 3600
+# Sessiya muddati SILANADI: 10+ daqiqadan keyin kelgan har bir faol so'rov
+# muddatni to'ldiradi — panel ochiq turgan foydalanuvchi 12 soatdan keyin
+# chetlab yuborilmaydi. Mutlaq chek esa sessiyani 7 kundan oshmay qayta
+# tugaydi (eski parollar uchun ham xavfsiz chegara).
+_SESSION_ABS_MAX_S = 7 * 24 * 3600
+_SESSION_TOUCH_S = 600
+_MAX_SESSIONS_PER_USER = 8
 _PBKDF2_ITERATIONS = 120_000
+PASSWORD_MIN_LEN = 8
+_COMMON_PASSWORDS = {
+    "12345678", "123456789", "1234567890", "password", "password1",
+    "qwerty123", "parol123", "admin123", "bmbrutto", "dtransport",
+}
+
+
+def password_error(password: str, username: str = "") -> str:
+    """Yangi parolni tekshiradi; xato matni yoki bo'sh satr qaytaradi."""
+    pw = str(password or "")
+    if len(pw) < PASSWORD_MIN_LEN:
+        return f"Parol kamida {PASSWORD_MIN_LEN} belgi bo'lishi kerak"
+    if len(pw) > 128:
+        return "Parol 128 belgidan oshmasligi kerak"
+    low = pw.lower()
+    if low in _COMMON_PASSWORDS:
+        return "Bu parol juda oddiy — boshqa parol tanlang"
+    uname = str(username or "").strip().lower()
+    if uname and low == uname:
+        return "Parol loginga o'xshamasligi kerak"
+    return ""
 
 _ROLE_RANK = {"VIEWER": 0, "DISPATCHER": 1, "MANAGER": 2, "DIRECTOR": 3, "ADMIN": 4}
 
@@ -77,9 +105,14 @@ _GET_ROLE_MIN: dict[str, int] = {
     "/api/route-skm": 2, "/api/electricity/price": 2, "/api/electricity": 2,
     "/api/drivers": 2, "/api/salary": 2, "/api/check": 3, "/api/sms": 3,
     "/api/documents": 3, "/api/me": 0,
+    "/api/sync/status": 2, "/api/sync/monthly/status": 2,
     "/api/video": 1, "/api/video/cameras": 1, "/api/video/relay": 1,
     "/api/video/archive": 2, "/api/video/export": 4,
 }
+
+# Eng uzun prefiks ustun: `/api/video/archive` `/api/video` dan oldin
+# tekshirilishi kerak (aks holda umumiy qoida aniqroq qoidani bosib ketadi).
+_GET_ROLE_ORDER = tuple(sorted(_GET_ROLE_MIN.items(), key=lambda kv: -len(kv[0])))
 
 _POST_ROLE_MIN: dict[str, int] = {
     "/api/settings": 4, "/api/settings/env": 4, "/api/settings/companies": 4,
@@ -90,6 +123,8 @@ _POST_ROLE_MIN: dict[str, int] = {
     "/api/video/cameras": 4, "/api/video/relay": 4, "/api/video/archive": 4,
     "/api/video/export": 4,
 }
+
+_POST_ROLE_ORDER = tuple(sorted(_POST_ROLE_MIN.items(), key=lambda kv: -len(kv[0])))
 
 _ROUTE_SCOPED_PREFIXES = (
     "/api/summary", "/api/rejects", "/api/brutto", "/api/routes",
@@ -161,15 +196,30 @@ def _prune_sessions() -> None:
 
 def create_session(user: dict) -> str:
     token = secrets.token_urlsafe(32)
+    name = str(user.get("username") or "").strip().lower()
     with _SESSION_LOCK:
         _load_sessions()
         _prune_sessions()
+        now = time.time()
+        # Bitta akkaunt uchun sessiyalar soni cheklangan: eng eski
+        # sessiyalar yopiladi (cheksiz JSON o'sishi va token ko'payishi).
+        same = sorted(
+            ((float(s.get("last_seen") or 0), t)
+             for t, s in _sessions.items()
+             if str(s.get("username") or "").strip().lower() == name),
+            key=lambda x: x[0])
+        for _, old in same[:max(0, len(same) - _MAX_SESSIONS_PER_USER + 1)]:
+            _sessions.pop(old, None)
         _sessions[token] = {
             "username": user.get("username") or "",
             "user_id": int(user.get("id") or 0),
             "role": user.get("role") or "VIEWER",
             "company": user.get("company") or "",
-            "expires_at": time.time() + _SESSION_MAX_AGE_S,
+            "expires_at": now + _SESSION_MAX_AGE_S,
+            # Silash muddati uchun qo'shimcha qo'yilmalar (eski yozuvlarda
+            # yo'q — birinchi tekshiruvda `setdefault` bilan to'ldiriladi).
+            "last_seen": now,
+            "created_at": now,
         }
         _save_sessions()
     return token
@@ -184,16 +234,69 @@ def drop_session(token: str) -> None:
         _save_sessions()
 
 
+def drop_user_sessions(username: str, keep_token: str = "") -> int:
+    """Bir foydalanuvchining BARCHA sessiyalarini yopadi (joriy saqlanadi).
+
+    Parol o'zgarganda eski parol bilan kirish imkoniyatini darhol
+    yo'qotish uchun ishlatiladi: `keep_token` (joriy qurilma) bundan
+    mustasno. Yopilgan sessiyalar soni qaytariladi.
+    """
+    name = str(username or "").strip().lower()
+    if not name:
+        return 0
+    closed = 0
+    with _SESSION_LOCK:
+        _load_sessions()
+        for token, s in list(_sessions.items()):
+            if token == keep_token:
+                continue
+            if str(s.get("username") or "").strip().lower() != name:
+                continue
+            _sessions.pop(token, None)
+            closed += 1
+        if closed:
+            _save_sessions()
+    return closed
+
+
+def refresh_session_cookie(request: Request, response: Response) -> bool:
+    """Faol `bm_session` cookie'sini qayta yangilaydi (muddat silanadi).
+
+    Brauzer cookie'si ham 12 soatlik bo'ladi: panel ochiq turganda SPA
+    har ~30 soniyada `/api/me` so'radi — shu so'rovda kuki ham yangilanadi,
+    shuning uchun "kuki yo'qolgan" holat faqat haqiqiy tanaffusdan keyin
+    ro'y beradi. Sessiya o'zi yopilgan bo'lsa (parol o'zgargan) — kuki
+    qayta yozilmaydi.
+    """
+    token = (request.cookies.get("bm_session") or "").strip()
+    if not token or not session_user(token):
+        return False
+    response.set_cookie(
+        "bm_session", token, path="/", httponly=True, samesite="lax",
+        secure=request_is_https(request), max_age=_SESSION_MAX_AGE_S)
+    return True
+
+
 def session_user(token: str) -> dict | None:
     with _SESSION_LOCK:
         _load_sessions()
         s = _sessions.get(token)
         if not s:
             return None
-        if float(s.get("expires_at") or 0) <= time.time():
+        now = time.time()
+        created = float(s.get("created_at") or 0)
+        if float(s.get("expires_at") or 0) <= now or (
+                created and now - created > _SESSION_ABS_MAX_S):
             _sessions.pop(token, None)
             _save_sessions()
             return None
+        # Silash: faol foydalanuvchi muddatini to'ldiradi (yozuv har 10
+        # daqiqada bir marta saqlanadi — so'rov boshiga diskka yozilmaydi).
+        if now - float(s.get("last_seen") or 0) > _SESSION_TOUCH_S:
+            s["last_seen"] = now
+            s.setdefault("created_at", now)
+            s["expires_at"] = now + _SESSION_MAX_AGE_S
+            _save_sessions()
         company = s.get("company") or ""
         role = s.get("role") or "VIEWER"
         is_admin = role == "ADMIN"
@@ -330,7 +433,17 @@ def rate_limit_post(endpoint: str) -> bool:
 # Super admin
 # ---------------------------------------------------------------------------
 
+_SUPER_LOCK = threading.Lock()
+_SUPER_TTL_S = 30.0
+_super_cache: tuple[float, set[str]] | None = None
+
+
 def super_admin_names() -> set[str]:
+    global _super_cache
+    now = time.monotonic()
+    with _SUPER_LOCK:
+        if _super_cache and now - _super_cache[0] < _SUPER_TTL_S:
+            return set(_super_cache[1])
     names = set()
     env_u = str(os.environ.get("DASHBOARD_ADMIN_USER") or "").strip().lower()
     if env_u:
@@ -347,7 +460,15 @@ def super_admin_names() -> set[str]:
                 names.add(str(u.get("username") or "").lower())
     except Exception:  # noqa: BLE001
         pass
+    with _SUPER_LOCK:
+        _super_cache = (time.monotonic(), set(names))
     return names
+
+
+def invalidate_super_cache() -> None:
+    global _super_cache
+    with _SUPER_LOCK:
+        _super_cache = None
 
 
 def is_super_username(username: str) -> bool:
@@ -359,41 +480,84 @@ def is_super_username(username: str) -> bool:
 # Foydalanuvchi bo'limlari (per-user ruxsatlar)
 # ---------------------------------------------------------------------------
 
+_ACCESS_LOCK = threading.Lock()
+_ACCESS_TTL_S = 20.0
+# username -> (storage nusxasi, vaqt, pages, telegram_chat_id)
+_access_cache: dict[str, tuple[object, float, list | None, str]] = {}
+
+
+def invalidate_user_access(username: str = "") -> None:
+    """Bo'lim/Telegram keshi yozuvini tozalaydi ('' = butun kesh)."""
+    with _ACCESS_LOCK:
+        if username:
+            _access_cache.pop(str(username).strip().lower(), None)
+        else:
+            _access_cache.clear()
+
+
 def page_for_path(path: str) -> str:
     """API yo'li qaysi sahifaga tegishli (topilmasa '')."""
     p = str(path or "")
-    for prefix, page in PAGE_API_PREFIXES.items():
-        if p.startswith(prefix):
-            return page
-    return ""
+    best = ""
+    page = ""
+    for prefix, name in PAGE_API_PREFIXES.items():
+        if len(prefix) > len(best) and p.startswith(prefix):
+            best = prefix
+            page = name
+    return page
+
+
+def _user_access(username: str) -> tuple[list | None, str]:
+    """Akkauntning (pages, telegram_chat_id) juftligi — bitta so'rovda.
+
+    Keshlanadi: `Scope` har so'rovda chaqiradi, admin panel o'zgartirganda
+    `invalidate_user_access` darhol yangilaydi. DB xatosida cheklov
+    SAQLANADI (fail-closed) — vaqtinchalik uzilish ruxsatni kengaytirmaydi.
+    """
+    u = str(username or "").strip().lower()
+    if not u:
+        return None, ""
+    try:
+        from ..db.storage import get_storage
+        st = get_storage()
+    except Exception:  # noqa: BLE001
+        return [], ""
+    now = time.monotonic()
+    with _ACCESS_LOCK:
+        cached = _access_cache.get(u)
+        if cached and cached[0] is st and now - cached[1] < _ACCESS_TTL_S:
+            return cached[2], cached[3]
+    try:
+        row = st.dashboard_user_get(username=u)
+    except Exception:  # noqa: BLE001
+        return [], ""
+    pages: list | None = None
+    tg = ""
+    if row:
+        is_admin_row = str(row.get("role") or "").upper() == "ADMIN"
+        try:
+            data = json.loads(str(row.get("data") or "{}"))
+        except (TypeError, ValueError):
+            data = None
+        if isinstance(data, dict):
+            tg = str(data.get("telegram_chat_id") or "")
+            raw = data.get("pages")
+            if not is_admin_row and isinstance(raw, list):
+                pages = [str(p) for p in raw if str(p) in PAGE_KEYS]
+    with _ACCESS_LOCK:
+        if len(_access_cache) > 500:
+            _access_cache.clear()
+        _access_cache[u] = (st, now, pages, tg)
+    return pages, tg
 
 
 def user_pages(username: str) -> list | None:
     """Foydalanuvchi uchun aniq belgilangan bo'limlar (None = rol bo'yicha).
 
     `dashboard_users.data` JSON'idagi `pages` ro'yxati o'qiladi. Ro'yxat
-    bo'lmasa yoki noto'g'ri bo'lsa — None (cheklov yo'q).
+    bo'lmasa (yoki ADMIN) — None (rol bo'yicha cheklov).
     """
-    u = str(username or "").strip().lower()
-    if not u or is_super_username(u):
-        return None
-    try:
-        from ..db.storage import get_storage
-        row = get_storage().dashboard_user_get(username=u)
-    except Exception:  # noqa: BLE001
-        return None
-    if not row:
-        return None
-    try:
-        data = json.loads(str(row.get("data") or "{}"))
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    pages = data.get("pages")
-    if not isinstance(pages, list):
-        return None
-    return [str(p) for p in pages if str(p) in PAGE_KEYS]
+    return _user_access(username)[0]
 
 
 def user_tg(scope: dict | None) -> str:
@@ -403,23 +567,7 @@ def user_tg(scope: dict | None) -> str:
     o'sha Telegram akkaunt uchun bot ham shu foydalanuvchining bo'lim
     ruxsatlarini qo'llaydi (`roles.pages_for`).
     """
-    u = str((scope or {}).get("username") or "").strip().lower()
-    if not u:
-        return ""
-    try:
-        from ..db.storage import get_storage
-        row = get_storage().dashboard_user_get(username=u)
-    except Exception:  # noqa: BLE001
-        return ""
-    if not row:
-        return ""
-    try:
-        data = json.loads(str(row.get("data") or "{}"))
-    except (TypeError, ValueError):
-        return ""
-    if not isinstance(data, dict):
-        return ""
-    return str(data.get("telegram_chat_id") or "")
+    return _user_access((scope or {}).get("username") or "")[1]
 
 
 def effective_pages(scope: dict | None) -> list | None:
@@ -445,6 +593,40 @@ def page_allowed(scope: dict | None, page: str) -> bool:
 # ---------------------------------------------------------------------------
 # Bootstrap admin
 # ---------------------------------------------------------------------------
+
+def _env_file() -> Path:
+    """`.env` manzili (testlarda `monkeypatch` bilan almashtiriladi)."""
+    return Path(".env")
+
+
+def sync_env_admin_password(username: str, password: str) -> bool:
+    """Bootstrap ADMIN parolini `.env`ga sinxronlaydi (yagona manba — 1 yo'l).
+
+    `ensure_bootstrap_admin()` har restartda `DASHBOARD_ADMIN_PASS`ni
+    haqiqiy parol deb oladi: panel orqali o'zgarGAN parol `.env`ga
+    yozilmasa, keyingi restart uni eski qiymatga qaytarib yuboradi
+    (foydalanuvchi "parolim ishlamayapti" deb qoladi). Shu sababli
+    bootstrap akkaunt paroli o'zgarganda `.env` ham yangilanadi —
+    qayta yozish uchun hech narsa qolmaydi.
+    """
+    want_user = (os.environ.get("DASHBOARD_ADMIN_USER") or "").strip().lower()
+    if not want_user or not password:
+        return False
+    if str(username or "").strip().lower() != want_user:
+        return False
+    path = _env_file()
+    try:
+        if not path.exists():
+            return False
+        from dotenv import set_key
+        set_key(str(path), "DASHBOARD_ADMIN_PASS", password)
+        os.environ["DASHBOARD_ADMIN_PASS"] = password
+        log.info("Bootstrap admin parolini .env ga sinxronlandi")
+        return True
+    except Exception:  # noqa: BLE001
+        log.warning("DASHBOARD_ADMIN_PASS .env ga yozilmadi", exc_info=True)
+        return False
+
 
 def ensure_bootstrap_admin() -> None:
     username = (os.environ.get("DASHBOARD_ADMIN_USER") or "").strip()
@@ -486,6 +668,22 @@ def _session_token_from_request(request: Request, creds: HTTPAuthorizationCreden
         return creds.credentials
     cookie = request.cookies.get("bm_session", "")
     return cookie.strip()
+
+
+def _session_token_from_headers(request: Request) -> str:
+    """Middleware uchun sessiya tokeni (FastAPI creds hali yo'q).
+
+    `resolve_scope` bilan bir xil ustuvorlik: Bearer sessiya tokeni (lekin
+    `DASHBOARD_TOKEN` emas) cookie'dan oldin tekshiriladi. Aks holda
+    admin cookie'si bilan birga yuborilgan kompaniya Bearer tokeni tenant
+    nazoratidan chetlab o'tardi.
+    """
+    auth = (request.headers.get("authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        tok = auth[7:].strip()
+        if tok and tok != _dashboard_token():
+            return tok
+    return (request.cookies.get("bm_session") or "").strip()
 
 
 def _is_loopback(request: Request) -> bool:
@@ -533,11 +731,12 @@ async def resolve_scope(
     token = _session_token_from_request(request, creds)
     session = session_user(token) if token else None
     if session:
-        # Per-user bo'limlar ro'yxati har so'rovda o'qiladi: admin sozlamani
-        # o'zgartirsa darhol kuchga kiradi (sessiya qayta kirishni talab
-        # qilmaydi). ADMIN / super uchun cheklov yo'q.
+        # Per-user bo'limlar ro'yxati keshlangan holda o'qiladi: admin
+        # sozlamani o'zgartirsa `invalidate_user_access` keshni darhol
+        # tozalaydi. ADMIN uchun cheklov yo'q — DB so'rovi qilinmaydi.
         session = dict(session)
-        session["pages"] = user_pages(session.get("username"))
+        session["pages"] = (None if session.get("is_admin")
+                            else user_pages(session.get("username")))
         return session
 
     dt = _dashboard_token()
@@ -566,9 +765,9 @@ class Scope:
         path = request.url.path
         min_needed = self._min_role
         if min_needed is None:
-            table = _GET_ROLE_MIN if request.method == "GET" else _POST_ROLE_MIN
+            order = _GET_ROLE_ORDER if request.method == "GET" else _POST_ROLE_ORDER
             min_needed = 1
-            for prefix, mn in table.items():
+            for prefix, mn in order:
                 if path.startswith(prefix):
                     min_needed = mn
                     break
@@ -588,6 +787,17 @@ class Scope:
 
 
 require_auth = Scope()
+
+
+async def optional_scope(
+    request: Request,
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> dict[str, Any] | None:
+    """Auth ixtiyoriy endpointlar uchun scope (login bo'lmasa `None`)."""
+    scope = await resolve_scope(request, creds)
+    if scope:
+        request.state.scope = scope
+    return scope
 
 
 def get_scope(request: Request) -> dict[str, Any]:
@@ -617,14 +827,46 @@ def force_route(scope: dict, path: str, params: dict) -> dict:
     return params
 
 
+def _audit_value(value: Any, limit: int = 160) -> str:
+    return " ".join(str(value or "").split())[:limit]
+
+
+def audit_event(action: str, request: Request | None = None, *,
+                user: str = "", target: str = "", ok: bool = True,
+                detail: str = "") -> None:
+    """Xavfsizlik/mutatsiya hodisasini logga yozadi (parol/token yozilmaydi)."""
+    ip = client_ip(request) if request is not None else "?"
+    log.info("AUDIT action=%s ok=%s user=%s target=%s ip=%s detail=%s",
+             _audit_value(action, 80), "1" if ok else "0",
+             _audit_value(user), _audit_value(target), ip,
+             _audit_value(detail))
+
+
+def _tenant_denied(reason: str, request: Request, scope: dict,
+                   company: str) -> Any:
+    audit_event("tenant.denied", request,
+                user=str((scope or {}).get("username") or ""),
+                target=company, ok=False, detail=reason)
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=403,
+        content={
+            "ok": False,
+            "detail": "Kompaniya faol emas yoki topilmadi. "
+                      "Administratorga murojaat qiling.",
+        },
+    )
+
+
 def tenant_guard(request: Request):
-    """Bloklangan/muddati o'tgan kompaniya sessiyasini to'xtatadi (403).
+    """Kompaniya tenant holatini fail-closed tekshiradi (403).
 
     Qoidalar:
     - faqat /api/ yo'llar (login/logout mustasno);
-    - faqat `bm_session` cookie bor so'rovlar; ADMIN (super) tegilmaydi;
-    - noma'lum kompaniya (jadvalda yo'q) — fail-open (o'tkaziladi);
-    - har qanday xato — o'tkaziladi (dashboard to'xtab qolmasligi uchun).
+    - sessiya tokeni cookie yoki Bearer header'da bo'lishi mumkin; ADMIN
+      (super) tegilmaydi;
+    - non-admin uchun kompaniya majburiy va `companies` jadvalida mavjud
+      bo'lishi kerak; noma'lum/xato holat ham 403 (fail-closed).
 
     Ruxsat etilgan so'rovlar uchun `request.state.tenant` to'ldiriladi.
     Qaytaradi: 403 JSONResponse yoki None.
@@ -636,35 +878,42 @@ def tenant_guard(request: Request):
         return None
     if path.startswith("/api/login") or path.startswith("/api/logout"):
         return None
-    cookie = request.cookies.get("bm_session", "")
-    if not cookie:
+    token = _session_token_from_headers(request)
+    if not token:
         return None
     try:
-        session = session_user(cookie)
-        if not session:
-            return None
-        company = str(session.get("company") or "")
-        from ..core import tenant
-        row = tenant.company_state(company) if company else None
+        session = session_user(token)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Tenant sessiyasini o'qib bo'lmadi: %s", exc)
+        return None
+    if not session:
+        return None
+    company = str(session.get("company") or "").strip()
+    if session.get("is_admin"):
         request.state.tenant = {
             "company": company,
             "company_id": int(session.get("company_id") or 0),
-            "state": row,
+            "state": None,
         }
-        if session.get("is_admin"):
-            return None
-        if company and not tenant.company_active(row):
-            from fastapi.responses import JSONResponse
-            return JSONResponse(
-                status_code=403,
-                content={
-                    "ok": False,
-                    "detail": "Kompaniya faol emas (bloklangan yoki obuna "
-                              "muddati tugagan). Administratorga murojaat qiling.",
-                },
-            )
-    except Exception:  # noqa: BLE001
         return None
+    if not company:
+        return _tenant_denied("missing-company", request, session, company)
+    try:
+        from ..core import tenant
+        row = tenant.company_state(company)
+        active = tenant.company_active(row)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Tenant holatini tekshirib bo'lmadi (%s): %s", company, exc)
+        return _tenant_denied("lookup-error", request, session, company)
+    request.state.tenant = {
+        "company": company,
+        "company_id": int(session.get("company_id") or 0),
+        "state": row,
+    }
+    if row is None:
+        return _tenant_denied("unknown-company", request, session, company)
+    if not active:
+        return _tenant_denied("inactive-company", request, session, company)
     return None
 
 

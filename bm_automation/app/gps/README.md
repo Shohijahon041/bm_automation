@@ -123,7 +123,16 @@ ishlatiladi:
 - `drift` — farq katta: kamera boshqa avtobusda yoki GPS chalg'iyapti;
 - `suggest` — bog'lanmagan kamera yaqin avtobus topildi (bog'lash tavsiyasi,
   UI'da bir bosishda bog'lanadi);
+- `stale` — kamera joyi eskirgan (`GPS_CAMERA_FRESH_S` dan eski): masofa
+  **hisoblanmaydi**, chunki avtobus shu vaqt ichida boshqa joyda bo'ladi —
+  aks holda har bir uzilishdan keyin soxta `drift` chiqadi;
+- `teltonika_offline` — Teltonika joyi ham eskirgan (avtobus aloqasi yo'q);
 - `unbound` / `no_camera_gps` / `no_teltonika`.
+
+Solishtirmada bitta avtobusda bir nechta Teltonika bo'lsa **eng yangi joy
+yuborgani** olinadi (almashtirilgan/eski qurilma ham ro'yxatda qolishi mumkin).
+Kamera qatorida ham `online`/`last_seen_s` Teltonika qatorlari bilan bir xil
+hisoblanadi.
 
 Kameralar `video_cameras` jadvalida saqlanadi. Uch turdagi manba:
 
@@ -344,6 +353,7 @@ Kunlik hisobotni qo'lda yuborish: UI'da "📨 Telegramga yuborish"
 | Var | Standart | Ma'no |
 |---|---|---|
 | `GPS_CAMERA_MATCH_M` | `300` | kamera GPS Teltonika GPS bilan mos hisoblanadigan radius (m); shundan uzoq — `drift`, bog'lanmagani uchun bog'lash tavsiyasi |
+| `GPS_CAMERA_FRESH_S` | `900` | solishtirma uchun joy shu sekunddan eski bo'lmasligi kerak; eski joy — `stale`/`teltonika_offline` (soxta `drift` oldini oladi), `0` = tekshirmaslik |
 | `JT_CAMERA_CHANNELS` | `4` | 4G kamera kanallari soni (UI kanal tugmalari) |
 | `GPS_STOPS_MIN_S` | `120` | to'xtash minimal davomiyligi (sekund) |
 | `GPS_STOPS_RADIUS_M` | `120` | to'xtash radiusi (metr) |
@@ -357,7 +367,7 @@ Himoya: `Authorization: Bearer <DASHBOARD_TOKEN>`
 | Usul | Endpoint | Ma'no |
 |---|---|---|
 | GET | `/api/gps/devices` | Teltonika qurilmalari + oxirgi holat (kameralar chiqarilmaydi) |
-| GET | `/api/gps/camera-assist` | kamera GPS ↔ Teltonika GPS solishtirmasi (mos/drift/bog'lash tavsiyasi) |
+| GET | `/api/gps/camera-assist` | kamera GPS ↔ Teltonika GPS solishtirmasi (mos/drift/eskirgan/bog'lash tavsiyasi) |
 | GET | `/api/gps/positions?imei=&from=&to=&limit=` | traektoriya |
 | POST | `/api/gps/devices` | `{imei, vehicle_id?, name?}` — qo'shish/bog'lash |
 | PATCH | `/api/gps/devices/{imei}` | `{vehicle_id?, name?, enabled?}` |

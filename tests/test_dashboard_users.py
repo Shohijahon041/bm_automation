@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from bm_automation.app.core import profiles as profiles_mod
 from bm_automation.app.dashboard import deps
 from bm_automation.app.db.storage import storage_for
+from bm_automation.app.db.tenancy import seed_companies
 from tests.sqlite_backend import SQLiteDatabase
 
 
@@ -102,6 +103,8 @@ def env(monkeypatch, tmp_path):
     with deps._LOGIN_LOCK:
         deps._login_fails.clear()
         deps._login_blocked_until.clear()
+    deps.invalidate_super_cache()
+    deps.invalidate_user_access()
     monkeypatch.setattr(deps, "_POST_MIN_INTERVAL_S", 0.0)
     monkeypatch.setattr(deps, "_LOGIN_MIN_INTERVAL_S", 0.0)
     db = SQLiteDatabase(str(tmp_path / "dash.db"))
@@ -126,6 +129,10 @@ def env(monkeypatch, tmp_path):
              "profileId": "", "start1": "", "start2": ""},
         ],
     })
+    seed_companies(st, [
+        {"name": "XTEST", "routeVariantId": "r1"},
+        {"name": "YTEST", "routeVariantId": "r2"},
+    ])
     return st
 
 
@@ -136,6 +143,14 @@ def _login(env, username, password):
 
 
 # ---------------------------------------------------------------- auth
+
+def test_password_policy_rejects_weak_values():
+    """Parol siyosati: qisqa, keng tarqalgan va login bilan bir xil parol rad etiladi."""
+    assert deps.password_error("qisqa") is not None
+    assert deps.password_error("12345678") is not None
+    assert deps.password_error("ali", "ali") is not None
+    assert deps.password_error("parol1234") == ""
+
 
 def test_schema_creates_dashboard_users(storage):
     """Storagema dashboard_users jadvali mavjud va ishlaydi."""
@@ -238,8 +253,16 @@ def test_logout_destroys_session(env):
     status, data, _ = _request(env, "/api/logout", method="POST",
                                headers=hdr, body=b"{}")
     assert status == 200 and data["ok"] is True
-    status, _, _ = _request(env, "/api/me", headers=hdr)
-    assert status == 401
+    status, data, _ = _request(env, "/api/me", headers=hdr)
+    assert status == 200
+    assert data["ok"] is False and data["authenticated"] is False
+
+
+def test_me_anonymous_returns_200_false(env):
+    """Login qilmagan probe 401 emas, 200 {"ok": false} qaytaradi."""
+    status, data, _ = _request(env, "/api/me")
+    assert status == 200
+    assert data["ok"] is False and data["authenticated"] is False
 
 
 def test_token_bearer_restores_admin(env, monkeypatch):
@@ -460,7 +483,7 @@ def test_admin_creates_user_via_api(env):
            "Content-Type": "application/json"}
     body = json.dumps({"action": "create", "username": "meneger",
                        "role": "MANAGER", "company": "XTEST",
-                       "password": "1234"}).encode()
+                       "password": "parol1234"}).encode()
     status, data, _ = _request(env, "/api/dashboard-users", method="POST",
                                headers={**hdr, "Content-Length": str(len(body))},
                                body=body)
@@ -611,6 +634,7 @@ def _mk(env, username, role, company="XTEST", password="x", data=""):
     st = env
     st.dashboard_user_add(username, *deps.hash_password(password),
                           role=role, company=company, data=data)
+    deps.invalidate_super_cache()
     _, _, cookies = _login(env, username, password)
     return {"Cookie": f"bm_session={cookies['bm_session']}",
             "Content-Type": "application/json"}
@@ -700,7 +724,7 @@ def test_only_super_creates_admin_role(env):
     st = env
     hdr = _mk(env, "root", "ADMIN")
     body = json.dumps({"action": "create", "username": "hacker",
-                       "role": "ADMIN", "password": "1234"}).encode()
+                       "role": "ADMIN", "password": "parol1234"}).encode()
     status, data, _ = _request(env, "/api/dashboard-users", method="POST",
                                headers={**hdr, "Content-Length": str(len(body))},
                                body=body)
@@ -709,7 +733,7 @@ def test_only_super_creates_admin_role(env):
     # Super admin ADMIN yaratadi.
     hdr2 = _mk(env, "basi", "ADMIN", data='{"super": true}')
     body = json.dumps({"action": "create", "username": "admin2",
-                       "role": "ADMIN", "password": "1234"}).encode()
+                       "role": "ADMIN", "password": "parol1234"}).encode()
     status, data, _ = _request(env, "/api/dashboard-users", method="POST",
                                headers={**hdr2, "Content-Length": str(len(body))},
                                body=body)
@@ -782,7 +806,7 @@ def test_manager_create_scoped_and_role_capped(env):
     st = env
     hdr = _mk(env, "mgr", "MANAGER", "XTEST")
     body = json.dumps({"action": "create", "username": "dir2",
-                       "role": "DIRECTOR", "password": "1234"}).encode()
+                       "role": "DIRECTOR", "password": "parol1234"}).encode()
     status, data, _ = _request(env, "/api/dashboard-users", method="POST",
                                headers={**hdr, "Content-Length": str(len(body))},
                                body=body)
@@ -791,7 +815,7 @@ def test_manager_create_scoped_and_role_capped(env):
     # VIEWER yaratadi — kompaniya o'z korxonasiga yoziladi.
     body = json.dumps({"action": "create", "username": "viewer2",
                        "role": "VIEWER", "company": "YTEST",
-                       "password": "1234"}).encode()
+                       "password": "parol1234"}).encode()
     status, data, _ = _request(env, "/api/dashboard-users", method="POST",
                                headers={**hdr, "Content-Length": str(len(body))},
                                body=body)
@@ -1389,6 +1413,66 @@ def test_sms_routes_route_scope(env, monkeypatch):
     assert status == 200 and calls == [("r1", True)]
 
 
+def test_sms_send_route_scope(env, monkeypatch):
+    """Qo'lda SMS: non-admin o'z route'iga bog'lanadi, begona route 404."""
+    from bm_automation.app.notifications import sms_notify as sn
+    calls = []
+
+    def fake(**kw):
+        calls.append(kw)
+        return {"status": "SENT", "logged": "inserted"}
+
+    monkeypatch.setattr(sn, "send_and_log", fake)
+    hdr = _hdr(env, "DIRECTOR")
+    body = json.dumps({"phone": "+998901234567", "text": "Salom",
+                       "route_id": "r2"}).encode()
+    status, _, _ = _request(env, "/api/sms/send", method="POST", headers=hdr,
+                            body=body)
+    assert status == 404 and calls == []
+    # Bitta yo'nalishli kompaniyada route avtomatik tanlanadi va jurnalga yoziladi.
+    body = json.dumps({"phone": "+998901234567", "text": "Salom"}).encode()
+    status, data, _ = _request(env, "/api/sms/send", method="POST", headers=hdr,
+                               body=body)
+    assert status == 200 and data["route_id"] == "r1"
+    assert calls[-1]["route_id"] == "r1"
+    assert calls[-1]["route_name"] == "10-yo'nalish"
+    # ADMIN uchun yo'nalishsiz (umumiy) yuborish mumkin.
+    ahdr = _hdr(env, "ADMIN")
+    status, data, _ = _request(env, "/api/sms/send", method="POST", headers=ahdr,
+                               body=body)
+    assert status == 200 and data["route_id"] == ""
+    assert calls[-1]["route_id"] == ""
+    body = json.dumps({"phone": "+998901234567", "text": "Salom",
+                       "route_id": "r2"}).encode()
+    status, data, _ = _request(env, "/api/sms/send", method="POST", headers=ahdr,
+                               body=body)
+    assert status == 200 and data["route_id"] == "r2"
+    assert calls[-1]["route_name"] == "20-yo'nalish"
+
+
+def test_sms_send_requires_route_when_multiple(env, monkeypatch):
+    """Ikki yo'nalishli kompaniyada route tanlanmasa 400 — SMS yuborilmaydi."""
+    from bm_automation.app.notifications import sms_notify as sn
+    calls = []
+    monkeypatch.setattr(sn, "send_and_log",
+                        lambda **kw: calls.append(kw) or {"status": "SENT"})
+    data = profiles_mod.load_profiles()
+    data["profiles"].append({"name": "XTEST", "routeVariantId": "r2",
+                             "routeName": "20-yo'nalish", "profileId": "",
+                             "start1": "", "start2": ""})
+    profiles_mod.save_profiles(data)
+    hdr = _hdr(env, "DIRECTOR")
+    body = json.dumps({"phone": "+998901234567", "text": "Salom"}).encode()
+    status, _, _ = _request(env, "/api/sms/send", method="POST", headers=hdr,
+                            body=body)
+    assert status == 400 and calls == []
+    body = json.dumps({"phone": "+998901234567", "text": "Salom",
+                       "route_id": "r1"}).encode()
+    status, _, _ = _request(env, "/api/sms/send", method="POST", headers=hdr,
+                            body=body)
+    assert status == 200 and calls[-1]["route_id"] == "r1"
+
+
 def test_electricity_price_manager_blocked(env):
     """electricity/price global sozlama - faqat ADMIN o'zgartiradi."""
     hdr = _hdr(env, "MANAGER")
@@ -1557,7 +1641,7 @@ def test_driver_create_route_scope(env, monkeypatch):
     from bm_automation.app.dashboard.routers import drivers as drivers_mod
     calls = []
 
-    def fake(payload, driver_id=""):
+    def fake(payload, driver_id="", scope=None):
         calls.append(payload.get("route_id"))
         return {"ok": True, "driver_id": "new1"}
 
@@ -1583,7 +1667,7 @@ def test_driver_profile_cannot_move_company(env, monkeypatch):
     from bm_automation.app.dashboard.routers import drivers as drivers_mod
     calls = []
 
-    def fake(payload, driver_id=""):
+    def fake(payload, driver_id="", scope=None):
         calls.append((driver_id, payload.get("route_id")))
         return {"ok": True}
 
@@ -1601,22 +1685,50 @@ def test_driver_profile_cannot_move_company(env, monkeypatch):
     assert status == 200 and calls == [("d1", "r1")]
 
 
-def test_company_without_routes_fail_closed(env, monkeypatch):
-    """Qamrovsiz kompaniya hech narsani ko'rmaydi (fail-closed).
+def test_driver_detail_forced_company_route(env):
+    """Detail so'rovidagi route parametri o'z korxonasi bilan chegaralanadi."""
+    from bm_automation.app.db.models import SyncSource, TripRecord, TripStatus
 
-    Oldin bo'sh qamrov route paramini bo'sh qoldirib, butun bazani ochib
-    qo'yardi (ish haqi/summary barcha firmalar ma'lumotini chiqarardi).
-    """
+    st = env
+    st.save_route(external_id="r1", name="10-yo'nalish", entity_type="ROUTE")
+    st.save_route(external_id="r2", name="20-yo'nalish", entity_type="ROUTE")
+    st.save_vehicle(external_id="v1", plate_number="01A111AA", route_id="r1")
+    st.save_vehicle(external_id="v2", plate_number="02B222BB", route_id="r2")
+    st.save_driver("d1", full_name="Ali", route_id="r1")
+    for rid, vid, pt in (("r1", "v1", "08:00"), ("r2", "v2", "09:00")):
+        st.save_trip(TripRecord(
+            date="2026-08-10", route_id=rid, vehicle_id=vid, driver_id="d1",
+            planned_time=pt, actual_time=pt, status=TripStatus.ACCEPTED.value,
+            source=SyncSource.DUTY.value))
+    st.save_driver_work_log("2026-08-10", "d1", "v1", 10.0, 1, note="O'z")
+    st.save_driver_work_log("2026-08-10", "d1", "v2", 99.0, 1, note="Boshqa")
+
+    hdr = _hdr(env, "MANAGER")
+    status, data, _ = _request(env, "/api/drivers/d1?route=r2", headers=hdr)
+    assert status == 200
+    assert all(t.get("route_id") != "r2" for t in data["trips"])
+    assert all(w.get("vehicle_id") != "v2" for w in data["work_logs"])
+    status, _, _ = _request(env, "/api/vehicles/v2", headers=hdr)
+    assert status == 404
+
+
+def test_unknown_company_fail_closed(env, monkeypatch):
+    """Noma'lum kompaniya akkaunti kira olmaydi; eski sessiya ham 403."""
     st = env
     st.save_driver("d1", full_name="Ali", route_id="r1")
     st.dashboard_user_add("nobody", *deps.hash_password("to'g'ri"),
                           role="MANAGER", company="MAVJUD_EMAS")
-    _, _, cookies = _login(env, "nobody", "to'g'ri")
-    hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
-    # Public routes ro'yxati bo'sh.
+    status, data, cookies = _login(env, "nobody", "to'g'ri")
+    assert status == 403 and data.get("ok") is False
+    assert "bm_session" not in cookies
+    # Kompaniya keyin o'chirilgan/yo'qolgan bo'lsa, avval yaratilgan
+    # sessiya ham API'ga kira olmaydi (tenant_guard fail-closed).
+    tok = deps.create_session({"username": "nobody", "id": 99,
+                               "role": "MANAGER", "company": "MAVJUD_EMAS"})
+    hdr = {"Cookie": f"bm_session={tok}"}
     status, data, _ = _request(env, "/api/routes", headers=hdr)
-    assert status == 200 and data["routes"] == []
-    # Haydovchilar ro'yxati ham bo'sh (tashqaridan driver_id ko'rinmaydi).
+    assert status == 403 and data.get("ok") is False
+    # Haydovchi tafsiloti ham ochilmaydi (tashqaridan driver_id ko'rinmaydi).
     calls = []
 
     def fake_detail(self, driver_id, f=None):
@@ -1626,8 +1738,27 @@ def test_company_without_routes_fail_closed(env, monkeypatch):
     monkeypatch.setattr(
         "bm_automation.app.dashboard.metrics.Metrics.driver_detail", fake_detail)
     status, _, _ = _request(env, "/api/drivers/d1", headers=hdr)
-    assert status == 404 and calls == []
+    assert status == 403 and calls == []
     # Yozish ham yopiq.
+    body = json.dumps({"route_id": "r1", "km_rate": 10}).encode()
+    status, _, _ = _request(env, "/api/kmrate", method="POST", headers=hdr,
+                            body=body)
+    assert status == 403
+
+
+def test_known_company_without_routes_sees_nothing(env):
+    """Mavjud, lekin yo'nalishsiz kompaniya 200 + bo'sh ro'yxat oladi."""
+    st = env
+    seed_companies(st, [{"name": "MAVJUD_EMAS"}])
+    st.save_driver("d1", full_name="Ali", route_id="r1")
+    st.dashboard_user_add("nobody", *deps.hash_password("to'g'ri"),
+                          role="MANAGER", company="MAVJUD_EMAS")
+    _, _, cookies = _login(env, "nobody", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
+    status, data, _ = _request(env, "/api/routes", headers=hdr)
+    assert status == 200 and data["routes"] == []
+    status, _, _ = _request(env, "/api/drivers/d1", headers=hdr)
+    assert status == 404
     body = json.dumps({"route_id": "r1", "km_rate": 10}).encode()
     status, _, _ = _request(env, "/api/kmrate", method="POST", headers=hdr,
                             body=body)
@@ -1694,12 +1825,12 @@ def _admin_env(env):
             "Content-Type": "application/json"}
 
 
-def test_show_driver_salary_default_on(env):
-    """Standart holatda oylik summalar ko'rsatiladi."""
+def test_show_driver_salary_default_off(env):
+    """Standart holatda botda oylik ko'rsatilmaydi (dashboardda doim ko'rinadi)."""
     hdr = _admin_env(env)
     status, data, _ = _request(env, "/api/settings", headers=hdr)
     assert status == 200
-    assert data["global"]["show_driver_salary"] is True
+    assert data["global"]["show_driver_salary"] is False
 
 
 def test_show_driver_salary_toggle_persists(env):
@@ -1723,7 +1854,8 @@ def test_show_driver_salary_toggle_persists(env):
     assert data["global"]["show_driver_salary"] is True
 
 
-def test_drivers_directory_masks_salary_when_off(env, monkeypatch):
+def test_drivers_directory_shows_salary_when_bot_flag_off(env, monkeypatch):
+    """Bot sozlamasi o'chik bo'lsa ham dashboardda summalar ko'rinadi."""
     import bm_automation.app.dashboard.metrics as mmod
 
     rows = [
@@ -1744,30 +1876,21 @@ def test_drivers_directory_masks_salary_when_off(env, monkeypatch):
                         lambda self, f=None: copy.deepcopy(canned))
 
     hdr = _admin_env(env)
-    # O'chirilgan: moliyaviy maydonlar None, km_rate saqlanadi.
     body = json.dumps({"show_driver_salary": False}).encode()
     _request(env, "/api/settings", method="POST",
              headers={**hdr, "Content-Length": str(len(body))}, body=body)
     status, data, _ = _request(env, "/api/drivers", headers=hdr)
     assert status == 200
-    assert data.get("show_driver_salary") is False
     dr = data["drivers"][0]
-    assert dr["net_pay"] is None and dr["gross_pay"] is None
-    assert dr["tax"] is None and dr["fines"] is None
+    assert dr["net_pay"] == 4_350_000.0
+    assert dr["gross_pay"] == 5_000_000.0
+    assert dr["tax"] == 600_000.0 and dr["fines"] == 50_000.0
     assert dr["km_rate"] == 2000.0
-    assert data["totals"]["net_pay"] is None
+    assert data["totals"]["net_pay"] == 4_350_000.0
     assert data["totals"]["km"] == 2500.0
-    # Yoqilgan: barcha qiymatlar qaytadi.
-    body = json.dumps({"show_driver_salary": True}).encode()
-    _request(env, "/api/settings", method="POST",
-             headers={**hdr, "Content-Length": str(len(body))}, body=body)
-    status, data, _ = _request(env, "/api/drivers", headers=hdr)
-    assert status == 200
-    assert data["drivers"][0]["net_pay"] == 4_350_000.0
-    assert data["totals"]["gross_pay"] == 5_000_000.0
 
 
-def test_driver_detail_masks_salary_when_off(env, monkeypatch):
+def test_driver_detail_shows_salary_when_bot_flag_off(env, monkeypatch):
     import bm_automation.app.dashboard.metrics as mmod
 
     detail = {
@@ -1786,12 +1909,12 @@ def test_driver_detail_masks_salary_when_off(env, monkeypatch):
              headers={**hdr, "Content-Length": str(len(body))}, body=body)
     status, data, _ = _request(env, "/api/drivers/d1", headers=hdr)
     assert status == 200
-    assert data.get("show_driver_salary") is False
     d = data["driver"]
-    assert d["net_pay"] is None and d["gross_pay"] is None
-    assert d["tax"] is None and d["fines"] is None
+    assert d["net_pay"] == 4_350_000.0
+    assert d["gross_pay"] == 5_000_000.0
+    assert d["tax"] == 600_000.0 and d["fines"] == 50_000.0
     assert d["km_rate"] == 2000.0
-    assert data["fines_total"] is None
+    assert data["fines_total"] == 50_000.0
 
 
 def test_user_photo_cached_redirect(env, monkeypatch):
@@ -1865,7 +1988,7 @@ def test_admin_creates_user_with_pages(env):
     hdr = _json_hdr(env, "root")
     status, data, _ = _post_users(env, hdr, {
         "action": "create", "username": "ali", "role": "MANAGER",
-        "company": "XTEST", "password": "1234", "pages": ["drivers", "video"]})
+        "company": "XTEST", "password": "parol1234", "pages": ["drivers", "video"]})
     assert status == 200 and data.get("ok") is True
     row = st.dashboard_user_get(username="ali")
     assert json.loads(row["data"])["pages"] == ["drivers", "video"]
@@ -1937,7 +2060,7 @@ def test_unknown_page_key_rejected(env):
     st.dashboard_user_add("root", *deps.hash_password("to'g'ri"), role="ADMIN")
     status, data, _ = _post_users(env, _json_hdr(env, "root"), {
         "action": "create", "username": "ali", "role": "MANAGER",
-        "company": "XTEST", "password": "1234",
+        "company": "XTEST", "password": "parol1234",
         "pages": ["drivers", "yoq-bolim"]})
     assert data.get("ok") is False
     assert "Noma'lum bo'lim" in str(data.get("error") or "")
@@ -1986,7 +2109,7 @@ def test_dashboard_user_telegram_link_round_trip(env):
     hdr = _json_hdr(env, "root")
     status, data, _ = _post_users(env, hdr, {
         "action": "create", "username": "ali", "role": "MANAGER",
-        "company": "XTEST", "password": "1234",
+        "company": "XTEST", "password": "parol1234",
         "pages": ["overview"], "telegram_chat_id": "123456"})
     assert status == 200 and data.get("ok") is True
     saved = json.loads(st.dashboard_user_get(username="ali")["data"])
@@ -1999,7 +2122,7 @@ def test_dashboard_user_telegram_link_round_trip(env):
     assert row["telegram_chat_id"] == "123456"
 
     # Foydalanuvchining o'zi ham bog'langan Telegram ID'ni ko'radi.
-    _, me, _ = _request(env, "/api/me", headers=_login_hdr(env, "ali", "1234"))
+    _, me, _ = _request(env, "/api/me", headers=_login_hdr(env, "ali", "parol1234"))
     assert me.get("telegram_chat_id") == "123456"
 
     # Noto'g'ri ID rad etiladi, saqlangan qiymat o'zgarmaydi.
@@ -2101,6 +2224,39 @@ def test_users_list_exposes_pages(env, monkeypatch, tmp_path):
     assert row["pages"] == ["overview", "routes"]
 
 
+def test_users_list_links_drivers_in_batch(env, monkeypatch, tmp_path):
+    """/api/users haydovchini telegram va telefon bo'yicha bog'laydi (batch)."""
+    from bm_automation.app.core import bot_users
+    monkeypatch.setattr(bot_users, "STATE_FILE", tmp_path / "bot_users.json")
+    with bot_users._LOCK:
+        bot_users._CACHE = {}
+        bot_users._LOADED = False
+    bot_users.record_user(601, first_name="User601")
+    bot_users.record_user(602, first_name="User602")
+    with bot_users._LOCK:
+        bot_users._CACHE["602"]["phone"] = "+998 93 733 45 60"
+        bot_users._save()
+
+    env.save_driver_profile("d1", telegram_chat_id="601")
+    env.save_driver_profile("d2", phone="93-733-45-60")
+    env.upsert("drivers", ["external_id"],
+               {"external_id": "d1", "full_name": "Ali Valiyev"})
+    env.upsert("drivers", ["external_id"],
+               {"external_id": "d2", "full_name": "Vali Karimov"})
+    env.dashboard_user_add("root", *deps.hash_password("to'g'ri"), role="ADMIN")
+
+    status, data, _ = _request(env, "/api/users",
+                               headers=_login_hdr(env, "root"))
+    assert status == 200
+    rows = {int(u["chat_id"]): u for u in data["users"]}
+    assert rows[601]["linked"] is True
+    assert rows[601]["driver_name"] == "Ali Valiyev"
+    assert rows[601]["driver_id"] == "d1"
+    assert rows[602]["linked"] is True
+    assert rows[602]["driver_name"] == "Vali Karimov"
+    assert rows[602]["driver_id"] == "d2"
+
+
 def test_user_detail_shows_dashboard_link(env, monkeypatch, tmp_path):
     """Bog'langan panel akkaunti va uning bo'limlari /api/users/{uid}da qaytadi."""
     _bot_user(monkeypatch, tmp_path, 559)
@@ -2115,3 +2271,55 @@ def test_user_detail_shows_dashboard_link(env, monkeypatch, tmp_path):
     assert status == 200
     assert data["dashboard_user"]["username"] == "ali"
     assert data["dashboard_user"]["pages"] == ["drivers"]
+
+
+# ------------------------------------------------------------ max_users
+
+def _set_max_users(st, company, value):
+    st._exec(f"UPDATE companies SET max_users = {st.db.ph} "
+             f"WHERE name = {st.db.ph}", (value, company))
+
+
+def test_panel_create_respects_company_max_users(env):
+    """Panel orqali foydalanuvchi yaratish korxona limitiga bo'ysunadi."""
+    st = env
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"), role="ADMIN")
+    st.dashboard_user_add("mavjud", *deps.hash_password("x"),
+                          role="VIEWER", company="XTEST")
+    _set_max_users(st, "XTEST", 1)
+    hdr = _json_hdr(env, "root")
+    status, data, _ = _post_users(env, hdr, {
+        "action": "create", "username": "yangi", "role": "VIEWER",
+        "company": "XTEST", "password": "parol1234"})
+    assert data.get("ok") is False
+    assert "Maksimal foydalanuvchi soni (1)" in str(data.get("error") or "")
+    assert st.dashboard_user_get(username="yangi") is None
+    # Limit oshirilgach yaratish mumkin.
+    _set_max_users(st, "XTEST", 2)
+    status, data, _ = _post_users(env, hdr, {
+        "action": "create", "username": "yangi", "role": "VIEWER",
+        "company": "XTEST", "password": "parol1234"})
+    assert status == 200 and data.get("ok") is True
+
+
+def test_company_move_respects_target_max_users(env):
+    """Foydalanuvchini boshqa korxonaga ko'chirishda o'sha korxona limiti tekshiriladi."""
+    st = env
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"), role="ADMIN")
+    st.dashboard_user_add("kochir", *deps.hash_password("x"),
+                          role="DISPATCHER", company="XTEST")
+    st.dashboard_user_add("y1", *deps.hash_password("x"),
+                          role="VIEWER", company="YTEST")
+    _set_max_users(st, "YTEST", 1)
+    hdr = _json_hdr(env, "root")
+    status, data, _ = _post_users(env, hdr, {
+        "action": "update", "username": "kochir", "company": "YTEST"})
+    assert data.get("ok") is False
+    assert "Maksimal foydalanuvchi soni (1)" in str(data.get("error") or "")
+    assert st.dashboard_user_get(username="kochir")["company"] == "XTEST"
+    # O'rin bo'shagach (yoki limit oshgach) ko'chirish o'tadi.
+    _set_max_users(st, "YTEST", 2)
+    status, data, _ = _post_users(env, hdr, {
+        "action": "update", "username": "kochir", "company": "YTEST"})
+    assert status == 200 and data.get("ok") is True
+    assert st.dashboard_user_get(username="kochir")["company"] == "YTEST"

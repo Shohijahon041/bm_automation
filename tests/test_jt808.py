@@ -240,6 +240,90 @@ def test_parse_resource_list_device_first_packet_10_bytes():
     assert items[0]["start"] == "2026-10-12T02:40:00"
 
 
+def test_parse_resource_page_standard_total():
+    """Standart 6 baytli sarlavhada jami [2:6] da — sahifa uni qaytaradi."""
+    page = jt808.parse_resource_page(_resource_body([
+        (1, "261011100000", "261011130000", 111)]))
+    assert page["total"] == 1
+    assert page["header_len"] == 6
+    assert page["header_hex"] == "000500000001"
+
+
+def test_parse_resource_page_device_first_packet_total():
+    """10 baytli sarlavhada jami [6:10] da (T8008V2 regressiyasi)."""
+    prefix = bytes.fromhex("00080001") + struct.pack(">H", 15) + struct.pack(">I", 116)
+    page = jt808.parse_resource_page(prefix + _device_record() * 3)
+    assert page["total"] == 116
+    assert page["header_len"] == 10
+
+
+def test_parse_resource_page_4byte_has_no_total():
+    """4 baytli davom paketida jami maydoni yo'q — None bo'lishi kerak."""
+    body = bytes.fromhex("00080002") + _device_record() * 16
+    page = jt808.parse_resource_page(body)
+    assert page["total"] is None
+    assert len(page["items"]) == 16
+
+
+def test_parse_resource_page_rejects_small_total():
+    """Paketdagi yozuvlar sonidan kichik qiymat 'jami' emas (sarlavha o'rni)."""
+    body = struct.pack(">HI", 1, 1) + _device_record() * 2
+    page = jt808.parse_resource_page(body)
+    assert page["total"] is None
+
+
+def test_begin_resources_filters_channel_and_range():
+    """Yangi so'rov: boshqa kanal/oraliqdagi eski yozuvlar aralashmaydi."""
+    jt808.begin_resources("123456", 1, "2026-10-12 02:00:00",
+                          "2026-10-12 03:00:00")
+    body = bytes.fromhex("00080002") + b"".join([
+        _device_record(1, "261012024000", "261012025000", 1),   # mos
+        _device_record(2, "261012024000", "261012025000", 2),   # boshqa kanal
+        _device_record(1, "261012010000", "261012011000", 3),   # oraliqdan oldin
+        _device_record(1, "261012040000", "261012041000", 4),   # oraliqdan keyin
+    ])
+    _dispatch("123456", 0x1205, body)
+    info = jt808.resources_info("123456")
+    assert info["received"] == 1
+    assert info["items"][0]["size"] == 1
+    assert info["packets"] == 1
+    assert info["total"] is None and info["complete"] is False
+    assert info["request"] == {"channel": 1,
+                               "start": "2026-10-12T02:00:00",
+                               "end": "2026-10-12T03:00:00"}
+    jt808.clear_resources("123456")
+
+
+def test_begin_resources_total_marks_complete_after_all_packets():
+    """Qurilma 'jami'ni birinchi paketda yuboradi; oxirgi paketda complete."""
+    jt808.begin_resources("123456", 0)
+    first = (bytes.fromhex("00080001") + struct.pack(">H", 1)
+             + struct.pack(">I", 2)
+             + _device_record(1, "261012024000", "261012025000", 1))
+    _dispatch("123456", 0x1205, first)
+    info = jt808.resources_info("123456")
+    assert info["total"] == 2 and info["received"] == 1
+    assert info["complete"] is False and info["packets"] == 1
+    second = (bytes.fromhex("00080002")
+              + _device_record(1, "261012030000", "261012031000", 2))
+    _dispatch("123456", 0x1205, second)
+    info = jt808.resources_info("123456")
+    assert info["total"] == 2 and info["received"] == 2
+    assert info["complete"] is True and info["packets"] == 2
+    jt808.clear_resources("123456")
+
+
+def test_begin_resources_resets_previous_result():
+    jt808.begin_resources("123456", 1)
+    _dispatch("123456", 0x1205, _resource_body([
+        (1, "261011100000", "261011130000", 111)]))
+    assert jt808.resources_info("123456")["received"] == 1
+    jt808.begin_resources("123456", 2)
+    info = jt808.resources_info("123456")
+    assert info["received"] == 0 and info["items"] == []
+    jt808.clear_resources("123456")
+
+
 def test_request_av_resource_list_body_24_bytes(monkeypatch):
     """0x9205 tanasi: kanal(1)+start(6)+end(6)+alarm(8)+3*1 = 24 bayt."""
     import asyncio

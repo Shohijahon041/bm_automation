@@ -177,7 +177,7 @@ def test_run_once_resends_on_change(gu_env, monkeypatch):
     info = dg._grafik_sent_info(rid, ds)
     new_total, new_drivers = dg._duty_fingerprint(new)
     assert info["hash"] == new_total and info["drivers"] == new_drivers
-    assert reports and "B-80" in reports[0]
+    assert reports and "B-80" in reports[0][1]
 
 
 def test_run_once_skips_unchanged(gu_env, monkeypatch):

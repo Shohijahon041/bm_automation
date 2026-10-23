@@ -182,13 +182,59 @@ def _run_myai(chat_id: int, text: str, f: dict | None) -> None:
 
 # ------------------------------------------------------------- sync
 
+# Bir vaqtda faqat bitta sync oqimi (kunlik/oylik) — ikki oqim birga
+# BM API'ga urilib, token va DB yozuvlarini chalkashtirmasin.
+_SYNC_GUARD = threading.Lock()
+_SYNC_BUSY_TEXT = "⏳ Sinxronlash allaqachon davom etmoqda — tugashini kuting."
+
+
+def _spawn_sync(target, *args) -> bool:
+    """Sync oqimini guard ostida boshlaydi; band bo'lsa False."""
+    if not _SYNC_GUARD.acquire(blocking=False):
+        return False
+
+    def _runner():
+        try:
+            target(*args)
+        finally:
+            _SYNC_GUARD.release()
+
+    try:
+        threading.Thread(target=_runner, daemon=True).start()
+    except Exception:
+        _SYNC_GUARD.release()
+        raise
+    return True
+
+
+def _sync_scope_routes(chat_id: int) -> list[str] | None:
+    """Sync yo'nalishlari: ADMIN — None (barcha profillar), aks holda ruxsat etilganlar.
+
+    Yo'nalish biriktirilmagan non-admin uchun bo'sh ro'yxat — sync
+    taqiqlanadi (boshqa korxonalar ma'lumoti tortilmaydi).
+    """
+    if resolve_role(chat_id) is Role.ADMIN:
+        return None
+    raw = str(context.filters_for(chat_id).get("route") or "")
+    return [rid for rid in raw.replace(",", " ").split()
+            if rid and not rid.startswith("__")]
+
+
+def _sync_row(r) -> tuple[str, int, int, str]:
+    """SyncResult yoki dict'dan (entity, inserted, updated, error)."""
+    if isinstance(r, dict):
+        return (str(r.get("entity") or "?"), int(r.get("inserted") or 0),
+                int(r.get("updated") or 0), str(r.get("error") or ""))
+    return (str(getattr(r, "entity", "?")),
+            int(getattr(r, "inserted", 0) or 0),
+            int(getattr(r, "updated", 0) or 0),
+            str(getattr(r, "error", "") or ""))
+
+
 def _sync_summary(results: list) -> str:
     lines = ["🔄 <b>Sinxronlash tugadi</b>", ""]
     for r in results:
-        ent = getattr(r, "entity", r)
-        ins = getattr(r, "inserted", 0)
-        upd = getattr(r, "updated", 0)
-        err = getattr(r, "error", "")
+        ent, ins, upd, err = _sync_row(r)
         base = f"  {ent}: +{ins} yangi / {upd} yangilangan"
         lines.append(base + (f"  ⚠️ {err}" if err else ""))
     return "\n".join(lines)
@@ -199,6 +245,7 @@ def _do_sync(chat_id: int) -> None:
         from ...db import sync as dsync
 
         storage = get_storage()
+        routes = _sync_scope_routes(chat_id)
         results = [dsync.sync_statuses(storage), dsync.sync_profiles(storage)]
 
         try:
@@ -217,7 +264,11 @@ def _do_sync(chat_id: int) -> None:
                 dates.insert(1, (today - _date_timedelta(days=2)).isoformat())
                 dates.insert(1, (today - _date_timedelta(days=3)).isoformat())
             for date_str in dict.fromkeys(dates):
-                results += dsync.sync_all_profiles(storage, client, date_str)
+                if routes:
+                    results += dsync.sync_days(storage, client, [date_str],
+                                               routes=routes)
+                else:
+                    results += dsync.sync_all_profiles(storage, client, date_str)
         except Exception as exc:  # noqa: BLE001
             storage.record_error(source="bot.sync", message=str(exc))
 
@@ -229,8 +280,14 @@ def _do_sync(chat_id: int) -> None:
 
 
 def start_sync(chat_id: int) -> None:
+    if _sync_scope_routes(chat_id) == []:
+        reply(chat_id, "⛔ Sizga yo'nalish biriktirilmagan — "
+                       "sinxronlash mumkin emas.")
+        return
+    if not _spawn_sync(_do_sync, chat_id):
+        reply(chat_id, _SYNC_BUSY_TEXT)
+        return
     reply(chat_id, SYNC_STARTED)
-    threading.Thread(target=_do_sync, args=(chat_id,), daemon=True).start()
 
 
 # ---------------------------------------------------------- monthly sync
@@ -238,10 +295,7 @@ def start_sync(chat_id: int) -> None:
 def _monthly_sync_summary(results: list) -> str:
     lines = ["🔄 <b>Oylik sinxronlash tugadi</b>", ""]
     for r in results:
-        ent = getattr(r, "entity", r)
-        ins = getattr(r, "inserted", 0)
-        upd = getattr(r, "updated", 0)
-        err = getattr(r, "error", "")
+        ent, ins, upd, err = _sync_row(r)
         base = f"  {ent}: +{ins} yangi / {upd} yangilangan"
         lines.append(base + (f"  ⚠️ {err}" if err else ""))
     return "\n".join(lines)
@@ -255,6 +309,7 @@ def _do_monthly_sync(chat_id: int, from_date: str, to_date: str) -> None:
         from ...db import sync as dsync
 
         storage = get_storage()
+        routes = _sync_scope_routes(chat_id)
         d_from = _dt_date.fromisoformat(from_date)
         d_to = _dt_date.fromisoformat(to_date)
 
@@ -273,7 +328,11 @@ def _do_monthly_sync(chat_id: int, from_date: str, to_date: str) -> None:
             reply(chat_id, f"🔄 Sinxronlash: {ds}...")
             try:
                 client = legacy.ensure_client()
-                results += dsync.sync_all_profiles(storage, client, ds)
+                if routes:
+                    results += dsync.sync_days(storage, client, [ds],
+                                               routes=routes)
+                else:
+                    results += dsync.sync_all_profiles(storage, client, ds)
             except Exception as exc:
                 storage.record_error(source="bot.sync_monthly", message=str(exc))
             cur += _dt_td(days=1)
@@ -288,9 +347,14 @@ def _do_monthly_sync(chat_id: int, from_date: str, to_date: str) -> None:
 
 def start_monthly_sync(chat_id: int, from_date: str, to_date: str) -> None:
     from ...text import SYNC_MONTHLY_STARTED
+    if _sync_scope_routes(chat_id) == []:
+        reply(chat_id, "⛔ Sizga yo'nalish biriktirilmagan — "
+                       "sinxronlash mumkin emas.")
+        return
+    if not _spawn_sync(_do_monthly_sync, chat_id, from_date, to_date):
+        reply(chat_id, _SYNC_BUSY_TEXT)
+        return
     reply(chat_id, SYNC_MONTHLY_STARTED)
-    threading.Thread(target=_do_monthly_sync,
-                     args=(chat_id, from_date, to_date), daemon=True).start()
 
 
 # ------------------------------------------------------------ verify (oylik)
@@ -337,9 +401,12 @@ def _do_grafik(chat_id: int, route_ids: list[str] | None = None,
         # Ertangi grafik tugmasi (18:00 oqimi): allaqachon yuborilgan
         # yo'nalishlar ham qayta yuboriladi — o'zgarmagan bo'lsa ham
         # Excel+rasm ketadi, o'zgargan bo'lsa yangilangan holda.
+        # notify=False — qo'lda so'rov haydovchilarga SMS yubormaydi
+        # (SMS faqat avtomatik 18:00 oqimi va kuzatuv orqali ketadi).
         daily_grafik.main(chat_id=str(chat_id), route_ids=route_ids,
                           day_offset=day_offset,
-                          resend_if_sent=(day_offset == 1))
+                          resend_if_sent=(day_offset == 1),
+                          notify=False)
         reply(chat_id, "✅ <b>Grafik yuborildi</b>")
     except Exception as exc:  # noqa: BLE001 - barcha xatolar foydalanuvchiga
         log.warning("grafik yuborish xatosi: %s", exc)
@@ -351,12 +418,33 @@ def _do_grafik(chat_id: int, route_ids: list[str] | None = None,
 
 def start_grafik(chat_id: int, route_ids: list[str] | None = None,
                  day_offset: int = 1) -> None:
+    from .grafik_limit import DAILY_LIMIT, reserve
+
+    quota = reserve(route_ids)
+    allowed = quota["allowed"]
+    blocked = quota["blocked"]
+    if not allowed:
+        if blocked:
+            names = ", ".join(short_name(b["company"]) for b in blocked)
+            reply(chat_id, f"⛔ <b>KUNLIK LIMIT TUGADI</b>\n\n{names} uchun "
+                           f"bugun {DAILY_LIMIT} martalik grafik yuborilgan.\n"
+                           f"Limit ertaga 00:00 da yangilanadi.")
+        else:
+            reply(chat_id, "⚠️ Yuborish uchun yo'nalish topilmadi.")
+        return
+
     day_label = {1: "Ertangi", 0: "Bugungi", -1: "Kechagi"}.get(
         day_offset, f"{day_offset}")
+    note = ""
+    if blocked:
+        names = ", ".join(short_name(b["company"]) for b in blocked)
+        note = (f"\n\n⚠️ {names}: kunlik limit ({DAILY_LIMIT}) tugagan — "
+                f"bugun yuborilmaydi.")
     reply(chat_id, f"🖼 <b>{day_label.upper()} GRAFIK YUBORISH</b>\n\n"
                    f"{day_label} kun grafiklari (xlsx + rasm + statistika) "
-                   f"tayyorlanmoqda. Bir necha daqiqa davom etishi mumkin...")
-    threading.Thread(target=_do_grafik, args=(chat_id, route_ids),
+                   f"tayyorlanmoqda. Bir necha daqiqa davom etishi mumkin..."
+                   f"{note}")
+    threading.Thread(target=_do_grafik, args=(chat_id, allowed),
                      kwargs={"day_offset": day_offset}, daemon=True).start()
 
 
@@ -406,11 +494,41 @@ def commit_addcompany(chat_id: int) -> None:
     if owner_ids:
         set_owner_chat_ids(name, owner_ids)
 
+    # Yo'nalish nomi va konechka nomlarini BM waybill'laridan avtomatik
+    # aniqlash (best-effort, qo'lda kiritilgan qiymat ustidan yozilmaydi).
+    names_line = "🧭 Konechka: aniqlanmadi — dashboard'da qo'lda kiriting"
+    route_name_line = ""
+    try:
+        from ...core.profiles import get_profile, update_profile_fields
+        from ...services.driver_sheet_service import detect_profile_fields
+
+        prof = get_profile(name, route_id=route) or profile
+        found = detect_profile_fields(prof)
+        fields = {}
+        if not str(prof.get("routeName") or "").strip() and found.get("routeName"):
+            fields["routeName"] = found["routeName"]
+        for key in ("start1", "start2"):
+            if not str(prof.get(key) or "").strip() and found.get(key):
+                fields[key] = found[key]
+        if fields:
+            update_profile_fields(name, fields, route_id=route)
+        if fields.get("routeName"):
+            route_name_line = (f"📛 Yo'nalish nomi: "
+                               f"{esc(fields['routeName'])}\n")
+        if fields.get("start1") or fields.get("start2"):
+            up = esc(fields.get("start1") or "-")
+            down = esc(fields.get("start2") or "-")
+            names_line = f"🧭 Konechka: 1-chiqish — {up}; 2-chiqish — {down}"
+    except Exception as exc:  # noqa: BLE001 - ro'yxatdan o'tkazishni to'xtatmaydi
+        print(f"[addcompany] nomlar aniqlanmadi: {exc}")
+
     reply(chat_id,
           f"✅ <b>{name}</b> ro'yxatdan o'tkazildi.\n"
           f"🛣 Yo'nalish: <code>{route}</code>\n"
+          f"{route_name_line}"
           f"👤 Egalar: {', '.join(str(o) for o in owner_ids) or '-'}\n"
-          f"🔑 Login: {'kiritildi' if username and password else 'keyin /login orqali'}\n\n"
+          f"🔑 Login: {'kiritildi' if username and password else 'keyin /login orqali'}\n"
+          f"{names_line}\n\n"
           f"Statistika tayyorlanmoqda...")
 
     threading.Thread(target=show_company_stats,
@@ -1436,11 +1554,20 @@ def _send_settings_audit_file(chat_id: int) -> None:
         reply(chat_id, f"❌ Audit faylini yuborishda xatolik:\n<code>{exc}</code>")
 
 
+def _salary_routes(chat_id: int) -> str:
+    """ADMIN — barcha yo'nalishlar; boshqalar — faqat o'z doirasi."""
+    if resolve_role(chat_id) is Role.ADMIN:
+        return ""
+    f = context.filters_for(chat_id)
+    return str(f.get("route") or "").replace(",", " ")
+
+
 def _do_salary_dl(chat_id: int, from_date: str, to_date: str) -> None:
     try:
         from ...dashboard.export import salary_export, salary_filename
 
-        data = salary_export(from_date, to_date)
+        data = salary_export(from_date, to_date,
+                             route=_salary_routes(chat_id))
         name = salary_filename(from_date, to_date)
         reply(chat_id, f"📎 Oylik hisobot tayyor: {name}")
         from ..telegram import send_bytes
@@ -1898,11 +2025,11 @@ def handle_message(chat_id: int, text: str) -> None:
         return
     if cmd == "daily":
         from . import daily_summary
-        reply(chat_id, daily_summary.send_now())
+        reply(chat_id, daily_summary.send_now(f))
         return
     if cmd == "finesreport":
         from . import fines_report
-        reply(chat_id, fines_report.send_now())
+        reply(chat_id, fines_report.send_now(f))
         return
     if cmd == "ai":
         arg = " ".join(parts[1:]).strip()
@@ -1955,6 +2082,9 @@ def handle_message(chat_id: int, text: str) -> None:
               reply_markup=kb.nav_kb("nav:ai"))
         return
     if cmd == "insights":
+        if role is not Role.ADMIN:
+            reply(chat_id, DENIED_TEXT)
+            return
         from . import self_review
         reply(chat_id, self_review.send_now())
         return
@@ -1964,11 +2094,13 @@ def handle_message(chat_id: int, text: str) -> None:
     if cmd == "problems":
         reply(chat_id, *render.problems(f))
         return
-    if cmd == "reports":
-        reply(chat_id, *render.reports())
-        return
-    if cmd == "errors":
-        reply(chat_id, *render.errors())
+    if cmd in ("reports", "errors"):
+        # Tizim darajasidagi hisobot/xatolar — faqat ADMIN (multi-company).
+        if role is not Role.ADMIN:
+            reply(chat_id, DENIED_TEXT)
+            return
+        reply(chat_id, *(render.reports() if cmd == "reports"
+                         else render.errors()))
         return
     if cmd == "status":
         reply(chat_id, *render.status())
@@ -2120,6 +2252,11 @@ def handle_message(chat_id: int, text: str) -> None:
             reply(chat_id, DENIED_TEXT)
             return
         name = " ".join(parts[1:]).strip() or None
+        # Nom bilan /resend — faqat shu kompaniyaga ruxsat borlarga.
+        if name and role is not Role.ADMIN \
+                and name not in context.allowed_names(chat_id):
+            reply(chat_id, "Bu kompaniya sizga tegishli emas.")
+            return
         # Argument'siz /resend — ADMIN barcha profillarni, boshqalar faqat
         # o'ziga biriktirilgan yo'nalish(lar) bo'yicha qayta yuboradi.
         if name is None and role is not Role.ADMIN:
@@ -2332,6 +2469,10 @@ def handle_callback(chat_id: int, cq: dict, data: str) -> None:
                 return
             answer(cq)
             reply(chat_id, *render.brutto(f, chat_id=chat_id))
+            return
+        if target in ("reports", "insights") and role is not Role.ADMIN:
+            answer(cq, "Huquq yo'q")
+            reply(chat_id, DENIED_TEXT)
             return
         handlers = {
             "dashboard": lambda fl: render.today(fl, chat_id=chat_id),

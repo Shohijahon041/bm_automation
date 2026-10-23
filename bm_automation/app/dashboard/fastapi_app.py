@@ -17,7 +17,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..utils.logger import get_logger
@@ -69,13 +69,18 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    docs_on = (
+        os.environ.get("BM_TEST_MODE") == "1"
+        or os.environ.get("DASHBOARD_DOCS", "").strip().lower()
+        in ("1", "true", "yes", "on")
+    )
     app = FastAPI(
         title="BM Dashboard",
         version="2.0.0",
         lifespan=lifespan,
-        docs_url="/api/docs",
-        redoc_url="/api/redoc",
-        openapi_url="/api/openapi.json",
+        docs_url="/api/docs" if docs_on else None,
+        redoc_url="/api/redoc" if docs_on else None,
+        openapi_url="/api/openapi.json" if docs_on else None,
     )
 
     _cors_origins = [
@@ -97,6 +102,15 @@ def create_app() -> FastAPI:
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        response.headers.setdefault("Content-Security-Policy", "default-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; script-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' https://bmbrutto.uz http://127.0.0.1:* http://localhost:*;")
+        response.headers.setdefault("X-Robots-Tag", "noindex, nofollow")
+        path = request.url.path
+        is_photo = path.startswith("/api/drivers/") and path.endswith("/photo")
+        is_document = "/document/" in path
+        if path.startswith("/api/") and not (is_photo or is_document):
+            response.headers.setdefault("Cache-Control", "no-store")
         return response
 
     @app.middleware("http")
@@ -117,6 +131,23 @@ def create_app() -> FastAPI:
         if denied is not None:
             return denied
         return await call_next(request)
+
+    @app.middleware("http")
+    async def audit_mutations(request: Request, call_next):
+        """API mutatsiyalarini audit logga yozadi (parol/token emas)."""
+        response = await call_next(request)
+        path = request.url.path
+        if (request.method in ("POST", "PUT", "PATCH", "DELETE")
+                and path.startswith("/api/")
+                and path not in ("/api/login", "/api/logout")):
+            from .deps import audit_event
+            scope = getattr(request.state, "scope", None) or {}
+            audit_event("http.mutation", request,
+                        user=str(scope.get("username") or ""),
+                        target=path, ok=response.status_code < 400,
+                        detail=f"method={request.method} "
+                               f"status={response.status_code}")
+        return response
 
     # --- Routers ---
     from .routers import auth, data, drivers, admin, system
@@ -144,6 +175,21 @@ def create_app() -> FastAPI:
             resp.set_cookie("bm_token", dt, path="/", httponly=True,
                             samesite="lax", secure=request_is_https(request))
         return resp
+
+    if docs_on:
+        @app.get("/openapi.json", include_in_schema=False)
+        async def openapi_alias():
+            """Eski `/openapi.json` yo'lini haqiqiy `/api/openapi.json` ga yo'naltiradi."""
+            return RedirectResponse("/api/openapi.json", status_code=307)
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon_ico():
+        icon = WEB_DIR / "favicon.ico"
+        if icon.exists():
+            return FileResponse(
+                icon, media_type="image/x-icon",
+                headers={"Cache-Control": "public, max-age=604800"})
+        return Response(status_code=204)
 
     if WEB_DIR.exists():
         app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="static")
