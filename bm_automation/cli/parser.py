@@ -15,6 +15,7 @@ def build_parser() -> argparse.ArgumentParser:
         cmd_cleanup,
         cmd_daily,
         cmd_dashboard,
+        cmd_demo_seed,
         cmd_drivers,
         cmd_duty,
         cmd_gross_route,
@@ -58,6 +59,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_ka = sub.add_parser("keepalive", help="Tokenlarni tirik saqlash (refresh + tekshiruv)")
     p_ka.set_defaults(func=cmd_keepalive)
+
+    p_demo = sub.add_parser(
+        "demo-seed",
+        help="DEMO korxona + namuna haydovchi/avtobus/reyslarni yaratish")
+    p_demo.add_argument("--username", default="demo",
+                        help="Demo panel logini (default: demo)")
+    p_demo.add_argument("--password", default="",
+                        help="Demo panel paroli (bo'sh = avtomatik, bir marta chiqadi)")
+    p_demo.add_argument("--days", type=int, default=21,
+                        help="Oyna uzunligi, kunlarda (default: 21)")
+    p_demo.add_argument("--company", default="",
+                        help="Korxona nomi (default: DEMO KORXONA)")
+    p_demo.add_argument("--end-date", default="",
+                        help="Oyna oxiri YYYY-MM-DD (bo'sh = oxirgi real reys sanasi)")
+    p_demo.set_defaults(func=cmd_demo_seed)
     p_list = sub.add_parser("list-reports", help="Mavjud hisobotlarni ko'rsatish")
     p_list.set_defaults(func=cmd_list_reports)
 

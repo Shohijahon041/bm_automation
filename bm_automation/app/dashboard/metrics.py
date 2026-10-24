@@ -301,7 +301,12 @@ class Metrics:
         return names
 
     def _companies(self) -> dict:
-        """routeVariantId -> firma ma'lumoti (profiles.json)."""
+        """routeVariantId -> firma ma'lumoti.
+
+        Manba: profiles.json (ustuvor). Unda yo'q faol tenantlar (masalan
+        DEMO korxona) DB `profiles` jadvalidan qo'shiladi — `company_routes`
+        bilan bir xil fallback.
+        """
         if self._companies_cache is not None:
             return self._companies_cache
         from ..core.profiles import all_profiles
@@ -313,6 +318,26 @@ class Metrics:
                     "company": str(p.get("name") or ""),
                     "route_name": str(p.get("routeName") or ""),
                 }
+        try:
+            from ..core.tenant import company_active, company_state
+            known = {str(v.get("company") or "").strip().lower()
+                     for v in out.values() if str(v.get("company") or "").strip()}
+            for r in self.storage.query(
+                    "SELECT route_id, name, route_name FROM profiles "
+                    "WHERE route_id != '' AND company_id != 0", limit=10000):
+                rid = str(r.get("route_id") or "").strip()
+                name = str(r.get("name") or "").strip()
+                if not rid or not name or rid in out or name.lower() in known:
+                    continue
+                state = company_state(name, storage=self.storage)
+                if not company_active(state):
+                    continue
+                out[rid] = {
+                    "company": name,
+                    "route_name": str(r.get("route_name") or ""),
+                }
+        except Exception:  # noqa: BLE001 - DB yo'q bo'lsa profiles.json yetarli
+            pass
         self._companies_cache = out
         return out
 

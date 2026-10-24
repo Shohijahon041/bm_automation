@@ -30,6 +30,48 @@ def cmd_login_browser(args) -> int:
     return browser_run(args.extra)
 
 
+def cmd_demo_seed(args) -> int:
+    """DEMO korxona + namuna ma'lumotlarni yaratish (idempotent)."""
+    from ..app.dashboard.demo_seed import seed_demo
+
+    try:
+        res = seed_demo(
+            username=args.username,
+            password=args.password or "",
+            days=args.days,
+            company_name=args.company or "",
+            end_date=args.end_date or "",
+        )
+    except (ValueError, RuntimeError) as exc:
+        print(f"XATO: {exc}", file=sys.stderr)
+        return 1
+
+    w = res["window"]
+    c = res["counts"]
+    print(f"DEMO korxona tayyor: {res['company']} (#{res['company_id']})")
+    print(f"  Login:  {res['username']}")
+    if res["password"]:
+        print(f"  Parol:  {res['password']}   (faqat bir marta ko'rsatiladi)")
+    elif res["user_created"]:
+        print("  Parol:  --password bilan berilgan")
+    else:
+        print("  Parol:  o'zgartirilmadi (mavjud akkaunt)")
+    print(f"  Rol:    {res['role']}")
+    print("  Yo'nalishlar: " + ", ".join(
+        f"{r['id']} ({r['km']:g} km)" for r in res["routes"]))
+    print(f"  Oyna:   {w['from']} .. {w['to']} ({w['days']} kun)")
+    print(f"  Yozuvlar: {c['trips']} reys, {c['route_daily']} kunlik, "
+          f"{c['schedules']} grafik, {c['work_logs']} AVTO qayd, "
+          f"{c['drivers']} haydovchi, {c['vehicles']} avtobus")
+    print(f"  Qo'shimcha: {c['fines']} jarima, {c['appeals']} murojaat, "
+          f"{c['avans']} avans")
+    for msg in res["warnings"]:
+        print(f"  OGOHLANTIRISH: {msg}")
+    print("  Eslatma: panel allaqachon ishlab turgan bo'lsa, tenant keshi "
+          "30 soniyada yangilanadi.")
+    return 0
+
+
 def cmd_keepalive(args) -> int:
     """Tokenlarni tirik saqlash: refresh rotatsiyasi + tekshiruv so'rovi.
 
