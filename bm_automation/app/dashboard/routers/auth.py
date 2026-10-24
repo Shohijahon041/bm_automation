@@ -205,6 +205,31 @@ def me(request: Request, response: Response,
               for p in all_profiles()
               if str(p.get("name") or "").strip().lower()
               == company_name.strip().lower()]
+    if not routes and company_name:
+        # profiles.json'da yozuvi yo'q tenantlar (masalan DEMO korxona):
+        # yo'nalishlar `routes` jadvalidan olinadi — company_routes fallback.
+        from ...core.tenant import company_routes
+        try:
+            ids = company_routes(company_name)
+            names: dict[str, str] = {}
+            if ids:
+                from ...db.storage import get_storage
+                st = get_storage()
+                if st.enabled:
+                    ph = st.db.ph
+                    marks = ",".join(ph for _ in ids)
+                    for r in st.query(
+                            "SELECT external_id, name FROM routes WHERE "
+                            f"external_id IN ({marks})", tuple(ids),
+                            limit=1000):
+                        rid = str(r.get("external_id") or "")
+                        if rid:
+                            names[rid] = str(r.get("name") or "")
+            routes = [{"routeVariantId": rid,
+                       "routeName": names.get(rid) or rid}
+                      for rid in ids]
+        except Exception:  # noqa: BLE001 - DB yo'q bo'lsa bo'sh ro'yxat qoladi
+            routes = []
     return {
         "ok": True,
         "username": scope.get("username") or "",

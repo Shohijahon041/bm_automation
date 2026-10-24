@@ -196,6 +196,25 @@ def company_routes(company_name: str, storage=None) -> list[str]:
             for rid, cid in _CACHE["route_to_cid"].items():
                 if cid == state["id"] and rid not in out:
                     out.append(rid)
+    if out or not state:
+        return out
+    # Oxirgi fallback: `routes` jadvali — DB `profiles` qatori bo'lmagan
+    # tenantlar uchun (masalan DEMO korxona; profiles.name unikal).
+    try:
+        from ..db import storage as storage_mod
+
+        st = storage if storage is not None else storage_mod.get_storage()
+        if st.enabled:
+            ph = st.db.ph
+            for r in st.query(
+                    "SELECT external_id FROM routes WHERE company_id = "
+                    f"{ph} AND entity_type = {ph}",
+                    (int(state["id"]), "ROUTE"), limit=1000):
+                rid = str(r.get("external_id") or "").strip()
+                if rid and rid not in out:
+                    out.append(rid)
+    except Exception:  # noqa: BLE001 - DB yo'q bo'lsa profiles.json natijasi qoladi
+        pass
     return out
 
 

@@ -303,9 +303,9 @@ class Metrics:
     def _companies(self) -> dict:
         """routeVariantId -> firma ma'lumoti.
 
-        Manba: profiles.json (ustuvor). Unda yo'q faol tenantlar (masalan
-        DEMO korxona) DB `profiles` jadvalidan qo'shiladi — `company_routes`
-        bilan bir xil fallback.
+        Manba: profiles.json (ustuvor). Unda yo'q faol tenantlar DB'dan
+        to'ldiriladi: avval `profiles` jadvali, u bo'lmasa `routes`
+        (masalan DEMO korxona — profiles.name unikal).
         """
         if self._companies_cache is not None:
             return self._companies_cache
@@ -322,12 +322,38 @@ class Metrics:
             from ..core.tenant import company_active, company_state
             known = {str(v.get("company") or "").strip().lower()
                      for v in out.values() if str(v.get("company") or "").strip()}
+            profiled_cids: set[int] = set()
             for r in self.storage.query(
-                    "SELECT route_id, name, route_name FROM profiles "
+                    "SELECT route_id, name, route_name, company_id FROM profiles "
                     "WHERE route_id != '' AND company_id != 0", limit=10000):
+                cid = int(r.get("company_id") or 0)
+                if cid:
+                    profiled_cids.add(cid)
                 rid = str(r.get("route_id") or "").strip()
                 name = str(r.get("name") or "").strip()
                 if not rid or not name or rid in out or name.lower() in known:
+                    continue
+                state = company_state(name, storage=self.storage)
+                if not company_active(state):
+                    continue
+                out[rid] = {
+                    "company": name,
+                    "route_name": str(r.get("route_name") or ""),
+                }
+
+            # profiles qatori yo'q faol tenantlar: yo'nalishlar `routes`dan.
+            ph = self.ph
+            for r in self.storage.query(
+                    "SELECT r.external_id AS route_id, r.name AS route_name, "
+                    "r.company_id AS company_id, c.name AS company "
+                    "FROM routes r JOIN companies c ON c.id = r.company_id "
+                    "WHERE r.external_id != '' AND r.company_id != 0 "
+                    f"AND r.entity_type = {ph}", ("ROUTE",), limit=10000):
+                rid = str(r.get("route_id") or "").strip()
+                name = str(r.get("company") or "").strip()
+                cid = int(r.get("company_id") or 0)
+                if (not rid or not name or rid in out
+                        or cid in profiled_cids):
                     continue
                 state = company_state(name, storage=self.storage)
                 if not company_active(state):

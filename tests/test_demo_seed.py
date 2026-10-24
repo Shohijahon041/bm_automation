@@ -84,11 +84,14 @@ def test_seed_creates_company_user_and_catalog(denv):
     assert set(data["pages"]) == set(DEMO_PAGES)
 
     cid = res["company_id"]
-    assert {r["route_id"] for r in st.query(
-        "SELECT route_id FROM profiles")} == {"DEMO-R01", "DEMO-R02"}
+    # profiles.name production sxemasida unikal — demo uni yozmaydi,
+    # tenant yo'nalishlari `routes` jadvalidan olinadi.
+    assert st.query("SELECT COUNT(*) AS n FROM profiles")[0]["n"] == 0
+    assert {r["external_id"] for r in st.query(
+        "SELECT external_id FROM routes")} == {"DEMO-R01", "DEMO-R02"}
     assert st.query("SELECT COUNT(*) AS n FROM vehicles")[0]["n"] == 6
     assert st.query("SELECT COUNT(*) AS n FROM driver_profiles")[0]["n"] == 8
-    for table in ("profiles", "routes", "vehicles", "drivers",
+    for table in ("routes", "vehicles", "drivers",
                   "driver_profiles", "trips", "route_daily", "schedules",
                   "driver_work_logs", "driver_fines", "driver_appeals",
                   "avans"):
@@ -271,6 +274,37 @@ def test_route_options_include_demo_pills(denv):
     tenant_mod.reset()
     opts = {o["id"]: o for o in metrics_mod.route_options()}
     assert "DEMO-R01" not in opts
+
+
+def test_me_returns_demo_route_pills(denv, monkeypatch, tmp_path):
+    """profiles.json'da profili yo'q tenant ham /api/me'da yo'nalish oladi."""
+    from fastapi.testclient import TestClient
+
+    seed_demo(storage=denv, username="demo", password="DemoParol123",
+              days=2, end_date="2026-10-20")
+    monkeypatch.delenv("BM_TEST_MODE", raising=False)
+    monkeypatch.setattr(deps, "_dashboard_token", lambda: "")
+    monkeypatch.setattr(deps, "_sessions_file",
+                        lambda: tmp_path / "sessions.json")
+    with deps._SESSION_LOCK:
+        deps._sessions = {}
+    with deps._LOGIN_LOCK:
+        deps._login_fails.clear()
+        deps._login_blocked_until.clear()
+    monkeypatch.setattr(deps, "_POST_MIN_INTERVAL_S", 0.0)
+    monkeypatch.setattr(deps, "_LOGIN_MIN_INTERVAL_S", 0.0)
+
+    from bm_automation.app.dashboard.fastapi_app import app
+    client = TestClient(app)
+    res = client.post("/api/login", json={"username": "demo",
+                                          "password": "DemoParol123"})
+    assert res.status_code == 200
+    me = client.get("/api/me").json()
+    routes = {r["routeVariantId"]: r["routeName"]
+              for r in me["company"]["routes"]}
+    assert set(routes) == {"DEMO-R01", "DEMO-R02"}
+    assert routes["DEMO-R01"].startswith("DEMO ")
+    assert me["company"]["routeCount"] == 2
 
 
 def test_cli_parser_wires_demo_seed():

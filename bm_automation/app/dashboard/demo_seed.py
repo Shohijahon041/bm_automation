@@ -130,20 +130,14 @@ def _ensure_company(storage, company_name: str) -> tuple[int, dict, bool]:
     return int(row["id"]), row, created
 
 
-def _seed_catalog(storage, cid: int, company_name: str) -> None:
-    """Profillar, yo'nalishlar, avtobuslar, haydovchilar va profillari."""
+def _seed_catalog(storage, cid: int) -> None:
+    """Yo'nalishlar, avtobuslar, haydovchilar va profillari.
+
+    `profiles` jadvaliga yozilmaydi: unda `name` unikal (production sxemasi)
+    — bitta korxonaning bir nechta yo'nalishini saqlab bo'lmaydi. Tenant
+    yo'nalishlari `routes` jadvalidan olinadi (company_routes fallback).
+    """
     for rid, rname, _km in _DEMO_ROUTES:
-        storage.upsert("profiles", ["name", "route_id"], {
-            "external_id": f"demo-profile-{rid}",
-            "name": company_name,
-            "route_id": rid,
-            "profile_id": rid,
-            "route_name": rname,
-            "start1": _TIMES[0],
-            "start2": _TIMES[-1],
-            "data": _js({"demo": True, "kmRate": DEMO_KM_RATE}),
-            "company_id": cid,
-        })
         storage.upsert("routes", ["external_id"], {
             "external_id": rid,
             "name": rname,
@@ -509,7 +503,7 @@ def seed_demo(storage=None, *, username: str = DEMO_USERNAME,
     tenant.reset()
     deps.invalidate_user_access(username)
 
-    _seed_catalog(storage, cid, company_name)
+    _seed_catalog(storage, cid)
 
     start = (datetime.strptime(end, "%Y-%m-%d").date()
              - timedelta(days=days - 1)).isoformat()
