@@ -1057,8 +1057,9 @@ function showTab(t) {
   tr.setAttribute('aria-pressed', t === 'rec' ? 'true' : 'false');
   if (location.hash !== '#' + t) { try { history.replaceState(null, '', '#' + t); } catch (e) {} }
   if (t === 'gps') { initMaps(); setTimeout(function () { map.invalidateSize(); }, 60); }
-  if (t === 'video') { loadJtStreams(); refreshCams(); }
-  if (t === 'setka') { loadJtStreams(); sgSig = ''; _sgPoll(); }
+  if (t === 'video') { loadJtStreams(); refreshCams(); mountJtGridStreams(); }
+  else destroyJtPlayers();   /* video varaqdan chiqildi — oqimlar bo'shatilsin */
+  if (t === 'setka') { loadJtStreams(); sgResetTiles(); _sgPoll(); }
   else sgDestroyPlayers();   /* setkadan chiqildi — brauzer pleyerlarini bo'shatamiz */
   if (t === 'rec') {
     loadJtStreams();
@@ -1988,6 +1989,10 @@ function delCam(id) { if (!confirm("Kamerani o'chirish?")) return; API.del('/api
 /* ============ JT1078 / CMSV6 4G kameralar (avto-aniqlangan) ============ */
 var jtStreams = [], jtDevices = [], jtSig = '', jtHlsMap = {};
 var jtRecent = [], jtStarting = {};
+/* sim -> oxirgi marta JT808 signal ro'yxatida ko'rilgan vaqt (ms). Kamera
+   qayta ulanganda ro'yxatdan bir zum tushib qoladi — 60s "imtiyoz" bilan
+   online/offline holati va video devori sakrab o'zgarmaydi. */
+var jtOnlineSeen = {}, JT_ONLINE_GRACE_MS = 60000;
 function fmtBytes(n) {
   n = n || 0;
   if (n < 1024) return n + ' B';
@@ -1999,6 +2004,8 @@ function loadJtStreams() {
     var now = Date.now();
     jtStreams = (d.streams || []).map(function (s) { s._at = now; return s; });
     jtDevices = d.devices || [];
+    var _nowMs = Date.now();
+    jtDevices.forEach(function (p) { jtOnlineSeen[String(p)] = _nowMs; });
     jtBindings = d.bindings || {};
     jtChannels = parseInt(d.camera_channels, 10) || 4;
     jtAssist = {};
@@ -2049,6 +2056,15 @@ function jtDiagHtml(s) {
       ' oldin</span>');
   }
   parts.push('<span>' + (s.frames || 0) + ' kadr · ' + (s.keyframes || 0) + ' kalit</span>');
+  var fa = _ageAt(s, 'frame_age_s');
+  if (fa !== null && fa > 8) {
+    parts.push('<span class="warn" title="Kameradan yangi kadr kelmayapti — server 0x9101 ni qayta so\'raydi"><i class="ic sm">' +
+      featherIcon("alert-triangle") + '</i>kadr kelmayapti (' + fmtAge(fa) + ')</span>');
+  }
+  if (s.re_requests) {
+    parts.push('<span title="Oqim qotib qolganda yuborilgan 0x9101 qayta so\'rovlari">' +
+      '<i class="ic sm">' + featherIcon("refresh-cw") + '</i>0x9101 ×' + s.re_requests + '</span>');
+  }
   if (s.uptime_s) parts.push('<span>' + fmtAge(s.uptime_s) + ' efirda</span>');
   if (s.restarts) parts.push('<span class="warn"><i class="ic sm">' + featherIcon("refresh-cw") + '</i>' + s.restarts + ' marta qayta</span>');
   var html = '<div class="jt-diag-line">' + parts.join(' · ') + '</div>';
@@ -2108,13 +2124,24 @@ function _jtShownStreams() {
 function _jtDeviceUniverse() {
   var m = {};
   jtDevices.forEach(function (p) { m[String(p)] = 1; });
+  /* Imtiyoz oynasidagi qurilmalar ham ro'yxatda qoladi (signal sakrashi). */
+  var tn = Date.now();
+  Object.keys(jtOnlineSeen).forEach(function (p) {
+    if (tn - jtOnlineSeen[p] < JT_ONLINE_GRACE_MS) m[String(p)] = 1;
+  });
   Object.keys(jtBindings).forEach(function (p) { m[String(p)] = 1; });
   Object.keys(jtAssist).forEach(function (p) { m[String(p)] = 1; });
   jtStreams.forEach(function (s) { m[String(s.sim)] = 1; });
   return Object.keys(m);
 }
 function _jtIsOnline(sim) {
-  return jtDevices.some(function (p) { return String(p) === String(sim); });
+  if (jtDevices.some(function (p) { return String(p) === String(sim); })) return true;
+  /* Kamera JT808 signal ulanishini qisqa-qisqa yangilaydi — bir poll'da
+     ro'yxatdan tushib qolsa karta "oflayn"ga sakrab, video devori qayta
+     qurilib, barcha pleyerlar uzilardi. Shu sababli qurilma 60s ichida
+     ko'rilgan bo'lsa ham onlayn hisoblanadi. */
+  var t = jtOnlineSeen[String(sim)];
+  return !!t && (Date.now() - t) < JT_ONLINE_GRACE_MS;
 }
 function _jtShownDevices() {
   return _jtDeviceUniverse().filter(_jtCamOn);
@@ -2122,7 +2149,11 @@ function _jtShownDevices() {
 function renderJtStreams() {
   var g = document.getElementById('jt-grid');
   if (!g) return;
-  var sig = jtDevices.slice().sort().join(',') + '|' +
+  /* DIQQAT: `jtDevices` (jonli TCP sessiyalari) EMAS — kamera signal
+     ulanishini yangilaganda ro'yxat bir zum o'zgarib, barcha video
+     pleyerlar qayta qurilardi. Imtiyoz oynasi bilan barqaror to'plam
+     (`_jtDeviceUniverse`) ishlatiladi. */
+  var sig = _jtDeviceUniverse().filter(_jtCamOn).sort().join(',') + '|' +
     jtStreams.filter(function (s) { return s.kind !== 'playback'; })
       .map(function (s) { return s.sim + '_' + s.channel; }).sort().join(',') +
     '#' + _vidBusSig() + '|' + Object.keys(jtBindings).length + '|' + Object.keys(jtAssist).length;
@@ -2139,8 +2170,23 @@ function renderJtStreams() {
   g.innerHTML = html;
   var e = document.getElementById('jt-empty');
   if (e) e.style.display = (shownStreams.length || _jtShownDevices().length) ? 'none' : 'block';
-  shownStreams.forEach(function (s) { mountJtHls(s); });
+  /* KO'RINMAYDIGAN varaqda pleyer ochmaymiz: Setka ochiq bo'lsa ham shu
+     ro'yxat fon rejimida ikkinchi FLV oqimini tortib, 4G'ni ikki barobar
+     yeb qo'yardi (oqim qotishining sabablaridan biri). */
+  if (_videoTabVisible()) mountJtGridStreams();
   updateJtDiag();
+}
+function _videoTabVisible() {
+  var v = document.getElementById('video');
+  return !!v && v.style.display === 'block';
+}
+function mountJtGridStreams() {
+  _jtShownStreams().forEach(function (s) {
+    var key = 'jt-' + s.sim + '-' + s.channel;
+    var m = streamMounts[key];
+    if (m && m.map[key]) return;   /* pleyer allaqachon ochiq */
+    mountJtHls(s);
+  });
 }
 function jtStreamCard(s) {
   var vid = 'jt-' + s.sim + '-' + s.channel;
@@ -2410,9 +2456,8 @@ function destroyJtPlayers() {
     try { if (jtHlsMap[k]) jtHlsMap[k].destroy(); } catch (e) {}
   });
   Object.keys(streamMounts).forEach(function (k) {
-    if (streamMounts[k].map === jtHlsMap) delete streamMounts[k];
+    if (streamMounts[k].map === jtHlsMap) { delete streamMounts[k]; delete flvRetry[k]; }
   });
-  flvRetry = {};
   jtHlsMap = {};
 }
 function mountJtHls(s) {
@@ -2426,6 +2471,9 @@ function mountJtHls(s) {
    beradi (jt-grid → jtHlsMap, Setka → sgPlayers) — biri ikkinchisining
    pleyerini buzmaydi. */
 var streamMounts = {}, flvRetry = {};
+/* Jonli oqim qotish nazorati holati: key -> {t: currentTime, at: ms} va
+   key -> qayta ulashlar soni (kadr kela boshlaganda nolga tushadi). */
+var _streamWatch = {}, _streamRestart = {};
 function streamState(v, key, state, text) {
   if (!v || !v.parentNode) return;
   var box = v.parentNode.querySelector('.stream-state');
@@ -2457,7 +2505,61 @@ function retryStream(key) {
   info.v.removeAttribute('src');
   try { info.v.load(); } catch (e) {}
   flvRetry[key] = 0;
+  _streamWatch[key] = null;
   mountStreamTo(info.s, info.v, key, info.map);
+}
+/* Jonli oqim "qotishini" aniqlash. flv.js/HLS buffer bo'shab qolsa
+   currentTime to'xtaydi, lekin ERROR hodisasi CHIQMAYDI — pleyer oxirgi
+   kadrda muzlab qoladi (20-30s "pauza" shu edi). Shu sababli vaqt bo'yicha
+   kuzatamiz va kerak bo'lsa oqimni qayta ulaymiz (server tomonda esa
+   kadr kelmasa 0x9101 qayta so'raladi). */
+var _STALL_MS = 10000;      /* currentTime shu vaqt o'zgarmasa — qotgan */
+var _STALL_MAX = 6;         /* ketma-ket qayta ulash chegarasi */
+function _streamWatchTick() {
+  if (document.hidden) { _streamWatch = {}; return; }
+  var now = Date.now();
+  Object.keys(streamMounts).forEach(function (key) {
+    var m = streamMounts[key];
+    if (!m || !m.v || !m.v.isConnected || !m.map[key]) return;
+    var v = m.v;
+    if (v.ended) return;
+    if (v.paused) {
+      /* Pleyer pauzada qolib ketgan (avto-play bloklangan) — muted oqimda
+         qayta urinamiz; foydalanuvchi pauza qilgan bo'lsa brauzer rad etadi. */
+      if (v.readyState >= 2) { try { v.play().catch(function () {}); } catch (e) {} }
+      _streamWatch[key] = null;
+      return;
+    }
+    var w = _streamWatch[key];
+    if (!w || Math.abs(v.currentTime - w.t) > 0.05) {
+      _streamWatch[key] = {t: v.currentTime, at: now};
+      return;
+    }
+    /* currentTime qimirlamayapti: buffer bo'sh (readyState < 3) yoki
+       dekoder to'xtagan. Yetarli vaqt o'tgan bo'lsa qayta ulaymiz. */
+    if (now - w.at < _STALL_MS) return;
+    var n = (_streamRestart[key] || 0) + 1;
+    _streamRestart[key] = n;
+    _streamWatch[key] = null;
+    if (n > _STALL_MAX) {
+      streamState(v, key, 'error', 'Video oqimi uzildi');
+      return;
+    }
+    streamState(v, key, 'loading', n === 1
+      ? 'Oqim qotdi — qayta ulanmoqda…'
+      : 'Qayta ulanmoqda (' + n + ')…');
+    try { retryStream(key); } catch (e) {}
+  });
+  Object.keys(_streamWatch).forEach(function (k) {
+    if (!streamMounts[k]) delete _streamWatch[k];
+  });
+}
+/* Ochiq (ro'yxatga olingan) ulanishmi? Varaq almashganda pleyer
+   yopiladi — kechiktirilgan qayta urinishlar o'lik ulanishni tiriltirmasin
+   (aks holda yopilgan Video varaq fon rejimida oqim tortishda davom etardi). */
+function _mountAlive(key, v, map) {
+  var m = streamMounts[key];
+  return !!m && m.v === v && m.map === map;
 }
 function mountStreamTo(s, v, key, map) {
   streamMounts[key] = {s: s, v: v, map: map};
@@ -2470,6 +2572,7 @@ function mountStreamTo(s, v, key, map) {
   if (waitMs > 50) {
     streamState(v, key, 'loading', 'Oqim tayyorlanmoqda…');
     setTimeout(function () {
+      if (!_mountAlive(key, v, map)) return;
       if (!v.isConnected || document.getElementById(v.id) !== v) return;
       if (map[key]) return;
       mountStreamTo(s, v, key, map);
@@ -2477,11 +2580,16 @@ function mountStreamTo(s, v, key, map) {
     return;
   }
   streamState(v, key, 'loading', 'Video yuklanmoqda…');
-  v.onplaying = function () { flvRetry[key] = 0; streamState(v, key, 'ready', ''); };
+  v.onplaying = function () {
+    flvRetry[key] = 0;
+    _streamRestart[key] = 0;   /* oqim tiklandi — qotish hisoblagichi nolga */
+    streamState(v, key, 'ready', '');
+  };
   v.oncanplay = function () { flvRetry[key] = 0; streamState(v, key, 'ready', ''); };
   if (s.flv && !window.flvjs) {
     /* flv.js hali yuklanmagan — yuklab bo'lgach qayta urinamiz. */
     _loadJtLib('flv', function (ok) {
+      if (!_mountAlive(key, v, map)) return;
       if (document.getElementById(v.id) !== v) return;   /* oqim yopilgan */
       if (ok) mountStreamTo(s, v, key, map);
       else mountHlsTo(s, v, key, map);
@@ -2508,6 +2616,7 @@ function mountStreamTo(s, v, key, map) {
         if (n <= 3 && v.isConnected) {
           streamState(v, key, 'loading', 'Oqim tayyorlanmoqda…');
           setTimeout(function () {
+            if (!_mountAlive(key, v, map)) return;
             if (!v.isConnected || map[key]) return;
             mountStreamTo(s, v, key, map);
           }, 1200);
@@ -2533,6 +2642,7 @@ function mountHlsTo(s, v, key, map) {
   }
   if (!window.Hls) {
     _loadJtLib('hls', function (ok) {
+      if (!_mountAlive(key, v, map)) return;
       if (ok && v.isConnected) mountHlsTo(s, v, key, map);
       else if (v.isConnected) streamState(v, key, 'error', 'Video kutubxonasi yuklanmadi');
     });
@@ -2566,6 +2676,7 @@ function mountHlsTo(s, v, key, map) {
    varaqda; plitka bosilsa SUBSTREAM (yengil oqim) ochiladi/to'xtatiladi,
    "Barchasini boshlash" tanlangan kanaldagi hamma kamerani birdan ochadi. */
 var sgCh = 1, sgPlayers = {}, sgSig = '', sgChSig = '', sgChSet = false;
+var sgTiles = {};   /* sim -> {type:'live'|'idle', el, busy} — DOM bilan solishtirish */
 function _sgVisible() {
   var b = document.getElementById('setka');
   return !!b && b.style.display !== 'none';
@@ -2581,12 +2692,16 @@ function sgDevices() {
     return String(_sgName(a)).localeCompare(String(_sgName(b)), 'uz');
   });
 }
-function sgSigOf() {
-  return jtDevices.slice().sort().join(',') + '|' +
-    jtStreams.filter(function (s) { return s.kind !== 'playback'; })
-      .map(function (s) { return s.sim + '_' + s.channel; }).sort().join(',') + '|' +
-    Object.keys(jtBindings).length + '|' + Object.keys(jtAssist).length + '|' +
-    _vidBusSig() + '|' + sgCh;
+/* Plitkalar to'plami imzosi. DIQQAT: bu yerda `jtDevices` (JT808 signal
+   ulanishlari) QATNASHMAYDI — kamera qisqa-qisqa qayta ulanganda signal
+   ro'yxati o'zgarib, butun video devori qayta qurilib, barcha pleyerlar
+   uzilib qolardi (20-30s "pauza"). Grid faqat jonli plitkalar to'plamiga
+   qarab yangilanadi. */
+function sgGridSig(live, idle) {
+  return live.map(function (s) { return 'L' + s; }).join(',') + '|' +
+    idle.map(function (s) {
+      return 'I' + s + (jtStarting[jtStartKey(s, sgCh)] ? '*' : '');
+    }).join(',');
 }
 /* Kanal bo'yicha jonli oqimlar soni (playback hisoblanmaydi) */
 function _sgLiveChannelCounts() {
@@ -2636,18 +2751,15 @@ function sgRender() {
     return !jtChLive(sim, sgCh) && _jtIsOnline(sim);
   });
   var off = all.filter(function (sim) { return !_jtIsOnline(sim); });
-  var sig = sgSigOf() + '|' + live.length;
-  if (sig === sgSig) { _sgDiag(); return; }   /* o'zgarish yo'q — pleyerlarni uzmaymiz */
-  sgSig = sig;
-  sgDestroyPlayers();
   var g = document.getElementById('sg-grid');
   if (!g) return;
-  g.innerHTML = live.map(sgTile).join('') + idle.map(sgIdleTile).join('');
+  /* Oflayn ro'yxati/izohlar pleyersiz — har safar yangilanadi (arzon). */
   var ob = document.getElementById('sg-off');
   if (ob) {
     ob.style.display = off.length ? 'block' : 'none';
-    ob.innerHTML = '<div class="sg-offhead"><i class="ic sm">' + featherIcon('wifi-off') + '</i>Oflayn kameralar (' + off.length + ')</div>' +
+    var offHtml = '<div class="sg-offhead"><i class="ic sm">' + featherIcon('wifi-off') + '</i>Oflayn kameralar (' + off.length + ')</div>' +
       off.map(sgOffRow).join('');
+    if (ob._html !== offHtml) { ob.innerHTML = offHtml; ob._html = offHtml; }
   }
   var e = document.getElementById('sg-empty');
   if (e) e.style.display = all.length ? 'none' : 'block';
@@ -2656,8 +2768,65 @@ function sgRender() {
     info.textContent = '· kanal ' + sgCh + ' · ' + live.length + ' jonli' +
       (off.length ? ' · ' + off.length + ' oflayn' : '');
   }
-  live.forEach(function (sim) { sgMount(sim); });
+  var sig = sgGridSig(live, idle);
+  if (sig !== sgSig) {
+    sgSig = sig;
+    /* Plitkalarni JOYIDA solishtiramiz: faqat qo'shilgan/o'zgarganlar
+       yaratiladi, qolgan pleyerlar DOM'da tegilmaydi (oqim uzilmaydi). */
+    sgReconcileGrid(g, live, idle);
+  }
   _sgDiag();
+}
+function sgReconcileGrid(g, live, idle) {
+  var want = {};
+  live.forEach(function (sim) { want[sim] = 'live'; });
+  idle.forEach(function (sim) { want[sim] = 'idle'; });
+  Object.keys(sgTiles).forEach(function (sim) {
+    var t = sgTiles[sim];
+    var keep = want[sim] === t.type &&
+      (t.type !== 'idle' ||
+       !!t.busy === !!jtStarting[jtStartKey(sim, sgCh)]);
+    if (keep) return;
+    sgUnmountTile(sim);
+  });
+  live.forEach(function (sim) {
+    if (sgTiles[sim]) return;
+    g.insertAdjacentHTML('beforeend', sgTile(sim));
+    sgTiles[sim] = {type: 'live', el: g.lastElementChild};
+    sgMount(sim);
+  });
+  idle.forEach(function (sim) {
+    if (sgTiles[sim]) return;
+    g.insertAdjacentHTML('beforeend', sgIdleTile(sim));
+    sgTiles[sim] = {
+      type: 'idle', el: g.lastElementChild,
+      busy: !!jtStarting[jtStartKey(sim, sgCh)]
+    };
+  });
+}
+function sgUnmountTile(sim) {
+  var t = sgTiles[sim];
+  if (!t) return;
+  if (t.type === 'live') {
+    var key = 'sgv-' + sim;
+    var m = streamMounts[key];
+    if (m) {
+      try { if (m.map[key]) m.map[key].destroy(); } catch (e) {}
+      delete m.map[key];
+      delete streamMounts[key];
+    }
+    delete flvRetry[key];
+  }
+  if (t.el && t.el.parentNode) t.el.parentNode.removeChild(t.el);
+  delete sgTiles[sim];
+}
+function sgResetTiles() {
+  /* Kanal almashdi / tab qayta ochildi — barchasini noldan quramiz. */
+  var g = document.getElementById('sg-grid');
+  if (g) g.innerHTML = '';
+  sgTiles = {};
+  sgSig = '';
+  sgDestroyPlayers();
 }
 function sgTile(sim) {
   var name = _sgName(sim);
@@ -2725,6 +2894,15 @@ function _sgDiag() {
     var el = document.getElementById('sgb-' + s.sim);
     if (el) el.textContent = fmtBytes(s.bytes);
   });
+  /* Avtobus nomi keyin bog'langan bo'lsa (bindings kech keldi) — plitka
+     yozuvini joyida yangilaymiz (pleyerni uzmasdan). */
+  Object.keys(sgTiles).forEach(function (sim) {
+    var t = sgTiles[sim];
+    if (!t || !t.el) return;
+    var nm = t.el.querySelector('.nm');
+    var want = _sgName(sim);
+    if (nm && nm.textContent !== want) nm.textContent = want;
+  });
   /* Oflayn qatorlardagi "oxirgi ko'rinish" vaqtini yangilash
      (render'ni qayta chizmasdan — pleyerlar uzilmasin). */
   sgDevices().forEach(function (sim) {
@@ -2747,9 +2925,8 @@ function sgDestroyPlayers() {
     try { if (sgPlayers[k]) sgPlayers[k].destroy(); } catch (e) {}
   });
   Object.keys(streamMounts).forEach(function (k) {
-    if (streamMounts[k].map === sgPlayers) delete streamMounts[k];
+    if (streamMounts[k].map === sgPlayers) { delete streamMounts[k]; delete flvRetry[k]; }
   });
-  flvRetry = {};
   sgPlayers = {};
 }
 function sgSetCh(c) {
@@ -2757,7 +2934,7 @@ function sgSetCh(c) {
   if (c === sgCh) return;
   sgCh = c;
   sgChSet = true;   /* foydalanuvchi qo'lda tanladi — avto-kanal endi ishlamaydi */
-  sgSig = '';
+  sgResetTiles();
   sgRenderCh();
   sgRender();
 }
@@ -4275,6 +4452,8 @@ setInterval(refresh, 10000);
 setInterval(loadVehicles, 30000);   /* sanagich/kamera bog'lanishi yangilansin */
 setInterval(refreshCams, 30000);
 setInterval(loadJtStreams, 5000);
+/* Jonli pleyerlar qotib qolsa (flv.js ERROR bermaydi) qayta ulanadi. */
+setInterval(_streamWatchTick, 4000);
 setInterval(loadAlerts, 20000);
 setInterval(tickClock, 1000);
 window.addEventListener('resize', function () { if (map) map.invalidateSize(); });

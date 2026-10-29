@@ -43,6 +43,15 @@ def _int_or(qs: dict, key: str, default=None):
         return default
 
 
+def _client_is_local(handler: BaseHTTPRequestHandler) -> bool:
+    """So'rov loopback'dan kelganmi (token sozlanmagan rejim uchun)."""
+    try:
+        host = str((handler.client_address or ("",))[0]).strip().lower()
+    except (AttributeError, IndexError, TypeError):
+        return False
+    return host in ("127.0.0.1", "::1", "localhost") or host.startswith("127.")
+
+
 def _check_token(handler: BaseHTTPRequestHandler, qs: dict | None = None) -> bool:
     """DASHBOARD_TOKEN sozlangan bo'lsa tekshiradi (dashboard bilan bir xil).
 
@@ -56,20 +65,23 @@ def _check_token(handler: BaseHTTPRequestHandler, qs: dict | None = None) -> boo
     Bo'sh yoki noto'g'ri Bearer boshqa usullarni bloklamaydi: dashboard
     `bmFetch` har doim `Authorization: Bearer <token>` yuboradi (token
     bo'lmasa bo'sh) — shuning uchun bu yerda erta `return False` qilinmaydi.
+    Token umuman sozlanmagan bo'lsa API faqat loopback'dan ochiq (fail-closed
+    — 0.0.0.0'da avtomatik ochilib qolmasin).
     """
     if not config.GPS_API_TOKEN:
-        return True
+        return _client_is_local(handler)
     want = config.GPS_API_TOKEN
     auth = (handler.headers.get("Authorization") or "").strip()
-    if auth[:7].lower() == "bearer " and auth[7:].strip() == want:
+    if auth[:7].lower() == "bearer " and hmac.compare_digest(auth[7:].strip(), want):
         return True
     for part in (handler.headers.get("Cookie") or "").split(";"):
         kv = part.strip().split("=", 1)
-        if len(kv) == 2 and kv[0].strip() == "bm_token" and kv[1].strip() == want:
+        if len(kv) == 2 and kv[0].strip() == "bm_token" \
+                and hmac.compare_digest(kv[1].strip(), want):
             return True
     if qs:
         qtok = (qs.get("token") or [""])[0].strip()
-        if qtok and qtok == want:
+        if qtok and hmac.compare_digest(qtok, want):
             return True
     return _valid_session(handler)
 
@@ -179,28 +191,62 @@ class GpsHandler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------- helpers
 
+    def _cors_origin(self) -> str:
+        """So'rov Origin'i uchun ruxsat etilgan qiymat (aks holda '').
+
+        Ilgari HAR QANDAY Origin aks ettirilardi (`Allow-Credentials: true`
+        bilan) — begona sayt foydalanuvchi cookie'si bilan ma'lumot o'qishi
+        mumkin edi. Endi whitelist:
+          * o'z hosti (nginx `/gps` proxy va to'g'ridan-to'g'ri kirish);
+          * `GPS_CORS_ORIGINS` (vergul bilan, `.env`);
+          * lokal ishlab chiqish (`localhost`/`127.0.0.1` istalgan portda).
+        """
+        raw = (self.headers.get("Origin") or "").strip().rstrip("/")
+        if not raw:
+            return ""
+        low = raw.lower()
+        host = (self.headers.get("Host") or "").strip().lower()
+        allowed = {f"http://{host}", f"https://{host}"} if host else set()
+        for item in (os.environ.get("GPS_CORS_ORIGINS") or "").split(","):
+            item = item.strip().rstrip("/").lower()
+            if item:
+                allowed.add(item)
+        try:
+            parsed = urlparse(low)
+            if parsed.scheme in ("http", "https") and (
+                    parsed.hostname in ("localhost", "127.0.0.1", "::1")):
+                return raw
+        except ValueError:
+            return ""
+        return raw if low in allowed else ""
+
     def _json(self, obj, status: int = 200) -> None:
         raw = json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8")
-        # Dashboard (:8080) sessiya cookie'si bilan to'g'ridan-to'g'ri
-        # ulanishi uchun CORS (ko'p korxonali qamrov: bm_session cookie
-        # token'dan ustun turadi → Origin'ni aks ettiramiz).
-        origin = self.headers.get("Origin") or "*"
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", origin)
-        self.send_header("Access-Control-Allow-Credentials", "true")
-        self.send_header(
-            "Access-Control-Allow-Headers",
-            "Authorization, Content-Type, Cookie",
-        )
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+        origin = self._cors_origin()
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header(
+                "Access-Control-Allow-Headers",
+                "Authorization, Content-Type, Cookie",
+            )
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
 
     def do_OPTIONS(self):  # noqa: N802
-        """CORS preflight."""
-        origin = self.headers.get("Origin") or "*"
+        """CORS preflight — faqat whitelist'dagi Origin uchun."""
+        origin = self._cors_origin()
+        if not origin:
+            self.send_response(403)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Access-Control-Allow-Credentials", "true")
@@ -226,6 +272,9 @@ class GpsHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         # Yangilangandan keyin eski sahifa keshdan ochilib qolmasin.
         self.send_header("Cache-Control", "no-cache")
+        # URL'da token bo'lishi mumkin — tashqi resurslarga Referer ketmasin.
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1023,6 +1072,10 @@ class GpsHandler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "error": "channel/stream_type noto'g'ri"}, 400)
                     return
                 jt1078.allow_stream(phone, channel, "live")
+                # Oqim jimgina qotib qolsa watchdog shu parametrlar bilan
+                # 0x9101 ni qayta yuboradi (I-kadr bilan qayta boshlanadi).
+                jt1078.remember_live_request(
+                    phone, channel, host, config.JT1078_TCP_PORT, stream_type)
                 ok = jt808.send_live_request(
                     phone, host, config.JT1078_TCP_PORT, channel, stream_type)
                 self._log_jt_video(phone, channel, "live_start")
@@ -1043,6 +1096,7 @@ class GpsHandler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "error": "channel noto'g'ri"}, 400)
                     return
                 ok = jt808.send_live_stop(phone, channel)
+                jt1078.forget_live_request(phone, channel)
                 closed = jt1078.close_stream(phone, channel, "live")
                 jt1078.clear_playback(phone, channel)
                 self._log_jt_video(phone, channel, "live_stop")
@@ -1202,6 +1256,7 @@ class GpsHandler(BaseHTTPRequestHandler):
                     # jtpb_... oqimini jonli karta ostiga qayta ochardi —
                     # shu sabli live muxer'ni ham yopamiz (oyna ichida).
                     closed_live = jt1078.close_stream(phone, channel, "live")
+                    jt1078.forget_live_request(phone, channel)
                 self._json({"ok": bool(ok), "phone": phone,
                             "channel": channel, "control": control,
                             "speed": speed,

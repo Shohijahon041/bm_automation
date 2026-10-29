@@ -162,6 +162,24 @@ JT1078_LIVE_PRIME_MAX_AU = int(
 JT1078_LIVE_PRIME_CAP_S = float(
     os.environ.get("GPS_JT1078_LIVE_PRIME_CAP_S", "2.0")
 )
+# ---- Jonli oqim "qotishi" nazorati (Setka pauzasi) ----
+# Kamera ba'zan oqimni jimgina to'xtatadi yoki qayta ulanganda I-kadr
+# yubormaydi — muxer ochiq turadi, ffmpeg kutadi, pleyer esa oxirgi kadrda
+# qotib qoladi (20-30s "pauza"). Shu soniya davomida yangi kadr kelmasa
+# 0x9101 qayta so'raladi (qurilma oqimni I-kadrdan boshlab qayta ochadi).
+# 0 = nazorat o'chirilgan.
+JT1078_LIVE_STALL_S = max(
+    0, int(os.environ.get("GPS_JT1078_LIVE_STALL_S", "15"))
+)
+# Qayta so'rovlar orasidagi minimal interval (qurilma ulgurishi uchun).
+JT1078_LIVE_RESTART_MIN_S = max(
+    5, int(os.environ.get("GPS_JT1078_LIVE_RESTART_MIN_S", "20"))
+)
+# Bitta oqim uchun ketma-ket qayta so'rovlar chegarasi (kadr kelishi bilan
+# hisoblagich nolga tushadi). 0 = cheksiz.
+JT1078_LIVE_RESTART_MAX = max(
+    0, int(os.environ.get("GPS_JT1078_LIVE_RESTART_MAX", "8"))
+)
 # ffmpeg stdin'iga yozuvchi navbat hajmi (access-unit soni). ffmpeg ulgurmasa
 # (kuchsiz VPS) navbat to'ladi va eng eski kadr tashlanadi — event loop
 # bloklanmaydi (ilgari bloklovchi yozuv butun serverni muzlatardi).

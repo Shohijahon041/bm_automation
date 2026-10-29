@@ -131,6 +131,12 @@ _PEER_KEYS_MAX = 500
 # "{sim}_{ch}" -> expiry epoch. Yozuv (playback) so'ralganda shu (sim,kanal)
 # uchun kelayotgan oqim "playback" deb belgilanadi (jonli bilan aralashmasin).
 _PLAYBACK: dict = {}
+# "{sim}_{ch}" -> oxirgi JONLI so'rov (0x9101) parametrlari. Oqim jimgina
+# to'xtab qolsa (kamera qayta ulanganda I-kadr yubormasa / oqimni yopsa)
+# watchdog shu ma'lumot bilan buyruqni QAYTA yuboradi — aks holda muxer ochiq
+# qolib, pleyer oxirgi kadrda muzlab turardi.
+_LIVE_REQ: dict = {}
+LIVE_REQ_TTL_S = 6 * 3600.0
 MUXER_IDLE_TIMEOUT = 120.0   # sekund data kelmasa muxer yopiladi
 # "To'xtatish" buyrug'i keyin o'chirilgan muxer kaliti -> expiry epoch.
 # Qurilma 0x9102/0x9202'ni kech bajaradi yoki umuman tinglamaydi: yopilgan
@@ -157,6 +163,31 @@ FRAME_MAX_BYTES = 4 * 1024 * 1024
 def allow_stream(sim: str, channel: int, mode: str = "live") -> None:
     """Foydalanuvchi yangi oqim so'raganda oldingi stop blokini bekor qiladi."""
     _SUPPRESS.pop(_muxer_key(str(sim), int(channel), mode), None)
+
+
+def remember_live_request(sim: str, channel: int, host: str, tcp_port: int,
+                          stream_type: int = 0) -> None:
+    """Jonli (0x9101) so'rov parametrlarini eslab qolish.
+
+    Oqim jimgina qotib qolsa watchdog shu parametrlar bilan buyruqni qayta
+    yuboradi (qurilma oqimni I-kadrdan boshlab qayta ochadi).
+    """
+    _LIVE_REQ[f"{sim}_{int(channel)}"] = {
+        "sim": str(sim), "channel": int(channel),
+        "host": str(host), "port": int(tcp_port),
+        "stream_type": int(stream_type),
+        "since": _now(), "last_at": 0.0, "attempts": 0, "fails": 0,
+    }
+
+
+def forget_live_request(sim: str, channel: int | None = None) -> None:
+    """Jonli so'rovni esdan chiqarish (to'xtatish yoki oqim yakunlanganda)."""
+    if channel is None:
+        for k in [k for k, v in _LIVE_REQ.items()
+                  if str(v.get("sim")) == str(sim)]:
+            _LIVE_REQ.pop(k, None)
+        return
+    _LIVE_REQ.pop(f"{sim}_{int(channel)}", None)
 
 
 def set_playback(sim: str, channel: int, seconds: int | None = None) -> None:
@@ -343,6 +374,7 @@ def _stream_view(key: str, st: dict, active: bool) -> dict:
     lk = st.get("last_keyframe_at")
     err_at = st.get("last_error_at")
     since = st.get("since")
+    lfa = st.get("last_frame_at")
     # PILOT: ZLMediaKit yoqilganda muxer RTMP uzatadi va ZLMediaKit o'zi
     # HLS+FLV chiqaradi. Shunda fayl-based /hls/ generatsiya QILINMAYDI —
     # shuning uchun 'hls' maydonini ham ZLMediaKit HLS'iga og'ktiramiz
@@ -369,6 +401,14 @@ def _stream_view(key: str, st: dict, active: bool) -> dict:
         "frames": int(st.get("frames") or 0),
         "keyframes": int(st.get("keyframes") or 0),
         "keyframe_age_s": round(now - lk, 1) if lk else None,
+        # Oxirgi KADR kelganidan beri o'tgan vaqt — oqim "qotganini" shu
+        # ko'rsatadi (muxer ochiq, lekin kamera data yubormayapti).
+        "frame_age_s": round(now - lfa, 1) if lfa else None,
+        "stalled": bool(
+            active and config.JT1078_LIVE_STALL_S > 0
+            and lfa and now - lfa > config.JT1078_LIVE_STALL_S
+            and kind == "live"),
+        "re_requests": int(st.get("re_requests") or 0),
         "uptime_s": int(now - since) if since else None,
         # Diagnostika: muxer qayta ishga tushishi va oxirgi xato
         "restarts": int(st.get("restarts") or 0),
@@ -615,6 +655,9 @@ class _Muxer:
         self.frames = 0
         self.keyframes = 0
         self.last_keyframe_at: float | None = None
+        # Oxirgi kadr qabul qilingan vaqt — "oqim qotdimi?" nazorati uchun.
+        self.last_frame_at: float | None = None
+        self.re_requests = 0
         # Serverga video SAQLANMAYDI — xom H.264 faqat diagnostika uchun
         # (GPS_JT1078_RAW_DUMP=1).
         self._raw = None
@@ -966,6 +1009,8 @@ class _Muxer:
                 "frames": st.get("frames") or self.frames,
                 "keyframes": st.get("keyframes") or self.keyframes,
                 "last_keyframe_at": st.get("last_keyframe_at") or self.last_keyframe_at,
+                "last_frame_at": self.last_frame_at or st.get("last_frame_at"),
+                "re_requests": int(st.get("re_requests") or self.re_requests),
                 "restarts": self.restarts,
                 "dropped": self.dropped,
                 "last_error": self.last_error or st.get("last_error"),
@@ -1042,6 +1087,7 @@ def _get_muxer(sim: str, channel: int, mode: str = "live",
             "codec": m.codec,
             "fps": getattr(m, "fps_out", None),
             "frames": 0, "keyframes": 0, "last_keyframe_at": None,
+            "last_frame_at": None, "re_requests": 0,
             "restarts": m.restarts,
             "dropped": 0,
             "last_error": getattr(m, "last_error", None),
@@ -1101,8 +1147,91 @@ def _reap_idle_muxers(now: float | None = None) -> int:
             m.close_reason = (f"data kelmadi ({int(MUXER_IDLE_TIMEOUT)}s)"
                               if m.bytes == 0 else "kamera uzildi")
             m.close()
+            forget_live_request(m.sim, m.channel)
             closed += 1
     return closed
+
+
+def _live_stall_targets(now: float) -> list:
+    """Qotib qolgan (kadr kelmayotgan) JONLI oqimlar ro'yxati.
+
+    Har bir element: (muxer, so'rov, kadrsiz o'tgan sekund). Faqat
+    foydalanuvchi 0x9101 so'ragan oqimlar kuzatiladi — aks holda hech kim
+    ko'rmayotgan oqimni qayta ochish ortiqcha 4G trafik bo'lardi.
+    """
+    out = []
+    stall_s = config.JT1078_LIVE_STALL_S
+    if stall_s <= 0:
+        return out
+    for key, m in list(_MUXERS.items()):
+        if m.mode != "live" or m.closed:
+            continue
+        req = _LIVE_REQ.get(f"{m.sim}_{m.channel}")
+        if req is None:
+            continue
+        anchor = m.last_frame_at or m.since
+        age = now - anchor
+        if age < stall_s:
+            continue
+        if req.get("last_at") and (
+                now - req["last_at"] < config.JT1078_LIVE_RESTART_MIN_S):
+            continue
+        limit = config.JT1078_LIVE_RESTART_MAX
+        if limit and int(req.get("attempts") or 0) >= limit:
+            continue
+        out.append((m, req, age))
+    return out
+
+
+async def _live_stall_check() -> int:
+    """Qotgan jonli oqimlarga 0x9101 ni qayta yuborish. Qaytaradi: yuborilgan."""
+    now = _now()
+    cut = now - LIVE_REQ_TTL_S
+    for k in [k for k, v in _LIVE_REQ.items() if v.get("since", 0) < cut]:
+        _LIVE_REQ.pop(k, None)
+    sent = 0
+    for m, req, age in _live_stall_targets(now):
+        # "To'xtatish" oynasi (SUPPRESS) qayta so'rovni to'sib qo'ymasin.
+        allow_stream(m.sim, m.channel, "live")
+        from . import jt808  # aylanma importdan qochish uchun (lazy)
+        try:
+            ok = await asyncio.to_thread(
+                jt808.send_live_request, req["sim"], req["host"],
+                req["port"], req["channel"], req["stream_type"])
+        except Exception:  # noqa: BLE001
+            log.exception("JT1078: 0x9101 qayta so'rovi xatosi (%s_%s)",
+                          m.sim, m.channel)
+            ok = False
+        req["attempts"] = int(req.get("attempts") or 0) + 1
+        req["last_at"] = _now()
+        m.re_requests += 1
+        st = _STREAMS.get(m.key)
+        if st is not None:
+            st["re_requests"] = m.re_requests
+        if ok:
+            sent += 1
+            log.warning("JT1078: jonli oqim qotdi %s (%.0fs kadrsiz) — "
+                        "0x9101 qayta so'raldi (#%d)",
+                        _src(_MUXER_SRC.get(m.key), m.key), age,
+                        req["attempts"])
+        else:
+            req["fails"] = int(req.get("fails") or 0) + 1
+            log.warning("JT1078: jonli oqim qotdi %s (%.0fs kadrsiz) — "
+                        "0x9101 yetkazilmadi (qurilma signal ulanishida "
+                        "emasmi?)", _src(_MUXER_SRC.get(m.key), m.key), age)
+            m.note("oqim qotdi — 0x9101 qayta so'rovi yetkazilmadi")
+    return sent
+
+
+async def _stall_watch_loop(interval: float = 5.0) -> None:
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await _live_stall_check()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            log.exception("JT1078: qotish nazorati xatosi")
 
 
 async def _reaper_loop(interval: float = 30.0) -> None:
@@ -1261,6 +1390,13 @@ class _Session:
             return
         _STATS["access_units"] += 1
         m.write(au, ts)
+        # Watchdog uchun: oqim HAQIQATAN kadr qabul qilyapti (qotib qolmagan).
+        m.last_frame_at = _now()
+        req = _LIVE_REQ.get(f"{key[0]}_{key[1]}")
+        if req is not None and req.get("attempts"):
+            # Kadr keldi — ketma-ket qayta so'rovlar hisoblagichi nolga tushadi.
+            req["attempts"] = 0
+            req["fails"] = 0
         # Diagnostika: muxer'ga haqiqatan yozilgan kadrlar shu yerda sanaladi
         # (kalit kadr vaqti — "nega video qora?" savolining asosiy belgisi).
         st = _STREAMS.get(m.key)
@@ -1268,6 +1404,7 @@ class _Session:
             st["bytes"] = m.bytes
             st["dropped"] = getattr(m, "dropped", 0)
             st["frames"] = int(st.get("frames") or 0) + 1
+            st["last_frame_at"] = m.last_frame_at
             if typ == DT_VIDEO_I:
                 st["keyframes"] = int(st.get("keyframes") or 0) + 1
                 st["last_keyframe_at"] = _now()
@@ -1444,8 +1581,12 @@ async def run_tcp(host: str, port: int) -> None:
     addrs = ", ".join(str(s.getsockname()) for s in server.sockets)
     log.info("JT1078 media listener: %s", addrs)
     reaper = asyncio.ensure_future(_reaper_loop())
+    # Jonli oqim qotishini nazorat: kadr kelmay qolsa 0x9101 qayta so'raladi
+    # (kamera oqimni jimgina to'xtatganda pleyer oxirgi kadrda muzlab qolardi).
+    stall_watch = asyncio.ensure_future(_stall_watch_loop())
     async with server:
         try:
             await server.serve_forever()
         finally:
             reaper.cancel()
+            stall_watch.cancel()

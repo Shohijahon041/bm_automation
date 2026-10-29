@@ -6,6 +6,8 @@ data_type bayti: bits5-4 = kadr turi, bits1-0 = subpaket belgisi. Muxer
 (ffmpeg) monkeypatch qilinadi — faqat freyming va yig'ish mantiq'i tekshiriladi.
 """
 
+import asyncio
+
 import pytest
 
 from bm_automation.app.gps import jt1078
@@ -49,11 +51,17 @@ class _FakeMuxer:
         self.last_active = 0.0
         self.closed = False
         self.aus = []
+        self.last_frame_at = None
+        self.re_requests = 0
+        self.notes = []
         _FakeMuxer.instances.append(self)
 
     def write(self, au, ts=None):
         self.bytes += len(au)
         self.aus.append(au)
+
+    def note(self, msg):
+        self.notes.append(msg)
 
     def close(self):
         self.closed = True
@@ -66,6 +74,7 @@ def _registries_clear():
     jt1078._STREAMS.clear()
     jt1078._DIAG.clear()
     jt1078._SUPPRESS.clear()
+    jt1078._LIVE_REQ.clear()
     jt1078._STATS.update({"access_units": 0})
     jt1078.clear_playback()
 
@@ -1044,3 +1053,142 @@ def test_idle_reaper_reopen_not_suppressed(monkeypatch):
     assert not any(not x.closed for x in _FakeMuxer.instances[:-1])
 
 
+
+
+# --------------------------------------- jonli oqim qotish nazorati (Setka)
+
+def _live_session(monkeypatch):
+    """Kadr qabul qilgan ochiq jonli muxer: I1 emit → muxer, keyin I2 → P1."""
+    _reset(monkeypatch)
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I1", ts=1)
+    _feed(sess, DT_VIDEO_P, SUB_ATOMIC, b"P1", ts=2)   # I1 yoziladi
+    return sess, jt1078._MUXERS["123_1"]
+
+
+def test_live_stall_targets_skips_without_user_request(monkeypatch):
+    """Foydalanuvchi 0x9101 so'ramagan oqim kuzatilmaydi (traffik tejash)."""
+    sess, m = _live_session(monkeypatch)
+    m.last_frame_at = 1000.0
+    now = 1000.0 + jt1078.config.JT1078_LIVE_STALL_S + 1
+    assert jt1078._live_stall_targets(now) == []
+
+    jt1078.remember_live_request("123", 1, "10.0.0.5", 6808)
+    targets = jt1078._live_stall_targets(now)
+    assert len(targets) == 1
+    assert targets[0][0] is m
+    assert targets[0][1]["host"] == "10.0.0.5"
+
+
+def test_live_stall_targets_ignore_fresh_frames(monkeypatch):
+    """Kadr yaqinda kelgan bo'lsa (qotmagan) qayta so'rov yo'q."""
+    sess, m = _live_session(monkeypatch)
+    jt1078.remember_live_request("123", 1, "10.0.0.5", 6808)
+    now = jt1078._now()
+    assert jt1078._live_stall_targets(now) == []
+
+
+def test_live_stall_check_resends_and_rate_limits(monkeypatch):
+    """Qotgan oqimga 0x9101 qayta yuboriladi va ketma-ket takrorlanmaydi."""
+    from bm_automation.app.gps import jt808
+
+    sess, m = _live_session(monkeypatch)
+    m.last_frame_at = jt1078._now() - (jt1078.config.JT1078_LIVE_STALL_S + 5)
+    jt1078.remember_live_request("123", 1, "10.0.0.5", 6808, stream_type=0)
+    calls = []
+
+    def fake_send(sim, host, tcp_port, channel=1, stream_type=0):
+        calls.append((sim, host, tcp_port, channel, stream_type))
+        return True
+
+    monkeypatch.setattr(jt808, "send_live_request", fake_send)
+    assert asyncio.run(jt1078._live_stall_check()) == 1
+    assert calls == [("123", "10.0.0.5", 6808, 1, 0)]
+    assert m.re_requests == 1
+    assert jt1078.streams()[0]["re_requests"] == 1
+    # Darhol ikkinchi tekshiruv — minimal interval o'tmagan, yuborilmaydi.
+    assert asyncio.run(jt1078._live_stall_check()) == 0
+    assert len(calls) == 1
+
+
+def test_live_stall_check_unreachable_device_noted(monkeypatch):
+    """0x9101 yetkazilmasa diagnostika qayd etiladi (foydalanuvchi sabab ko'rsin)."""
+    from bm_automation.app.gps import jt808
+
+    sess, m = _live_session(monkeypatch)
+    m.last_frame_at = jt1078._now() - (jt1078.config.JT1078_LIVE_STALL_S + 5)
+    jt1078.remember_live_request("123", 1, "10.0.0.5", 6808)
+    monkeypatch.setattr(jt808, "send_live_request",
+                        lambda *a, **k: False)
+    assert asyncio.run(jt1078._live_stall_check()) == 0
+    assert m.re_requests == 1
+    assert any("0x9101" in n for n in m.notes)
+
+
+def test_stalled_flag_and_frame_age(monkeypatch):
+    """Kamera jim qolsa `frame_age_s` o'sadi va `stalled` yoqiladi."""
+    sess, m = _live_session(monkeypatch)
+    s = jt1078.streams()[0]
+    assert s["frame_age_s"] is not None
+    assert s["stalled"] is False
+
+    old = jt1078._now() - (jt1078.config.JT1078_LIVE_STALL_S + 3)
+    m.last_frame_at = old
+    jt1078._STREAMS["123_1"]["last_frame_at"] = old
+    s = jt1078.streams()[0]
+    assert s["stalled"] is True
+    assert s["frame_age_s"] > jt1078.config.JT1078_LIVE_STALL_S
+
+
+def test_forget_live_request(monkeypatch):
+    """To'xtatish va idle reap kuzatuvni olib tashlaydi (qayta so'rov yo'q)."""
+    _reset(monkeypatch)
+    jt1078.remember_live_request("123", 1, "h", 6808)
+    jt1078.remember_live_request("123", 2, "h", 6808)
+    jt1078.remember_live_request("999", 1, "h", 6808)
+    jt1078.forget_live_request("123", 1)
+    assert set(jt1078._LIVE_REQ) == {"123_2", "999_1"}
+    jt1078.forget_live_request("123")
+    assert set(jt1078._LIVE_REQ) == {"999_1"}
+
+
+def test_live_restart_gives_up_after_max(monkeypatch):
+    """Qurilma javob bermasa cheksiz 4G trafik bo'lmasin: urinishlar cheklanadi."""
+    from bm_automation.app.gps import jt808
+
+    sess, m = _live_session(monkeypatch)
+    m.last_frame_at = jt1078._now() - (jt1078.config.JT1078_LIVE_STALL_S + 5)
+    jt1078.remember_live_request("123", 1, "10.0.0.5", 6808)
+    monkeypatch.setattr(jt1078.config, "JT1078_LIVE_RESTART_MAX", 2)
+    monkeypatch.setattr(jt1078.config, "JT1078_LIVE_RESTART_MIN_S", 0)
+    calls = []
+    monkeypatch.setattr(jt808, "send_live_request",
+                        lambda *a, **k: calls.append(a) or True)
+    for _ in range(4):
+        asyncio.run(jt1078._live_stall_check())
+    assert len(calls) == 2
+    assert m.re_requests == 2
+
+
+def test_frame_arrival_resets_restart_attempts(monkeypatch):
+    """Kadr qayta kela boshladi — urinishlar hisoblagichi nolga tushadi."""
+    sess, m = _live_session(monkeypatch)
+    jt1078.remember_live_request("123", 1, "h", 6808)
+    req = jt1078._LIVE_REQ["123_1"]
+    req["attempts"] = 3
+    req["fails"] = 2
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"I2", ts=3)   # P1 yoziladi
+    assert req["attempts"] == 0 and req["fails"] == 0
+
+
+def test_idle_reap_forgets_live_request(monkeypatch):
+    """Idle reap kuzatuvni ham tozalaydi (yopilgan oqimga 0x9101 ketmasin)."""
+    _reset(monkeypatch)
+    sess = jt1078._Session()
+    _feed(sess, DT_VIDEO_I, SUB_ATOMIC, b"A")
+    sess.close()
+    jt1078.remember_live_request("123", 1, "h", 6808)
+    jt1078._MUXERS["123_1"].last_active = 1000.0
+    assert jt1078._reap_idle_muxers(
+        now=1000.0 + jt1078.MUXER_IDLE_TIMEOUT + 1) == 1
+    assert "123_1" not in jt1078._LIVE_REQ
