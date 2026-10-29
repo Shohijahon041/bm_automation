@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from datetime import datetime
@@ -12,6 +13,7 @@ from .models import (
     AgentContext, AgentResult, AgentType, AgentStatus,
     LLMMessage, StepStatus, Plan, PlanStep,
 )
+from .json_utils import extract_json_object
 from .prompts.master import MASTER_SYSTEM, MASTER_CLASSIFY
 from ..utils.logger import get_logger
 
@@ -24,6 +26,28 @@ _MONTH_NAMES = {
 }
 
 _MONTH_KEYWORDS = ("oylik", "monthly", "oy xulos", "oy yakun", "bu oy")
+
+# Foydalanuvchilar ko'pincha apostrofsiz yozadi ("yonalish", "royxati").
+# Intent qoidalari ikkala yozuvni ham tanishi uchun matn shu belgilardan
+# tozalanadi — aks holda so'rov LLM'ga ketib, sekin va noto'g'ri bo'ladi.
+_APOS_RE = re.compile("[\u2018\u2019\u02bb\u02bc\u0060\u00b4\u2032']")
+
+
+def _flat(text: str) -> str:
+    """Apostrof variantlarini olib tashlangan kichik harfli matn."""
+    return _APOS_RE.sub("", (text or "").lower())
+
+# Yakuniy javob uchun LLM byudjeti. Bridge 120s kutadi; qolgan vaqt
+# reviewer va qadamlarga qolishi kerak. Vaqt tugasa deterministik javob.
+RESPONSE_TIMEOUT = 40.0
+
+# LLM ba'zan suhbat/filtr javobini (masalan "User Safety: safe") qaytaradi.
+# Bunday javob foydalanuvchiga yuborilmaydi — strukturaviy fallback ishlatiladi.
+_JUNK_MARKERS = (
+    "user safety", "as an ai language model", "as an ai, i",
+    "i cannot assist", "i can't assist", "i'm sorry, but i can't",
+    "system prompt", "i am unable to",
+)
 
 
 class MasterAgent(BaseAgent):
@@ -41,6 +65,14 @@ class MasterAgent(BaseAgent):
 
     name = AgentType.MASTER
     description = "Asosiy orchestrator — topshiriqni boshqaradi"
+
+    # Bu intentlarda ma'lumot aniq strukturali — LLM matni faqat chalkashtiradi
+    # va javobni sekinlashtiradi (30-120s). Deterministik javob ishonchliroq.
+    STRUCTURED_INTENTS = frozenset({
+        "routes_list", "vehicles_list", "documents", "staff",
+        "dispatcher_routes", "waybills", "sms",
+        "check_route", "daily_summary",
+    })
 
     def __init__(self, llm, tools=None):
         super().__init__(llm, tools)
@@ -144,55 +176,38 @@ class MasterAgent(BaseAgent):
             return AgentResult(success=False, error=str(exc))
 
     async def _classify_intent(self, user_request: str) -> dict:
-        """Foydalanuvchi so'rovini tahlil qilish."""
+        """Foydalanuvchi so'rovini tahlil qilish.
+
+        Aniq so'rovlarda LLM chaqirilmaydi — deterministik qoidalar tez va
+        barqaror. LLM faqat noaniq ("general") so'rovlar uchun ishlatiladi.
+        """
+        det = self._classify_deterministic(user_request)
+        if det.get("intent") not in ("general", ""):
+            log.info("Intent deterministik aniqlandi: %s", det["intent"])
+            return det
+
         try:
             response = await self._call_llm(
                 MASTER_CLASSIFY.format(user_request=user_request),
                 user_request,
-                max_tokens=200,
+                max_tokens=500,
             )
-            # JSON parse qilish
-            response = response.strip()
-            if response.startswith("```"):
-                response = response.split("\n", 1)[1].rsplit("```", 1)[0]
-            try:
-                result = json.loads(response)
-                if isinstance(result, dict) and result.get("intent"):
-                    # Telegram'ga yuborish flag'i LLM natijasidan mustaqil
-                    # qo'shiladi — aks holda qadam plan'ga tushmasdi.
-                    rp = result.setdefault("params", {})
-                    self._apply_send_flag(rp, user_request.lower())
-                    # LLM noto'g'ri umumiy intent tanlasa va so'rovda
-                    # yo'nalish/avtobus/haydovchi ishorasi bo'lsa — aniq
-                    # deterministik intent ustun bo'ladi (model noaniqligi).
-                    det = self._classify_deterministic(user_request)
-                    strong = ("check_route", "check_vehicle", "check_driver",
-                              "attendance", "schedule", "not_accepted_km",
-                              "routes_list", "vehicles_list", "avans", "fines",
-                              "documents", "staff", "dispatcher_routes",
-                              "waybills", "sms")
-                    if (det.get("params") or {}).get("route"):
-                        strong += ("daily_summary",)
-                    if (det.get("intent") in strong
-                            and result.get("intent") in (
-                                "monthly_report", "monthly_driver",
-                                "daily_summary", "monthly", "general",
-                                "check_route", "check_vehicle")):
-                        det.setdefault("params", {})
-                        self._apply_send_flag(det["params"],
-                                              user_request.lower())
-                        return det
-                    return result
-            except json.JSONDecodeError:
-                log.warning("Intent JSON emas (%s) — deterministik tahlil", response[:80])
+            result = extract_json_object(response)
+            if isinstance(result, dict) and result.get("intent"):
+                rp = result.setdefault("params", {})
+                self._apply_send_flag(rp, user_request.lower())
+                return result
+            log.warning("Intent JSON ajratilmadi (%s) — deterministik tahlil",
+                        str(response)[:80])
         except Exception as exc:  # noqa: BLE001
             log.warning("Intent aniqlanmadi: %s — deterministik tahlil", exc)
 
-        return self._classify_deterministic(user_request)
+        return det
 
     @staticmethod
     def _apply_send_flag(params: dict, lower: str) -> None:
         """'yubor/telegram' so'zlari bo'lsa send_telegram flag'ini qo'yadi."""
+        lower = _flat(lower)
         if any(w in lower for w in (
                 "yubor", "telegramga", "telegram ga", "telegram",
                 "send", "jo'nat", "jonat", "elchi", "yetkazi")):
@@ -258,7 +273,8 @@ class MasterAgent(BaseAgent):
     def _classify_deterministic(user_request: str) -> dict:
         """LLM bo'lmasa — qoidalar bilan intent aniqlash (insonga o'xshash)."""
         text = (user_request or "").strip()
-        lower = text.lower()
+        raw = text.lower()
+        lower = _flat(text)
         params: dict[str, Any] = {}
 
         route_pattern = re.search(
@@ -300,7 +316,7 @@ class MasterAgent(BaseAgent):
         if driver_hint and any(w in lower for w in (
                 "haydovchi", "haydovchisini", "shofyor", "driver",
                 "haydovchisi", "kiritdi", "tekshir", "haqida",
-                "ma'lumot", "malumot", "informatsiya", "kim bu",
+                "malumot", "informatsiya", "kim bu",
                 "kim bu haydovchi")):
             params["driver"] = driver_hint.group(1).strip()
 
@@ -308,11 +324,11 @@ class MasterAgent(BaseAgent):
         # Kun ko'rsatilgan oy nomi ("13-sentabr") — sana, oy emas:
         # bunday holatda month o'rniga date param qo'yiladi.
         if not params.get("month"):
-            day_dt = MasterAgent._parse_daydate(lower)
+            day_dt = MasterAgent._parse_daydate(raw)
             if day_dt and not params.get("date"):
                 params["date"] = day_dt
             if not params.get("date"):
-                month = MasterAgent._extract_month(lower)
+                month = MasterAgent._extract_month(raw)
                 if month:
                     params["month"] = month
 
@@ -320,16 +336,16 @@ class MasterAgent(BaseAgent):
         MasterAgent._apply_send_flag(params, lower)
 
         daily_words = ("hisobot", "hisobotini", "xulosa", "umumiy",
-                       "barcha yo'nalish", "kunlik", "hozirgi holat",
+                       "barcha yonalish", "kunlik", "hozirgi holat",
                        "kundalik", "qancha avtobus chiqqan")
 
         # Reyting / top / eng yaxshi haydovchi so'rovlari
         _SORT_HINTS = (
-            ("reyting bo'yicha", "rating"), ("reyting", "rating"),
+            ("reyting boyicha", "rating"), ("reyting", "rating"),
             ("baho", "rating"), ("eng yaxshi", "rating"),
-            ("eng ko'p km", "km"), ("eng kop km", "km"),
-            ("eng ko'p qatnov", "trips"), ("eng kop qatnov", "trips"),
-            ("eng ko'p reys", "trips"), ("eng kop reys", "trips"),
+            ("eng kop km", "km"),
+            ("eng kop qatnov", "trips"),
+            ("eng kop reys", "trips"),
         )
         for _phrase, _s in _SORT_HINTS:
             if _phrase in lower:
@@ -368,7 +384,7 @@ class MasterAgent(BaseAgent):
             return {"intent": "salary", "params": params}
         # Avans to'lovlari
         if any(w in lower for w in ("avans", "avanslari", "avansim",
-                                    "oldindan to'lov")):
+                                    "oldindan tolov")):
             if not params.get("driver"):
                 _nm = re.search(
                     r"\b([А-ЯЁA-Z]{3,}(?:\s+[А-ЯЁA-Z]{3,}){0,3})\b", text)
@@ -393,34 +409,34 @@ class MasterAgent(BaseAgent):
                                     "hodim")):
             return {"intent": "staff", "params": params}
         # Dispecher yo'nalishlari
-        if ("dispecher yo'nalish" in lower or "dispatcher routes" in lower
-                or "dispecher yoʻnalish" in lower
-                or "dispecher yo`nalish" in lower):
+        if "dispecher yonalish" in lower or "dispatcher routes" in lower:
             return {"intent": "dispatcher_routes", "params": params}
         # Yo'l varaqalari
-        if any(w in lower for w in ("yo'l varaqa", "yo'l varaqasi",
-                                    "yoʻl varaqa", "yo`l varaqa",
+        if any(w in lower for w in ("yol varaqa", "yol varaqasi",
                                     "waybill", "putevoy list")):
             return {"intent": "waybills", "params": params}
         # SMS tarixi / jo'natmalar
         if any(w in lower for w in ("sms tarixi", "sms log", "smslar",
-                                    "jo'natmalar", "yuborilgan sms",
-                                    "sms jo'natma")):
+                                    "jonatmalar", "yuborilgan sms",
+                                    "sms jonatma")):
             return {"intent": "sms", "params": params}
         if any(w in lower for w in ("muammo", "problems", "nosoz", "kechik")):
             return {"intent": "problems", "params": params}
+        # Ro'yxat so'rovlari — "hisobot/xulosa" so'zidan oldin tekshiriladi
+        # (aks holda "barcha yo'nalishlar ro'yxati" kunlik hisobotga tushadi).
+        _not_report = not any(w in lower for w in (
+            "hisobot", "xulosa", "kunlik", "davomat"))
+        if _not_report and not params.get("route") and any(w in lower for w in (
+                "yonalishlar royxati", "barcha yonalishlar",
+                "qancha yonalish", "nechta yonalish", "yonalishlar soni")):
+            return {"intent": "routes_list", "params": params}
+        if _not_report and not params.get("route") and any(w in lower for w in (
+                "avtobuslar royxati", "barcha avtobuslar", "avtobus parki",
+                "qancha avtobus bor", "nechta avtobus bor",
+                "avtobuslar soni", "avtobuslari royxati")):
+            return {"intent": "vehicles_list", "params": params}
         if any(w in lower for w in daily_words):
             return {"intent": "daily_summary", "params": params}
-        # Ro'yxatlar — oylik/daily bloklaridan keyin (route'ga bog'lanmaganlar)
-        if not params.get("route") and any(w in lower for w in (
-                "yo'nalishlar ro'yxati", "barcha yo'nalishlar",
-                "qancha yo'nalish", "nechta yo'nalish", "yo'nalishlar soni")):
-            return {"intent": "routes_list", "params": params}
-        if not params.get("route") and any(w in lower for w in (
-                "avtobuslar ro'yxati", "barcha avtobuslar", "avtobus parki",
-                "qancha avtobus bor", "nechta avtobus bor",
-                "avtobuslar soni", "avtobuslari ro'yxati")):
-            return {"intent": "vehicles_list", "params": params}
         if driver_hint and ("drivers" in lower or params.get("driver")
                             or "haydovchi" in lower or "shofyor" in lower):
             return {"intent": "check_driver", "params": params}
@@ -428,14 +444,14 @@ class MasterAgent(BaseAgent):
             veh_words = ("avtobus" in lower or "mashina" in lower
                          or "transport" in lower)
             list_words = any(w in lower for w in (
-                "qancha", "nechta", "ro'yxati", "barcha", "holati",
-                "chiqqan", "chiqgan", "yo'lda", "harakatda"))
+                "qancha", "nechta", "royxati", "barcha", "holati",
+                "chiqqan", "chiqgan", "yolda", "harakatda"))
             if veh_words and list_words:
                 return {"intent": "check_route", "params": params}
             if veh_words:
                 return {"intent": "check_vehicle", "params": params}
             return {"intent": "check_route", "params": params}
-        if "marshrut" in lower or "yo'nalish" in lower:
+        if "marshrut" in lower or "yonalish" in lower:
             return {"intent": "check_route", "params": params}
         if params.get("send_telegram"):
             return {"intent": "telegram", "params": params}
@@ -446,13 +462,23 @@ class MasterAgent(BaseAgent):
         return self._agents.get(agent_type)
 
     async def _build_response(self, context: AgentContext, results: dict,
-                              sources: dict[str, str] | None = None) -> str:
+                              sources: dict[str, str] | None = None,
+                              task_type: str = "") -> str:
         """Yakuniy javobni yaratish.
 
         sources — har bir agent qaysi manbadan ma'lumot olgani.
         Javobda manbalar eslatib o'tiladi (shaffoflik).
+
+        task_type — planner aniqlagan intent; strukturali intentlarda LLM
+        chaqirilmaydi (tezroq va raqamlar bir-biriga zid bo'lmaydi).
         """
         sources = sources or {}
+        # Strukturali ma'lumot bo'lsa LLM shart emas — strukturaviy javob
+        # tezroq va aniqroq (model ro'yxatni tushirib qoldirishi mumkin).
+        if (task_type in self.STRUCTURED_INTENTS
+                or self._is_structured_payload(results)):
+            return self._format_fallback(results, sources)
+
         system = (
             "Siz transport tizimi uchun AI-yordamchisiz. "
             "Natijalarni tushunarli formatda O'zbek tilida qaytaring. "
@@ -460,21 +486,98 @@ class MasterAgent(BaseAgent):
             "Agar manbalar berilgan bo'lsa, javobda qaysi manbadan "
             "olinganini ko'rsating (masalan 'Manba: PostgreSQL')."
         )
+        # Bilim bazasi (Obsidian) — qoidalar/xatolar javobga ham ta'sir qiladi.
+        brief = self.knowledge(context)
+        if brief:
+            system = f"{system}\n\n{brief}"
         source_block = ""
         if sources:
             lines = [f"  • {agent}: {src}" for agent, src in sources.items()]
             source_block = "\n\nManbalar:\n" + "\n".join(lines)
         user = (
             f"So'rov: {context.user_request}\n\n"
-            f"Natijalar:\n{json.dumps(results, ensure_ascii=False, indent=2)}"
+            f"Natijalar:\n{self._results_for_prompt(results)}"
             f"{source_block}"
         )
         try:
-            response = await self._call_llm(system, user)
-            return response
+            response = (await asyncio.wait_for(
+                self._call_llm(system, user),
+                timeout=RESPONSE_TIMEOUT,
+            ) or "").strip()
+            if self._is_sane_response(response):
+                return response
+            log.warning("LLM javobi ishonchsiz (%r) — strukturaviy javob",
+                        response[:100])
         except Exception:  # noqa: BLE001
-            # LLM ishlamasa — oddiy format
-            return self._format_fallback(results, sources)
+            pass
+
+        # LLM ishlamasa yoki foydalanuvchiga yaroqsiz javob qaytarsa —
+        # natijalardan deterministik, strukturaviy javob yig'amiz.
+        return self._format_fallback(results, sources)
+
+    @staticmethod
+    def _results_for_prompt(results: dict) -> str:
+        """Natijalarni LLM uchun cheklab berish — katta ro'yxat sekinlashtiradi."""
+        payload = json.dumps(results, ensure_ascii=False, indent=2)
+        if len(payload) > 12000:
+            payload = payload[:12000] + "\n… (natija qisqartirildi)"
+        return payload
+
+    @staticmethod
+    def _is_list_payload(results: dict) -> bool:
+        """Faqat ro'yxat ma'lumoti bo'lsa — LLM chaqiruvi shart emas."""
+        if not isinstance(results, dict):
+            return False
+        # transport/analytics — shu ro'yxatni normalizatsiya qilgan qadamlar,
+        # yangi ma'lumot qo'shmaydi. Boshqa agent bo'lsa LLM kerak bo'ladi.
+        if set(results) - {"browser", "transport", "analytics"}:
+            return False
+        br = results.get("browser")
+        inner = br.get("data") if isinstance(br, dict) else None
+        if not isinstance(inner, dict):
+            return False
+        list_keys = ("routes", "vehicles", "documents", "staff",
+                     "waybills", "sms")
+        if not any(k in inner for k in list_keys):
+            return False
+        return not (inner.get("summary") or inner.get("daily")
+                    or inner.get("totals"))
+
+    @classmethod
+    def _is_structured_payload(cls, results: dict) -> bool:
+        """Natijada LLM'siz ham aniq javob beradigan struktura bormi."""
+        if not isinstance(results, dict) or not results:
+            return False
+        if cls._is_list_payload(results):
+            return True
+        # Yo'nalish tekshiruvi (RouteAgent) — kunlik yozuvlar/reyslar.
+        route_step = results.get("route")
+        if isinstance(route_step, dict) and (
+                "data" in route_step or route_step.get("no_data")):
+            return True
+        # Kunlik xulosa (Analytics db_daily) — raqamlar manbasi.
+        ana = results.get("analytics")
+        if isinstance(ana, dict) and isinstance(ana.get("db_daily"), dict):
+            return True
+        # Davomat va haydovchi hisobotlari ham tayyor struktura beradi.
+        if isinstance(ana, dict) and (
+                isinstance(ana.get("attendance_data"), dict)
+                or isinstance(ana.get("driver_data"), dict)):
+            return True
+        return False
+
+    @staticmethod
+    def _is_sane_response(text: str) -> bool:
+        """LLM javobi foydalanuvchiga yuborishga yaroqlimi."""
+        if len(text) < 12:
+            return False
+        low = text.lower()
+        if any(marker in low for marker in _JUNK_MARKERS):
+            return False
+        # Model natijani xom JSON qilib qaytargan bo'lsa — fallback.
+        if text.startswith("{") and extract_json_object(text) is not None:
+            return False
+        return bool(re.search(r"[0-9A-Za-zА-Яа-яЁё]", text))
 
     def _format_fallback(self, results: dict,
                          sources: dict[str, str] | None = None) -> str:
@@ -593,6 +696,29 @@ class MasterAgent(BaseAgent):
                     f"{r0.get('total_km', 0)} km, "
                     f"{r0.get('total_vehicles', 0)} avtobus")
 
+        # 0.6b. Yo'nalishlar jadvali (db get_routes) — nomlar ro'yxati.
+        # Kunlik statistika emas: elementlarda `name`/`external_id` bo'ladi.
+        rts_tbl = br_inner.get("routes") if isinstance(br_inner, dict) else None
+        if isinstance(rts_tbl, list) and rts_tbl \
+                and not br_inner.get("summary") \
+                and all(isinstance(r0, dict)
+                        and ("name" in r0 or "external_id" in r0)
+                        and "route_name" not in r0
+                        for r0 in rts_tbl[:10]):
+            routes_shown = True
+            lines.append(
+                f"🗺️ Yo'nalishlar ro'yxati: "
+                f"{br_inner.get('count', len(rts_tbl))} ta")
+            for r0 in rts_tbl[:30]:
+                label = r0.get("name") or r0.get("external_id") or "-"
+                extra = []
+                if r0.get("entity_type"):
+                    extra.append(str(r0["entity_type"]))
+                if r0.get("is_brutto"):
+                    extra.append("brutto")
+                suffix = f" ({', '.join(extra)})" if extra else ""
+                lines.append(f"  • {label}{suffix}")
+
         # 0.7. Avtobuslar ro'yxati (db get_vehicles)
         if isinstance(br_inner, dict) and br_inner.get("vehicles") \
                 and "count" in br_inner and "summary" not in br_inner:
@@ -629,7 +755,9 @@ class MasterAgent(BaseAgent):
         # 0.10. Dispecher yo'nalishlari (db get_dispatcher_routes)
         if isinstance(br_inner, dict) and br_inner.get("routes") \
                 and "summary" not in br_inner and "vehicles" not in br_inner \
-                and "daily" not in br_inner:
+                and "daily" not in br_inner \
+                and any("route_name" in (x or {}) or "company" in (x or {})
+                        for x in (br_inner.get("routes") or [])[:5]):
             drlist = br_inner.get("routes") or []
             lines.append(
                 f"📡 Dispecher yo'nalishlari: "
@@ -760,7 +888,8 @@ class MasterAgent(BaseAgent):
             else:
                 lines.append(f"🚏 {rname}: {rdate} — Kunlik yozuv yo'q.")
             anom = route_step.get("trip_anomalies")
-            if isinstance(anom, dict) and anom.get("found"):
+            if (isinstance(anom, dict) and anom.get("found")
+                    and int(anom.get("anomalies_count", 0) or 0) > 0):
                 lines.append(
                     f"⚠️ Reys anomaliyalari: {anom.get('anomalies_count', 0)} ta "
                     f"avtobusda jami {anom.get('missing_trips_total', 0)} reys "
@@ -800,15 +929,6 @@ class MasterAgent(BaseAgent):
             if not has_daily_summary:
                 lines.append(str(rep["report"]))
 
-        # 5. Umumiy / boshqa
-        if not lines:
-            for agent_name, data in results.items():
-                if isinstance(data, dict) and not data.get("error"):
-                    keys = list(data.keys())[:4]
-                    lines.append(f"• {agent_name}: " + ", ".join(keys))
-                elif isinstance(data, dict) and data.get("error"):
-                    lines.append(f"• {agent_name}: xato — {data['error']}")
-
         # 5. Rich DB ma'lumotlari — analytics tomonidan olib o'tilgan
         #    (rejects hisoboti ko'rsatilgan bo'lsa, bo'sh "Kunlik xulosa" o'tkazib
         #    yuboriladi — chalkashtirmaslik uchun).
@@ -820,7 +940,8 @@ class MasterAgent(BaseAgent):
                 acc = tot.get("accept_rate", 0)
                 lines.append(
                     f"📊 Kunlik xulosa ({db_daily.get('date', '')}): "
-                    f"reja {tot.get('planned', 0)}, amalda {tot.get('actual', 0)}, "
+                    f"reja {tot.get('planned', 0)}, "
+                    f"amalda {tot.get('completed', tot.get('actual', 0))}, "
                     f"qabul qilingan {tot.get('accepted', 0)}, "
                     f"qabul qilinmagan {tot.get('not_accepted', 0)}, "
                     f"muammolar {tot.get('problems_total', 0)}. "
@@ -853,6 +974,15 @@ class MasterAgent(BaseAgent):
                     f"model {v.get('model', '')}, garaj №{v.get('garage_number', '')}, "
                     f"kunlik yozuv {len(db_veh.get('route_daily', []))}, "
                     f"reyslar {db_veh.get('trips_count', 0)}.")
+
+        # 6. Umumiy / boshqa — faqat yuqorida hech narsa ko'rsatilmagan bo'lsa
+        if not lines:
+            for agent_name, data in results.items():
+                if isinstance(data, dict) and not data.get("error"):
+                    keys = list(data.keys())[:4]
+                    lines.append(f"• {agent_name}: " + ", ".join(keys))
+                elif isinstance(data, dict) and data.get("error"):
+                    lines.append(f"• {agent_name}: xato — {data['error']}")
 
         if not lines:
             lines.append("Ma'lumotlar bazasida topilmadi yoki sanada ma'lumot yo'q.")

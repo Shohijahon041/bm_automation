@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import random
 import time
 from abc import ABC, abstractmethod
 from typing import Any
@@ -13,6 +15,15 @@ from .models import (
 )
 from .providers import LLMProvider
 from ..utils.logger import get_logger
+
+
+# Vault'ga yozish/o'chirish (yangi qayd) faqat shu agentlarga ruxsat —
+# eng kam huquq qoidasi: bilim bazasini hamma o'qiydi, kam sonli agent yozadi.
+VAULT_WRITE_AGENTS = {"master", "reviewer", "analytics"}
+VAULT_WRITE_ACTIONS = {"write", "delete"}
+# Idempotent bo'lmagan action'lar — qayta urinilmaydi (ikki marta bajarilmasin).
+_NON_IDEMPOTENT = {"write", "delete", "send", "save", "create", "append",
+                   "update", "remove", "clear"}
 
 
 class BaseAgent(ABC):
@@ -39,6 +50,7 @@ class BaseAgent(ABC):
         self.logger = get_logger(f"myai.{self.name.value}")
         self._status = AgentStatus(agent=self.name)
         self._last_tool: tuple[str, str] | None = None
+        self._last_tool_error: dict[str, Any] | None = None
         self.source_note = ""
         self.allowed_tools: set[str] | None = None
 
@@ -133,14 +145,15 @@ class BaseAgent(ABC):
             raise
 
     async def _use_tool(self, tool_name: str, **kwargs) -> Any:
-        """Tool chaqirig'i."""
+        """Tool chaqirig'i (huquq, timeout, retry, diagnostika)."""
         self._check_tool_allowed(tool_name)
         if self.tools is None:
             raise RuntimeError(f"Tools mavjud emas: {tool_name}")
         tool = self.tools.get(tool_name)
         if tool is None:
             raise RuntimeError(f"Tool topilmadi: {tool_name}")
-        action = kwargs.get("action", "")
+        action = str(kwargs.get("action") or "")
+        self._check_write_allowed(tool_name, action)
         try:
             from .events import emit_tool_call
             emit_tool_call(self.name.value, tool_name, action=action)
@@ -148,13 +161,132 @@ class BaseAgent(ABC):
             self.logger.debug("Event emit xatosi (tool_call): %s", exc)
         self.logger.debug("Tool call: %s.%s", tool_name, action)
         self._last_tool = (tool_name, action or "")
-        result = await tool.execute(**kwargs)
+        result = await self._execute_tool(tool_name, tool, action, kwargs)
+        return result
+
+    async def _execute_tool(self, tool_name: str, tool: Any, action: str,
+                            kwargs: dict) -> Any:
+        """Tool'ni timeout va retry bilan bajarish.
+
+        Vaqtinchalik xatolar (timeout, ulanish uzilishi) o'qish
+        action'larida qayta uriniladi (eksponensial kutish + jitter).
+        Yozish/yuborish action'lari qayta urinilmaydi — ikki marta
+        bajarilib qo'ymasin. Oxirgi xato `last_tool_error` da saqlanadi
+        va event bus'ga `success=False` bo'lib yuboriladi (avval xato
+        hodisasi umuman chiqmasdi).
+        """
+        attempts = 1 if action in _NON_IDEMPOTENT else self._tool_retries() + 1
+        last_exc: BaseException | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                result = await asyncio.wait_for(tool.execute(**kwargs),
+                                                timeout=self._tool_timeout())
+            except asyncio.TimeoutError as exc:
+                last_exc = exc
+                self.logger.error("Tool timeout (%.0fs): %s.%s",
+                                  self._tool_timeout(), tool_name, action)
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if not self._is_transient(exc):
+                    break
+                self.logger.warning("Tool xatosi (%s.%s, urinish %d/%d): %s",
+                                    tool_name, action, attempt, attempts, exc)
+            else:
+                self._last_tool_error = None
+                self._emit_tool_result(tool_name, True)
+                return result
+            if attempt < attempts:
+                await asyncio.sleep(self._backoff(attempt))
+
+        error = str(last_exc or "Tool xatosi")
+        hint = ""
+        try:
+            from .knowledge_context import lesson_hint
+            hint = lesson_hint(tool_name, action)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.debug("Vault darsi olinmadi: %s", exc)
+        self._last_tool_error = {
+            "tool": tool_name, "action": action, "error": error,
+            "attempts": attempts, "hint": hint,
+        }
+        # Bilim bazasi o'zini o'zi kengaytiradi: muvaffaqiyatsiz amal
+        # xato imzosi bo'yicha guruhlanib `Xatolar/Avto-xato-jurnali`
+        # qaydiga yoziladi (takrorlar sanaladi).
+        try:
+            from ..core import knowledge_grow
+            knowledge_grow.learn_error(tool=tool_name, action=action,
+                                       error=error, agent=self.name.value,
+                                       lesson=hint)
+        except Exception as exc:  # noqa: BLE001 - jurnal vazifani to'xtatmasin
+            self.logger.debug("Xato jurnali yozilmadi: %s", exc)
+        self.logger.error("Tool bajarilmadi (%d urinish): %s.%s — %s",
+                          attempts, tool_name, action, error)
+        self._emit_tool_result(tool_name, False, error)
+        raise last_exc if last_exc is not None else RuntimeError(error)
+
+    @property
+    def last_tool_error(self) -> dict[str, Any] | None:
+        """Oxirgi muvaffaqiyatsiz tool (tool, action, error, hint, attempts)."""
+        return self._last_tool_error
+
+    def _tool_timeout(self) -> float:
+        try:
+            return max(1.0, float(self.config.tool_timeout))
+        except Exception:  # noqa: BLE001
+            return 60.0
+
+    def _tool_retries(self) -> int:
+        try:
+            return max(0, min(int(self.config.tool_retries), 5))
+        except Exception:  # noqa: BLE001
+            return 2
+
+    @staticmethod
+    def _is_transient(exc: BaseException) -> bool:
+        """Vaqtinchalik xatomi (qayta urinish mumkin) yoki mantiqiy xato."""
+        return isinstance(exc, (TimeoutError, ConnectionError, OSError))
+
+    @staticmethod
+    def _backoff(attempt: int) -> float:
+        """Eksponensial kutish + jitter (bir xil vaqtda urinmaslik uchun)."""
+        return min(0.4 * (2 ** (attempt - 1)), 4.0) + random.uniform(0, 0.25)
+
+    def _check_write_allowed(self, tool_name: str, action: str) -> None:
+        """Bilim bazasiga yozish faqat ruxsat etilgan agentlarga."""
+        if tool_name != "vault" or action not in VAULT_WRITE_ACTIONS:
+            return
+        if self.name.value not in VAULT_WRITE_AGENTS:
+            raise PermissionError(
+                f"{self.name.value} agent bilim bazasiga yozish huquqiga ega "
+                f"emas (faqat o'qish). Ruxsat etilgan: "
+                f"{', '.join(sorted(VAULT_WRITE_AGENTS))}")
+
+    def _emit_tool_result(self, tool_name: str, success: bool,
+                          error: str = "") -> None:
+        """Tool natijasi hodisasini yuborish (xatoni ham ko'rsatadi)."""
         try:
             from .events import emit_tool_result
-            emit_tool_result(self.name.value, tool_name, success=True)
+            emit_tool_result(self.name.value, tool_name, success=success,
+                             message=("OK" if success else error[:200]))
         except Exception as exc:  # noqa: BLE001
             self.logger.debug("Event emit xatosi (tool_result): %s", exc)
-        return result
+
+    def knowledge(self, context: AgentContext | None = None) -> str:
+        """Qadamga tegishli bilim bazasi bloki (Obsidian qoidalar/xatolar).
+
+        Orchestrator tayyor blokni `context.knowledge` orqali beradi;
+        bo'lmasa agent o'zi so'rovga mos qaydlarni yig'adi.
+        """
+        brief = str(getattr(context, "knowledge", "") or "")
+        if brief:
+            return brief
+        try:
+            from .knowledge_context import brief as _brief
+            return _brief(f"{self.name.value} "
+                          f"{getattr(context, 'user_request', '')}")
+        except Exception as exc:  # noqa: BLE001
+            self.logger.debug("Bilim bazasi bloki olinmadi: %s", exc)
+            return ""
 
     async def self_check(self, output_data: dict,
                          source: str = "") -> dict:

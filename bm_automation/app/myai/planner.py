@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from .agents import BaseAgent
+from .json_utils import extract_json_object
 from .models import (
     AgentContext, AgentResult, AgentType,
     Plan, PlanStep,
@@ -131,9 +132,7 @@ class PlannerAgent(BaseAgent):
             {"agent": "analytics", "action": "calculate"},
         ],
         "routes_list": [
-            {"agent": "browser", "action": "get_all_routes_summary"},
-            {"agent": "transport", "action": "normalize"},
-            {"agent": "analytics", "action": "calculate"},
+            {"agent": "browser", "action": "get_routes"},
         ],
         "vehicles_list": [
             {"agent": "browser", "action": "get_vehicles"},
@@ -146,6 +145,16 @@ class PlannerAgent(BaseAgent):
             {"agent": "analytics", "action": "calculate"},
         ],
     }
+
+    # LLM plani shart bo'lmagan aniq intentlar — template ishonchliroq.
+    # Model bu so'rovlarda noto'g'ri action tanlab, bo'sh natija bergan.
+    DETERMINISTIC_INTENTS = frozenset({
+        "routes_list", "vehicles_list", "documents", "staff",
+        "dispatcher_routes", "waybills", "sms", "avans", "fines",
+        # Kunlik/yo'nalish so'rovlari ham aniq template'ga ega: LLM plan
+        # 8-30s qo'shib, action'ni noto'g'ri tanlashi mumkin edi.
+        "check_route", "daily_summary",
+    })
 
     INTROSPECT = {
         "check_route": "Yo'nalish bo'yicha ma'lumot",
@@ -183,6 +192,7 @@ class PlannerAgent(BaseAgent):
                 user_request=context.user_request,
                 intent=context.params.get("intent", {}),
                 params=context.params,
+                knowledge=self.knowledge(context),
             )
             self._finish(True, f"{len(plan.steps)} qadam yaratildi")
             return AgentResult(
@@ -198,8 +208,13 @@ class PlannerAgent(BaseAgent):
             return AgentResult(success=False, error=str(exc))
 
     async def create_plan(self, user_request: str, intent: dict | None = None,
-                          params: dict | None = None) -> Plan:
-        """Execution plan yaratish."""
+                          params: dict | None = None,
+                          knowledge: str = "") -> Plan:
+        """Execution plan yaratish.
+
+        `knowledge` — bilim bazasi (Obsidian) dan olingan qoidalar/xatolar
+        bloki; LLM plan tuzayotganda unga tayanadi.
+        """
         intent_type = (intent or {}).get("intent", "general")
         extra_params = (intent or {}).get("params", {})
         merged = {**(params or {}), **extra_params}
@@ -220,9 +235,18 @@ class PlannerAgent(BaseAgent):
                     from datetime import date as _date
                     merged["month"] = _date.today().strftime("%Y-%m")
 
+        # Aniq ro'yxat so'rovlari — LLM plan o'rniga ishonchli template.
+        # Model bu yerda noto'g'ri action tanlab, bo'sh natija qaytargan.
+        if intent_type in self.DETERMINISTIC_INTENTS:
+            plan = self._plan_from_template(intent_type, merged)
+            self._ensure_intent_steps(plan, intent_type, merged)
+            self._ensure_delivery(plan, intent_type, merged)
+            return plan
+
         # Avval LLM bilan urinish
         try:
-            plan = await self._plan_with_llm(user_request, intent_type, merged)
+            plan = await self._plan_with_llm(user_request, intent_type, merged,
+                                             knowledge=knowledge)
             if plan and plan.steps:
                 self._apply_params_to_steps(plan, merged)
                 self._ensure_intent_steps(plan, intent_type, merged)
@@ -313,38 +337,44 @@ class PlannerAgent(BaseAgent):
         ))
 
     async def _plan_with_llm(self, user_request: str, intent_type: str,
-                             params: dict) -> Plan | None:
-        """LLM yordamida plan yaratish."""
+                             params: dict, knowledge: str = "") -> Plan | None:
+        """LLM yordamida plan yaratish (bilim bazasi bloki bilan)."""
+        system = PLANNER_CREATE.format(
+            user_request=user_request,
+            intent=intent_type,
+            params=json.dumps(params, ensure_ascii=False),
+        )
+        if knowledge:
+            system = f"{knowledge}\n\n{system}"
         response = await self._call_llm(
-            PLANNER_CREATE.format(
-                user_request=user_request,
-                intent=intent_type,
-                params=json.dumps(params, ensure_ascii=False),
-            ),
+            system,
             user_request,
             max_tokens=1000,
         )
 
-        response = response.strip()
-        if response.startswith("```"):
-            response = response.split("\n", 1)[1].rsplit("```", 1)[0]
+        data = extract_json_object(response)
+        if not isinstance(data, dict):
+            raise ValueError("Plan JSON ajratilmadi")
 
-        data = json.loads(response)
         steps = []
         for s in data.get("steps", []):
+            if not isinstance(s, dict):
+                continue
             try:
                 agent_type = AgentType(s["agent"])
             except (ValueError, KeyError):
                 continue
+            step_params = s.get("params")
             steps.append(PlanStep(
                 agent=agent_type,
-                action=s.get("action", ""),
-                params=s.get("params", {}),
+                action=s.get("action", "") or "",
+                params=step_params if isinstance(step_params, dict) else {},
             ))
 
+        plan_params = data.get("params")
         return Plan(
             task_type=data.get("task_type", intent_type),
-            params=data.get("params", params),
+            params=plan_params if isinstance(plan_params, dict) else params,
             steps=steps,
         )
 

@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from . import BaseTool
+from ..scope import allowed_companies, allowed_routes, current_scope, scope_denied
 from ...db.storage import get_storage
 from ...utils.logger import get_logger
 
@@ -71,6 +72,9 @@ class DBTool(BaseTool):
             "get_trip_statuses": self._get_trip_statuses,
             "rows": self._rows,
         }
+        denial = await self._scope_precheck(action, kwargs)
+        if denial is not None:
+            return denial
         handler = actions.get(action)
         if handler is None:
             raise ValueError(f"Noma'lum db action: {action}")
@@ -78,6 +82,110 @@ class DBTool(BaseTool):
 
     def _storage(self):
         return get_storage()
+
+    # ---------------------------------------------------------- tenant scope
+    def _scope(self) -> dict | None:
+        """Faol korxona scope'i; ``None`` — cheklov yo'q (admin/CLI)."""
+        s = current_scope()
+        if not s or s.get("is_admin"):
+            return None
+        return s
+
+    def _scope_routes(self) -> list[str] | None:
+        return allowed_routes(self._storage())
+
+    def _scope_companies(self) -> list[str] | None:
+        if self._scope() is None:
+            return None
+        return allowed_companies()
+
+    def _scope_sql(self, column: str, params: list) -> str:
+        """Scope bo'yicha ``AND <column> IN (...)`` qo'shadi.
+
+        ``column`` faqat kod ichidagi doimiy nom (foydalanuvchi kiritmasi
+        emas). Cheklov bo'lmasa bo'sh satr. Scope bo'sh bo'lsa ``1=0`` —
+        fail-closed.
+        """
+        routes = self._scope_routes()
+        if routes is None:
+            return ""
+        if not routes:
+            return " AND 1=0"
+        params.extend(routes)
+        holders = ", ".join("%s" for _ in routes)
+        return f" AND {column} IN ({holders})"
+
+    def _route_blocked(self, route_id: str) -> bool:
+        routes = self._scope_routes()
+        if routes is None:
+            return False
+        return str(route_id or "").strip() not in routes
+
+    def _driver_blocked(self, driver_id: str) -> bool:
+        """Haydovchi boshqa korxona yo'nalishidami?"""
+        routes = self._scope_routes()
+        if routes is None:
+            return False
+        did = str(driver_id or "").strip()
+        if not did:
+            return True
+        try:
+            rows = self._storage().query(
+                "SELECT route_id FROM drivers WHERE external_id = %s LIMIT 1",
+                (did,))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("MyAI driver scope xatosi: %s", exc)
+            return True
+        if not rows:
+            return True
+        return str(rows[0].get("route_id") or "").strip() not in routes
+
+    def _vehicle_blocked(self, vehicle_id: str) -> bool:
+        routes = self._scope_routes()
+        if routes is None:
+            return False
+        vid = str(vehicle_id or "").strip()
+        if not vid:
+            return True
+        try:
+            rows = self._storage().query(
+                "SELECT route_id FROM vehicles WHERE external_id = %s LIMIT 1",
+                (vid,))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("MyAI vehicle scope xatosi: %s", exc)
+            return True
+        if not rows:
+            return True
+        return str(rows[0].get("route_id") or "").strip() not in routes
+
+    async def _scope_precheck(self, action: str, kwargs: dict) -> dict | None:
+        """Aniq yo'nalish/haydovchi so'ralganda scope'ni oldindan tekshirish.
+
+        Ro'yxat so'rovlari (route berilmagan) SQL darajasida filtrlanadi.
+        Bu yerga faqat boshqa korxona resursiga aniq murojaat tushadi.
+        """
+        if self._scope() is None:
+            return None
+        if action in ("query", "get_errors", "get_notifications",
+                      "get_reports", "get_automation_runs"):
+            return scope_denied("Bu bo'lim korxona scope'ida yopiq")
+        raw = ""
+        for key in ("route_id", "route"):
+            raw = str(kwargs.get(key) or "").strip()
+            if raw:
+                break
+        if not raw and action == "get_route_by_name":
+            raw = str(kwargs.get("query") or "").strip()
+        if raw:
+            uid = raw
+            if not ("-" in raw and len(raw) == 36):
+                uid = await self._resolve_route_uid(raw)
+            if self._route_blocked(uid):
+                return scope_denied("Bu yo'nalish boshqa korxonaga tegishli")
+        driver_id = str(kwargs.get("driver_id") or "").strip()
+        if driver_id and self._driver_blocked(driver_id):
+            return scope_denied("Bu haydovchi boshqa korxonaga tegishli")
+        return None
 
     def _today(self) -> str:
         from datetime import date as _d
@@ -92,21 +200,31 @@ class DBTool(BaseTool):
         route_id = (route_id or "").strip()
         if not route_id:
             return "", ""
-        # UUID kabi ko'rinsa to'g'ridan-to'g'ri
+        # UUID kabi ko'rinsa to'g'ridan-to'g'ri. Scope bo'lsa faqat
+        # ruxsat etilgan yo'nalish nomi ochiladi (begona UUID nomi chiqmaydi).
         if "-" in route_id and len(route_id) == 36:
+            params: list = [route_id]
+            extra = self._scope_sql("external_id", params)
             row = storage.query(
-                "SELECT name FROM routes WHERE external_id = %s LIMIT 1", (route_id,))
+                "SELECT name FROM routes WHERE external_id = %s" + extra
+                + " LIMIT 1", tuple(params))
             name = row[0]["name"] if row else route_id
             return route_id, name
-        # Nomi bo'yicha qidirish (B-80, b-80 → ROUTE yozuvi)
+        # Nomi bo'yicha qidirish (B-80, b-80 → ROUTE yozuvi). Scope bo'lsa
+        # bir xil nomli begona yo'nalish emas, o'z yo'nalishi topiladi.
+        params = [route_id]
+        extra = self._scope_sql("external_id", params)
         row = storage.query(
             "SELECT external_id, name FROM routes "
-            "WHERE LOWER(name) = LOWER(%s) LIMIT 1", (route_id,))
+            "WHERE LOWER(name) = LOWER(%s)" + extra + " LIMIT 1",
+            tuple(params))
         if not row:
+            params = [f"%{route_id}%"]
+            extra = self._scope_sql("external_id", params)
             row = storage.query(
                 "SELECT external_id, name FROM routes "
-                "WHERE LOWER(name) LIKE LOWER(%s) AND entity_type = 'ROUTE' LIMIT 1",
-                (f"%{route_id}%",))
+                "WHERE LOWER(name) LIKE LOWER(%s) AND entity_type = 'ROUTE'"
+                + extra + " LIMIT 1", tuple(params))
         if row:
             return row[0]["external_id"], row[0]["name"]
         return route_id, route_id
@@ -204,37 +322,46 @@ class DBTool(BaseTool):
         rows = self._storage().query(sql, params)
         return {"rows": rows, "count": len(rows)}
 
-    async def _get_routes(self, query: str = "", **kwargs) -> dict:
+    async def _get_routes(self, query: str = "", entity_type: str = "ROUTE",
+                          **kwargs) -> dict:
+        """Yo'nalishlar ro'yxati.
+
+        `routes` jadvalida BM daraxti ham bor (ORG/PARK/REGION) — foydalanuvchi
+        "yo'nalishlar" deganda faqat ROUTE qatorlarini kutadi. Hammasini
+        olish uchun entity_type="" beriladi.
+        """
         storage = self._storage()
+        where = []
+        params: list = []
         if query:
-            rows = storage.query(
-                "SELECT external_id, name, entity_type, is_brutto, parent_id "
-                "FROM routes "
-                "WHERE name ILIKE %s OR external_id = %s "
-                "ORDER BY name",
-                (f"%{query}%", query),
-            )
-        else:
-            rows = storage.query(
-                "SELECT external_id, name, entity_type, is_brutto, parent_id "
-                "FROM routes ORDER BY name",
-            )
+            where.append("(name ILIKE %s OR external_id = %s)")
+            params.extend([f"%{query}%", query])
+        if entity_type:
+            where.append("entity_type = %s")
+            params.append(entity_type)
+        sql = ("SELECT external_id, name, entity_type, is_brutto, parent_id "
+               "FROM routes WHERE 1=1")
+        if where:
+            sql += " AND " + " AND ".join(where)
+        sql += self._scope_sql("external_id", params)
+        sql += " ORDER BY name"
+        rows = storage.query(sql, tuple(params))
         return {"routes": rows, "count": len(rows)}
 
     async def _get_vehicles(self, route_id: str = "", **kwargs) -> dict:
         storage = self._storage()
         rid = await self._resolve_route_uid(route_id)
+        params: list = []
+        where = "1=1"
         if rid:
-            rows = storage.query(
-                "SELECT external_id, plate_number, garage_number, model, route_id "
-                "FROM vehicles WHERE route_id = %s ORDER BY plate_number",
-                (rid,),
-            )
-        else:
-            rows = storage.query(
-                "SELECT external_id, plate_number, garage_number, model, route_id "
-                "FROM vehicles ORDER BY plate_number",
-            )
+            where = "route_id = %s"
+            params.append(rid)
+        where += self._scope_sql("route_id", params)
+        rows = storage.query(
+            "SELECT external_id, plate_number, garage_number, model, route_id "
+            f"FROM vehicles WHERE {where} ORDER BY plate_number",
+            tuple(params),
+        )
         return {"vehicles": rows, "count": len(rows)}
 
     async def _get_schedules(
@@ -261,10 +388,11 @@ class DBTool(BaseTool):
         if vehicle_id:
             where.append("vehicle_id = %s")
             params.append(vehicle_id)
+        scope_sql = self._scope_sql("route_id", params)
         rows = storage.query(
             "SELECT date, route_id, graph_name, driver_id, vehicle_id, "
             "shift_name, start_time, end_time, trip_count "
-            f"FROM schedules WHERE {' AND '.join(where)} "
+            f"FROM schedules WHERE {' AND '.join(where)}{scope_sql} "
             "ORDER BY route_id, start_time",
             tuple(params),
         )
@@ -287,9 +415,11 @@ class DBTool(BaseTool):
             if rid:
                 where.append("route_id = %s")
                 params.append(rid)
+        scope_sql = self._scope_sql("route_id", params)
         rows = storage.query(
             f"SELECT {_ROUTE_DAILY_COLS} FROM route_daily "
-            f"WHERE {' AND '.join(where)} ORDER BY route_id, vehicle_number",
+            f"WHERE {' AND '.join(where)}{scope_sql} "
+            "ORDER BY route_id, vehicle_number",
             tuple(params),
         )
         scheduled = [r for r in rows if int(r.get("working_day", 0) or 0) > 0]
@@ -336,26 +466,19 @@ class DBTool(BaseTool):
         date = self._normalize_date(date)
         if not date:
             date = self._today()
+        where = ["date = %s"]
+        params: list[Any] = [date]
         if route_id:
             rid = await self._resolve_route_uid(route_id)
-            if rid:
-                rows = storage.query(
-                    f"SELECT {_ROUTE_DAILY_COLS} FROM route_daily "
-                    "WHERE route_id = %s AND date = %s ORDER BY vehicle_number",
-                    (rid, date),
-                )
-            else:
-                rows = storage.query(
-                    f"SELECT {_ROUTE_DAILY_COLS} FROM route_daily "
-                    f"WHERE route_id = %s AND date = %s ORDER BY vehicle_number",
-                    (route_id, date),
-                )
-        else:
-            rows = storage.query(
-                f"SELECT {_ROUTE_DAILY_COLS} FROM route_daily "
-                "WHERE date = %s ORDER BY route_id, vehicle_number",
-                (date,),
-            )
+            where.append("route_id = %s")
+            params.append(rid or route_id)
+        scope_sql = self._scope_sql("route_id", params)
+        rows = storage.query(
+            f"SELECT {_ROUTE_DAILY_COLS} FROM route_daily "
+            f"WHERE {' AND '.join(where)}{scope_sql} "
+            "ORDER BY route_id, vehicle_number",
+            tuple(params),
+        )
         _, route_name = await self._resolve_route(route_id)
         has = bool(rows)
         no_data, latest = (False, "")
@@ -380,7 +503,8 @@ class DBTool(BaseTool):
         if query:
             where.append("(d.full_name ILIKE %s OR d.tin LIKE %s OR d.external_id = %s)")
             params.extend((f"%{query}%", query, query))
-        where_sql = f" WHERE {' AND '.join(where)}" if where else ""
+        where_sql = f" WHERE {' AND '.join(where)}" if where else " WHERE 1=1"
+        where_sql += self._scope_sql("d.route_id", params)
         rows = storage.query(
             "SELECT d.external_id, d.full_name, d.tin, d.route_id, "
             "COALESCE(p.phone, '') AS phone, "
@@ -432,7 +556,10 @@ class DBTool(BaseTool):
                 (f"%{driver}%",))
         if not row:
             return driver, driver
-        return row[0]["external_id"], row[0]["full_name"]
+        did = str(row[0]["external_id"])
+        if self._driver_blocked(did):
+            return "", ""
+        return did, row[0]["full_name"]
 
     async def _get_avans(self, driver: str = "", driver_id: str = "",
                          month: str = "", **kwargs) -> dict:
@@ -501,6 +628,7 @@ class DBTool(BaseTool):
         if date:
             sql += " AND CAST(w.date AS TEXT) = %s"
             params.append(self._normalize_date(date) or date)
+        sql += self._scope_sql("w.route_id", params)
         sql += " ORDER BY w.date DESC LIMIT %s"
         params.append(int(limit))
         rows = [dict(r) for r in storage.query(sql, tuple(params))]
@@ -526,6 +654,7 @@ class DBTool(BaseTool):
         if date:
             sql += " AND CAST(d.date AS TEXT) = %s"
             params.append(self._normalize_date(date) or date)
+        sql += self._scope_sql("d.route_id", params)
         sql += " ORDER BY d.date DESC LIMIT 100"
         rows = [dict(r) for r in storage.query(sql, tuple(params))]
         return {"count": len(rows), "date": date or "", "duties": rows}
@@ -540,6 +669,9 @@ class DBTool(BaseTool):
         if dispatcher_chat_id:
             sql += " WHERE dispatcher_chat_id = %s"
             params.append(dispatcher_chat_id)
+        else:
+            sql += " WHERE 1=1"
+        sql += self._scope_sql("route_id", params)
         sql += " ORDER BY route_name"
         rows = [dict(r) for r in storage.query(sql, tuple(params))]
         return {"count": len(rows), "routes": rows}
@@ -564,6 +696,7 @@ class DBTool(BaseTool):
             sql += " OR LOWER(d.category) LIKE LOWER(%s))"
             params.append(f"%{query}%")
             params.append(f"%{query}%")
+        sql += self._scope_sql("dr.route_id", params)
         sql += " ORDER BY d.created_at DESC LIMIT %s"
         params.append(int(limit))
         rows = [dict(r) for r in storage.query(sql, tuple(params))]
@@ -580,6 +713,14 @@ class DBTool(BaseTool):
             sql += " AND (LOWER(name) LIKE LOWER(%s) OR LOWER(position) LIKE LOWER(%s))"
             params.append(f"%{query}%")
             params.append(f"%{query}%")
+        companies = self._scope_companies()
+        if companies is not None:
+            if not companies:
+                sql += " AND 1=0"
+            else:
+                params.extend(companies)
+                holders = ", ".join("%s" for _ in companies)
+                sql += f" AND company IN ({holders})"
         sql += " ORDER BY name LIMIT %s"
         params.append(int(limit))
         rows = [dict(r) for r in storage.query(sql, tuple(params))]
@@ -603,6 +744,7 @@ class DBTool(BaseTool):
             if uid:
                 sql += " AND s.route_id = %s"
                 params.append(uid)
+        sql += self._scope_sql("s.route_id", params)
         sql += " ORDER BY s.created_at DESC LIMIT %s"
         params.append(int(limit))
         rows = [dict(r) for r in storage.query(sql, tuple(params))]
@@ -663,6 +805,12 @@ class DBTool(BaseTool):
         if table not in allowed:
             return {"count": 0, "error": f"Ruxsat berilmagan jadval: {table}",
                     "rows": []}
+        scoped = self._scope() is not None
+        if scoped and table not in (
+                "routes", "vehicles", "drivers", "schedules", "waybills",
+                "duties", "sms_log", "dispatcher_routes"):
+            return {"count": 0, "error": "Bu jadval korxona scope'ida yopiq",
+                    "scope_denied": True, "rows": []}
         storage = self._storage()
         params: list = []
         limit = max(1, min(int(limit), 100))
@@ -679,6 +827,15 @@ class DBTool(BaseTool):
         if key and key in cols and value:
             sql += f' AND CAST("{key}" AS TEXT) LIKE %s'
             params.append(f"%{value}%")
+        if scoped:
+            routes = self._scope_routes() or []
+            if not routes:
+                sql += " AND 1=0"
+            else:
+                params.extend(routes)
+                holders = ", ".join("%s" for _ in routes)
+                col = "external_id" if table == "routes" else "route_id"
+                sql += f' AND "{col}" IN ({holders})'
         sql += f" ORDER BY {cols[0]} LIMIT %s"
         params.append(limit)
         try:
@@ -826,6 +983,8 @@ class DBTool(BaseTool):
                 "SELECT * FROM driver_work_logs WHERE driver_id = %s ORDER BY date DESC LIMIT 30",
                 (driver_id,),
             )
+        elif self._scope() is not None:
+            return {**scope_denied("Haydovchi ko'rsatilmadi"), "work_logs": []}
         else:
             rows = storage.query(
                 "SELECT * FROM driver_work_logs WHERE date = %s",
@@ -850,14 +1009,18 @@ class DBTool(BaseTool):
         route_uuid, route_name = await self._resolve_route(route_id)
         lookup_id = route_uuid or route_id
         # Try route_id as UUID first, then as name
+        params: list = [lookup_id, date]
+        extra = self._scope_sql("route_id", params)
         rows = storage.query(
-            "SELECT * FROM trips WHERE route_id = %s AND date = %s",
-            (lookup_id, date),
+            "SELECT * FROM trips WHERE route_id = %s AND date = %s" + extra,
+            tuple(params),
         )
         if not rows and route_name and route_name != route_id:
+            params = [route_uuid, date]
+            extra = self._scope_sql("route_id", params)
             rows = storage.query(
-                "SELECT * FROM trips WHERE route_id = %s AND date = %s",
-                (route_uuid, date),
+                "SELECT * FROM trips WHERE route_id = %s AND date = %s" + extra,
+                tuple(params),
             )
         vehicles = []
         for r in rows:
@@ -910,16 +1073,18 @@ class DBTool(BaseTool):
         if not date:
             from datetime import date as _d
             date = _d.today().isoformat()
+        params: list = [date]
+        extra = self._scope_sql("route_id", params)
         rows = storage.query(
             """SELECT (data::json->>'routeName') AS route_name,
                       COUNT(*) AS total,
                       COUNT(DISTINCT vehicle_id) AS vehicles,
                       SUM(CASE WHEN status='ACCEPTED' THEN 1 ELSE 0 END) AS accepted,
                       COALESCE(SUM(distance_km), 0) AS total_km
-               FROM trips WHERE date = %s
+               FROM trips WHERE date = %s""" + extra + """
                GROUP BY (data::json->>'routeName')
                ORDER BY total DESC""",
-            (date,),
+            tuple(params),
         )
         routes = []
         for r in rows:
@@ -964,6 +1129,7 @@ class DBTool(BaseTool):
         if route_uuid or route_id:
             where += " AND t.route_id = %s"
             params.append(route_uuid or route_id)
+        where += self._scope_sql("t.route_id", params)
         rows = storage.query(
             f"""SELECT t.status, t.distance_km,
                       (t.data::json->>'driverName') AS driver_name,
@@ -1020,7 +1186,14 @@ class DBTool(BaseTool):
             uid = await self._resolve_route_uid(rid)
             if uid:
                 rid = uid
-        return self._period_filter(month=month, date=date, route_id=rid)
+        f = self._period_filter(month=month, date=date, route_id=rid)
+        allowed = self._scope_routes()
+        if allowed is not None:
+            if rid:
+                f["route"] = rid if rid in allowed else "__scope_deny__"
+            else:
+                f["route"] = " ".join(allowed) if allowed else "__scope_deny__"
+        return f
 
     async def _get_daily_summary(self, date: str = "", route_id: str = "",
                                  month: str = "", **kwargs) -> dict:
@@ -1045,10 +1218,12 @@ class DBTool(BaseTool):
         if route_uuid:
             try:
                 st = self._storage()
+                params: list = [route_uuid, str(f.get("from", ""))]
+                extra = self._scope_sql("route_id", params)
                 rows = st.query(
                     "SELECT count(*) AS c FROM route_daily "
-                    "WHERE route_id = %s AND date = %s AND trip_fact > 0",
-                    (route_uuid, str(f.get("from", ""))))
+                    "WHERE route_id = %s AND date = %s AND trip_fact > 0" + extra,
+                    tuple(params))
                 t["vehicles_out"] = int(rows[0]["c"]) if rows else 0
             except Exception as exc:  # noqa: BLE001
                 log.warning("vehicles_out xatosi: %s", exc)
@@ -1182,7 +1357,10 @@ class DBTool(BaseTool):
                 (f"%{plate}%",))
         if not row:
             return plate, plate
-        return str(row[0]["external_id"]), str(row[0]["plate_number"])
+        vid = str(row[0]["external_id"])
+        if self._vehicle_blocked(vid):
+            return "", ""
+        return vid, str(row[0]["plate_number"])
 
     async def _get_vehicle_detail(self, vehicle: str = "", plate: str = "",
                                   date: str = "", **kwargs) -> dict:

@@ -433,3 +433,48 @@ def cmd_cleanup(args) -> int:
           f"eski log fayllari: {logs} ta")
     return 0
 
+
+def cmd_vault_links(args) -> int:
+    from ..app.core.vault_links import autolink_all
+
+    res = autolink_all(dry_run=args.dry_run, limit=max(1, args.limit))
+    mode = "Sinov (dry-run): " if res["dry_run"] else ""
+    print(f"{mode}{res['total']} qayd tekshirildi, "
+          f"{res['changed_count']} ta yangilandi")
+    for rel in res["changed"]:
+        print(f"  ~ {rel}")
+    return 0
+
+
+def cmd_vault_grow(args) -> int:
+    """Bilim bazasini kengaytiradi (kod xaritasi, holat, log, bo'shliqlar)."""
+    from ..app.core.knowledge_grow import grow
+
+    res = grow(gaps=not args.no_gaps)
+    print(f"Bilim bazasi kengaytirildi: {res['notes']} qayd, "
+          f"{len(res['changed'])} ta qayd yangilandi")
+    for key, changed in res["steps"].items():
+        print(f"  {'~' if changed else '='} {key}")
+    for err in res["errors"]:
+        print(f"  ! {err}")
+    return 0
+
+
+def cmd_vault_status(args) -> int:
+    """Kengaytirish holati (qaydlar soni, interval, oxirgi ishga tushish)."""
+    from ..app.core.knowledge_grow import status
+
+    st = status()
+    state = "yoqilgan" if st["enabled"] else "o'chirilgan (KNOWLEDGE_AUTO=off)"
+    print(f"Avtomatik kengaytirish: {state}")
+    print(f"Interval: {st['interval_min']} daqiqa, "
+          f"ishga tushishlar: {st['runs']}")
+    print(f"Qaydlar: {st['notes']} ta, {st['bytes']} bayt")
+    print(f"Oxirgi: {st['last_run'] or '—'}")
+    if st["next_in_sec"]:
+        print(f"Keyingisi: {st['next_in_sec'] // 60} daqiqadan keyin")
+    for item in st["history"][:5]:
+        print(f"  {item.get('at', '')} — {item.get('notes', 0)} qayd, "
+              f"{item.get('changed', 0)} yangilandi")
+    return 0
+

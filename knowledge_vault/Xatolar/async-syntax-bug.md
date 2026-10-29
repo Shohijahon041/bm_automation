@@ -30,3 +30,14 @@
 3. API 200 bo'lishi frontend to'g'ri ishlashini kafolatlamaydi.
 
 Tekshiruv nomi: `node --check` yoki brauzer DevTools konsoli.
+
+<!-- avto-bog'liq:start -->
+## Bog'liq qaydlar
+
+- [[Bilim-bazasi]] — bosh indeks
+- [[Xato-jurnali]]
+- [[Kod-va-uslub]]
+- [[Dashboard-auth-va-sessiya]]
+- [[Tekshirish-qoidalari]]
+
+<!-- avto-bog'liq:end -->

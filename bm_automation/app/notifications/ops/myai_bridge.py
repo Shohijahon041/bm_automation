@@ -40,12 +40,17 @@ def ask_myai(user_request: str, route: str = "", date: str = "",
     """
     from ...myai.state import create_task, get_task
     from ...myai.orchestrator import get_orchestrator
+    from ...myai.scope import scope_for_chat, scope_company_label
 
-    params = None
+    # Korxona scope'i: chat egasining kompaniyalari/yo'nalishlari.
+    # ADMIN (yoki chat aniqlanmasa) — cheklovsiz.
+    chat_scope = scope_for_chat(chat_id)
+    params: dict[str, Any] = {"scope": chat_scope}
     if chat_id:
-        params = {"chat_id": str(chat_id)}
+        params["chat_id"] = str(chat_id)
 
-    task = create_task(user_request, route=route, date=date, params=params)
+    task = create_task(user_request, route=route, date=date, params=params,
+                       company=scope_company_label(chat_scope))
     task_id = task["task_id"]
     log.info("MyAI bridge: task yaratildi %s — %s", task_id, user_request[:60])
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from . import BaseTool
+from ..scope import allowed_routes, current_scope, scope_denied
 from ...dashboard.metrics import Metrics
 from ...utils.logger import get_logger
 from ...utils.names import short_name
@@ -84,6 +85,49 @@ class MonthlyTool(BaseTool):
             f["month"] = _date.today().strftime("%Y-%m")
         return f
 
+    # ---------------------------------------------------------- tenant scope
+    def _scope_routes(self) -> list[str] | None:
+        return allowed_routes(Metrics().storage)
+
+    def _deny(self, message: str = "") -> dict:
+        return scope_denied(message or "Bu ma'lumot boshqa korxonaga tegishli")
+
+    def _driver_blocked(self, driver_id: str) -> bool:
+        routes = self._scope_routes()
+        if routes is None:
+            return False
+        did = str(driver_id or "").strip()
+        if not did:
+            return True
+        rows = Metrics().storage.query(
+            "SELECT route_id FROM drivers WHERE external_id = %s LIMIT 1",
+            (did,))
+        if not rows:
+            return True
+        return str(rows[0].get("route_id") or "").strip() not in routes
+
+    def _apply_scope(self, f: dict, route_id: str = "") -> dict | None:
+        """Filterga scope route'larini qo'shadi; begona route — ``None``."""
+        routes = self._scope_routes()
+        if routes is None:
+            return f
+        rid = str(route_id or f.get("route") or "").strip()
+        if rid and rid not in routes:
+            return None
+        f["route"] = rid or (" ".join(routes) if routes else "__scope_deny__")
+        return f
+
+    @staticmethod
+    def _scope_sql(column: str, params: list) -> str:
+        routes = allowed_routes(Metrics().storage)
+        if routes is None:
+            return ""
+        if not routes:
+            return " AND 1=0"
+        params.extend(routes)
+        holders = ", ".join("%s" for _ in routes)
+        return f" AND {column} IN ({holders})"
+
     async def _resolve_route(self, route_id: str = "") -> str:
         """Yo'nalish nomini ("B-80") UUID ga bog'laydi; UUID bo'lsa qaytaradi."""
         route_id = (route_id or "").strip()
@@ -92,14 +136,19 @@ class MonthlyTool(BaseTool):
         if "-" in route_id and len(route_id) == 36:
             return route_id
         m = Metrics()
+        params: list = [route_id]
+        extra = self._scope_sql("external_id", params)
         rows = m.storage.query(
             "SELECT external_id FROM routes "
-            "WHERE LOWER(name) = LOWER(%s) LIMIT 1", (route_id,))
+            "WHERE LOWER(name) = LOWER(%s)" + extra + " LIMIT 1",
+            tuple(params))
         if not rows:
+            params = [f"%{route_id}%"]
+            extra = self._scope_sql("external_id", params)
             rows = m.storage.query(
                 "SELECT external_id FROM routes "
-                "WHERE LOWER(name) LIKE LOWER(%s) AND entity_type = 'ROUTE' LIMIT 1",
-                (f"%{route_id}%",))
+                "WHERE LOWER(name) LIKE LOWER(%s) AND entity_type = 'ROUTE'"
+                + extra + " LIMIT 1", tuple(params))
         return str(rows[0]["external_id"]) if rows else route_id
 
     @staticmethod
@@ -150,6 +199,12 @@ class MonthlyTool(BaseTool):
         if not did:
             return {"found": False, "query": driver or "",
                     "message": "Haydovchi topilmadi"}
+        if self._driver_blocked(did):
+            return self._deny("Bu haydovchi boshqa korxonaga tegishli")
+        scoped = self._apply_scope(f)
+        if scoped is None:
+            return self._deny()
+        f = scoped
         try:
             period = m._driver_period(f)
             data = m._single_driver_metrics(did, period)
@@ -176,6 +231,10 @@ class MonthlyTool(BaseTool):
             str(route_id or "").strip() or str(kwargs.get("route") or "").strip())
         if rroute:
             f["route"] = rroute
+        scoped = self._apply_scope(f, rroute)
+        if scoped is None:
+            return self._deny("Bu yo'nalish boshqa korxonaga tegishli")
+        f = scoped
         try:
             rows = m.drivers(f)
         except Exception as exc:  # noqa: BLE001
@@ -217,6 +276,10 @@ class MonthlyTool(BaseTool):
             str(route_id or "").strip() or str(kwargs.get("route") or "").strip())
         if rroute:
             f["route"] = rroute
+        scoped = self._apply_scope(f, rroute)
+        if scoped is None:
+            return self._deny("Bu yo'nalish boshqa korxonaga tegishli")
+        f = scoped
         try:
             mon = m.monthly({**f, "date": "", "from": "", "to": ""})
         except Exception as exc:  # noqa: BLE001

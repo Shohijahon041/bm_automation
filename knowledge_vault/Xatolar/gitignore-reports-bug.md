@@ -42,3 +42,14 @@ slash yo'q qoida barcha joyda mos keladi.
 
 Tasdiqlovchi: `git check-ignore -v` — muvaffaqiyatli tuzatish after
 `/reports/` qayta beradi hech narsa emas.
+
+<!-- avto-bog'liq:start -->
+## Bog'liq qaydlar
+
+- [[Bilim-bazasi]] — bosh indeks
+- [[Xato-jurnali]]
+- [[Kod-va-uslub]]
+- [[km-hisoblash-xatolari]]
+- [[vds-502-import]]
+
+<!-- avto-bog'liq:end -->

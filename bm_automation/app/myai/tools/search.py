@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from . import BaseTool
+from ..scope import allowed_routes, current_scope, scope_denied
 from ...db.storage import get_storage
 from ...utils.logger import get_logger
 
@@ -17,7 +18,11 @@ log = get_logger("myai.tools.search")
 
 
 class SearchTool(BaseTool):
-    """PostgreSQL global qidiruv — routes / drivers / vehicles."""
+    """PostgreSQL global qidiruv — routes / drivers / vehicles.
+
+    Korxona scope'i berilgan bo'lsa qidiruv faqat shu korxona
+    yo'nalishlari bo'yicha ishlaydi (fail-closed).
+    """
 
     name = "search"
     description = (
@@ -41,6 +46,26 @@ class SearchTool(BaseTool):
     def _storage():
         return get_storage()
 
+    def _scope_routes(self) -> list[str] | None:
+        return allowed_routes(self._storage())
+
+    def _scope_sql(self, column: str, params: list) -> str:
+        routes = self._scope_routes()
+        if routes is None:
+            return ""
+        if not routes:
+            return " AND 1=0"
+        params.extend(routes)
+        holders = ", ".join("%s" for _ in routes)
+        return f" AND {column} IN ({holders})"
+
+    def _foreign_route(self, route_id: str) -> bool:
+        routes = self._scope_routes()
+        if routes is None:
+            return False
+        rid = str(route_id or "").strip()
+        return bool(rid) and rid not in routes
+
     async def _find(self, query: str = "", limit: int = 5, **kwargs) -> dict:
         """Global qidiruv — har bir turdan top N ta natija."""
         q = str(query or "").strip()
@@ -61,24 +86,25 @@ class SearchTool(BaseTool):
 
     async def _routes(self, keyword: str = "", limit: int = 50, **kwargs) -> dict:
         s = self._storage()
+        params: list[Any] = []
+        where = " WHERE 1=1"
         if str(keyword or "").strip():
-            rows = s.query(
-                "SELECT external_id, name, entity_type, is_brutto, parent_id "
-                "FROM routes WHERE name ILIKE %s OR external_id = %s "
-                "ORDER BY name LIMIT %s",
-                (f"%{keyword}%", keyword, int(limit)),
-            )
-        else:
-            rows = s.query(
-                "SELECT external_id, name, entity_type, is_brutto, parent_id "
-                "FROM routes ORDER BY name LIMIT %s",
-                (int(limit),),
-            )
+            where += " AND (name ILIKE %s OR external_id = %s)"
+            params.extend((f"%{keyword}%", keyword))
+        where += self._scope_sql("external_id", params)
+        rows = s.query(
+            "SELECT external_id, name, entity_type, is_brutto, parent_id "
+            f"FROM routes{where} ORDER BY name LIMIT %s",
+            (*params, int(limit)),
+        )
         return {"routes": rows, "count": len(rows)}
 
     async def _drivers(self, keyword: str = "", route_id: str = "",
                        limit: int = 50, **kwargs) -> dict:
         """Haydovchilar — ism/TIN/telefon bo'yicha qidiruv."""
+        if self._foreign_route(route_id):
+            return {**scope_denied("Bu yo'nalish boshqa korxonaga tegishli"),
+                    "drivers": []}
         s = self._storage()
         where = []
         params: list[Any] = []
@@ -91,7 +117,8 @@ class SearchTool(BaseTool):
         if str(route_id or "").strip():
             where.append("d.route_id = %s")
             params.append(str(route_id))
-        where_sql = f" WHERE {' AND '.join(where)}" if where else ""
+        where_sql = f" WHERE {' AND '.join(where)}" if where else " WHERE 1=1"
+        where_sql += self._scope_sql("d.route_id", params)
         rows = s.query(
             "SELECT d.external_id, d.full_name, d.tin, d.route_id, "
             "COALESCE(r.name, '') AS route_name, "
@@ -109,6 +136,9 @@ class SearchTool(BaseTool):
     async def _vehicles(self, keyword: str = "", route_id: str = "",
                         limit: int = 50, **kwargs) -> dict:
         """Avtobuslar — plita/garaj/model bo'yicha qidiruv."""
+        if self._foreign_route(route_id):
+            return {**scope_denied("Bu yo'nalish boshqa korxonaga tegishli"),
+                    "vehicles": []}
         s = self._storage()
         where = []
         params: list[Any] = []
@@ -121,7 +151,8 @@ class SearchTool(BaseTool):
         if str(route_id or "").strip():
             where.append("v.route_id = %s")
             params.append(str(route_id))
-        where_sql = f" WHERE {' AND '.join(where)}" if where else ""
+        where_sql = f" WHERE {' AND '.join(where)}" if where else " WHERE 1=1"
+        where_sql += self._scope_sql("v.route_id", params)
         rows = s.query(
             "SELECT v.external_id, v.plate_number, v.garage_number, v.model, "
             "v.route_id, COALESCE(r.name, '') AS route_name "

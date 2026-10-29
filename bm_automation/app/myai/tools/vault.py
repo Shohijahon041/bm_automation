@@ -168,7 +168,7 @@ class VaultTool(BaseTool):
         if not title:
             return {"ok": False, "error": "title talab qilinadi"}
         category = str(category or "").strip("/ \\")
-        valid_cats = {"Qoidalar", "Sozlamalar", "Xatolar"}
+        valid_cats = {"Qoidalar", "Sozlamalar", "Xatolar", "Hisobotlar"}
         if category and category not in valid_cats:
             return {"ok": False,
                     "error": f"category {category} ruxsat etilmagan "
@@ -182,6 +182,8 @@ class VaultTool(BaseTool):
             p = self._resolve(f"{rel.replace('.md', '')}-{timestamp}.md")
         body = f"# {title}\n\n{str(content or '').strip()}\n"
         p.write_text(body, encoding="utf-8")
+        from ...core.vault_links import autolink_written
+        autolink_written(p, base=self.base)
         log.info("Vault: yozildi %s", p.relative_to(self.base))
         return {"ok": True, "path": str(p.relative_to(self.base))
                 .replace("\\", "/"), "title": title}

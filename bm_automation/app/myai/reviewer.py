@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -10,10 +11,16 @@ from .models import (
     AgentContext, AgentResult, AgentType,
     ReviewResult,
 )
+from .json_utils import extract_json_object
 from .prompts.reviewer import REVIEWER_SYSTEM, REVIEWER_VERIFY
 from ..utils.logger import get_logger
 
 log = get_logger("myai.reviewer")
+
+# Reviewer LLM tekshiruvi uchun byudjet. Bridge 120s kutadi; tekshiruv
+# osilib qolsa local invariantlarga o'tamiz (topshiriq "running" bo'lib
+# qolmasligi uchun).
+REVIEW_TIMEOUT = 25.0
 
 
 class ReviewerAgent(BaseAgent):
@@ -44,7 +51,8 @@ class ReviewerAgent(BaseAgent):
             output_data = context.params.get("output_data", {})
             agent_name = context.params.get("agent_name", "unknown")
 
-            review = await self.verify(agent_name, input_data, output_data)
+            review = await self.verify(agent_name, input_data, output_data,
+                                       knowledge=self.knowledge(context))
             self._finish(
                 review.approved,
                 f"{'Tasdiqlandi' if review.approved else 'Rad etildi'}: "
@@ -64,11 +72,20 @@ class ReviewerAgent(BaseAgent):
             return AgentResult(success=False, error=str(exc))
 
     async def verify(self, agent_name: str, input_data: dict,
-                     output_data: dict) -> ReviewResult:
-        """Natijani tekshirish."""
-        # Avval LLM bilan tekshirish
+                     output_data: dict, knowledge: str = "") -> ReviewResult:
+        """Natijani tekshirish (bilim bazasidagi qoidalarga tayanib)."""
+        # Strukturali natijalar uchun LLM shart emas — local tekshiruv yetarli
+        # (model sekin javob beradi va ba'zan noto'g'ri rad etadi).
+        if _is_structured_output(output_data):
+            return self._verify_local(output_data)
+
+        # Avval LLM bilan tekshirish (cheklangan vaqt — osilib qolmasin)
         try:
-            review = await self._verify_with_llm(agent_name, input_data, output_data)
+            review = await asyncio.wait_for(
+                self._verify_with_llm(agent_name, input_data, output_data,
+                                      knowledge=knowledge),
+                timeout=REVIEW_TIMEOUT,
+            )
             if review:
                 return review
         except Exception as exc:  # noqa: BLE001
@@ -119,33 +136,124 @@ class ReviewerAgent(BaseAgent):
             log.debug("Vault'ga yozish amalga oshmadi: %s", exc)
 
     async def _verify_with_llm(self, agent_name: str, input_data: dict,
-                               output_data: dict) -> ReviewResult | None:
-        """LLM yordamida tekshirish."""
+                               output_data: dict,
+                               knowledge: str = "") -> ReviewResult | None:
+        """LLM yordamida tekshirish (bilim bazasi qoidalari bilan)."""
+        system = REVIEWER_VERIFY.format(
+            agent_name=agent_name,
+            input_data=json.dumps(input_data, ensure_ascii=False, indent=2)[:2000],
+            output_data=json.dumps(output_data, ensure_ascii=False, indent=2)[:2000],
+        )
+        if knowledge:
+            system = f"{knowledge}\n\n{system}"
         response = await self._call_llm(
-            REVIEWER_VERIFY.format(
-                agent_name=agent_name,
-                input_data=json.dumps(input_data, ensure_ascii=False, indent=2)[:2000],
-                output_data=json.dumps(output_data, ensure_ascii=False, indent=2)[:2000],
-            ),
+            system,
             "Natijani tekshiring",
-            max_tokens=500,
+            max_tokens=700,
         )
 
-        response = response.strip()
-        if response.startswith("```"):
-            response = response.split("\n", 1)[1].rsplit("```", 1)[0]
+        data = extract_json_object(response)
+        if not isinstance(data, dict):
+            return None
 
-        data = json.loads(response)
+        approved = data.get("approved", True)
+        if isinstance(approved, str):
+            approved = approved.strip().lower() in ("true", "1", "ha", "yes")
+        else:
+            approved = bool(approved)
+        try:
+            confidence = float(data.get("confidence", 0.8))
+        except (TypeError, ValueError):
+            confidence = 0.8
+
         return ReviewResult(
-            approved=data.get("approved", True),
-            errors=data.get("errors", []),
-            corrections=data.get("corrections", []),
-            confidence=data.get("confidence", 1.0),
+            approved=approved,
+            errors=_as_text_list(data.get("errors")),
+            corrections=_as_text_list(data.get("corrections")),
+            confidence=confidence,
         )
 
     def _verify_local(self, output_data: dict) -> ReviewResult:
         """Local qoidalar bo'yicha tekshirish."""
         return verify_invariants(output_data)
+
+
+def _is_simple_list_output(output_data: dict) -> bool:
+    """Natija faqat ro'yxat ma'lumoti bo'lsa True (LLM tekshiruvi ortiqcha)."""
+    if not isinstance(output_data, dict) or not output_data:
+        return False
+    # transport/analytics — ro'yxatni normalizatsiya qilgan qadamlar.
+    if set(output_data) - {"browser", "transport", "analytics"}:
+        return False
+    br = output_data.get("browser")
+    inner = br.get("data") if isinstance(br, dict) else None
+    if not isinstance(inner, dict):
+        return False
+    list_keys = ("routes", "vehicles", "documents", "staff",
+                 "waybills", "sms")
+    if not any(k in inner for k in list_keys):
+        return False
+    return not (inner.get("summary") or inner.get("daily")
+                or inner.get("totals"))
+
+
+def _is_structured_output(output_data: dict) -> bool:
+    """Natijada aniq struktura bor — LLM tekshiruvisiz local yetarli."""
+    if not isinstance(output_data, dict) or not output_data:
+        return False
+    # Yuborish/Excel qadamlarida LLM tekshiruvi qoladi.
+    if set(output_data) - {"browser", "route", "transport",
+                           "analytics", "report", "driver", "attendance"}:
+        return False
+    if _is_simple_list_output(output_data):
+        return True
+    route_step = output_data.get("route")
+    if isinstance(route_step, dict) and (
+            "data" in route_step or route_step.get("no_data")):
+        return True
+    ana = output_data.get("analytics")
+    if isinstance(ana, dict) and isinstance(ana.get("db_daily"), dict):
+        return True
+    # Davomat/haydovchi hisoboti — tayyor struktura, LLM tekshiruvi shart emas.
+    for key in ("attendance", "driver"):
+        step = output_data.get(key)
+        if isinstance(step, dict) and (step.get("data") or step.get("no_data")):
+            return True
+    if isinstance(ana, dict) and (
+            isinstance(ana.get("attendance_data"), dict)
+            or isinstance(ana.get("driver_data"), dict)):
+        return True
+    return False
+
+
+def _as_text_list(value: Any) -> list[str]:
+    """LLM `errors`/`corrections` maydonini matn ro'yxatiga keltirish.
+
+    Model ba'zan obyekt ro'yxati qaytaradi; Pydantic `list[str]` bunday
+    qiymatni rad etib, tekshiruvni butunlay yiqitardi.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, dict):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        value = [value]
+    out: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            text = item
+        elif isinstance(item, dict):
+            text = ", ".join(
+                f"{k}: {v}" for k, v in item.items()
+                if v not in (None, "", [], {})
+            ) or str(item)
+        else:
+            text = str(item)
+        if text.strip():
+            out.append(text.strip())
+    return out
 
 
 def verify_invariants(output_data: dict) -> ReviewResult:

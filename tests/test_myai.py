@@ -223,7 +223,12 @@ class TestAgentEvents:
         from bm_automation.app.myai.agents import BaseAgent
         source = inspect.getsource(BaseAgent._use_tool)
         assert "emit_tool_call" in source
-        assert "emit_tool_result" in source
+        # Natija hodisasi (xato holati ham) `_execute_tool` +
+        # `_emit_tool_result` orqali yuboriladi.
+        runner = inspect.getsource(BaseAgent._execute_tool)
+        assert "_emit_tool_result" in runner
+        helper = inspect.getsource(BaseAgent._emit_tool_result)
+        assert "emit_tool_result" in helper
 
 
 class TestPauseResume:
@@ -391,7 +396,6 @@ class TestIntegration:
             "result": {"route": "r1", "date": "2026-08-10"},
         }
         script = [
-            '{"intent": "check_route", "params": {}}',
             '{"task_type": "check_route", "params": {}, "steps": ['
             ' {"agent": "browser", "action": "get_route_data"},'
             ' {"agent": "transport", "action": "normalize"}]}',
@@ -403,7 +407,8 @@ class TestIntegration:
         assert res["ok"] is True
         assert res["result"]["response"]
         assert store.tasks["t_end"]["status"] == "completed"
-        assert "browser" in res["result"]["steps_results"]
+        assert "route" in res["result"]["steps_results"]
+        assert "analytics" in res["result"]["steps_results"]
         assert "sources" in res["result"]
         assert store.tasks["t_end"]["progress"] == 100
 
@@ -449,6 +454,40 @@ class TestIntegration:
         assert res.get("ok") is False
         assert res.get("error") == "cancelled"
         assert store.tasks["t_cancel"]["status"] == "cancelled"
+
+    def test_external_cancel_marks_task_failed(self, monkeypatch):
+        """Bridge timeout coroutine'ni bekor qilsa — status failed bo'lsin."""
+        import asyncio
+        import time
+        from bm_automation.app.myai.orchestrator import Orchestrator
+
+        store = FakeState()
+        store.tasks["t_ext"] = {"user_request": "marshrutni tekshir",
+                                "result": {}}
+
+        def slow_tool(**kw):
+            time.sleep(1.0)
+            return {"rows": [1]}
+
+        script = [
+            '{"intent": "general", "params": {}}',
+            '{"task_type": "general", "params": {}, "steps": ['
+            ' {"agent": "browser", "action": "get_route_data"}]}',
+        ]
+        fake = _install_fakes(monkeypatch, store, script,
+                              on_execute=slow_tool)
+        orch = Orchestrator(llm=fake)
+
+        async def runner():
+            try:
+                await asyncio.wait_for(orch.run_task("t_ext"), timeout=0.2)
+            except asyncio.TimeoutError:
+                pass
+
+        asyncio.run(runner())
+
+        assert store.tasks["t_ext"]["status"] == "failed"
+        assert "timeout" in (store.tasks["t_ext"].get("error") or "")
 
     def test_run_task_paused_and_resumed(self, monkeypatch):
         import asyncio
@@ -545,3 +584,336 @@ class TestLLMTimeout:
         assert "PostgreSQL" in _source_label_for(a)
         a._last_tool = ("browser", "open_page")
         assert "Playwright" in _source_label_for(a)
+
+
+class TestAgentReliability:
+    """Agent javoblari mustahkamligi: intent, plan, javob va reviewer."""
+
+    def test_intent_deterministic_first_skips_llm(self):
+        import asyncio
+        from bm_automation.app.myai.master import MasterAgent
+
+        fake = FakeLLM()
+        master = MasterAgent(fake)
+        intent = asyncio.run(master._classify_intent("Avtobuslar ro'yxati"))
+        assert intent["intent"] == "vehicles_list"
+        assert fake.calls == []
+
+    def test_routes_list_plan_uses_routes_table(self):
+        import asyncio
+        from bm_automation.app.myai.planner import PlannerAgent
+
+        fake = FakeLLM()
+        planner = PlannerAgent(fake)
+        plan = asyncio.run(planner.create_plan(
+            "Yo'nalishlar ro'yxati qancha?",
+            intent={"intent": "routes_list", "params": {}},
+            params={},
+        ))
+        assert [(s.agent.value, s.action) for s in plan.steps] == [
+            ("browser", "get_routes")
+        ]
+        assert fake.calls == []
+
+    def test_intent_apostrophe_agnostic(self):
+        from bm_automation.app.myai.master import MasterAgent
+
+        cases = (
+            ("Yo'nalishlar ro'yxati qancha?", "routes_list"),
+            ("Yonalishlar royxati qancha?", "routes_list"),
+            ("Barcha yonalishlar", "routes_list"),
+            ("Avtobuslar ro'yxati", "vehicles_list"),
+            ("Avtobuslar royxati", "vehicles_list"),
+            ("Yo'l varaqasi kerak", "waybills"),
+            ("Yol varaqalari kerak", "waybills"),
+            ("Sms jo'natmalar tarixi", "sms"),
+            ("Sms jonatmalar tarixi", "sms"),
+            ("Eski avanslar", "avans"),
+        )
+        for text, want in cases:
+            got = MasterAgent._classify_deterministic(text)
+            assert got["intent"] == want, (text, got)
+
+    def test_get_routes_defaults_to_route_entities(self):
+        import asyncio
+        from bm_automation.app.myai.tools.db import DBTool
+
+        class FakeStorage:
+            def __init__(self):
+                self.sql = ""
+                self.params = ()
+
+            def query(self, sql, params=()):
+                self.sql = sql
+                self.params = params
+                return [{"name": "B-80", "entity_type": "ROUTE"}]
+
+        fake = FakeStorage()
+        tool = DBTool()
+        tool._storage = lambda: fake
+        res = asyncio.run(tool.execute(action="get_routes"))
+
+        assert "entity_type = %s" in fake.sql
+        assert "ROUTE" in fake.params
+        assert res["count"] == 1
+
+    def test_route_and_daily_plans_skip_llm(self):
+        import asyncio
+        from bm_automation.app.myai.planner import PlannerAgent
+
+        fake = FakeLLM()
+        planner = PlannerAgent(fake)
+        for intent in ("check_route", "daily_summary"):
+            plan = asyncio.run(planner.create_plan(
+                "B-80 yo'nalishini tekshir",
+                intent={"intent": intent, "params": {}},
+                params={"route": "B-80"},
+            ))
+            assert plan.steps, intent
+        assert fake.calls == []
+        import asyncio
+        from bm_automation.app.myai.master import MasterAgent
+        from bm_automation.app.myai.models import AgentContext
+
+        results = {
+            "browser": {
+                "method": "db",
+                "action": "get_routes",
+                "data": {
+                    "routes": [
+                        {"external_id": "1", "name": "B-80"},
+                        {"external_id": "2", "name": "B-12"},
+                    ],
+                    "count": 2,
+                },
+            },
+        }
+        master = MasterAgent(FakeLLM(default="User Safety: safe"))
+        text = asyncio.run(master._build_response(
+            AgentContext(user_request="Yo'nalishlar ro'yxati"),
+            results,
+        ))
+        assert "Yo'nalishlar ro'yxati: 2 ta" in text
+        assert "B-80" in text
+        assert "User Safety" not in text
+
+    def test_build_response_keeps_valid_llm_text(self):
+        import asyncio
+        from bm_automation.app.myai.master import MasterAgent
+        from bm_automation.app.myai.models import AgentContext
+
+        good = "Kechagi kun: 120 reys, 110 tasi qabul qilindi."
+        master = MasterAgent(FakeLLM(default=good))
+        text = asyncio.run(master._build_response(
+            AgentContext(user_request="Kechagi kun hisoboti"), {"browser": {}},
+        ))
+        assert text == good
+
+    def test_reviewer_coerces_non_string_errors(self):
+        import asyncio
+        from bm_automation.app.myai.reviewer import ReviewerAgent
+
+        fake = FakeLLM(default=(
+            '{"approved": "ha", "errors": [{"field": "km", "message": "xato"}],'
+            ' "corrections": [12], "confidence": "0.7"}'
+        ))
+        reviewer = ReviewerAgent(fake)
+        review = asyncio.run(reviewer._verify_with_llm("master", {}, {}))
+        assert review.approved is True
+        assert review.errors == ["field: km, message: xato"]
+        assert review.corrections == ["12"]
+        assert review.confidence == 0.7
+
+    def test_reviewer_invalid_json_falls_back_to_local(self):
+        import asyncio
+        from bm_automation.app.myai.reviewer import ReviewerAgent
+
+        fake = FakeLLM(default="JSON emas, oddiy matn")
+        reviewer = ReviewerAgent(fake)
+        review = asyncio.run(reviewer.verify(
+            "master", {}, {"total_trips": 10, "accepted": 8},
+        ))
+        # Local invariant: accepted < total, lekin not_accepted yo'q — tasdiq.
+        assert review.approved is True
+
+    def test_reviewer_skips_llm_for_list_output(self):
+        import asyncio
+        from bm_automation.app.myai.reviewer import ReviewerAgent
+
+        fake = FakeLLM()
+        reviewer = ReviewerAgent(fake)
+        review = asyncio.run(reviewer.verify(
+            "master", {},
+            {"browser": {"data": {"routes": [{"name": "B-80"}], "count": 1}}},
+        ))
+        assert review.approved is True
+        assert fake.calls == []
+
+    def test_build_response_skips_llm_for_vehicles_with_normalize_steps(self):
+        import asyncio
+        from bm_automation.app.myai.master import MasterAgent
+        from bm_automation.app.myai.models import AgentContext
+
+        results = {
+            "browser": {"data": {"vehicles": [
+                {"plate_number": "01 A 001", "model": "Isuzu",
+                 "garage_number": "1"},
+            ], "count": 1}},
+            "transport": {"data": {"vehicles": [], "summary": {}}},
+            "analytics": {"data": {"total_trips": 0}},
+        }
+        fake = FakeLLM(default="User Safety: safe")
+        master = MasterAgent(fake)
+        text = asyncio.run(master._build_response(
+            AgentContext(user_request="Avtobuslar ro'yxati"), results,
+        ))
+        assert "Avtobuslar: jami 1 ta" in text
+        assert "01 A 001" in text
+        assert fake.calls == []
+
+    def test_build_response_skips_llm_for_route_data(self):
+        import asyncio
+        from bm_automation.app.myai.master import MasterAgent
+        from bm_automation.app.myai.models import AgentContext
+
+        results = {
+            "route": {
+                "route_name": "B-80",
+                "date": "2026-10-25",
+                "data": [{"trip_plan": 10, "trip_fact": 8,
+                          "working_day": 1}],
+                "route_vehicles": {"found": True, "vehicles_count": 1,
+                                   "on_route": 1, "off_route": 0},
+            },
+            "transport": {"data": {}},
+            "analytics": {"data": {}},
+        }
+        fake = FakeLLM(default="B-80 Yo'li: qariqa 20")
+        master = MasterAgent(fake)
+        text = asyncio.run(master._build_response(
+            AgentContext(user_request="B-80 yo'nalishini tekshir"),
+            results, task_type="check_route",
+        ))
+        assert "B-80" in text
+        assert "reja 10 / amalda 8" in text
+        assert "qariqa" not in text
+        assert fake.calls == []
+
+    def test_build_response_skips_llm_for_daily_summary(self):
+        import asyncio
+        from bm_automation.app.myai.master import MasterAgent
+        from bm_automation.app.myai.models import AgentContext
+
+        results = {
+            "browser": {"data": {"date": "2026-10-24",
+                                 "daily": [{"trip_plan": 1}]}},
+            "transport": {"data": {}},
+            "analytics": {"db_daily": {
+                "date": "2026-10-24",
+                "totals": {"planned": 100, "actual": 95, "completed": 94,
+                           "accepted": 90, "not_accepted": 5,
+                           "problems_total": 2,
+                           "performance": 95, "accept_rate": 90},
+            }},
+            "report": {"data": {"report": "Jami qatnov: 0"}},
+        }
+        fake = FakeLLM(default="Jami qatnov: 0 (noto'g'ri)")
+        master = MasterAgent(fake)
+        text = asyncio.run(master._build_response(
+            AgentContext(user_request="Kechagi kun hisoboti"),
+            results, task_type="daily_summary",
+        ))
+        assert "Kunlik xulosa" in text
+        assert "reja 100" in text
+        # "Amalda" — botdagi kabi sayt ko'rsatkichi (completed), trips emas.
+        assert "amalda 94" in text
+        assert "Jami qatnov: 0" not in text
+        # Texnik kalitlar ro'yxati ("• analytics: ...") chiqmasligi kerak.
+        assert "• analytics:" not in text
+        assert "• report:" not in text
+        assert fake.calls == []
+
+    def test_reviewer_skips_llm_for_route_output(self):
+        import asyncio
+        from bm_automation.app.myai.reviewer import ReviewerAgent
+
+        fake = FakeLLM()
+        reviewer = ReviewerAgent(fake)
+        review = asyncio.run(reviewer.verify(
+            "master", {},
+            {"route": {"route_name": "B-80", "data": [{"trip_plan": 1}]},
+             "transport": {"data": {}}, "analytics": {"data": {}}},
+        ))
+        assert review.approved is True
+        assert fake.calls == []
+
+    def test_reviewer_skips_llm_for_daily_output(self):
+        import asyncio
+        from bm_automation.app.myai.reviewer import ReviewerAgent
+
+        fake = FakeLLM()
+        reviewer = ReviewerAgent(fake)
+        review = asyncio.run(reviewer.verify(
+            "master", {},
+            {"browser": {"data": {"daily": [{"trip_plan": 1}]}},
+             "analytics": {"db_daily": {"totals": {"planned": 1}}}},
+        ))
+        assert review.approved is True
+        assert fake.calls == []
+
+    def test_reviewer_skips_llm_for_attendance_output(self):
+        import asyncio
+        from bm_automation.app.myai.reviewer import ReviewerAgent
+
+        fake = FakeLLM()
+        reviewer = ReviewerAgent(fake)
+        review = asyncio.run(reviewer.verify(
+            "master", {},
+            {"attendance": {"data": {"date": "2026-10-25", "rows": []}},
+             "analytics": {"data": {}}},
+        ))
+        assert review.approved is True
+        assert fake.calls == []
+
+    def test_build_response_falls_back_when_llm_hangs(self, monkeypatch):
+        import asyncio
+        import time
+        from bm_automation.app.myai import master as master_mod
+        from bm_automation.app.myai.master import MasterAgent
+        from bm_automation.app.myai.models import AgentContext
+
+        monkeypatch.setattr(master_mod, "RESPONSE_TIMEOUT", 0.2)
+
+        class SlowLLM(FakeLLM):
+            def complete(self, system, user, **kwargs):
+                time.sleep(1.0)
+                return super().complete(system, user, **kwargs)
+
+        master = MasterAgent(SlowLLM())
+        text = asyncio.run(master._build_response(
+            AgentContext(user_request="Umumiy holat"),
+            {"security": {"data": {}}},
+        ))
+        # Osilib qolmaydi — deterministik javob qaytadi.
+        assert text
+        assert isinstance(text, str)
+
+    def test_reviewer_falls_back_when_llm_hangs(self, monkeypatch):
+        import asyncio
+        import time
+        from bm_automation.app.myai import reviewer as reviewer_mod
+        from bm_automation.app.myai.reviewer import ReviewerAgent
+
+        monkeypatch.setattr(reviewer_mod, "REVIEW_TIMEOUT", 0.2)
+
+        class SlowLLM(FakeLLM):
+            def complete(self, system, user, **kwargs):
+                time.sleep(1.0)
+                return super().complete(system, user, **kwargs)
+
+        fake = SlowLLM()
+        review = asyncio.run(ReviewerAgent(fake).verify(
+            "master", {}, {"security": {"data": {"ok": True}}},
+        ))
+        assert review is not None
+        assert review.approved is True

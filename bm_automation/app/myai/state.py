@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from ..db.storage import get_storage
@@ -22,6 +23,7 @@ CREATE TABLE IF NOT EXISTS myai_tasks (
     status VARCHAR(20) DEFAULT 'pending',
     current_agent VARCHAR(32),
     progress INTEGER DEFAULT 0,
+    company VARCHAR(255) DEFAULT '',
     result JSONB DEFAULT '{}',
     error TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -73,6 +75,10 @@ CREATE INDEX IF NOT EXISTS idx_myai_tasks_status ON myai_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_myai_steps_task_id ON myai_task_steps(task_id);
 CREATE INDEX IF NOT EXISTS idx_myai_logs_task_id ON myai_agent_logs(task_id);
 CREATE INDEX IF NOT EXISTS idx_myai_logs_created ON myai_agent_logs(created_at);
+
+-- Mavjud bazaga korxona ustunini qo'shish (eski yozuvlar '' = global).
+ALTER TABLE myai_tasks ADD COLUMN IF NOT EXISTS company VARCHAR(255) DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_myai_tasks_company ON myai_tasks(company);
 """
 
 
@@ -98,17 +104,20 @@ def init_myai_schema() -> bool:
 # ── Task CRUD ────────────────────────────────────────────────────────
 
 def create_task(user_request: str, route: str = "", date: str = "",
-                params: dict | None = None) -> dict:
+                params: dict | None = None, company: str = "") -> dict:
     """Yangi topshiriq yaratish. dict qaytaradi."""
     storage = get_storage()
     task_id = f"task_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{int(time.time() * 1000) % 1000:03d}"
     now = datetime.now().isoformat()
-    result_json = json.dumps({"route": route, "date": date, **(params or {})})
+    result_json = json.dumps({"route": route, "date": date,
+                              **(params or {})})
+    company = str(company or "").strip()
 
     storage.db.execute(
         "INSERT INTO myai_tasks (task_id, user_request, status, progress, "
-        "result, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-        (task_id, user_request, "pending", 0, result_json, now, now),
+        "company, result, created_at, updated_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+        (task_id, user_request, "pending", 0, company, result_json, now, now),
     )
 
     log.info("Topshiriq yaratildi: %s", task_id)
@@ -117,6 +126,7 @@ def create_task(user_request: str, route: str = "", date: str = "",
         "user_request": user_request,
         "status": "pending",
         "progress": 0,
+        "company": company,
         "result": {"route": route, "date": date, **(params or {})},
         "created_at": now,
         "updated_at": now,
@@ -145,6 +155,7 @@ def get_task(task_id: str) -> dict | None:
         "status": row["status"],
         "current_agent": row.get("current_agent") or "",
         "progress": row["progress"] or 0,
+        "company": str(row.get("company") or ""),
         "result": result,
         "error": row.get("error") or "",
         "created_at": str(row["created_at"]) if row.get("created_at") else "",
@@ -178,10 +189,11 @@ def update_task(task_id: str, **kwargs) -> bool:
 
 
 def list_tasks(limit: int = 20, status: str = "",
-               offset: int = 0, q: str = "") -> list[dict]:
+               offset: int = 0, q: str = "", company: str = "") -> list[dict]:
     """Topshiriqlar ro'yxati — dict list qaytaradi.
 
     Paginatsiya: limit + offset. status va q (matn qidiruv) bo'yicha filtrlash.
+    ``company`` berilsa — faqat shu korxona vazifalari (korxona scope'i).
     """
     storage = get_storage()
     where = []
@@ -193,6 +205,9 @@ def list_tasks(limit: int = 20, status: str = "",
     if q:
         where.append("user_request ILIKE %s")
         params.append(f"%{q}%")
+    if company:
+        where.append("company = %s")
+        params.append(str(company))
     where_sql = f" WHERE {' AND '.join(where)}" if where else ""
     params.extend((limit, offset))
     rows = storage.query(
@@ -215,6 +230,7 @@ def list_tasks(limit: int = 20, status: str = "",
             "status": row["status"],
             "current_agent": row.get("current_agent") or "",
             "progress": row["progress"] or 0,
+            "company": str(row.get("company") or ""),
             "result": result,
             "error": row.get("error") or "",
             "created_at": str(row["created_at"]) if row.get("created_at") else "",
@@ -224,8 +240,8 @@ def list_tasks(limit: int = 20, status: str = "",
     return tasks
 
 
-def count_tasks(status: str = "", q: str = "") -> int:
-    """Topshiriqlar soni — status va q bo'yicha filtrlash mumkin."""
+def count_tasks(status: str = "", q: str = "", company: str = "") -> int:
+    """Topshiriqlar soni — status, q va company bo'yicha filtrlash mumkin."""
     storage = get_storage()
     where = []
     params: list[Any] = []
@@ -236,6 +252,9 @@ def count_tasks(status: str = "", q: str = "") -> int:
     if q:
         where.append("user_request ILIKE %s")
         params.append(f"%{q}%")
+    if company:
+        where.append("company = %s")
+        params.append(str(company))
     where_sql = f" WHERE {' AND '.join(where)}" if where else ""
     rows = storage.query(
         f"SELECT COUNT(*) AS n FROM myai_tasks{where_sql}", tuple(params),
@@ -326,20 +345,80 @@ def get_logs(task_id: str, limit: int = 50) -> list[dict]:
 
 # ── Stats ────────────────────────────────────────────────────────────
 
-def get_stats() -> dict:
-    """MyAI umumiy statistikasi."""
+def reconcile_stale_tasks(max_age_minutes: int = 45) -> int:
+    """Uzilib qolgan 'running' tasklarni 'failed' deb yopish.
+
+    Bot/dashboard qayta ishga tushganda o'sha paytda bajarilayotgan
+    tasklar DB'da 'running' bo'lib qoladi va panelda abadiy "ishlayapti"
+    ko'rinadi. `updated_at` eski bo'lganlar yopiladi.
+    """
+    # Testlar umumiy bazaga yozmasin — ular o'z fake state'ini ishlatadi.
+    if os.getenv("BM_TEST_MODE"):
+        return 0
     storage = get_storage()
+    if not getattr(storage, "enabled", False):
+        return 0
     try:
-        total = storage.query("SELECT COUNT(*) AS n FROM myai_tasks", [])
+        rows = storage.query(
+            "SELECT task_id, updated_at FROM myai_tasks "
+            "WHERE status = 'running'", [],
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Jadval hali yaratilmagan bo'lishi mumkin (birinchi ishga tushish).
+        log.debug("Uzilgan tasklarni tekshirib bo'lmadi: %s", exc)
+        return 0
+
+    cutoff = datetime.now().astimezone() - timedelta(minutes=max_age_minutes)
+    now = datetime.now().isoformat()
+    reason = ("Jarayon qayta ishga tushdi — vazifa uzildi "
+              "(natija saqlanmagan). So'rovni qayta yuboring.")
+    closed = 0
+    for row in rows:
+        raw = row.get("updated_at")
+        if isinstance(raw, datetime):
+            ts = raw
+        else:
+            try:
+                ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                continue
+        if ts.tzinfo is None:
+            ts = ts.astimezone()
+        if ts >= cutoff:
+            continue
+        try:
+            storage.db.execute(
+                "UPDATE myai_tasks SET status = %s, error = %s, "
+                "updated_at = %s WHERE task_id = %s",
+                ("failed", reason, now, row["task_id"]),
+            )
+            closed += 1
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Task %s ni yopib bo'lmadi: %s",
+                      row.get("task_id"), exc)
+    if closed:
+        log.warning("MyAI: %d uzilgan task 'failed' deb belgilandi", closed)
+    return closed
+
+
+def get_stats(company: str = "") -> dict:
+    """MyAI umumiy statistikasi (``company`` berilsa — faqat shu korxona)."""
+    storage = get_storage()
+    company = str(company or "").strip()
+    where = " WHERE company = %s" if company else ""
+    params: tuple = (company,) if company else ()
+    try:
+        total = storage.query(
+            f"SELECT COUNT(*) AS n FROM myai_tasks{where}", params)
         active = storage.query(
-            "SELECT COUNT(*) AS n FROM myai_tasks WHERE status = 'running'", [],
-        )
+            "SELECT COUNT(*) AS n FROM myai_tasks WHERE status = 'running'"
+            + (" AND company = %s" if company else ""), params)
         completed = storage.query(
-            "SELECT COUNT(*) AS n FROM myai_tasks WHERE status = 'completed'", [],
-        )
+            "SELECT COUNT(*) AS n FROM myai_tasks WHERE status = 'completed'"
+            + (" AND company = %s" if company else ""), params)
         failed = storage.query(
-            "SELECT COUNT(*) AS n FROM myai_tasks WHERE status = 'failed'", [],
-        )
+            "SELECT COUNT(*) AS n FROM myai_tasks WHERE status = 'failed'"
+            + (" AND company = %s" if company else ""), params)
         return {
             "total": total[0]["n"] if total else 0,
             "active": active[0]["n"] if active else 0,

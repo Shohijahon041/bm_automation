@@ -21,6 +21,19 @@ class DTransportTool(BaseTool):
         from ...api.client import BMClient
         return BMClient()
 
+    @staticmethod
+    def _scope_denial(kwargs: dict) -> dict | None:
+        """Korxona scope'i bo'lsa faqat o'z yo'nalishi so'raladi."""
+        from ..scope import allowed_routes, current_scope, scope_denied
+        scope = current_scope()
+        if not scope or scope.get("is_admin"):
+            return None
+        routes = allowed_routes(None)
+        rid = str(kwargs.get("route_id") or "").strip()
+        if rid and rid in (routes or []):
+            return None
+        return scope_denied("Bu yo'nalish boshqa korxonaga tegishli")
+
     async def execute(self, action: str = "", **kwargs) -> Any:
         actions = {
             "get_route_data": self._get_route_data,
@@ -30,6 +43,9 @@ class DTransportTool(BaseTool):
             "get_gross_route": self._get_gross_route,
             "get_gross_trip": self._get_gross_trip,
         }
+        denial = self._scope_denial(kwargs)
+        if denial is not None:
+            return denial
         handler = actions.get(action)
         if handler is None:
             raise ValueError(f"Noma'lum dtransport action: {action}")

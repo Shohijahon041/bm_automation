@@ -125,6 +125,9 @@ class AgentContext(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     previous_results: dict[str, Any] = Field(default_factory=dict)
     step_index: int = 0
+    # Bilim bazasi (Obsidian) dan olingan qoidalar/xatolar bloki —
+    # LLM ishlatadigan agentlar buni promptga qo'shadi.
+    knowledge: str = ""
 
 
 class AgentResult(BaseModel):

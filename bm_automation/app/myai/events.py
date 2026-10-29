@@ -218,22 +218,35 @@ class EventBus:
             if q in self._subscribers:
                 self._subscribers.remove(q)
 
-    def recent(self, limit: int = 50) -> list[dict]:
-        """Get recent events from the in-memory buffer."""
-        items = list(self._buffer)[-limit:]
+    def recent(self, limit: int = 50,
+               allow: Any = None) -> list[dict]:
+        """Get recent events from the in-memory buffer.
+
+        ``allow`` — ixtiyoriy filtr (``AgentEvent`` qabul qiladi); korxona
+        scope'ida faqat o'z tasklarining hodisalari qaytariladi.
+        """
+        items = list(self._buffer)
+        if allow is not None:
+            items = [e for e in items if allow(e)]
+        items = items[-limit:]
         return [e.to_dict() for e in items]
 
-    def events_sse(self, timeout: float = 30.0) -> Generator[str, None, None]:
+    def events_sse(self, timeout: float = 30.0,
+                   allow: Any = None) -> Generator[str, None, None]:
         """SSE generator — yields event data lines for HTTP streaming."""
         q = self.subscribe()
         try:
             # Send recent events first
             for ev in list(self._buffer)[-20:]:
+                if allow is not None and not allow(ev):
+                    continue
                 yield f"data: {ev.to_json()}\n\n"
             # Then stream live
             while True:
                 try:
                     ev = q.popleft()
+                    if allow is not None and not allow(ev):
+                        continue
                     yield f"data: {ev.to_json()}\n\n"
                 except IndexError:
                     time.sleep(0.5)

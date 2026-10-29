@@ -42,6 +42,14 @@ class MyAIConfig:
     llm_timeout: float = field(
         default_factory=lambda: float(os.getenv("MYAI_LLM_TIMEOUT", "120"))
     )
+    # Tool chaqiruvi: bitta urinish uchun timeout va vaqtinchalik
+    # xatolarda (timeout/ulanish) qayta urinishlar soni.
+    tool_timeout: float = field(
+        default_factory=lambda: float(os.getenv("MYAI_TOOL_TIMEOUT", "60"))
+    )
+    tool_retries: int = field(
+        default_factory=lambda: int(os.getenv("MYAI_TOOL_RETRIES", "2"))
+    )
     # Providerlar zanjiri (fallback) — vergul bilan ajratiladi.
     # Ulardan qaysi biri configured va ishlasa, o'sha ishlatiladi.
     llm_providers: tuple[str, ...] = field(

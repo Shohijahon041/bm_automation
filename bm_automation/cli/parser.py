@@ -33,6 +33,9 @@ def build_parser() -> argparse.ArgumentParser:
         cmd_routes,
         cmd_schedule,
         cmd_summary,
+        cmd_vault_grow,
+        cmd_vault_links,
+        cmd_vault_status,
         cmd_waybill,
     )
     from .db_commands import (
@@ -226,6 +229,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_clean.add_argument("--dry-run", action="store_true",
                          help="Faqat hisob — hech narsa o'chirilmaydi")
     p_clean.set_defaults(func=cmd_cleanup)
+
+    p_vl = sub.add_parser(
+        "vault-links",
+        help="Bilim bazasi qaydlarini avtomatik bog'lash (Obsidian grafigi)")
+    p_vl.add_argument("--dry-run", action="store_true",
+                      help="Faqat hisob — fayllar o'zgartirilmaydi")
+    p_vl.add_argument("--limit", type=int, default=4,
+                      help="Har qaydga bog'lanadigan qaydlar soni (standart 4)")
+    p_vl.set_defaults(func=cmd_vault_links)
+
+    p_vg = sub.add_parser(
+        "vault-grow",
+        help="Bilim bazasini kengaytirish (kod xaritasi, holat, log, bo'shliqlar)")
+    p_vg.add_argument("--no-gaps", action="store_true",
+                      help="Yechilmagan havolalar uchun bo'sh qayd ochmaslik")
+    p_vg.set_defaults(func=cmd_vault_grow)
+
+    p_vs = sub.add_parser("vault-status",
+                          help="Bilim bazasi kengaytirish holati")
+    p_vs.set_defaults(func=cmd_vault_status)
 
     p_db = sub.add_parser("db", help="Ma'lumotlar bazasi (Supabase/PostgreSQL)")
     db_sub = p_db.add_subparsers(dest="action", required=True)

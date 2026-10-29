@@ -24,3 +24,14 @@
 1. Rejadagi = Amalda + Qabul qilinmagan tengligini tekshiring.
 2. QATNOV/AVTOBUS farqini esda tuting.
 3. Raqamni chamalab "to'ldirmang" — yetarli bo'lmasa ayting.
+
+<!-- avto-bog'liq:start -->
+## Bog'liq qaydlar
+
+- [[Bilim-bazasi]] — bosh indeks
+- [[Asosiy-invariantlar]]
+- [[Xato-jurnali]]
+- [[Atamalar]]
+- [[profiles-ruxsat]]
+
+<!-- avto-bog'liq:end -->

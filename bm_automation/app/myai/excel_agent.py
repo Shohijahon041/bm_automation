@@ -99,7 +99,8 @@ class ExcelAgent(BaseAgent):
                 "Qiymat": db_daily.get("date") or db_daily.get("month", ""),
             }] + [
                 {"Ko'rsatkich": "Reja", "Qiymat": t.get("planned", 0)},
-                {"Ko'rsatkich": "Amalda", "Qiymat": t.get("actual", 0)},
+                {"Ko'rsatkich": "Amalda",
+                 "Qiymat": t.get("completed", t.get("actual", 0))},
                 {"Ko'rsatkich": "Qabul qilingan", "Qiymat": t.get("accepted", 0)},
                 {"Ko'rsatkich": "Qabul qilinmagan", "Qiymat": t.get("not_accepted", 0)},
                 {"Ko'rsatkich": "Muammolar", "Qiymat": t.get("problems_total", 0)},
