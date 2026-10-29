@@ -193,12 +193,26 @@ $env:BM_DB_DRIVER="sqlite"; $env:BM_TEST_MODE="1"
 
 Natijalar (2026-10-29):
 
-- `py_compile` — OK
-- `node --check` (index.html inline JS) — OK
-- `tests/test_security_hardening.py` — **20 passed**
-- `tests/test_tenant_context.py` + `tests/test_dashboard_users.py` — **130 passed**
-- To'liq to'plam — **1549 passed, 0 failed** (50 daqiqa, exit 0;
-  `state/_security_full_pytest.log`)
+- `py_compile` (70 o'zgargan modul) — OK
+- `node --check` (index.html 3 blok, gps_ui.html 1 blok inline JS) — OK
+- `tests/test_security_hardening.py` — **30 passed**
+- Tenant/dashboard/MyAI regressiya to'plami — **267 passed**
+- To'liq to'plam — **1568 passed, 0 failed** (13 daqiqa, exit 0;
+  `state/_full_pytest_20261029.log`)
+
+Deploy (2026-10-29, `bm-dashboard` + `bm-bot` restart):
+
+- Backup: `/opt/bm/state/deploy_backup_20261029_205824_hardening`
+  (`before_runtime.tar.gz`, `before_vault.tar.gz`, `md5_before.txt`,
+  `.env`/`profiles.json`/`tokens.json` md5 — o'zgarmagan).
+- 13 fayl (12 py + 2 html, jami 13 yo'l) + `knowledge_vault` qaytalari;
+  lokal==VDS md5 100%.
+- Smoke: `/`=200, `/api/me`=200 (tokenda), `/api/health` anonim 401 /
+  MANAGER+ 200, `Host: evil.example`=400, begona `Origin` POST=403,
+  `Sec-Fetch-Site: cross-site`=403, GPS begona Origin'ga ACAO yo'q /
+  same-origin bor, `Referrer-Policy: no-referrer`, `/api/video/jt-streams`
+  tokensiz 401, `dashboard_sessions.json` 600, journal traceback 0,
+  NRestarts 0, timer'lar active.
 
 ---
 
