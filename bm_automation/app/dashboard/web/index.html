@@ -2212,6 +2212,35 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
             <button class="button" id="s-pass-save" onclick="changeMyPassword()">PAROLNI O'ZGARTIRISH</button>
           </div>
         </section>
+        <!-- Akkaunt: ikki bosqichli himoya (TOTP) -->
+        <section class="panel" style="margin-bottom:14px">
+          <div class="section-head"><div><div class="eyebrow">ACCOUNT</div><h2>Ikki bosqichli himoya (TOTP)</h2></div><span class="hint" id="mfa-status"></span></div>
+          <div style="padding:0 18px 18px">
+            <p class="hint" style="margin:0 0 12px">Google Authenticator / Authy ilovasidagi 6 xonali kod bilan qo'shimcha kirish tekshiruvi. Yoqilgach, kirishda paroldan tashqari kod ham so'raladi.</p>
+            <div id="mfa-off" style="display:none">
+              <div style="display:grid;grid-template-columns:minmax(0,320px);gap:14px;margin-bottom:10px">
+                <div><label style="display:block;font:10px 'IBM Plex Mono',monospace;color:var(--muted);margin-bottom:4px" for="mfa-pass">JORIY PAROL</label><input class="input" id="mfa-pass" type="password" autocomplete="current-password"></div>
+              </div>
+              <button class="button" onclick="mfaSetup()">YOQISHNI BOSHLASH</button>
+            </div>
+            <div id="mfa-setup" style="display:none">
+              <p class="hint" style="margin:0 0 6px">Ilovaga qo'shing: sirni qo'lda kiriting yoki quyidagi havolani oching.</p>
+              <div class="input" id="mfa-secret" style="font-family:'IBM Plex Mono',monospace;font-size:12px;word-break:break-all;cursor:text;margin-bottom:6px"></div>
+              <div style="margin-bottom:12px"><a href="#" id="mfa-link" style="font:11px 'IBM Plex Mono',monospace;color:#38bdf8" target="_blank" rel="noopener">otpauth havolasini ochish</a></div>
+              <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+                <div style="flex:1;min-width:180px"><label style="display:block;font:10px 'IBM Plex Mono',monospace;color:var(--muted);margin-bottom:4px" for="mfa-code">ILOVADAGI KOD</label><input class="input" id="mfa-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" spellcheck="false" placeholder="123456"></div>
+                <button class="button" onclick="mfaEnable()">TASDIQLASH</button>
+              </div>
+            </div>
+            <div id="mfa-on" style="display:none">
+              <div style="display:grid;grid-template-columns:minmax(0,320px);gap:14px;margin-bottom:10px">
+                <div><label style="display:block;font:10px 'IBM Plex Mono',monospace;color:var(--muted);margin-bottom:4px" for="mfa-off-pass">JORIY PAROL</label><input class="input" id="mfa-off-pass" type="password" autocomplete="current-password"></div>
+              </div>
+              <button class="button" onclick="mfaDisable()" style="border-color:rgba(239,68,68,.45);color:#ef4444">O'CHIRISH</button>
+            </div>
+            <div class="hint" id="mfa-msg" style="margin-top:10px"></div>
+          </div>
+        </section>
         <!-- Database -->
         <section class="panel" style="margin-bottom:14px">
           <div class="section-head"><div><div class="eyebrow">DATABASE</div><h2>Ma'lumotlar bazasi</h2></div><span class="hint" id="settings-db-status"></span></div>
@@ -2555,6 +2584,10 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
       <input type="text" id="login-user" class="input auth-user" autocomplete="username" autofocus spellcheck="false">
       <label class="wb-lb" for="login-pass">Parol</label>
       <input type="password" id="login-pass" class="input auth-pass" autocomplete="current-password">
+      <div id="login-code-wrap" style="display:none">
+        <label class="wb-lb" for="login-code">IKKI BOSQICHLI KOD (6 RAQAM)</label>
+        <input type="text" id="login-code" class="input" inputmode="numeric" maxlength="6" autocomplete="one-time-code" spellcheck="false" placeholder="123456">
+      </div>
       <button class="button auth-btn" id="login-btn">KIRISH</button>
       <div class="auth-err" id="login-err" role="alert"></div>
     </div>
@@ -4820,7 +4853,7 @@ function showPage(name, updateHash=true){
   if(name==='appeals') loadAppeals();
   if(name==='sms') startSmsPoll(); else stopSmsPoll();
   if(name==='admin') initAdmin();
-  if(name==='settings') { loadSettings(); loadCompanies(); loadEnvSettings(); loadKmPanel(); }
+  if(name==='settings') { loadSettings(); loadCompanies(); loadEnvSettings(); loadKmPanel(); mfaRefresh(); }
   if(name==='dusers') loadDashboardUsers();
   if(name==='knowledge'){ loadVault(); vaultGrowStatus(); }
   if(name==='disk') loadDisk();
@@ -6607,6 +6640,10 @@ function duTgBadge(u) {
   if (!tg) return '';
   return ' <span style="color:var(--teal-text)">\u00b7 TG ' + esc(tg) + '</span>';
 }
+function duMfaBadge(u) {
+  if (!u || !u.mfa) return '';
+  return '<span style="display:inline-block;padding:2px 8px;border-radius:6px;font:600 10px \'IBM Plex Mono\',monospace;background:rgba(56,189,248,.12);color:#38bdf8;border:1px solid rgba(56,189,248,.3)">TOTP</span>';
+}
 function duPagesBadge(u) {
   if (!Array.isArray(u.pages)) return '';
   return ' <span style="color:var(--amber)">\u00b7 ' + u.pages.length + " bo'lim</span>";
@@ -6790,12 +6827,15 @@ function renderDashboardUsers() {
     const canDelete = dashIsSuper && !u.super;
     const buttons = '<button class="button ghost" style="font-size:11px;padding:5px 10px" onclick="editUser(' + i + ')">TAHRIRLASH</button>'
       + '<button class="button ghost" style="font-size:11px;padding:5px 10px" onclick="resetUserPass(' + i + ')">PAROL</button>'
+      + (u.mfa
+          ? '<button class="button ghost" style="font-size:11px;padding:5px 10px" title="Ikki bosqichli himoyani nolga qaytarish" onclick="resetUserMfa(' + i + ')">TOTP RESET</button>'
+          : '')
       + (canDelete
           ? '<button class="button ghost" style="font-size:11px;padding:5px 10px;border-color:rgba(239,68,68,.4);color:#ef4444" onclick="deleteUser(' + i + ')">O\'CHIRISH</button>'
           : '');
     h += '<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--bg-deep)">'
       + '<div style="flex:1;min-width:0">'
-      + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><b style="font:600 13px \'IBM Plex Mono\',monospace;color:var(--ink)">' + esc(u.username) + '</b>' + userStatusBadge(u) + superBadge(u) + '</div>'
+      + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><b style="font:600 13px \'IBM Plex Mono\',monospace;color:var(--ink)">' + esc(u.username) + '</b>' + userStatusBadge(u) + superBadge(u) + duMfaBadge(u) + '</div>'
       + '<div style="font:11px \'IBM Plex Mono\',monospace;color:var(--muted)">' + esc(role) + ' &middot; ' + esc(company) + duPagesBadge(u) + duTgBadge(u) + '</div>'
       + '</div>'
       + '<label style="font:10px \'IBM Plex Mono\',monospace;color:var(--muted);display:flex;align-items:center;gap:6px"><input type="checkbox" id="du-a-' + i + '" ' + (u.active ? 'checked' : '') + ' onchange="toggleUser(' + i + ', this.checked)"> Faol</label>'
@@ -6882,6 +6922,94 @@ async function changeMyPassword() {
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+// ---- Ikki bosqichli himoya (TOTP) ----
+function mfaSay(m) {
+  const el = document.getElementById("mfa-msg");
+  if (el) { el.textContent = m || ""; el.style.color = ""; }
+}
+async function mfaRefresh() {
+  // Joriy holatni serverdan oladi va panel ko'rinishini almashtiradi.
+  const st = document.getElementById("mfa-status");
+  const off = document.getElementById("mfa-off");
+  const setup = document.getElementById("mfa-setup");
+  const on = document.getElementById("mfa-on");
+  if (!st) return;
+  try {
+    const d = await api("/api/mfa/status");
+    const enabled = !!(d && d.enabled);
+    st.textContent = enabled ? "YOQILGAN" : "O'CHIRILGAN";
+    st.style.color = enabled ? "#34d399" : "";
+    if (off) off.style.display = enabled ? "none" : "";
+    if (on) on.style.display = enabled ? "" : "none";
+    if (setup) setup.style.display = "none";
+  } catch (e) {
+    st.textContent = "Holatni olib bo'lmadi";
+  }
+}
+async function mfaSetup() {
+  // 1-qadam: joriy parolni tasdiqlab, ilovaga qo'shiladigan sirni olamiz.
+  const pw = (document.getElementById("mfa-pass") || {}).value || "";
+  mfaSay("");
+  if (!pw) { mfaSay("Joriy parolni kiriting"); return; }
+  try {
+    const d = await postJSON("/api/mfa/setup", { password: pw });
+    if (!d.ok) { mfaSay(d.error || d.detail || "Xatolik"); return; }
+    const sec = document.getElementById("mfa-secret");
+    if (sec) sec.textContent = d.secret || "";
+    const link = document.getElementById("mfa-link");
+    if (link && d.otpauth) link.href = d.otpauth;
+    const code = document.getElementById("mfa-code");
+    if (code) code.value = "";
+    const setup = document.getElementById("mfa-setup");
+    if (setup) setup.style.display = "";
+    const pass = document.getElementById("mfa-pass");
+    if (pass) pass.value = "";
+    mfaSay("Sirni ilovaga qo'shing (yoki havolani oching) va 6 xonali kodni kiriting");
+    if (code) code.focus();
+  } catch (e) {
+    mfaSay((e && e.message) || "Xatolik");
+  }
+}
+async function mfaEnable() {
+  // 2-qadam: kodni tekshirib sirni saqlaymiz — shundan keyin kirishda kod talab qilinadi.
+  const codeEl = document.getElementById("mfa-code");
+  const code = ((codeEl && codeEl.value) || "").trim();
+  mfaSay("");
+  if (!/^\d{6}$/.test(code)) { mfaSay("6 xonali kodni kiriting"); return; }
+  try {
+    const d = await postJSON("/api/mfa/enable", { code: code });
+    if (!d.ok) { mfaSay(d.error || d.detail || "Xatolik"); return; }
+    await mfaRefresh();
+    mfaSay("Ikki bosqichli himoya yoqildi — keyingi kirishda kod so'raladi");
+  } catch (e) {
+    mfaSay((e && e.message) || "Xatolik");
+  }
+}
+async function mfaDisable() {
+  const pwEl = document.getElementById("mfa-off-pass");
+  const pw = (pwEl && pwEl.value) || "";
+  mfaSay("");
+  if (!pw) { mfaSay("Joriy parolni kiriting"); return; }
+  if (!confirm("Ikki bosqichli himoya o'chirilsinmi? Kod so'ralmay qoladi.")) return;
+  try {
+    const d = await postJSON("/api/mfa/disable", { password: pw });
+    if (!d.ok) { mfaSay(d.error || d.detail || "Xatolik"); return; }
+    if (pwEl) pwEl.value = "";
+    await mfaRefresh();
+    mfaSay("Ikki bosqichli himoya o'chirildi");
+  } catch (e) {
+    mfaSay((e && e.message) || "Xatolik");
+  }
+}
+async function resetUserMfa(idx) {
+  // Admin: foydalanuvchi telefonini yo'qotganda kodni nolga qaytaradi.
+  const u = (window.__dashUsersFiltered || [])[+idx];
+  if (!u) return;
+  if (!confirm(u.username + " uchun ikki bosqichli himoya nolga qaytarilsinmi?\nKeyingi kirishda faqat parol so'raladi.")) return;
+  const d = await postJSON("/api/dashboard-users", { action: "mfa_reset", username: u.username });
+  if (!d.ok) alert("Xato: " + (d.error || d.detail || ""));
+  else { alert("TOTP nolga qaytarildi"); loadDashboardUsers(); }
 }
 async function deleteUser(idx) {
   const u = (window.__dashUsersFiltered || [])[+idx];
@@ -9262,16 +9390,23 @@ function applyAccessUI() {
 async function tryLogin() {
   const userEl = document.getElementById("login-user");
   const passEl = document.getElementById("login-pass");
+  const codeEl = document.getElementById("login-code");
+  const codeWrap = document.getElementById("login-code-wrap");
   const errEl = document.getElementById("login-err");
   const username = (userEl.value || "").trim();
   const password = passEl.value || "";
+  const code = ((codeEl && codeEl.value) || "").trim();
   errEl.textContent = "";
   if (!username || !password) { errEl.textContent = "Login va parolni kiriting"; (passEl || userEl).focus(); return; }
   try {
-    const r = await bmFetch("/api/login", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({username, password})});
+    const payload = {username, password};
+    if (code) payload.code = code;
+    const r = await bmFetch("/api/login", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
     const d = await r.json().catch(() => ({}));
     if (r.status === 200 && d && d.ok) {
       passEl.value = ""; userEl.value = "";
+      if (codeEl) codeEl.value = "";
+      if (codeWrap) codeWrap.style.display = "none";
       await refreshMe();
       applyAccessUI();
       document.body.classList.remove("auth-locked");
@@ -9279,7 +9414,14 @@ async function tryLogin() {
       applyHashPage();
       return;
     }
-    errEl.textContent = (d && d.error) || "Login yoki parol noto'g'ri";
+    if (d && d.mfa_required) {
+      /* Parol to'g'ri, faqat kod kerak — parol maydoni saqlanadi. */
+      if (codeWrap) codeWrap.style.display = "";
+      errEl.textContent = d.error || "Ikki bosqichli himoya kodi kerak";
+      if (codeEl) { codeEl.focus(); codeEl.select(); }
+      return;
+    }
+    errEl.textContent = (d && (d.error || d.detail)) || "Login yoki parol noto'g'ri";
     passEl.value = ""; passEl.focus();
   } catch (e) {
     errEl.textContent = "Server bilan bog'lanib bo'lmadi";
@@ -9292,7 +9434,7 @@ function initAuth() {
   const err = document.getElementById("login-err");
   const fire = () => void tryLogin();
   btn.addEventListener("click", fire);
-  [user, pass].forEach(el => { if (el) el.addEventListener("keydown", e => { if (e.key === "Enter") fire(); }); });
+  [user, pass, document.getElementById("login-code")].forEach(el => { if (el) el.addEventListener("keydown", e => { if (e.key === "Enter") fire(); }); });
   document.getElementById("logout-btn").addEventListener("click", () => {
     bmFetch("/api/logout", {method: "POST"}).catch(() => {}).finally(() => {
       me = null;
@@ -9300,6 +9442,10 @@ function initAuth() {
       document.body.classList.add("auth-locked");
       if (user) user.value = "";
       if (pass) pass.value = "";
+      const codeEl = document.getElementById("login-code");
+      const codeWrap = document.getElementById("login-code-wrap");
+      if (codeEl) codeEl.value = "";
+      if (codeWrap) codeWrap.style.display = "none";
       if (err) err.textContent = "";
     });
   });

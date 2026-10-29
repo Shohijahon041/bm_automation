@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ...core.sections import clean_sections
@@ -106,6 +109,55 @@ def _row_pages(row: dict) -> list | None:
 class LoginRequest(BaseModel):
     username: str
     password: str
+    # Ikki bosqichli himoya (TOTP) yoqilgan akkauntlar uchun 6 xonali kod.
+    code: str = ""
+
+
+# TOTP sozlash jarayoni: sir tasdiqlanmaguncha bazaga yozilmaydi.
+# Yozuv: (sir, yaratilgan vaqt, xato urinishlar soni).
+_PENDING_MFA: dict[str, tuple[str, float, int]] = {}
+_PENDING_TTL_S = 10 * 60
+_PENDING_MAX_TRIES = 5
+_MFA_LOCK = threading.Lock()
+
+
+def _pending_put(username: str, secret: str) -> None:
+    with _MFA_LOCK:
+        _PENDING_MFA[username] = (secret, time.monotonic(), 0)
+
+
+def _pending_get(username: str) -> str:
+    """Tasdiqlash uchun sirni oladi (muddati o'tgan bo'lsa bo'sh)."""
+    with _MFA_LOCK:
+        item = _PENDING_MFA.get(username)
+        if not item:
+            return ""
+        secret, created, _tries = item
+        if time.monotonic() - created > _PENDING_TTL_S:
+            _PENDING_MFA.pop(username, None)
+            return ""
+        return secret
+
+
+def _pending_fail(username: str) -> bool:
+    """Noto'g'ri kod: urinishlar soni oshadi, chegaradan oshsa jarayon bekor."""
+    with _MFA_LOCK:
+        item = _PENDING_MFA.get(username)
+        if not item:
+            return False
+        secret, created, tries = item
+        tries += 1
+        if tries >= _PENDING_MAX_TRIES:
+            _PENDING_MFA.pop(username, None)
+            return False
+        _PENDING_MFA[username] = (secret, created, tries)
+        return True
+
+
+def _pending_drop(username: str) -> None:
+    with _MFA_LOCK:
+        _PENDING_MFA.pop(username, None)
+
 
 
 @router.post("/api/login")
@@ -152,6 +204,28 @@ def login(body: LoginRequest, request: Request, response: Response):
             raise HTTPException(
                 403, "Kompaniya topilmadi yoki faol emas. "
                      "Administratorga murojaat qiling")
+
+    # Ikki bosqichli himoya (TOTP): parol to'g'ri bo'lsa ham kod talab
+    # qilinadi. Sessiya faqat ikkalasi to'g'ri bo'lganda yaratiladi.
+    totp_secret = str(user.get("totp_secret") or "").strip()
+    if totp_secret:
+        from .. import totp as _totp
+        code = str(body.code or "").strip()
+        if not code:
+            audit_event("login.mfa_required", request, user=username,
+                        detail="totp")
+            return JSONResponse(
+                {"ok": False, "mfa_required": True,
+                 "error": "Ikki bosqichli himoya kodi kerak"},
+                status_code=401)
+        if not _totp.verify(totp_secret, code):
+            login_fail(ip, username)
+            audit_event("login.fail", request, user=username, ok=False,
+                        detail="bad-totp")
+            return JSONResponse(
+                {"ok": False, "mfa_required": True,
+                 "error": "Kod noto'g'ri yoki muddati o'tgan"},
+                status_code=401)
 
     login_success(ip, username)
     # Eski (kam iteratsiyali yoki formatsiz) hash — parol to'g'ri bo'lgani
@@ -295,6 +369,8 @@ def list_dashboard_users(request: Request, scope: dict = Depends(Scope())):
             "company_route": str((profile or {}).get("routeName") or ""),
             "active": int(u.get("active") or 0) == 1,
             "super": uname in super_names,
+            # Ikki bosqichli himoya (TOTP) yoqilganmi.
+            "mfa": bool(str(u.get("totp_secret") or "").strip()),
             # None = rol bo'yicha standart; ro'yxat = aniq tanlangan bo'limlar.
             "pages": _row_pages(u),
             "telegram_chat_id": _row_tg(u),
@@ -594,6 +670,32 @@ async def manage_dashboard_users(request: Request, scope: dict = Depends(Scope()
                         target=uname)
         return {"ok": ok}
 
+    if action == "mfa_reset":
+        # Qulflangan foydalanuvchi uchun zaxira yo'l: ADMIN ikki bosqichli
+        # himoyani o'chiradi (auditga yoziladi). Parol o'zgarmaydi.
+        if not caller_is_admin:
+            return {"ok": False, "error": "Faqat ADMIN reset qila oladi"}
+        uname = str(payload.get("username") or "").strip().lower()
+        try:
+            row_id = int(payload.get("id") or 0)
+        except (TypeError, ValueError):
+            row_id = 0
+        row = st.dashboard_user_get(row_id=row_id) if row_id else None
+        if not row and uname:
+            row = st.dashboard_user_get(username=uname)
+        if not row:
+            return {"ok": False, "error": "Foydalanuvchi topilmadi"}
+        target = str(row.get("username") or "").lower()
+        if target in super_names and not caller_is_super:
+            return {"ok": False, "error": "Super adminni boshqa foydalanuvchi tahrirlay olmaydi"}
+        if not caller_is_super and str(row.get("company") or "") != caller_company:
+            return {"ok": False, "error": "Boshqa korxona foydalanuvchisini tahrirlay olmaysiz"}
+        ok = st.dashboard_user_update(int(row.get("id") or 0), totp_secret="")
+        if ok:
+            audit_event("dashboard_user.mfa_reset", request, user=caller,
+                        target=target)
+        return {"ok": ok}
+
     return {"ok": False, "error": "Noma'lum action"}
 
 
@@ -642,3 +744,90 @@ def change_password(body: ChangePasswordRequest, request: Request,
     audit_event("password.change", request, user=username,
                 target=username, detail=f"sessions_closed={closed}")
     return {"ok": True, "closed_sessions": closed}
+
+
+class MfaPasswordRequest(BaseModel):
+    password: str = ""
+
+
+class MfaCodeRequest(BaseModel):
+    code: str = ""
+
+
+def _self_user(scope: dict) -> tuple[str, dict]:
+    """Joriy sessiya egasining username'i va DB yozuvi."""
+    from ...db.storage import get_storage
+    username = str(scope.get("username") or "").strip().lower()
+    if not username:
+        raise HTTPException(401, "Kirish talab qilinadi")
+    user = get_storage().dashboard_user_get(username=username)
+    if not user:
+        raise HTTPException(404, "Akkaunt topilmadi")
+    return username, user
+
+
+@router.get("/api/mfa/status")
+def mfa_status(scope: dict = Depends(Scope())):
+    _username, user = _self_user(scope)
+    return {"ok": True,
+            "enabled": bool(str(user.get("totp_secret") or "").strip())}
+
+
+@router.post("/api/mfa/setup")
+def mfa_setup(body: MfaPasswordRequest, request: Request,
+              scope: dict = Depends(Scope())):
+    """Joriy parolni tasdiqlab yangi TOTP sirini qaytaradi (hali yoqilmagan)."""
+    from .. import totp as _totp
+    username, user = _self_user(scope)
+    if not verify_password(body.password or "", str(user.get("salt") or ""),
+                           str(user.get("password_hash") or "")):
+        audit_event("mfa.setup", request, user=username, ok=False,
+                    detail="bad-password")
+        raise HTTPException(400, "Parol noto'g'ri")
+    secret = _totp.new_secret()
+    _pending_put(username, secret)
+    audit_event("mfa.setup", request, user=username, detail="pending")
+    return {"ok": True, "secret": secret, "account": username,
+            "otpauth": _totp.otpauth_url(secret, username)}
+
+
+@router.post("/api/mfa/enable")
+def mfa_enable(body: MfaCodeRequest, request: Request,
+               scope: dict = Depends(Scope())):
+    """Sozlashda olingan sirni ilovadagi kod bilan tasdiqlab yoqadi."""
+    from .. import totp as _totp
+    username, user = _self_user(scope)
+    secret = _pending_get(username)
+    if not secret:
+        raise HTTPException(400, "Sozlash jarayoni topilmadi — qaytadan boshlang")
+    if not _totp.verify(secret, body.code):
+        audit_event("mfa.enable", request, user=username, ok=False,
+                    detail="bad-code")
+        if not _pending_fail(username):
+            raise HTTPException(400, "Kod noto'g'ri — sozlashni qaytadan boshlang")
+        raise HTTPException(400, "Kod noto'g'ri — telefon vaqtini tekshiring")
+    _pending_drop(username)
+    from ...db.storage import get_storage
+    if not get_storage().dashboard_user_update(int(user.get("id") or 0),
+                                               totp_secret=secret):
+        raise HTTPException(500, "Saqlab bo'lmadi")
+    audit_event("mfa.enable", request, user=username)
+    return {"ok": True, "enabled": True}
+
+
+@router.post("/api/mfa/disable")
+def mfa_disable(body: MfaPasswordRequest, request: Request,
+                scope: dict = Depends(Scope())):
+    """Ikki bosqichli himoyani o'chiradi (parol qayta tasdiqlanadi)."""
+    username, user = _self_user(scope)
+    if not verify_password(body.password or "", str(user.get("salt") or ""),
+                           str(user.get("password_hash") or "")):
+        audit_event("mfa.disable", request, user=username, ok=False,
+                    detail="bad-password")
+        raise HTTPException(400, "Parol noto'g'ri")
+    from ...db.storage import get_storage
+    if not get_storage().dashboard_user_update(int(user.get("id") or 0),
+                                               totp_secret=""):
+        raise HTTPException(500, "Saqlab bo'lmadi")
+    audit_event("mfa.disable", request, user=username)
+    return {"ok": True, "enabled": False}

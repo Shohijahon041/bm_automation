@@ -56,13 +56,13 @@ chiqarilmagan.
 | SEC-04 | High | CSRF himoyasi yo'q edi; `GET /api/backup/run` holat o'zgartirardi | `fastapi_app.py:116-145`, `routers/system.py:296-302` | **Tuzatildi** (Origin/Sec-Fetch-Site + POST) |
 | SEC-05 | High | GPS API token bo'sh bo'lsa `0.0.0.0`da autentifikatsiyasiz ochiq; token `==` bilan solishtirilardi | `gps/api.py:55-86` | **Tuzatildi** (faqat loopback + `compare_digest`) |
 | SEC-06 | Medium | GPS API har qanday `Origin`ni aks ettiradi + `Allow-Credentials: true`; UI tokeni URL'da, `Referrer-Policy` yo'q | `gps/api.py:189-224, 444-450` | **Tuzatildi** (CORS whitelist + `no-referrer`) |
-| SEC-07 | Medium | RLS barcha jadvallarda yoqilgan, lekin **policy yo'q** → ilova roli RLS'ni chetlab o'tishi shart; izolyatsiya faqat app-level | `db/schema.py:592-594` | Ochiq (dizayn qarori kerak) |
+| SEC-07 | Medium | RLS barcha jadvallarda yoqilgan, lekin **policy yo'q** → ilova roli RLS'ni chetlab o'tishi shart; izolyatsiya faqat app-level | `db/schema.py:592-594` | **Qaror qabul qilindi** (2026-10-29): rol least-privilege (`super=f`, `bypassrls=f`), policy'siz RLS saqlanadi, izolyatsiya app-level; `bm_app` roli + policy — P1 (HARDENING_PLAN §2.1) |
 | SEC-08 | Medium | Sessiya tokenlari `state/dashboard_sessions.json`da ochiq matnda; statik `DASHBOARD_TOKEN` `==` bilan solishtiriladi | `deps.py:150-190, 776-784` | **Tuzatildi** (fayl 0600, `compare_digest`) |
-| SEC-09 | Medium | Bog'liqliklar pastki chegara bilan pin qilinmagan, lockfile/hash yo'q; Docker root + mutable tag; CI action'lar SHA'ga pin qilinmagan | `requirements.txt`, `Dockerfile:3,26-28`, `.github/workflows/test.yml:15,19` | Ochiq |
-| SEC-10 | Low | CSP `script-src 'unsafe-inline'` — XSS himoyasi zaiflashgan | `fastapi_app.py:107` | Ochiq |
+| SEC-09 | Medium | Bog'liqliklar pastki chegara bilan pin qilinmagan, lockfile/hash yo'q; Docker root + mutable tag; CI action'lar SHA'ga pin qilinmagan | `requirements.txt`, `Dockerfile:3,26-28`, `.github/workflows/test.yml:15,19` | **Tuzatildi** (barcha paket `==`, action'lar commit SHA, base image digest); `--require-hashes` — keyingi qadam |
+| SEC-10 | Low | CSP `script-src 'unsafe-inline'` — XSS himoyasi zaiflashgan | `fastapi_app.py:107` | **Qisman tuzatildi**: `base-uri`/`form-action`/`object-src`/`frame-ancestors` qo'shildi; `'unsafe-inline'` inline handler'lar sabab qoladi (nonce — P2) |
 | SEC-11 | Low | `/api/health` har qanday autentifikatsiyalangan foydalanuvchiga host/disk/xotira ma'lumotini beradi | `routers/system.py` (`/api/health`) | **Tuzatildi** (MANAGER+) |
-| SEC-12 | Low | PBKDF2-SHA256 120k iteratsiya (OWASP tavsiyasi 600k); ADMIN uchun MFA yo'q | `deps.py:357-371` | **Tuzatildi** (600k + auto-rehash); MFA — ochiq |
-| SEC-13 | Low | Audit log yoziladi, lekin alerting/paging yo'q (faqat fayl/konsol) | `deps.py:866-879`, `utils/logger.py` | Ochiq |
+| SEC-12 | Low | PBKDF2-SHA256 120k iteratsiya (OWASP tavsiyasi 600k); ADMIN uchun MFA yo'q | `deps.py:357-371` | **Tuzatildi** (600k + auto-rehash). MFA: ixtiyoriy TOTP (setup/enable/disable + login kod bosqichi + admin reset) |
+| SEC-13 | Low | Audit log yoziladi, lekin alerting/paging yo'q (faqat fayl/konsol) | `deps.py:866-879`, `utils/logger.py` | **Tuzatildi**: login.fail (≥5/10 daq.) va backup PARTIAL/ERROR → ADMIN Telegram (`dashboard/alerts.py`, throttle) |
 | SEC-14 | Low | `/api/settings/companies` ro'yxati non-super ADMIN'ga barcha korxonalar nomini ko'rsatadi; `TrustedHostMiddleware` yo'q | `routers/admin.py:353-360` | **Tuzatildi** (own-company filtri + Host guard) |
 
 **Tuzatilmagan, lekin tekshirilgan himoyalar** (auditda zaiflik topilmadi):

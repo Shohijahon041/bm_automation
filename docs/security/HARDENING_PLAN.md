@@ -37,10 +37,46 @@ Holat: **lokal kod tuzatishlari bajarildi; productionga hech narsa chiqarilmagan
 | SEC-11 | `bm_automation/app/dashboard/routers/system.py` | `/api/health` — MANAGER+ (rank 2) | `bm-dashboard` restart |
 | SEC-12 | `bm_automation/app/dashboard/deps.py`, `routers/auth.py` | PBKDF2 600 000 + versiyalangan hash (`pbkdf2_sha256$iter$hex`), eski 120k hash'lar qabul qilinadi va login'da avtomatik rehash | `bm-dashboard` restart |
 | SEC-14 | `bm_automation/app/dashboard/routers/admin.py`, `fastapi_app.py`, `deps.py` | Non-super ADMIN faqat o'z kompaniyasini ko'radi; Host-header guard (DNS rebinding) | `bm-dashboard` restart |
+| SEC-09 | `requirements.txt`, `.github/workflows/test.yml`, `Dockerfile` | Barcha paketlar `==` (production freeze'dan), action'lar commit SHA bilan, base image manifest-digest bilan qulflandi | CI + image build |
+| SEC-13 | `app/dashboard/alerts.py` (yangi), `deps.py`, `db/backup.py` | Login xatolari (10 daq. ichida ≥5) va backup PARTIAL/ERROR → ADMIN'larga Telegram, tur bo'yicha throttle (10/30 daq.), fon oqimida | `bm-dashboard` restart |
+| SEC-10 | `bm_automation/app/dashboard/fastapi_app.py` | CSP: `base-uri`, `form-action`, `object-src`, `frame-ancestors` qo'shildi; `'unsafe-inline'` sababi kod izohida | `bm-dashboard` restart |
+| MFA | `app/dashboard/totp.py` (yangi), `routers/auth.py`, `db/schema.py`, `db/storage.py`, `db/backup.py`, `web/index.html` | Ixtiyoriy TOTP (har bir foydalanuvchi o'zi yoqadi, ADMIN birinchi navbatda): `dashboard_users.totp_secret`, `/api/mfa/setup|enable|disable`, login'da kod bosqichi, Settings paneli, admin `mfa_reset` (telefon yo'qolganda) | `bm-dashboard` + `bm-bot` restart (migratsiya `init_db()`) |
 | — | `tests/test_security_hardening.py` | 10 yangi regressiya testi (jami 30) | repo |
+| — | `tests/test_mfa_and_alerts.py` | 16 yangi test (TOTP vektorlar, alertlar, MFA API, CSP) | repo |
 
 Eslatma: `web/index.html` statik fayl — server restart talab qilmaydi, lekin
 `system.py`/`fastapi_app.py` Python o'zgargani uchun `bm-dashboard` restart shart.
+MFA migratsiyasi (`ALTER TABLE dashboard_users ADD COLUMN IF NOT EXISTS
+totp_secret`) `init_db()` orqali start paytida qo'llanadi.
+
+### 2.1 SEC-07 — DB roli va RLS qarori (2026-10-29, tekshirilgan)
+
+Production tekshiruvi (faqat o'qish):
+
+| Tekshiruv | Natija |
+|---|---|
+| `pg_roles` (joriy rol `bm`) | `rolsuper=f`, `rolbypassrls=f`, `rolcreatedb=f`, `rolcreaterole=f` — login-only rol |
+| `bm_loyiha` egaligi | Jadvallar egasi `bm` (`relforcerowsecurity=false` → egasi RLS'ni chetlab o'tadi) |
+| `listen_addresses` / `pg_hba.conf` | `localhost`; faqat loopback (peer + scram-sha-256) |
+| `pg_tables.rowsecurity` | 29 jadvalda `t`, `pg_policy` bo'sh (0 policy) |
+
+**Qaror: policy-asosidagi RLS joriy arxitekturada qo'shilmaydi.** Sabablari:
+
+1. `init_db()` startda DDL (`ALTER TABLE ... ENABLE ROW LEVEL SECURITY`,
+   jadval yaratish) bajaradi — shuning uchun `bm` jadval egasi bo'lib qolishi
+   shart, egasi esa policy'siz RLS'ni chetlab o'tadi (foyda nolga teng).
+2. Policy ishlashi uchun har so'rovda tenant GUC (masalan
+   `app.current_company`) o'rnatilishi kerak — bu `psycopg_pool` ulanish
+   kontekstini har request'da boshqarishni talab qiladi (murakkab, regressiya
+   xavfi yuqori). Hozirgi izolyatsiya **ilova qavatida** majburiy:
+   `Scope`/`tenant_guard` + `force_route` + `_strip_finance` (SEC-01, SEC-14).
+3. Egasi bo'lmagan alohida `bm_app` roli yaratish — kelajakdagi alohida ish
+   (owner `bm` DDL uchun, runtime `bm_app` faqat DML; RLS + `SET LOCAL` GUC).
+
+RLS'ni hozir yoqib qo'yish (policy'siz) Supabase'ga ko'chirishda himoya
+beradi va lokal PG'da egasi tufayli xatti-harakatni o'zgartirmaydi — shu holat
+saqlanadi. DB porti tashqariga ochilmagan, shuning uchun tashqi to'g'ridan-to'g'ri
+ulanish yo'li yo'q.
 
 ### Deploydan oldingi shartlar (production)
 
@@ -62,16 +98,16 @@ Eslatma: `web/index.html` statik fayl — server restart talab qilmaydi, lekin
 
 | ID | Ish | Fayl | Tekshirish |
 |---|---|---|---|
-| SEC-07 | DB rolini tekshirish (superuser/BYPASSRLS emasligi) va RLS policy qarori | `db/schema.py`, migration | `SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname=current_user;` |
-| SEC-09 | Lockfile (`pip-compile --generate-hashes`) va `--require-hashes`; Docker non-root | `requirements*.txt`, `Dockerfile` | CI yashil, image build |
+| — | `bm_app` runtime roli (faqat DML) + policy-asosidagi RLS (SEC-07 §2.1, 3-variant) | `db/`, systemd | staging'da tenant A/B testlari |
+| — | `pip-compile --generate-hashes` + `--require-hashes` (SEC-09 keyingi qadam) | `requirements*.txt` | CI yashil |
 
 ### P2 (keyingi oy)
 
 | ID | Ish |
 |---|---|
-| SEC-10 | CSP'ni nonce/hash asosiga o'tkazish (inline handler'larni bosqichma-bosqich ajratish) |
-| SEC-13 | Audit logga alerting: login.fail ko'payishi, `tenant.denied`, `password.change`, backup xatosi |
-| — | ADMIN uchun MFA (TOTP) — alohida loyiha sifatida |
+| SEC-10b | CSP'ni nonce/hash asosiga o'tkazish (inline handler'larni bosqichma-bosqich ajratish) |
+| — | Super ADMIN uchun MFA'ni majburiy qilish (hozir ixtiyoriy) |
+| — | Alertlarni Telegram'dan tashqari e-mail/webhook kanaliga chiqarish |
 
 ### Bog'liqlik yangilash (avtomatik emas)
 
@@ -125,8 +161,10 @@ Natijalarni baholash mezonlari:
 - SSH: `passwordauthentication no`, root login taqiqlangan yoki kalit bilan.
 - fail2ban: sshd jail aktiv.
 - `.env` va `state/`: 600/700; guruh/other o'qishi yo'q.
-- DB roli: `rolsuper=f`, `rolbypassrls=f` bo'lsa yaxshi; aks holda SEC-07 P1.
-- RLS: barcha jadvallarda `rowsecurity=t`, policy soni > 0 (hozir 0).
+- DB roli: `rolsuper=f`, `rolbypassrls=f` — 2026-10-29 da tasdiqlandi (SEC-07 §2.1).
+- RLS: 29 jadvalda `rowsecurity=t`, policy 0 — **qabul qilingan qaror** (§2.1):
+  tenant izolyatsiyasi ilova qavatida; policy-asosidagi RLS alohida `bm_app`
+  roli bilan kelajakdagi ish.
 
 ---
 
@@ -191,7 +229,20 @@ $env:BM_DB_DRIVER="sqlite"; $env:BM_TEST_MODE="1"
 & "C:\...\python.exe" -X utf8 -m pytest tests/ -q
 ```
 
-Natijalar (2026-10-29):
+Natijalar (2026-10-29, SEC-09/10/13 + MFA bosqichi):
+
+- `py_compile` (`alerts.py`, `totp.py`, `auth.py`, `deps.py`, `fastapi_app.py`,
+  `schema.py`, `storage.py`, `backup.py`) — OK
+- `node --check` (index.html 3 inline blok) — OK; MFA funksiyalari/ID'lar
+  cross-check — OK
+- `tests/test_mfa_and_alerts.py` — **16 passed** (TOTP RFC vektorlari, alertlar,
+  MFA API, reset ruxsatlari, CSP)
+- `tests/test_dashboard.py` + `tests/test_security_hardening.py` — **111 passed**
+- Paket pinlari PyPI'da mavjudligi tekshirildi (15/15 BOR)
+- To'liq to'plam — **1584 passed, 0 failed** (17 daqiqa, exit 0;
+  `state/_full_pytest_20261029_mfa.log`)
+
+Natijalar (2026-10-29, oldingi bosqich):
 
 - `py_compile` (70 o'zgargan modul) — OK
 - `node --check` (index.html 3 blok, gps_ui.html 1 blok inline JS) — OK
@@ -218,9 +269,13 @@ Deploy (2026-10-29, `bm-dashboard` + `bm-bot` restart):
 
 ## 7. Qabul mezonlari (Definition of Done)
 
-- [ ] SEC-01…SEC-05 productionda; smoke testlar o'tdi.
-- [ ] SEC-07 DB roli tekshirildi; RLS qarori hujjatlashtirildi.
-- [ ] `.env`/`state/` ruxsatlari 600/700.
-- [ ] Lockfile + CI hash tekshiruvi.
-- [ ] Audit alerting (kamida login.fail va backup.error).
+- [x] SEC-01…SEC-05 productionda; smoke testlar o'tdi (2026-10-29).
+- [x] SEC-07 DB roli tekshirildi; RLS qarori hujjatlashtirildi (§2.1).
+- [x] `.env`/`state/` ruxsatlari 600/700 (2026-10-08 hardening).
+- [x] Paketlar `==` bilan qulflandi; CI action'lari commit SHA'da (SEC-09).
+- [x] Audit alerting: login.fail (≥5/10 daq.) va backup PARTIAL/ERROR (SEC-13).
+- [x] CSP: `base-uri`/`form-action`/`object-src`/`frame-ancestors` (SEC-10).
+- [x] Ixtiyoriy MFA (TOTP): setup/enable/disable + login kod bosqichi + admin reset.
+- [ ] `pip-compile --generate-hashes` + `--require-hashes` (P1, keyingi qadam).
+- [ ] `bm_app` DML roli + policy-asosidagi RLS (P1, alohida ish).
 - [ ] Rollback bir marta mashq qilindi (staging yoki oynada).

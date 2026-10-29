@@ -119,7 +119,21 @@ def create_app() -> FastAPI:
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-        response.headers.setdefault("Content-Security-Policy", "default-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; script-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' https://bmbrutto.uz http://127.0.0.1:* http://localhost:*;")
+        # CSP: `script-src 'unsafe-inline'` saqlanadi — SPA bitta fayl,
+        # inline `<script>` va onclick atributlari bor (nonce'ga o'tkazish
+        # alohida ish). Qolgan direktivalar cheklovni yopadi: object/embed
+        # taqiqlangan, forma faqat o'z manziliga, baza URL o'zgarmaydi.
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com; "
+            "base-uri 'self'; form-action 'self'; object-src 'none'; "
+            "frame-ancestors 'none'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "script-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: https:; "
+            "font-src 'self' https://fonts.gstatic.com data:; "
+            "media-src 'self' blob:; "
+            "connect-src 'self' https://bmbrutto.uz http://127.0.0.1:* http://localhost:*;")
         response.headers.setdefault("X-Robots-Tag", "noindex, nofollow")
         path = request.url.path
         is_photo = path.startswith("/api/drivers/") and path.endswith("/photo")

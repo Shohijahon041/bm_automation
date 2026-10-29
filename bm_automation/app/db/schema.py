@@ -331,6 +331,8 @@ _RAW_TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("company", "TEXT NOT NULL DEFAULT ''"),
         ("active", "INTEGER NOT NULL DEFAULT 1"),
         ("data", "TEXT NOT NULL DEFAULT '{}'"),
+        # Ikki bosqichli kirish (TOTP) siri — bo'sh = o'chirilgan.
+        ("totp_secret", "TEXT NOT NULL DEFAULT ''"),
     ],
     # Video kameralar (HLS/RTSP) — har bir kamera avtobusga bog'lanadi.
     "video_cameras": [
@@ -538,6 +540,9 @@ _MIGRATIONS: list[str] = [
     "contact_phone TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE companies ADD COLUMN IF NOT EXISTS "
     "notes TEXT NOT NULL DEFAULT ''",
+    # Ikki bosqichli kirish (TOTP) — eski bazalarga ustun qo'shiladi.
+    "ALTER TABLE dashboard_users ADD COLUMN IF NOT EXISTS "
+    "totp_secret TEXT NOT NULL DEFAULT ''",
 ]
 
 # Tenant migratsiyasi (idempotent): eski bazalarga company_id/created_by/

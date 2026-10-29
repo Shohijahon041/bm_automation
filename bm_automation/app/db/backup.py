@@ -27,6 +27,15 @@ from .base import Database, DatabaseError
 
 log = get_logger("bm_automation.backup")
 
+
+def _alert_backup(status: str, error: str) -> None:
+    """Backup nosozligini ADMIN'larga xabar beradi (jim o'tkazib yuboriladi)."""
+    try:
+        from ..dashboard.alerts import notify_backup_failure
+        notify_backup_failure(status, error)
+    except Exception:  # noqa: BLE001 - ogohlantirish backup oqimini buzmidi
+        log.warning("Backup ogohlantirishi yuborilmadi")
+
 # Backup holati (xotira ichida)
 _backup_state = {
     "last_run": None,
@@ -612,6 +621,8 @@ def run_backup(tables: list[str] | None = None) -> dict:
             result["rows_synced"],
             duration,
         )
+        if not result["ok"]:
+            _alert_backup("PARTIAL", "; ".join(_backup_state["errors"][-5:]))
 
     except Exception as exc:
         result["ok"] = False
@@ -619,6 +630,7 @@ def run_backup(tables: list[str] | None = None) -> dict:
         _backup_state["last_status"] = "ERROR"
         _backup_state["errors"].append(str(exc))
         log.error("Backup xatosi: %s", exc)
+        _alert_backup("ERROR", str(exc))
 
     finally:
         _backup_state["running"] = False

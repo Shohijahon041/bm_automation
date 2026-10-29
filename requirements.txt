@@ -1,17 +1,20 @@
-requests>=2.32.0
-httpx>=0.27.0
-python-dotenv>=1.0.0
-openpyxl>=3.1.0
-xlwt>=1.3.0
-pandas>=2.0.0
-matplotlib>=3.9.0
-playwright>=1.45.0
-pytest>=8.0.0
-pydantic>=2.0.0
-android-sms-gateway>=4.2.0
-fastapi>=0.115.0
-uvicorn[standard]>=0.30.0
+# Aniq versiyalar (supply-chain himoyasi): har paket `==` bilan qulflangan.
+# Manba: production VDS (`/opt/bm/.venv`) — 2026-10-29 holati, o'rnatilgan va
+# sinalgan to'plam. Yangilash tartibi: yangi versiyani VDS'da sinab, keyin
+# shu faylga yozish (avtomatik "eng so'nggi" ga ergashish taqiqlanadi).
+requests==2.34.2
+httpx==0.28.1
+python-dotenv==1.2.4
+openpyxl==3.1.5
+xlwt==1.3.0
+pandas==3.0.6
+matplotlib==3.11.2
+playwright==1.63.0
+pytest==9.1.1
+pydantic==2.13.5
+android-sms-gateway==4.3.1
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
 # Ma'lumotlar bazasi: PostgreSQL uchun (SQLite standart kutubxonadan).
-# SQLite rejimi uchun ushbu qatorni o'chirish mumkin.
-psycopg[binary]>=3.2.0
-psycopg-pool>=3.2.0
+psycopg[binary]==3.3.6
+psycopg-pool==3.3.3

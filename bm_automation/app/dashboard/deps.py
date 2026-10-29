@@ -965,6 +965,12 @@ def audit_event(action: str, request: Request | None = None, *,
              _audit_value(action, 80), "1" if ok else "0",
              _audit_value(user), _audit_value(target), ip,
              _audit_value(detail))
+    if action in ("login.fail", "login.blocked"):
+        try:
+            from .alerts import notify_login_failure
+            notify_login_failure(_audit_value(user), ip, _audit_value(detail))
+        except Exception:  # noqa: BLE001 - ogohlantirish audit yozuvini buzmidi
+            log.warning("login ogohlantirishi yuborilmadi")
 
 
 def _tenant_denied(reason: str, request: Request, scope: dict,
