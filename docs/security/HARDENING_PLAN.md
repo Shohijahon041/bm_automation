@@ -242,6 +242,23 @@ Natijalar (2026-10-29, SEC-09/10/13 + MFA bosqichi):
 - To'liq to'plam — **1584 passed, 0 failed** (17 daqiqa, exit 0;
   `state/_full_pytest_20261029_mfa.log`)
 
+Deploy (2026-10-29 22:05–22:08, `bm-dashboard` + `bm-bot` restart):
+
+- Backup: `/opt/bm/state/deploy_backup_20261029_220511_mfa/` (`before_runtime.tar.gz`,
+  `.env` md5 — o'zgarmagan).
+- 9 fayl (7 py + 1 html + 1 base) `scp -O` bilan; server md5 9/9 lokal bilan bir xil.
+- `py_compile` (8 py) OK, `alerts`/`totp` import OK.
+- `init_db()` yangilanishi: `dashboard_users.totp_secret` ustuni qo'shildi
+  (`text NOT NULL DEFAULT ''`); RLS 29 jadval / 0 siyosat — o'zgarmagan.
+- Smoke: `/`=200, CSP'da `base-uri`/`form-action`/`object-src`/`frame-ancestors`
+  bor, `/api/mfa/status` anonim 401, soxta login 401, `/api/health` anonim 401,
+  GPS `8081/api/video/jt-streams` anonim 401; journal traceback 0,
+  NRestarts 0, `bm-token-refresh`/`backup` timer active.
+- Brauzer (`bmbrutto.uz`): sahifa to'liq yuklandi, console error 0;
+  `mfa-*`/`login-code*` elementlari va `mfaRefresh/mfaSetup/mfaEnable/
+  mfaDisable/resetUserMfa` funksiyalari mavjud. MFA **yoqilmadi** (egasining
+  akkaunti tegilmaydi) — yoqish Sozlamalar panelidan birinchi marta qo'lda.
+
 Natijalar (2026-10-29, oldingi bosqich):
 
 - `py_compile` (70 o'zgargan modul) — OK
