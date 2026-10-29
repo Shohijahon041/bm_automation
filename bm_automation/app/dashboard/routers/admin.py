@@ -285,6 +285,9 @@ def get_env_settings(request: Request, scope: dict = Depends(Scope())):
 
 # Kritikal maxfiy kalitlar — faqat SUPER ADMIN o'zgartira oladi
 _CRITICAL_ENV_KEYS = frozenset((
+    # BM manzili/loginini almashtirish orqali kredensiallarni begona
+    # serverga yuborish (yoki boshqa korxona ma'lumotini tortish) mumkin.
+    "BM_BASE_URL", "BM_USERNAME",
     "BM_PASSWORD", "TG_BOT_TOKEN", "TG_CHAT_ID", "TG_ADMIN_IDS",
     "TG_DISPATCHER_IDS", "TG_MANAGER_IDS", "TG_DRIVER_IDS",
     "OPENROUTER_API_KEY", "ANDROID_SMS_GATEWAY_LOGIN",
@@ -333,11 +336,29 @@ async def update_env_settings(request: Request, scope: dict = Depends(Scope())):
             "message": "Saqlandi. O'zgarishlar jarayon qayta ishga tushganda kuchga kiradi."}
 
 
+def _company_in_scope(scope: dict, name: str) -> bool:
+    """Non-super ADMIN faqat o'z kompaniyasi bilan ishlay oladi."""
+    if _is_super(scope):
+        return True
+    own = str(scope.get("company") or "").strip().lower()
+    return bool(own) and own == str(name or "").strip().lower()
+
+
+def _deny_company(scope: dict, name: str, action: str) -> None:
+    log.warning("Kompaniya amali rad etildi: user=%s company=%s action=%s",
+                scope.get("username"), name, action)
+    raise HTTPException(403, "Faqat o'z kompaniyangiz bilan ishlashingiz mumkin")
+
+
 @router.get("/api/settings/companies")
 def get_companies(request: Request, scope: dict = Depends(Scope())):
     from ...core.profiles import grouped_profiles, company_group_ids
     out = []
     for c in grouped_profiles():
+        # Non-super ADMIN faqat o'z kompaniyasini ko'radi (boshqa mijozlar
+        # nomi/yo'nalishlari oshkor bo'lmasin).
+        if not _company_in_scope(scope, str(c.get("name") or "")):
+            continue
         c["groupChatIds"] = company_group_ids(c.get("name"))
         out.append(c)
     return {"ok": True, "companies": out}
@@ -359,6 +380,10 @@ async def update_companies(request: Request, scope: dict = Depends(Scope())):
         existing = get_profile(name)
         if existing and not route:
             return {"ok": False, "error": "Yangi yo'nalish uchun routeVariantId kerak"}
+        # Yangi korxona yaratish (yoki begona korxona yo'nalishini qo'shish)
+        # faqat Super Admin huquqi.
+        if not _company_in_scope(scope, name):
+            _deny_company(scope, name, "add")
         try:
             if existing:
                 add_route_profile(
@@ -395,6 +420,8 @@ async def update_companies(request: Request, scope: dict = Depends(Scope())):
         name = str(payload.get("name") or "").strip()
         if not name:
             return {"ok": False, "error": "Kompaniya nomi kerak"}
+        if not _company_in_scope(scope, name):
+            _deny_company(scope, name, "groups")
         if not get_profile(name):
             return {"ok": False, "error": f"Kompaniya topilmadi: {name}"}
         from ...core.profiles import set_company_group_ids
@@ -413,6 +440,8 @@ async def update_companies(request: Request, scope: dict = Depends(Scope())):
         name = str(payload.get("name") or "").strip()
         if not name:
             return {"ok": False, "error": "Kompaniya nomi kerak"}
+        if not _company_in_scope(scope, name):
+            _deny_company(scope, name, "delete")
         if not delete_profile(name):
             return {"ok": False, "error": f"Kompaniya topilmadi: {name}"}
         return {"ok": True, "message": f"{name} o'chirildi"}
@@ -421,6 +450,8 @@ async def update_companies(request: Request, scope: dict = Depends(Scope())):
         name = str(payload.get("name") or "").strip()
         if not name:
             return {"ok": False, "error": "Kompaniya nomi kerak"}
+        if not _company_in_scope(scope, name):
+            _deny_company(scope, name, "update")
         match = str(payload.get("matchRouteVariantId")
                     or payload.get("oldRouteVariantId") or "").strip()
         old = get_profile(name, route_id=match) or {}
@@ -465,7 +496,7 @@ async def update_companies(request: Request, scope: dict = Depends(Scope())):
                 "warnings": warnings}
 
     # default: creds
-    return _update_company_creds(payload)
+    return _update_company_creds(payload, scope)
 
 
 # ---------------------------------------------------------------------------
@@ -1386,11 +1417,13 @@ async def create_company_user(company_id: int, request: Request, scope: dict = D
     return {"ok": True, "id": uid, "message": "Foydalanuvchi qo'shildi"}
 
 
-def _update_company_creds(payload: dict) -> dict:
+def _update_company_creds(payload: dict, scope: dict) -> dict:
     from ...core.profiles import get_profile, set_credentials
     name = str(payload.get("name") or "").strip()
     if not name:
         return {"ok": False, "error": "Kompaniya nomi kerak"}
+    if not _company_in_scope(scope, name):
+        _deny_company(scope, name, "creds")
     if not get_profile(name):
         return {"ok": False, "error": f"Kompaniya topilmadi: {name}"}
     try:

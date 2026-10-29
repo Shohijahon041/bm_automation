@@ -37,7 +37,12 @@ _SESSION_MAX_AGE_S = 12 * 3600
 _SESSION_ABS_MAX_S = 7 * 24 * 3600
 _SESSION_TOUCH_S = 600
 _MAX_SESSIONS_PER_USER = 8
-_PBKDF2_ITERATIONS = 120_000
+# OWASP tavsiyasi (2023+): PBKDF2-SHA256 kamida 600 000 iteratsiya. Eski
+# 120 000 lik hash'lar qabul qilinadi va muvaffaqiyatli login'da qayta
+# hisoblanadi (`needs_rehash`), shuning uchun parollarni almashtirish shart emas.
+_PBKDF2_ITERATIONS = 600_000
+_PBKDF2_LEGACY_ITERATIONS = 120_000
+_PBKDF2_PREFIX = "pbkdf2_sha256"
 PASSWORD_MIN_LEN = 8
 _COMMON_PASSWORDS = {
     "12345678", "123456789", "1234567890", "password", "password1",
@@ -93,6 +98,7 @@ PAGE_API_PREFIXES: dict[str, str] = {
     "/api/settings": "settings",
     "/api/dashboard-users": "dusers",
     "/api/video": "video",
+    "/api/knowledge": "knowledge",
 }
 
 _GET_ROLE_MIN: dict[str, int] = {
@@ -105,6 +111,7 @@ _GET_ROLE_MIN: dict[str, int] = {
     "/api/route-skm": 2, "/api/electricity/price": 2, "/api/electricity": 2,
     "/api/drivers": 2, "/api/salary": 2, "/api/check": 3, "/api/sms": 3,
     "/api/documents": 3, "/api/me": 0,
+    "/api/knowledge": 4,
     "/api/sync/status": 2, "/api/sync/monthly/status": 2,
     "/api/video": 1, "/api/video/cameras": 1, "/api/video/relay": 1,
     "/api/video/archive": 2, "/api/video/export": 4,
@@ -116,12 +123,14 @@ _GET_ROLE_ORDER = tuple(sorted(_GET_ROLE_MIN.items(), key=lambda kv: -len(kv[0])
 
 _POST_ROLE_MIN: dict[str, int] = {
     "/api/settings": 4, "/api/settings/env": 4, "/api/settings/companies": 4,
+    "/api/backup": 4,
     "/api/dashboard-users": 2, "/api/admin": 4, "/api/myai": 4,
     "/api/sms": 3, "/api/documents": 3, "/api/rejects/tariff": 2,
     "/api/kmrate": 2, "/api/route-skm": 2, "/api/sync": 2,
     "/api/electricity/price": 4, "/api/users": 4, "/api/dispatchers": 4,
     "/api/video/cameras": 4, "/api/video/relay": 4, "/api/video/archive": 4,
     "/api/video/export": 4,
+    "/api/knowledge": 4,
 }
 
 _POST_ROLE_ORDER = tuple(sorted(_POST_ROLE_MIN.items(), key=lambda kv: -len(kv[0])))
@@ -179,6 +188,12 @@ def _save_sessions() -> None:
         p = _sessions_file()
         p.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(p, json.dumps(_sessions, ensure_ascii=False))
+        # Sessiya tokenlari ochiq matnda — fayl faqat egasiga o'qiladi.
+        try:
+            if os.name != "nt":
+                os.chmod(p, 0o600)
+        except OSError:
+            pass
         try:
             _loaded_mtime = p.stat().st_mtime
         except OSError:
@@ -309,6 +324,11 @@ def session_user(token: str) -> dict | None:
             # bo'lsa ham sessiya ishlashda davom etadi).
             "company_id": 0 if is_admin else _company_id(company),
             "is_admin": is_admin,
+            # Super (egasi) — faqat `DASHBOARD_ADMIN_USER`/`super` bayrog'i
+            # bo'lgan akkaunt. Ba'zi bo'limlar (masalan "Bilim bazasi")
+            # faqat shu akkauntga ko'rinadi.
+            "is_super": bool(is_admin and is_super_username(
+                s.get("username") or "")),
             "routes": None if is_admin else _company_routes(company),
         }
 
@@ -345,21 +365,48 @@ def _company_routes(company: str) -> list[str]:
 # Parol
 # ---------------------------------------------------------------------------
 
-def hash_password(password: str, salt: str = "") -> tuple[str, str]:
-    salt = salt or secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac(
+def _pbkdf2_hex(password: str, salt: str, iterations: int) -> str:
+    return hashlib.pbkdf2_hmac(
         "sha256", (password or "").encode("utf-8"),
-        salt.encode("utf-8"), _PBKDF2_ITERATIONS)
-    return digest.hex(), salt
+        salt.encode("utf-8"), iterations).hex()
+
+
+def hash_password(password: str, salt: str = "") -> tuple[str, str]:
+    """Yangi hash: `pbkdf2_sha256$<iteratsiya>$<hex>` + salt."""
+    salt = salt or secrets.token_hex(16)
+    digest = _pbkdf2_hex(password, salt, _PBKDF2_ITERATIONS)
+    return f"{_PBKDF2_PREFIX}${_PBKDF2_ITERATIONS}${digest}", salt
+
+
+def _split_hash(expected: str) -> tuple[int, str]:
+    """Hash yozuvini (iteratsiya, hex) juftligiga ajratadi.
+
+    Format qo'yilmagan eski yozuvlar (sof hex) 120 000 iteratsiya bilan
+    hisoblangan deb qabul qilinadi — parol almashtirmasdan ko'chish uchun.
+    """
+    raw = str(expected or "").strip().lower()
+    parts = raw.split("$")
+    if len(parts) == 3 and parts[0] == _PBKDF2_PREFIX:
+        try:
+            return int(parts[1]), parts[2]
+        except ValueError:
+            return 0, ""
+    return _PBKDF2_LEGACY_ITERATIONS, raw
 
 
 def verify_password(password: str, salt: str, expected: str) -> bool:
     if not expected or not salt:
         return False
-    digest = hashlib.pbkdf2_hmac(
-        "sha256", (password or "").encode("utf-8"),
-        salt.encode("utf-8"), _PBKDF2_ITERATIONS)
-    return hmac.compare_digest(digest.hex(), (expected or "").lower())
+    iterations, digest_hex = _split_hash(expected)
+    if iterations <= 0 or not digest_hex:
+        return False
+    return hmac.compare_digest(_pbkdf2_hex(password, salt, iterations), digest_hex)
+
+
+def needs_rehash(expected: str) -> bool:
+    """Hash eskirgan (kam iteratsiya yoki formatsiz) bo'lsa True."""
+    iterations, digest_hex = _split_hash(expected)
+    return bool(digest_hex) and iterations < _PBKDF2_ITERATIONS
 
 
 # ---------------------------------------------------------------------------
@@ -645,9 +692,33 @@ def ensure_bootstrap_admin() -> None:
                                   password_hash=digest, role="ADMIN",
                                   company="", active=1, data='{"super": true}')
             log.info("Bootstrap SUPER ADMIN akkaunt yaratildi: %s", username.lower())
-        elif not verify_password(password, str(existing.get("salt") or ""), str(existing.get("password_hash") or "")):
-            st.dashboard_user_update(int(existing["id"]), salt=salt, password_hash=digest, active=1)
+            return
+        # Mavjud akkaunt: parol sinxronlanadi VA `super` bayrog'i KAFOLATLANADI.
+        # Ilgari (bayroq joriy etilishidan oldin) yaratilgan ADMIN qatorida
+        # `data` bo'sh bo'lardi — natijada hech kim super bo'lmay, "Bilim
+        # bazasi" bo'limi va `/api/knowledge` hammaga yopiq qolardi.
+        kwargs: dict[str, Any] = {"active": 1}
+        if not verify_password(password, str(existing.get("salt") or ""),
+                               str(existing.get("password_hash") or "")):
+            kwargs.update(salt=salt, password_hash=digest)
             log.info("Bootstrap SUPER ADMIN paroli .env dan yangilandi: %s", username.lower())
+        try:
+            data = json.loads(str(existing.get("data") or "{}"))
+        except (TypeError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        data["super"] = True
+        if str(existing.get("role") or "").strip().upper() != "ADMIN":
+            # Super huquqi faqat ADMIN rolida ishlaydi — rol ham tiklanadi
+            # (bo'limlar ro'yxati ADMIN uchun ma'nosiz, olib tashlanadi).
+            data.pop("pages", None)
+            kwargs.update(role="ADMIN", company="")
+            log.info("Bootstrap akkaunt ADMIN rolga o'tkazildi: %s", username.lower())
+        st.dashboard_user_update(
+            int(existing["id"]), data=json.dumps(data, ensure_ascii=False),
+            **kwargs)
+        invalidate_super_cache()
     except Exception:  # noqa: BLE001
         log.warning("Bootstrap ADMIN yaratilmadi (DB mavjud emas?)")
 
@@ -663,8 +734,15 @@ def _dashboard_token() -> str:
     return (os.environ.get("DASHBOARD_TOKEN") or "").strip()
 
 
+def _same_token(given: str, expected: str) -> bool:
+    """Tokenlarni vaqt bo'yicha doimiy solishtirish (timing leak yo'q)."""
+    if not given or not expected:
+        return False
+    return hmac.compare_digest(str(given), str(expected))
+
+
 def _session_token_from_request(request: Request, creds: HTTPAuthorizationCredentials | None) -> str:
-    if creds and creds.credentials and creds.credentials != _dashboard_token():
+    if creds and creds.credentials and not _same_token(creds.credentials, _dashboard_token()):
         return creds.credentials
     cookie = request.cookies.get("bm_session", "")
     return cookie.strip()
@@ -681,7 +759,7 @@ def _session_token_from_headers(request: Request) -> str:
     auth = (request.headers.get("authorization") or "").strip()
     if auth.lower().startswith("bearer "):
         tok = auth[7:].strip()
-        if tok and tok != _dashboard_token():
+        if tok and not _same_token(tok, _dashboard_token()):
             return tok
     return (request.cookies.get("bm_session") or "").strip()
 
@@ -692,6 +770,50 @@ def _is_loopback(request: Request) -> bool:
         return False
     host = (client.host or "").lower().rstrip(".")
     return host in ("127.0.0.1", "::1", "localhost") or host.startswith("127.") or "::ffff:127." in host
+
+
+_HOST_ALLOW_DEFAULT = {
+    "localhost", "127.0.0.1", "::1", "testserver",
+    "bmbrutto.uz", "www.bmbrutto.uz",
+}
+
+
+def host_allowed(host_header: str) -> bool:
+    """Host header ruxsat etilganmi (DNS rebinding / virtual-host himoyasi).
+
+    `DASHBOARD_ALLOWED_HOSTS=*` — nazorat o'chiriladi. Aks holda: env
+    ro'yxati + standart nomlar + `*.bmbrutto.uz` + IP-literal + server
+    hostname'i. Bo'sh Host ham rad etiladi (HTTP/1.1 da majburiy).
+    """
+    raw = (os.environ.get("DASHBOARD_ALLOWED_HOSTS") or "").strip()
+    extra = {h.strip().lower() for h in raw.split(",") if h.strip()}
+    if "*" in extra or raw == "*":
+        return True
+    host = (host_header or "").strip()
+    if not host:
+        return False
+    try:
+        from urllib.parse import urlsplit
+        name = (urlsplit("//" + host).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    if not name:
+        return False
+    if name in extra or name in _HOST_ALLOW_DEFAULT:
+        return True
+    if name.endswith(".bmbrutto.uz"):
+        return True
+    try:
+        import ipaddress
+        ipaddress.ip_address(name.strip("[]"))
+        return True
+    except ValueError:
+        pass
+    try:
+        import socket
+        return name == socket.gethostname().lower()
+    except OSError:
+        return False
 
 
 def request_is_https(request: Request) -> bool:
@@ -726,7 +848,8 @@ async def resolve_scope(
             log.warning("BM_TEST_MODE bypass tashqi so'rovdan bloklandi: %s",
                         client_ip(request))
             return None
-        return {"username": "test", "role": "ADMIN", "company": "", "is_admin": True, "routes": None}
+        return {"username": "test", "role": "ADMIN", "company": "",
+                "is_admin": True, "is_super": True, "routes": None}
 
     token = _session_token_from_request(request, creds)
     session = session_user(token) if token else None
@@ -743,8 +866,10 @@ async def resolve_scope(
     if dt:
         auth = (creds.credentials if creds else "") or ""
         cookie_token = request.cookies.get("bm_token", "")
-        if auth == dt or cookie_token == dt:
-            return {"username": "ADMIN", "role": "ADMIN", "company": "", "is_admin": True, "routes": None}
+        if _same_token(auth, dt) or _same_token(cookie_token, dt):
+            # Loopback/token egasi — server operatori, shuning uchun super.
+            return {"username": "ADMIN", "role": "ADMIN", "company": "",
+                    "is_admin": True, "is_super": True, "routes": None}
     return None
 
 

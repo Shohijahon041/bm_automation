@@ -97,6 +97,21 @@ def create_app() -> FastAPI:
     )
 
     @app.middleware("http")
+    async def host_guard(request: Request, call_next):
+        """Host-header himoyasi (DNS rebinding / virtual-host chalkashligi).
+
+        Ruxsat: `DASHBOARD_ALLOWED_HOSTS` (vergul, `*` = o'chirilgan),
+        lokal nomlar, `*.bmbrutto.uz`, IP-literal va server hostname'i.
+        """
+        from .deps import host_allowed
+        host = (request.headers.get("host") or "").strip()
+        if not host_allowed(host):
+            log.warning("Host rad etildi: %r (%s)", host, request.url.path)
+            return JSONResponse(
+                {"ok": False, "error": "Host ruxsat etilmagan"}, status_code=400)
+        return await call_next(request)
+
+    @app.middleware("http")
     async def security_headers(request: Request, call_next):
         response: Response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -112,6 +127,37 @@ def create_app() -> FastAPI:
         if path.startswith("/api/") and not (is_photo or is_document):
             response.headers.setdefault("Cache-Control", "no-store")
         return response
+
+    @app.middleware("http")
+    async def csrf_origin_guard(request: Request, call_next):
+        """Cookie bilan autentifikatsiya qilinadigan mutatsiyalar uchun
+        Origin/`Sec-Fetch-Site` nazorati (CSRF himoyasi).
+
+        Brauzer cross-site POST'da Origin yuboradi; bir xil saytdan kelgan
+        so'rovlar o'tadi, begona sayt esa 403 oladi. Bearer bilan ishlaydigan
+        tashqi integratsiyalar Origin yubormaydi — ular tegilmaydi.
+        """
+        if (request.method in ("POST", "PUT", "PATCH", "DELETE")
+                and request.url.path.startswith("/api/")):
+            if (request.headers.get("sec-fetch-site") or "").strip().lower() \
+                    == "cross-site":
+                return JSONResponse(
+                    {"ok": False, "error": "Cross-site so'rov rad etildi"},
+                    status_code=403)
+            origin = (request.headers.get("origin") or "").strip().rstrip("/")
+            if origin:
+                host = (request.headers.get("host") or "").strip()
+                allowed = {f"https://{host}", f"http://{host}"} if host else set()
+                allowed |= {
+                    o.strip().rstrip("/")
+                    for o in os.environ.get("DASHBOARD_CORS_ORIGINS", "").split(",")
+                    if o.strip()
+                }
+                if origin not in allowed:
+                    return JSONResponse(
+                        {"ok": False, "error": "Origin ruxsat etilmagan"},
+                        status_code=403)
+        return await call_next(request)
 
     @app.middleware("http")
     async def post_rate_limit(request: Request, call_next):
@@ -150,12 +196,13 @@ def create_app() -> FastAPI:
         return response
 
     # --- Routers ---
-    from .routers import auth, data, drivers, admin, system
+    from .routers import auth, data, drivers, admin, system, knowledge
     app.include_router(auth.router)
     app.include_router(data.router)
     app.include_router(drivers.router)
     app.include_router(admin.router)
     app.include_router(system.router)
+    app.include_router(knowledge.router)
 
     # --- Static files (SPA) ---
     @app.get("/", include_in_schema=False)

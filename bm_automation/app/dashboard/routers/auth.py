@@ -12,7 +12,7 @@ from ...core.sections import clean_sections
 from ..deps import (
     PAGE_KEYS, Scope, audit_event, client_ip,
     create_session, drop_session, drop_user_sessions, effective_pages,
-    hash_password, optional_scope, password_error, user_tg,
+    hash_password, needs_rehash, optional_scope, password_error, user_tg,
     is_super_username, login_allowed, login_fail, login_success,
     refresh_session_cookie, resolve_scope, session_user, super_admin_names,
     sync_env_admin_password, verify_password,
@@ -154,6 +154,15 @@ def login(body: LoginRequest, request: Request, response: Response):
                      "Administratorga murojaat qiling")
 
     login_success(ip, username)
+    # Eski (kam iteratsiyali yoki formatsiz) hash — parol to'g'ri bo'lgani
+    # uchun jimgina yangilanadi. Foydalanuvchi hech narsa sezmaydi.
+    if needs_rehash(str(user.get("password_hash") or "")):
+        try:
+            digest, salt = hash_password(password)
+            get_storage().dashboard_user_update(
+                int(user.get("id") or 0), salt=salt, password_hash=digest)
+        except Exception:  # noqa: BLE001
+            pass
     token = create_session({"username": username, "id": user.get("id"),
                             "role": role, "company": company})
     audit_event("login.success", request, user=username, target=company,
@@ -235,8 +244,11 @@ def me(request: Request, response: Response,
         "username": scope.get("username") or "",
         "role": scope.get("role") or "VIEWER",
         "is_admin": is_admin,
-        "super": (is_super_username(scope.get("username") or "")
-                  if is_admin else False),
+        # `is_super` scope'da (sessiya/test-mode/token) yoki username
+        # bo'yicha aniqlanadi — ikkalasi ham bir xil natija beradi.
+        "super": bool(scope.get("is_super")
+                      or is_super_username(scope.get("username") or ""))
+                  if is_admin else False,
         "login_type": "session",
         "company": {
             "name": company_name,
@@ -440,6 +452,19 @@ async def manage_dashboard_users(request: Request, scope: dict = Depends(Scope()
                                 if cur_name == caller else ""))
                 sync_env_admin_password(cur_name, password)
                 audit_event("dashboard_user.password", request,
+                            user=caller, target=cur_name)
+            # Telegram bog'lanish egasining o'zi uchun ham saqlanadi: `data`
+            # ichidagi `super` bayrog'i saqlanib qoladi, bot tomonidagi
+            # `is_super_chat` esa aynan shu maydon orqali egalikni aniqlaydi.
+            if "telegram_chat_id" in payload:
+                tg_id, tg_err = _clean_tg(payload.get("telegram_chat_id"))
+                if tg_err:
+                    return {"ok": False, "error": tg_err}
+                st.dashboard_user_update(
+                    row_id=row_id,
+                    data=_user_data(str(cur.get("data") or ""), tg_id=tg_id))
+                invalidate_user_access(cur_name)
+                audit_event("dashboard_user.telegram", request,
                             user=caller, target=cur_name)
             return {"ok": True, "closed_sessions": closed}
 

@@ -31,6 +31,16 @@ data/
 *.err
 logs/
 
+# Obsidian vault — sozlamalar/shaxsiy holat commit qilinmaydi; qaydlar (.md) qilinadi
+knowledge_vault/.obsidian/
+knowledge_vault/.trash/
+
+# Bir martalik scratch (diag skriptlar, JS bo'laklari, tayyorlangan media)
+.tmp_*/
+.tmp_*.py
+jscheck/
+prepared-media/
+
 # Freebuff workspace metadata
 .freebuff/
 

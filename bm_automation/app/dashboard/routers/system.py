@@ -28,7 +28,8 @@ def _parse_qs(request: Request) -> dict:
 # ---------------------------------------------------------------------------
 
 @router.get("/api/health")
-def api_health(request: Request, scope: dict = Depends(Scope())):
+def api_health(request: Request, scope: dict = Depends(Scope(2))):
+    # Host/disk/xotira tafsilotlari — MANAGER va yuqori (ichki monitoring).
     from .. import metrics as m
     sys_info = m.Metrics().system()
     return {"ok": True, "uptime_s": int(time.time() - _STARTED), "system": sys_info}
@@ -293,7 +294,7 @@ async def backup_status(request: Request, scope: dict = Depends(Scope())):
     return {"ok": True, **state}
 
 
-@router.get("/api/backup/run")
+@router.post("/api/backup/run")
 async def backup_run(request: Request, scope: dict = Depends(Scope())):
     from ...db.backup import run_backup
     params = _parse_qs(request)
@@ -615,14 +616,39 @@ def _sync_lines(results: list[dict]) -> list[str]:
 # MyAI Agent
 # ---------------------------------------------------------------------------
 
+def _myai_company(scope: dict) -> str:
+    """Sessiya uchun MyAI korxona yorlig'i ('' = global/admin)."""
+    from ...myai.scope import scope_company_label, scope_for_session
+    return scope_company_label(scope_for_session(scope))
+
+
+def _myai_task_owned(task: dict | None, company: str) -> bool:
+    """Korxona foydalanuvchisi faqat o'z korxonasi vazifasini ko'radi."""
+    if not company:
+        return True
+    return bool(task) and str(task.get("company") or "") == company
+
+
+def _myai_require_owned(task_id: str, company: str) -> dict:
+    from ...myai.state import get_task
+    task = get_task(task_id)
+    if not task or not _myai_task_owned(task, company):
+        raise HTTPException(404, "Vazifa topilmadi")
+    return task
+
+
 @router.post("/api/myai/task")
 async def myai_task_create(request: Request, scope: dict = Depends(Scope())):
     payload = await request.json()
     request_text = (payload.get("request") or "").strip()
     if not request_text:
         raise HTTPException(400, "request kiritilmagan")
+    from ...myai.scope import scope_for_session
     from ...myai.state import create_task
-    task = create_task(request_text)
+    myai_scope = scope_for_session(scope)
+    company = _myai_company(scope)
+    task = create_task(request_text, params={"scope": myai_scope},
+                       company=company)
     task_id = task["task_id"] if isinstance(task, dict) else task.task_id
 
     def _run_myai():
@@ -650,17 +676,18 @@ def myai_tasks(request: Request, scope: dict = Depends(Scope())):
         limit, offset = 20, 0
     status = params.get("status", "").strip()
     q = params.get("q", "").strip()
-    tasks = list_tasks(limit=limit, status=status, offset=offset, q=q)
-    return {"ok": True, "tasks": tasks, "total": count_tasks(status=status, q=q),
+    company = _myai_company(scope)
+    tasks = list_tasks(limit=limit, status=status, offset=offset, q=q,
+                       company=company)
+    return {"ok": True, "tasks": tasks,
+            "total": count_tasks(status=status, q=q, company=company),
             "limit": limit, "offset": offset}
 
 
 @router.get("/api/myai/task/{task_id}")
 def myai_task_detail(task_id: str, request: Request, scope: dict = Depends(Scope())):
-    from ...myai.state import get_task, get_logs
-    task = get_task(task_id)
-    if not task:
-        raise HTTPException(404, "Vazifa topilmadi")
+    from ...myai.state import get_logs
+    task = _myai_require_owned(task_id, _myai_company(scope))
     task["logs"] = get_logs(task_id, limit=30)
     return {"ok": True, "task": task}
 
@@ -668,6 +695,7 @@ def myai_task_detail(task_id: str, request: Request, scope: dict = Depends(Scope
 @router.get("/api/myai/task/{task_id}/logs")
 def myai_task_logs(task_id: str, request: Request, scope: dict = Depends(Scope())):
     from ...myai.state import get_logs
+    _myai_require_owned(task_id, _myai_company(scope))
     return {"ok": True, "logs": get_logs(task_id, limit=50)}
 
 
@@ -677,6 +705,7 @@ async def myai_task_cancel(request: Request, scope: dict = Depends(Scope())):
     tid = (payload.get("task_id") or "").strip()
     if not tid:
         raise HTTPException(400, "task_id kerak")
+    _myai_require_owned(tid, _myai_company(scope))
     from ...myai.state import update_task
     from ...myai.events import emit_task
     update_task(tid, status="cancelled", error="Foydalanuvchi tomonidan bekor qilindi")
@@ -695,6 +724,7 @@ async def myai_task_pause(request: Request, scope: dict = Depends(Scope())):
     tid = (payload.get("task_id") or "").strip()
     if not tid:
         raise HTTPException(400, "task_id kerak")
+    _myai_require_owned(tid, _myai_company(scope))
     try:
         from ...myai.orchestrator import get_orchestrator
         from ...myai.events import emit_task
@@ -713,6 +743,7 @@ async def myai_task_resume(request: Request, scope: dict = Depends(Scope())):
     tid = (payload.get("task_id") or "").strip()
     if not tid:
         raise HTTPException(400, "task_id kerak")
+    _myai_require_owned(tid, _myai_company(scope))
     try:
         from ...myai.orchestrator import get_orchestrator
         from ...myai.events import emit_task
@@ -730,7 +761,7 @@ def myai_status(request: Request, scope: dict = Depends(Scope())):
     try:
         from ...myai.providers.factory import get_provider
         from ...myai.state import get_stats
-        stats = get_stats()
+        stats = get_stats(company=_myai_company(scope))
         provider = get_provider()
         return {"ok": True, "provider": provider.name if provider else None, "stats": stats}
     except Exception:
@@ -744,6 +775,29 @@ def myai_registry(request: Request, scope: dict = Depends(Scope())):
     return {"ok": True, "agents": all_agents()}
 
 
+def _myai_event_filter(company: str):
+    """Korxona scope'i uchun task->company keshi bilan filtr."""
+    if not company:
+        return None
+    from ...myai.state import get_task
+
+    cache: dict[str, str] = {}
+
+    def allow(ev) -> bool:
+        tid = str(getattr(ev, "task_id", "") or "")
+        if not tid:
+            return False
+        if tid not in cache:
+            try:
+                row = get_task(tid)
+                cache[tid] = str((row or {}).get("company") or "")
+            except Exception:  # noqa: BLE001
+                cache[tid] = ""
+        return cache[tid] == company
+
+    return allow
+
+
 @router.get("/api/myai/activity")
 def myai_activity(request: Request, scope: dict = Depends(Scope())):
     from ...myai.events import get_event_bus
@@ -752,16 +806,19 @@ def myai_activity(request: Request, scope: dict = Depends(Scope())):
         limit = int(params.get("limit", "50"))
     except (TypeError, ValueError):
         limit = 50
-    return {"ok": True, "events": get_event_bus().recent(limit)}
+    events = get_event_bus().recent(
+        limit, allow=_myai_event_filter(_myai_company(scope)))
+    return {"ok": True, "events": events}
 
 
 @router.get("/api/myai/events")
 async def myai_events_sse(request: Request, scope: dict = Depends(Scope())):
     from ...myai.events import get_event_bus
     bus = get_event_bus()
+    allow = _myai_event_filter(_myai_company(scope))
 
     def event_stream():
-        for line in bus.events_sse(timeout=30):
+        for line in bus.events_sse(timeout=30, allow=allow):
             yield line
 
     return StreamingResponse(
