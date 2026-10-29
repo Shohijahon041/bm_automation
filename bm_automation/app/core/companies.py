@@ -12,11 +12,15 @@ nuqtasi. Har doim YANGI client qaytaradi — chaqiruvchi uni o'zi boshqaradi.
 
 from __future__ import annotations
 
+import logging
+import re
 from typing import Optional
 
 from ..config.settings import Config, get_config
-from .tokens import company_tokens_path
+from .tokens import company_tokens_path, load_tokens
 from .profiles import get_profile
+
+log = logging.getLogger("bm_automation.companies")
 
 __all__ = ["client_for_profile", "client_for_name", "company_token_path",
            "own_client", "route_accessible"]
@@ -91,11 +95,38 @@ def client_for_profile(profile: dict, auto_relogin: bool = True):
         if own:
             try:
                 return _own_client(profile, auto_relogin=auto_relogin)
-            except Exception:
-                return _admin_client(profile, auto_relogin=auto_relogin)
+            except Exception as exc:  # noqa: BLE001 - admin tokeniga zaxira
+                client = _admin_client(profile, auto_relogin=auto_relogin)
+                _warn_foreign_token(name, client, str(exc))
+                return client
         return _admin_client(profile, auto_relogin=auto_relogin)
     except Exception as exc:
         raise type(exc)(f"[{name}] client qurish xatosi: {exc}") from exc
+
+
+def _warn_foreign_token(name: str, client, error: str = "") -> None:
+    """Kompaniya o'z tokenini ololmagan bo'lsa ogohlantiradi.
+
+    Bunday holatda admin tokeni ishlatiladi — u boshqa kompaniyaniki
+    bo'lishi mumkin. Jim ishlash firma ma'lumotlarini aralashtirib
+    yuborishi mumkin, shuning uchun log'ga aniq yoziladi va yechim
+    ko'rsatiladi.
+    """
+    try:
+        data = load_tokens(path=getattr(client, "token_path", None)) or {}
+        org = str(data.get("organization") or "").strip()
+    except Exception:  # noqa: BLE001
+        org = ""
+    me = re.sub(r"\s+", " ", name).strip().lower()
+    other = re.sub(r"\s+", " ", org).strip().lower()
+    same = bool(org) and (me == other or me in other or other in me)
+    if same:
+        return
+    log.warning(
+        "[%s] kompaniya tokeni yo'q (sabab: %s); hozir "
+        "%r tokeni ishlatilmoqda. Tuzatish: python -m bm_automation "
+        "login-browser --company \"%s\" --visible",
+        name, error or "noma'lum", org or "asosiy", name)
 
 
 def client_for_name(name: str, username: str = "", password: str = ""):

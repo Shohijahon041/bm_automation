@@ -292,11 +292,14 @@ def _direct_sso_code(username: str, password: str, headless: bool, timeout: int)
     return code_box["code"]
 
 
-def _exchange_code(code: str, organization: str, discover: bool = True) -> dict:
+def _exchange_code(code: str, organization: str, discover: bool = True,
+                   token_path: str | None = None) -> dict:
     """OneID `code`ni tokenlarga almashtiradi va tokens.json'ga saqlaydi.
 
     `discover=False` — aniqlangan profillarni `profiles.json`ga yozmaslik
     (faqat natija qaytariladi, onboarding keyinroq qo'shadi).
+    `token_path` — token qaysi faylga yozilishi (kompaniya tokeni uchun
+    alohida fayl; berilmasa asosiy `tokens.json`).
     """
     from ..api.client import BMClient
 
@@ -311,7 +314,8 @@ def _exchange_code(code: str, organization: str, discover: bool = True) -> dict:
     org = organization
     if not org and profiles:
         org = profiles[0].get("organizationName") or profiles[0].get("fullName") or ""
-    save_tokens(access, refresh, base_url=client.config.base_url, organization=org)
+    save_tokens(access, refresh, base_url=client.config.base_url, organization=org,
+                path=token_path)
     label = org or "noma'lum"
     print(f"Token saqlandi (to'g'ridan-to'g'ri SSO). Kompaniya: {label}")
     print(f"  Profillar: {len(profiles)}")
@@ -337,11 +341,15 @@ def browser_login(
     timeout: int = 240,
     force: bool = False,
     discover: bool = True,
+    token_path: str | None = None,
 ) -> dict:
     """Brauzer orqali OneID login bajarib tokenlarni qaytaradi.
 
     Oldingi urinish muvaffaqiyatsiz bo'lsa, cooldown davomida brauzer
     ochilmaydi (`force=True` bilan chetlab o'tiladi).
+    `token_path` berilsa token SHU faylga yoziladi (kompaniyaning o'z
+    tokeni) — asosiy `tokens.json` boshqa kompaniya tokeni bilan
+    almashib ketmaydi.
     """
     if not force:
         remaining = _cooldown_remaining()
@@ -352,7 +360,7 @@ def browser_login(
     try:
         result = _browser_login_impl(
             username, password, organization, interactive, headless, timeout,
-            discover=discover,
+            discover=discover, token_path=token_path,
         )
     except Exception:
         _mark_failed()
@@ -369,6 +377,7 @@ def _browser_login_impl(
     headless: bool = False,
     timeout: int = 240,
     discover: bool = True,
+    token_path: str | None = None,
 ) -> dict:
     """Brauzer orqali OneID login bajarib tokenlarni qaytaradi."""
     cfg = get_config()
@@ -382,7 +391,8 @@ def _browser_login_impl(
     if site == PROD_SITE and username and password:
         try:
             code = _direct_sso_code(username, password, headless, timeout)
-            return _exchange_code(code, organization, discover=discover)
+            return _exchange_code(code, organization, discover=discover,
+                                  token_path=token_path)
         except Exception as exc:  # noqa: BLE001 - fallback ataylab
             print(f"  to'g'ridan-to'g'ri SSO ishlamadi ({exc}); /sign-in oqimiga o'tilmoqda")
 
@@ -466,6 +476,7 @@ def _browser_login_impl(
             tokens["refresh_token"],
             base_url=cfg.base_url,
             organization=tokens.get("org") or organization,
+            path=token_path,
         )
         print(f"Token saqlandi. Kompaniya: {tokens.get('org') or organization or 'noma\'lum'}")
         print(f"  Profillar (agar ko'p bo'lsa): {len(captured)}")
@@ -493,16 +504,28 @@ def run(argv: list | None = None) -> int:
     parser.add_argument("--user", default="", help="OneID login")
     parser.add_argument("--password", default="", help="OneID parol")
     parser.add_argument("--org", default="", help="Tanlanadigan kompaniya nomi (ixtiyoriy)")
+    parser.add_argument(
+        "--company", default="",
+        help="Kompaniya nomi — token shu kompaniyaning o'z fayliga yoziladi "
+             "(boshqa kompaniyalar tokenini almashtirmaydi)")
     args = parser.parse_args(argv)
+
+    token_path = None
+    if args.company:
+        from ..core.tokens import company_tokens_path
+
+        token_path = str(company_tokens_path(args.company))
+        print(f"Token fayli: {token_path}")
 
     try:
         tokens = browser_login(
             username=args.user,
             password=args.password,
-            organization=args.org,
+            organization=args.org or args.company,
             interactive=args.interactive,
             headless=not args.visible,
             force=args.interactive or args.visible,
+            token_path=token_path,
         )
         print("Bajarildi.")
         return 0

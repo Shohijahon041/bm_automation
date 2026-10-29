@@ -23,7 +23,7 @@ from ...utils.tgformat import esc
 from ..telegram import telegram_call
 from . import assistant, context, driver_entry, kb, legacy, planning, reg, render
 from .roles import (Role, can, resolve_role, driver_id_for_chat,
-                    section_allowed)
+                    is_super_chat, section_allowed)
 from .text import (DENIED_TEXT, DRIVER_HELP_TEXT, HELP_TEXT, SYNC_STARTED, SYNC_MONTHLY_STARTED, WELCOME_TEXT)
 
 log = get_logger("bm_automation.bot")
@@ -2101,6 +2101,80 @@ def handle_message(chat_id: int, text: str) -> None:
             return
         reply(chat_id, *(render.reports() if cmd == "reports"
                          else render.errors()))
+        return
+    if cmd == "vault":
+        # Bilim bazasi (`knowledge_vault/`): ro'yxat / o'qish / qidirish / yozish.
+        # Dashboard "Bilim bazasi" sahifasi bilan bitta papka (markdown).
+        # Ichki qoidalar/xatolar — FAQAT tizim egasi (super); boshqa rollar,
+        # hatto ADMIN ham, ko'rmaydi.
+        if role is not Role.ADMIN or not is_super_chat(chat_id):
+            reply(chat_id, DENIED_TEXT)
+            return
+        from ...core import knowledge as _vault
+        arg = " ".join(parts[1:]).strip()
+        sub, _, rest = arg.partition(" ")
+        sub_l, rest = sub.lower(), rest.strip()
+        try:
+            if sub_l in ("yoz", "saqla", "write") and rest:
+                cat, _, tail = rest.partition("|")
+                title, _, body = tail.partition("|")
+                if not title.strip() or not body.strip():
+                    reply(chat_id,
+                          "Format: <code>/vault yoz Qoidalar|Sarlavha|Matn</code>")
+                    return
+                res = _vault.write_note(title.strip(), cat.strip(), body.strip())
+                if res.get("ok"):
+                    reply(chat_id, f"✅ Saqlandi: <code>{esc(res.get('path') or '')}</code>")
+                else:
+                    reply(chat_id, f"❌ {esc(res.get('error') or 'Saqlanmadi')}")
+                return
+            if sub_l in ("qidir", "search") and rest:
+                d = _vault.search_notes(rest, limit=8)
+            elif arg.lower().endswith(".md"):
+                d = _vault.read_note(arg)
+                if not d.get("ok"):
+                    reply(chat_id, f"❌ {esc(d.get('error') or 'Fayl topilmadi')}")
+                    return
+                text = str(d.get("text") or "")
+                reply(chat_id, f"📄 <b>{esc(d.get('path') or arg)}</b>")
+                for i in range(0, min(len(text), 12000), 3500):
+                    reply(chat_id, f"<pre>{esc(text[i:i + 3500])}</pre>")
+                return
+            elif arg:
+                d = _vault.search_notes(arg, limit=8)
+            else:
+                d = _vault.list_notes()
+        except ValueError as exc:
+            reply(chat_id, f"❌ {esc(str(exc))}")
+            return
+        if "files" in d:
+            lines = ["🧠 <b>BILIM BAZASI</b>", ""]
+            for cat_name in _vault.CATEGORIES:
+                items = [f for f in d["files"] if f["category"] == cat_name]
+                if not items:
+                    continue
+                lines.append(f"<b>{esc(cat_name)}</b> ({len(items)})")
+                for f in items[:6]:
+                    lines.append(f"• <code>{esc(f['path'])}</code>")
+                if len(items) > 6:
+                    lines.append(f"  … yana {len(items) - 6} ta")
+                lines.append("")
+            lines.append("<i>O'qish:</i> <code>/vault Qoidalar/Asosiy-invariantlar.md</code>")
+            lines.append("<i>Qidirish:</i> <code>/vault qidir xato</code>")
+            reply(chat_id, "\n".join(lines).strip())
+            return
+        found = d.get("results") or []
+        if not found:
+            reply(chat_id, f"🔍 «{esc(arg)}» bo'yicha hech narsa topilmadi.")
+            return
+        lines = [f"🔍 <b>{len(found)} natija</b> — «{esc(arg)}»", ""]
+        for f in found:
+            lines.append(f"• <b>{esc(f['title'])}</b> <code>{esc(f['path'])}</code>")
+            if f.get("snippet"):
+                lines.append(f"  <i>{esc(f['snippet'][:120])}</i>")
+        lines.append("")
+        lines.append("<i>To'liq o'qish:</i> <code>/vault &lt;path&gt;</code>")
+        reply(chat_id, "\n".join(lines))
         return
     if cmd == "status":
         reply(chat_id, *render.status())

@@ -39,6 +39,7 @@ HELP_TEXT = (
     "/start — asosiy menyu\n"
     "/resend — profillarni qayta yuborish (ADMIN/DISPATCHER)\n"
     "/list — so'nggi fayllar\n"
+    "/vault — bilim bazasi (qoidalar/xatolar/hisobotlar: ro'yxat, /vault &lt;path&gt;, /vault qidir so'z, /vault yoz Kat|Sarlavha|Matn)\n"
     "/help — yordam\n"
     "/myrole — mening rol (huquq darajasi)\n"
     "/users — bot foydalanuvchilari ro'yxati (ADMIN/DISPATCHER)\n"

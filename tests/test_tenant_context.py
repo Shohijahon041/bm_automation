@@ -389,31 +389,34 @@ class _Req:
         return self._p
 
 
-def test_settings_companies_crud(tenv):
+def test_settings_companies_crud(tenv, monkeypatch):
     """`/api/settings/companies` — creds/add/delete ishlaydi va parol sizmaydi."""
     import asyncio
     from bm_automation.app.dashboard.routers import admin as admin_mod
     from bm_automation.app.core import profiles as pmod
 
-    listed = admin_mod.get_companies(None)
+    monkeypatch.setattr(admin_mod, "_is_super", lambda scope: True)
+    scope = {"is_admin": True, "username": "boss", "company": ""}
+
+    listed = admin_mod.get_companies(None, scope)
     assert listed["ok"]
     assert all("password" not in c for c in listed["companies"])
     assert all("has_credentials" in c for c in listed["companies"])
 
     r = asyncio.run(admin_mod.update_companies(_Req(
         {"action": "creds", "name": "OKCO TRANSPORT",
-         "username": "u1", "password": "p1"})))
+         "username": "u1", "password": "p1"}), scope))
     assert r["ok"]
     p = pmod.get_profile("OKCO TRANSPORT")
     assert p.get("username") == "u1" and p.get("password") == "p1"
 
     r = asyncio.run(admin_mod.update_companies(_Req(
-        {"action": "add", "name": "YANGI MCHJ", "routeVariantId": "ry1"})))
+        {"action": "add", "name": "YANGI MCHJ", "routeVariantId": "ry1"}), scope))
     assert r["ok"]
     assert pmod.get_profile("YANGI MCHJ")["routeVariantId"] == "ry1"
 
     r = asyncio.run(admin_mod.update_companies(_Req(
-        {"action": "delete", "name": "YANGI MCHJ"})))
+        {"action": "delete", "name": "YANGI MCHJ"}), scope))
     assert r["ok"]
     assert pmod.get_profile("YANGI MCHJ") is None
 

@@ -251,6 +251,9 @@ def api_salary(request: Request, scope: dict = Depends(Scope())):
     if not from_date or not to_date:
         raise HTTPException(400, "from va to parametrlari kerak")
     scopes = scope_routes(scope)
+    # Bo'sh qamrov — butun bazani eksport qilib yubormaslik uchun fail-closed.
+    if scopes is not None and not scopes:
+        raise HTTPException(403, "Kompaniyaga yo'nalish biriktirilmagan")
     data = salary_export(from_date, to_date,
                          route=" ".join(sorted(scopes)) if scopes is not None else "")
     name = salary_filename(from_date, to_date)

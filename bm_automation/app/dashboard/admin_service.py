@@ -103,7 +103,10 @@ def staff_summary(storage, year: int, month: int) -> dict:
 
 def _drivers(year: int, month: int, route_id: str = "") -> list[dict]:
     frm, to = _month_range(year, month)
-    f = {"from": frm, "to": to, "date": frm}
+    # `own_company`: oylik jamlanmada haydovchi faqat o'z firmasi
+    # yo'nalishlaridagi km'ni oladi — boshqa firmada ishlagan o'rinbosarlik
+    # kunlari bu firma summasi/Excel'iga qo'shilmaydi.
+    f = {"from": frm, "to": to, "date": frm, "own_company": True}
     all_drivers = Metrics().drivers(f)
     if not route_id:
         return all_drivers

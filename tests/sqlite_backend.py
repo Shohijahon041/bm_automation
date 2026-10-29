@@ -106,6 +106,10 @@ class SQLiteDatabase:
         cur = self._conn.execute(sql, self._params(params))
         return max(cur.rowcount or 0, 0)
 
+    def executescript(self, script: str) -> None:
+        """Ko'p bayonotli DDL — `Database.executescript` bilan mos."""
+        self._conn.executescript(script)
+
     def _in_tx(self) -> bool:
         return bool(getattr(self._local, "conns", None))
 

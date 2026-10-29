@@ -494,3 +494,89 @@ def test_driver_bm_sync_error_is_reported(client, seeded_storage,
     assert r.status_code == 200
     assert r.json()["ok"] is False
     assert "topilmadi" in r.json()["error"]
+
+
+# ---------------------------------------------------------------------------
+# Kunlik km qaydi — faqat super admin (Sozlamalar bo'limi)
+# ---------------------------------------------------------------------------
+
+def test_work_log_super_helper():
+    """`_require_super`: oddiy ADMIN ham 403 oladi, super o'tadi."""
+    from bm_automation.app.dashboard.routers import drivers as drv
+
+    with pytest.raises(HTTPException) as exc:
+        drv._require_super({"is_admin": True, "is_super": False})
+    assert exc.value.status_code == 403
+    with pytest.raises(HTTPException) as exc2:
+        drv._require_super({})
+    assert exc2.value.status_code == 403
+    drv._require_super({"is_admin": True, "is_super": True})  # xato ko'tarilmaydi
+
+
+def test_work_log_endpoints_blocked_for_non_super(client, seeded_storage,
+                                                  no_post_rate_limit, monkeypatch):
+    """Sessiya bilan kirgan (super bo'lmagan) ADMIN km qaydini o'zgartira olmaydi.
+
+    Panelda blok ko'rinmasa ham API to'g'ridan-to'g'ri chaqirilsa 403 bo'lishi
+    shart — `is_super` tekshiruvi server tomonda.
+    """
+    token = create_session({"username": "audit_admin", "role": "ADMIN",
+                            "company": ""})
+    monkeypatch.setenv("BM_TEST_MODE", "0")
+    client.cookies.set("bm_session", token)
+    try:
+        body = {"date": "2026-08-12", "vehicle_id": "v1", "distance_km": 10}
+        assert client.post("/api/drivers/d1/work-log",
+                           json=body).status_code == 403
+        assert client.post("/api/drivers/d1/work-log-delete",
+                           json={"date": "2026-08-12"}).status_code == 403
+        assert client.get("/api/work-logs?month=2026-08").status_code == 403
+    finally:
+        client.cookies.delete("bm_session")
+        drop_session(token)
+
+
+def test_work_logs_list_and_totals(client, seeded_storage):
+    """`GET /api/work-logs` — oy bo'yicha qo'lda qaydlar + jamlanma.
+
+    Sayt hisobi (`note='AVTO'`) qatorlari ro'yxatga kirmaydi: ular davomat
+    uchun, qo'lda km qaydi emas.
+    """
+    st = seeded_storage
+    st.save_driver_work_log("2026-08-10", "d1", "v1", 100.0, 2, "Odometr")
+    st.save_driver_work_log("2026-08-11", "d1", "v1", 55.5, 1, "Qo'shimcha")
+    st.save_driver_work_log("2026-08-06", "d1", "v1", 70.0, 0, "AVTO",
+                            working_day=1)
+    r = client.get("/api/work-logs?month=2026-08")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True and data["month"] == "2026-08"
+    dates = [e["date"] for e in data["entries"]]
+    assert "2026-08-11" in dates and "2026-08-10" in dates
+    assert "2026-08-06" not in dates          # AVTO — ko'rinmaydi
+    assert data["totals"]["km"] == pytest.approx(155.5)
+    assert data["totals"]["trips"] == 3
+    assert data["totals"]["days"] == 2
+    assert data["totals"]["entries"] == 2
+    assert all(e["driver"] == "Aliyev Aliy" for e in data["entries"])
+
+
+def test_attendance_ignores_manual_work_logs(seeded_storage):
+    """Qo'lda kiritilgan km kuni ishga chiqish (davomat) jadvaliga tushmaydi.
+
+    AVTO (sayt hisobi) kunlari esa avvalgidek ko'rinadi.
+    """
+    from bm_automation.app.dashboard import metrics as m
+
+    st = seeded_storage
+    st.save_driver_work_log("2026-08-05", "d1", "v1", 120.0, 2, "Qo'lda km")
+    st.save_driver_work_log("2026-08-06", "d1", "v1", 80.0, 0, "AVTO",
+                            working_day=1)
+    data = m.attendance_calendar({"month": "2026-08"})
+    assert data["ok"] is True
+    days = {d["full_name"]: d["work_days"] for d in data["drivers"]}
+    assert "Aliyev Aliy" in days
+    worked = days["Aliyev Aliy"]
+    assert "2026-08-05" not in worked          # qo'lda km qaydi — davomat emas
+    assert "2026-08-06" in worked              # sayt hisobi — davomat
+    assert "2026-08-10" in worked              # haqiqiy reys

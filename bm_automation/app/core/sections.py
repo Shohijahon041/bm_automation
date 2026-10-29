@@ -20,7 +20,7 @@ SECTION_KEYS: tuple[str, ...] = (
     "alerts", "performance", "top-performance", "electricity", "rejects",
     "brutto", "tariffs", "insights", "audit", "myai", "gps", "video",
     "sms", "admin", "logs", "disk", "documents", "users", "settings",
-    "dusers",
+    "dusers", "knowledge",
 )
 
 SECTION_LABELS: dict[str, str] = {
@@ -50,6 +50,7 @@ SECTION_LABELS: dict[str, str] = {
     "users": "Xodimlar",
     "settings": "Sozlamalar",
     "dusers": "Foydalanuvchilar",
+    "knowledge": "Bilim bazasi",
 }
 
 # Bot buyruq/nav nomi → bo'lim kaliti. Ro'yxatda yo'q buyruqlar (help,
@@ -117,6 +118,8 @@ BOT_SECTIONS: dict[str, str] = {
     "doc": "documents",
     "docs": "documents",
     "list": "documents",
+    # Bilim bazasi (Obsidian vault)
+    "vault": "knowledge",
 }
 
 # Bo'limlar ro'yxati berilmagan (`None`) bo'lsa — faqat rol bo'yicha ishlaydi.

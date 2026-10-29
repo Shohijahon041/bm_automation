@@ -191,3 +191,239 @@ def test_sync_table_upserts_rows(tmp_path):
     assert (inserted, updated) == (0, 1)
     rows = dst.query("SELECT name FROM routes WHERE external_id = ?", ("r-1",))
     assert rows == [{"name": "Yo'nalish 1 (yangilangan)"}]
+
+
+def test_sync_table_never_writes_target_id(tmp_path):
+    """`id` kalit emasligiga qaramay yozilmasdi — boshqa qator raqami ustiga
+    chiqardi (Neon'da duties/driver_work_logs/route_daily shu tufayl har
+    run'da `duplicate key ... pkey` xato bermoqda edi).
+    """
+    from bm_automation.app.db import backup
+    from tests.sqlite_backend import SQLiteDatabase
+
+    src = SQLiteDatabase(str(tmp_path / "src.db"))
+    dst = SQLiteDatabase(str(tmp_path / "dst.db"))
+    now = "2026-01-01 00:00:00"
+    ins = (
+        "INSERT INTO routes (id, external_id, name, parent_id, entity_type,"
+        " is_brutto, data, created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+
+    dst.execute(ins, (1, "r-1", "Eski", "", "route", "t", "{}", now, now))
+    # dst'da id=2 allaqachon boshqa qator tomonidan egallangan
+    dst.execute(ins, (2, "r-2", "Boshqa", "", "route", "t", "{}", now, now))
+    # manbadagi r-1 qatorining id'si dst'da r-2 ga tegishli
+    src.execute(ins, (2, "r-1", "Yangi", "", "route", "t", "{}", now, now))
+
+    inserted, updated = backup._sync_table(src, dst, "routes", ["external_id"])
+    assert (inserted, updated) == (0, 1)
+
+    rows = dst.query("SELECT id, external_id, name FROM routes ORDER BY id")
+    assert rows == [
+        {"id": 1, "external_id": "r-1", "name": "Yangi"},
+        {"id": 2, "external_id": "r-2", "name": "Boshqa"},
+    ]
+
+
+def test_upsert_sql_is_single_statement_on_conflict():
+    """Upsert — bitta `ON CONFLICT` bayonoti, staging jadval yo'q.
+
+    Avvalgi anti-join (`IS NOT DISTINCT FROM`) kalit indeksidan foydalana
+    olmay, har bo'lakda butun `trips` jadvalini skanerlardi: zaxira
+    soatlab davom etib, hech qachon tugamasdi.
+    """
+    from bm_automation.app.db.backup import _upsert_sql
+
+    cols = ["date", "route_id", "distance_km", "data"]
+    sql = _upsert_sql("trips", cols, ["date", "route_id"], "%s")
+
+    head = sql[len("INSERT INTO trips ("):]
+    inserted_cols = {c.strip() for c in head[:head.index(")")].split(",")}
+    assert inserted_cols == set(cols)
+    assert "ON CONFLICT (date, route_id)" in sql
+    assert "DO UPDATE SET" in sql
+    assert "distance_km = EXCLUDED.distance_km" in sql
+    assert "EXCLUDED.date" not in sql          # kalit yangilanmaydi
+    assert "IS NOT DISTINCT FROM" not in sql
+    assert "SELECT" not in sql                 # jadval skanerlanmaydi
+
+    # Faqat kalit + `created_at` bo'lsa — DO NOTHING.
+    assert _upsert_sql("t", ["a", "created_at"], ["a"], "?").endswith(
+        "DO NOTHING")
+
+
+def test_auto_backup_can_be_disabled_in_app(monkeypatch):
+    """Tashqi systemd timer ishlatilganda ilova ichida takroriy run bo'lmasin."""
+    from bm_automation.app.db import backup
+
+    monkeypatch.setenv("NEON_RESERVE_DSN", "postgresql://u:p@h/db")
+    monkeypatch.setenv("AUTO_BACKUP_IN_APP", "off")
+    backup._auto_backup_timer = None
+    backup.start_auto_backup()
+    assert backup._auto_backup_timer is None
+
+
+def test_row_chunks_split_large_tables_by_month_and_size():
+    """Neon pooler uzoq tranzaksiyani uzadi — `trips` bo'laklarga bo'linadi."""
+    from bm_automation.app.db.backup import _CHUNK_ROWS, _row_chunks
+
+    rows = [{"date": f"2026-{m:02d}-05", "driver_id": f"d{i}"}
+            for m in (1, 2) for i in range(3)]
+    chunks = _row_chunks(rows, ["date", "driver_id"])
+    assert [len(c) for c in chunks] == [3, 3]
+    assert {c[0]["date"][:7] for c in chunks} == {"2026-01", "2026-02"}
+
+    many = [{"external_id": str(i)} for i in range(_CHUNK_ROWS + 1)]
+    assert [len(p) for p in _row_chunks(many, ["external_id"])] == [
+        _CHUNK_ROWS, 1]
+
+
+def test_pg_sync_uses_on_conflict_and_bumps_sequence():
+    """`_pg_sync` paketli `ON CONFLICT` bajaradi; `id` kalit bo'lsa
+    sequence yuqoriga ko'tariladi."""
+    from contextlib import contextmanager
+
+    from bm_automation.app.db.backup import _pg_sync
+
+    seen: list[str] = []
+
+    class FakeDB:
+        driver = "postgres"
+        ph = "%s"
+
+        @contextmanager
+        def transaction(self):
+            yield
+
+        def executescript(self, sql):
+            seen.append(sql)
+
+        def execute(self, sql, params=()):
+            seen.append(sql)
+            return 0
+
+        def query(self, sql, params=None):
+            seen.append(sql)
+            if "pg_get_serial_sequence" in sql:
+                return [{"seq": "trips_id_seq"}]
+            if "pg_index" in sql:
+                # ON CONFLICT faqat haqiqiy UNIQUE indeksda ishlaydi.
+                return [{"cols": ["date", "route_id"]}, {"cols": ["id"]}]
+            if "RETURNING" in sql:
+                return [{"is_new": True}, {"is_new": False}]
+            return []
+
+    _pg_sync(FakeDB(), "trips",
+             ["date", "route_id", "distance_km"], ["date", "route_id"],
+             [{"date": "2026-01-01", "route_id": "r", "distance_km": 1},
+              {"date": "2026-01-02", "route_id": "r", "distance_km": 2}])
+
+    joined = "\n".join(seen)
+    assert "ON CONFLICT (date, route_id) DO UPDATE" in joined
+    assert "RETURNING (xmax = 0) AS is_new" in joined
+    # Uzoq tranzaksiya limiti o'chirilgan, jadval skanerlanmaydi.
+    assert "SET LOCAL idle_in_transaction_session_timeout = 0" in joined
+    assert "enable_nestloop" not in joined
+    assert "CREATE TEMP TABLE" not in joined
+    assert "ANALYZE" not in joined
+
+    seen.clear()
+    inserted, updated = _pg_sync(
+        FakeDB(), "trips", ["id", "date"], ["id"],
+        [{"id": 5, "date": "2026-01-01"}, {"id": 6, "date": "2026-01-02"}])
+    joined = "\n".join(seen)
+    assert "ON CONFLICT (id) DO UPDATE" in joined
+    assert "setval" in joined
+    assert (inserted, updated) == (1, 1)
+
+
+def test_pg_sync_falls_back_when_no_unique_index():
+    """`driver_fines` da UNIQUE indeks yo'q — `ON CONFLICT` xato berib,
+    jadval butunlay zaxiradan tushib qolardi. Bunday jadval UPDATE+INSERT
+    juftligi bilan yoziladi (qator-baqator so'rovsiz)."""
+    from contextlib import contextmanager
+
+    from bm_automation.app.db.backup import _pg_sync
+
+    seen: list[str] = []
+
+    class FakeDB:
+        driver = "postgres"
+        ph = "%s"
+
+        @contextmanager
+        def transaction(self):
+            yield
+
+        def executescript(self, sql):
+            seen.append(sql)
+
+        def execute(self, sql, params=()):
+            seen.append(sql)
+            return 0
+
+        def query(self, sql, params=None):
+            seen.append(sql)
+            if "pg_index" in sql:
+                return [{"cols": ["driver_id", "date", "status"]}]
+            if "RETURNING" in sql:
+                return [{"?column?": 1}]
+            return []
+
+    inserted, updated = _pg_sync(
+        FakeDB(), "driver_fines", ["driver_id", "date", "amount"],
+        ["driver_id", "date"],
+        [{"driver_id": "d1", "date": "2026-09-01", "amount": 400000}])
+
+    joined = "\n".join(seen)
+    assert "ON CONFLICT" not in joined
+    assert "UPDATE driver_fines AS t SET amount = v.amount" in joined
+    assert "INSERT INTO driver_fines" in joined
+    assert "NOT EXISTS (SELECT 1 FROM driver_fines AS t" in joined
+    assert (inserted, updated) == (1, 1)
+
+
+def test_sync_table_second_run_is_incremental(tmp_path):
+    """Ikkinchi yurish watermark'dan keyingi qatorlargina o'qiydi."""
+    from bm_automation.app.db import backup
+    from tests.sqlite_backend import SQLiteDatabase
+
+    src = SQLiteDatabase(str(tmp_path / "src.db"))
+    dst = SQLiteDatabase(str(tmp_path / "dst.db"))
+    ins = ("INSERT INTO routes (id, external_id, name, parent_id, entity_type,"
+           " is_brutto, data, created_at, updated_at)"
+           " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+
+    src.execute(ins, (1, "r-1", "Birinchi", "", "route", "t", "{}",
+                      "2026-01-01 00:00:00", "2026-01-01 00:00:00"))
+    assert backup._sync_table(src, dst, "routes", ["external_id"]) == (1, 0)
+    assert backup._load_watermark(dst, "routes") is not None
+
+    src.execute(ins, (2, "r-2", "Ikkinchi", "", "route", "t", "{}",
+                      "2026-01-02 00:00:00", "2026-01-02 00:00:00"))
+    inserted, updated = backup._sync_table(src, dst, "routes",
+                                           ["external_id"])
+    assert inserted == 1
+    assert updated <= 1                      # chegara qatori qayta yozilgan
+    assert dst.query("SELECT count(*) AS c FROM routes")[0]["c"] == 2
+
+
+def test_backup_keys_match_schema_and_unique_index():
+    """`_BACKUP_TABLES` kalitlari mavjud ustunlar va haqiqiy UNIQUE indeks
+    bilan mos bo'lishi shart — eskirgan kalit (`external_id`, `trip_id`)
+    `column ... does not exist` bilan butun jadvalni tashlab ketardi.
+    """
+    from bm_automation.app.db.backup import _BACKUP_TABLES
+    from bm_automation.app.db.schema import TABLE_COLUMNS, UNIQUE_KEYS
+
+    for table, info in _BACKUP_TABLES.items():
+        if table not in TABLE_COLUMNS:
+            continue
+        have = {"id", "created_at", "updated_at"}
+        have.update(c for c, _ in TABLE_COLUMNS[table])
+        missing = [k for k in info["key_cols"] if k not in have]
+        assert not missing, f"{table}: kalit ustun bazada yo'q: {missing}"
+        if table in UNIQUE_KEYS:
+            assert info["key_cols"] == UNIQUE_KEYS[table], (
+                f"{table}: backup kaliti UNIQUE indeksdan farq qiladi: "
+                f"{info['key_cols']} != {UNIQUE_KEYS[table]}")

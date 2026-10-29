@@ -31,12 +31,19 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import re
 import threading
+from datetime import datetime
 from pathlib import Path
 
 from ..utils.io import atomic_write
+
+log = logging.getLogger("bm_automation.profiles")
+
+# Saqlanadigan profiles.json nusxalari soni (keskin qisqarishda olinadi).
+_PROFILES_BACKUP_KEEP = 10
 
 PROFILES_FILE = Path(os.getenv("BM_PROFILES_FILE", str(Path(__file__).resolve().parent.parent.parent / "profiles.json")))
 
@@ -90,8 +97,71 @@ def load_profiles() -> dict:
     return data
 
 
+def _profile_keys(data: dict) -> set:
+    """(kompaniya nomi, routeVariantId) juftliklari to'plami."""
+    out = set()
+    for p in (data or {}).get("profiles") or []:
+        name = str(p.get("name") or "").strip().lower()
+        rid = str(p.get("routeVariantId") or "").strip().lower()
+        if name:
+            out.add((name, rid))
+    return out
+
+
+def _backup_profiles(reason: str) -> Path | None:
+    """Joriy profiles.json nusxasini vaqt belgisi bilan saqlaydi.
+
+    Faqat `_PROFILES_BACKUP_KEEP` ta oxirgi nusxa qoladi (disk shishmasin).
+    """
+    try:
+        if not PROFILES_FILE.exists():
+            return None
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        target = PROFILES_FILE.with_name(f"{PROFILES_FILE.name}.bak_{stamp}")
+        target.write_text(PROFILES_FILE.read_text(encoding="utf-8"),
+                          encoding="utf-8")
+        log.warning("profiles.json nusxasi saqlandi (%s): %s", reason, target.name)
+    except OSError as exc:
+        log.error("profiles.json nusxa olishda xato: %s", exc)
+        return None
+    try:
+        olds = sorted(PROFILES_FILE.parent.glob(f"{PROFILES_FILE.name}.bak_*"))
+        for old in olds[:-_PROFILES_BACKUP_KEEP]:
+            old.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return target
+
+
 def save_profiles(data: dict) -> Path:
+    """profiles.json'ni yozadi — keskin qisqarishda nusxa olib ogohlantiradi.
+
+    Hodisa: tashqi yozuv (OneID discovery, boshqa jarayon keshи) butun
+    kompaniyalar/yo'nalishlarni fayldan o'chirib yuborishi mumkin edi.
+    Endi eski fayl bilan solishtiriladi: yo'nalishlar soni keskin kamaysa
+    (>=2 ta va >=30%) avtomatik `profiles.json.bak_<vaqt>` nusxasi olinadi
+    va WARNING yoziladi — ma'lumotni tiklash imkoni qoladi.
+    """
     PROFILES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # Eski holat to'g'ridan-to'g'ri fayldan o'qiladi: `load_profiles()`
+    # fayl bo'lmasa o'zi `save_profiles`ni chaqiradi (rekursiya bo'lardi).
+    try:
+        old = (json.loads(PROFILES_FILE.read_text(encoding="utf-8"))
+               if PROFILES_FILE.exists() else {})
+    except (OSError, ValueError):
+        old = {}
+    old_keys = _profile_keys(old)
+    new_keys = _profile_keys(data)
+    lost = old_keys - new_keys
+    if old_keys and lost:
+        ratio = len(lost) / len(old_keys)
+        if len(old_keys) >= 3 and (len(lost) >= 2 and ratio >= 0.3):
+            log.warning(
+                "profiles.json keskin qisqarmoqda: %s -> %s yo'nalish "
+                "(yo'qolgan: %s)",
+                len(old_keys), len(new_keys),
+                ", ".join(sorted(f"{n or '?'}/{r or '?'}" for n, r in lost))[:400])
+            _backup_profiles("keskin qisqarish")
     atomic_write(PROFILES_FILE, json.dumps(data, ensure_ascii=False, indent=2))
     try:
         mtime = PROFILES_FILE.stat().st_mtime_ns

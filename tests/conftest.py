@@ -22,6 +22,14 @@ def _isolate_env_file(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_knowledge_vault(monkeypatch, tmp_path):
+    """Testlar haqiqiy `knowledge_vault/` ga qayd yozmasin."""
+    monkeypatch.setenv("KNOWLEDGE_VAULT_DIR", str(tmp_path / "knowledge_vault"))
+    # Kengaytirish holati ham (interval, oxirgi ishga tushish) izolyatsiya qilinadi.
+    monkeypatch.setenv("KNOWLEDGE_GROW_STATE_DIR", str(tmp_path / "knowledge_state"))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_bot_settings(monkeypatch, tmp_path):
     """Jonli bot sozlamalaridan (fayldan o'qiladi) testlarni izolyatsiya qiladi."""
     monkeypatch.setattr(bot_settings, "STATE_FILE", tmp_path / "bot_settings_test.json")

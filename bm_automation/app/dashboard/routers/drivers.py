@@ -44,6 +44,24 @@ DOCUMENT_FIELDS = {
 PHOTO_FIELD = "photo_path"
 DOCUMENT_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 
+WORK_LOG_MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
+
+# Qo'lda kiritilgan km qaydining standart izohi. Sayt hisobi `AVTO` izohi
+# bilan saqlanadi — qo'lda qayd hech qachon `AVTO` bo'lib qolmasligi kerak,
+# aks holda u "sayt ma'lumoti" deb hisoblanib, oylik/umumiy km'ga
+# qo'shilmaydi va keyingi sinxronlashda ustidan yoziladi.
+MANUAL_KM_NOTE = "KM QAYDI"
+
+
+def _require_super(scope: dict) -> None:
+    """Kunlik km qaydi faqat tizim egasi (super admin) uchun.
+
+    Boshqa foydalanuvchilar (ADMIN ham) ko'rmaydi va ishlatolmaydi —
+    server tomonda ham 403 qaytariladi.
+    """
+    if not scope.get("is_super"):
+        raise HTTPException(403, "Kunlik km qaydi faqat tizim egasiga ochiq")
+
 
 def _parse_qs(request: Request) -> dict:
     return dict(request.query_params)
@@ -260,9 +278,86 @@ async def api_driver_document_get(driver_id: str, kind: str, request: Request, s
     return FileResponse(p, headers={"Cache-Control": "private, no-store"})
 
 
+@router.get("/api/work-logs")
+def api_work_logs(request: Request, scope: dict = Depends(Scope())):
+    """Kunlik km qaydlari (faqat super admin) — oy bo'yicha ro'yxat + jamlanma.
+
+    Faqat qo'lda kiritilgan qaydlar (`note <> 'AVTO'`) qaytadi; sayt hisobi
+    qatorlari bu yerda ko'rinmaydi. Kiritilgan km haydovchi oyligiga
+    (`metrics.drivers` — manual km) qo'shiladi.
+    """
+    from ...db.storage import get_storage
+
+    _require_super(scope)
+    storage = get_storage()
+    if not storage.enabled:
+        return {"ok": False, "error": "DB rejimi o'chirilgan"}
+    month = str(request.query_params.get("month") or "").strip()
+    if not WORK_LOG_MONTH_RE.match(month):
+        month = date.today().strftime("%Y-%m")
+    driver_id = str(request.query_params.get("driver_id") or "").strip()[:128]
+    try:
+        limit = int(request.query_params.get("limit") or 200)
+    except (TypeError, ValueError):
+        limit = 200
+    limit = max(1, min(limit, 500))
+    year, mon = int(month[:4]), int(month[5:7])
+    from_date = f"{year}-{mon:02d}-01"
+    to_date = (f"{year + 1}-01-01" if mon == 12
+               else f"{year}-{mon + 1:02d}-01")
+    ph = storage.db.ph
+    where = [f"w.note <> {ph}", f"w.date >= {ph}", f"w.date < {ph}"]
+    args: list = ["AVTO", from_date, to_date]
+    if driver_id:
+        where.append(f"w.driver_id = {ph}")
+        args.append(driver_id)
+    clause = " AND ".join(where)
+    rows_sql = (
+        "SELECT w.date, w.driver_id, w.vehicle_id, w.distance_km,"
+        " w.trip_count, w.note, COALESCE(d.full_name, '') AS full_name,"
+        " COALESCE(d.route_id, '') AS route_id"
+        " FROM driver_work_logs w"
+        " LEFT JOIN drivers d ON d.external_id = w.driver_id"
+        f" WHERE {clause}"
+        f" ORDER BY w.date DESC, full_name LIMIT {limit}"
+    )
+    total_sql = (
+        "SELECT COALESCE(SUM(w.distance_km), 0) AS km,"
+        " COALESCE(SUM(w.trip_count), 0) AS trips,"
+        " COUNT(*) AS entries, COUNT(DISTINCT w.date) AS days"
+        " FROM driver_work_logs w"
+        f" WHERE {clause}"
+    )
+    try:
+        rows = storage.db.query(rows_sql, args) or []
+        totals_row = (storage.db.query(total_sql, args) or [{}])[0]
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "error": "Query xatosi"}
+    entries = []
+    for r in rows:
+        entries.append({
+            "date": str(r.get("date") or ""),
+            "driver_id": str(r.get("driver_id") or ""),
+            "driver": str(r.get("full_name") or r.get("driver_id") or ""),
+            "route_id": str(r.get("route_id") or ""),
+            "vehicle_id": str(r.get("vehicle_id") or ""),
+            "distance_km": float(r.get("distance_km") or 0),
+            "trip_count": int(r.get("trip_count") or 0),
+            "note": str(r.get("note") or ""),
+        })
+    totals = {
+        "km": round(float((totals_row or {}).get("km") or 0), 2),
+        "trips": int((totals_row or {}).get("trips") or 0),
+        "entries": int((totals_row or {}).get("entries") or 0),
+        "days": int((totals_row or {}).get("days") or 0),
+    }
+    return {"ok": True, "month": month, "entries": entries, "totals": totals}
+
+
 @router.post("/api/drivers/{driver_id}/work-log")
 async def api_driver_work_log(driver_id: str, request: Request, scope: dict = Depends(Scope())):
     from ...db.storage import get_storage
+    _require_super(scope)
     scopes = scope_routes(scope)
     if scopes is not None and not _driver_in_scope(get_storage(), driver_id, scopes):
         raise HTTPException(404, "haydovchi topilmadi")
@@ -273,6 +368,7 @@ async def api_driver_work_log(driver_id: str, request: Request, scope: dict = De
 @router.post("/api/drivers/{driver_id}/work-log-delete")
 async def api_driver_work_log_delete(driver_id: str, request: Request, scope: dict = Depends(Scope())):
     from ...db.storage import get_storage
+    _require_super(scope)
     scopes = scope_routes(scope)
     if scopes is not None and not _driver_in_scope(get_storage(), driver_id, scopes):
         raise HTTPException(404, "haydovchi topilmadi")
@@ -454,10 +550,39 @@ def _save_work_log(driver_id: str, payload: dict) -> dict:
         raise HTTPException(400, "Reys soni yaroqsiz")
     vehicle_id = str(payload.get("vehicle_id") or "").strip()[:128]
     note = str(payload.get("note") or "").strip()[:500]
+    # Bo'sh yoki "AVTO" izoh qaydni sayt hisobiga aylantirib qo'yardi:
+    # shu kalitdagi eski AVTO qator ustidan yozilganda izoh AVTO bo'lib
+    # qolardi va km oylikka qo'shilmasdi. Endi har doim qo'lda belgisi.
+    if not note:
+        note = MANUAL_KM_NOTE
+    elif note.upper() == "AVTO":
+        note = f"{MANUAL_KM_NOTE} (AVTO)"
+    # Sayt hisobi (AVTO) ustidan qo'lda qayd yozilayotgan bo'lsa, reja
+    # ko'rsatkichlari (working_day/trip_plan) saqlanib qoladi — davomat
+    # va tabel hisobi buzilmaydi.
+    keep: dict = {}
+    try:
+        old = storage.query(
+            "SELECT note, distance_plan, trip_plan, working_day,"
+            " trip_passed, trip_approved FROM driver_work_logs"
+            f" WHERE date = {storage.db.ph} AND driver_id = {storage.db.ph}"
+            f" AND vehicle_id = {storage.db.ph}",
+            (log_date, driver_id, vehicle_id))
+        if old and str(old[0].get("note") or "").upper() == "AVTO":
+            row = old[0]
+            keep = {
+                "distance_plan": float(row.get("distance_plan") or 0),
+                "trip_plan": int(row.get("trip_plan") or 0),
+                "working_day": int(row.get("working_day") or 0),
+                "trip_passed": int(row.get("trip_passed") or 0),
+                "trip_approved": int(row.get("trip_approved") or 0),
+            }
+    except Exception:  # noqa: BLE001 - reja saqlanmasa ham km yoziladi
+        keep = {}
     # Natural kalit (date, driver_id, vehicle_id) — upsert: qayta kiritilsa
     # yangilanadi (eski server.py bilan bir xil xatti-harakat).
     storage.save_driver_work_log(
-        log_date, driver_id, vehicle_id, distance, trips, note)
+        log_date, driver_id, vehicle_id, distance, trips, note, **keep)
     return {"ok": True}
 
 

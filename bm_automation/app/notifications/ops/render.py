@@ -500,6 +500,9 @@ def driver_card(driver_id: str, filters: dict | None = None,
     """
     driver_id = str(driver_id or "").strip()
     f = _default_month(parse_filters(filters or {}), filters or {})
+    # Ish haqi kartasi: faqat haydovchining o'z firmasi yo'nalishlari
+    # hisoblanadi (boshqa firmadagi o'rinbosarlik kunlari kirmaydi).
+    f["own_company"] = True
     # Haydovchi o'z kartasini ko'rganida `__deny__`/`__none__` sentinel
     # qiymatlari (ruxsatsiz ma'lumot belgisi) barcha satrlarni yashirib
     # qo'yadi — ularni tashlab, o'z statistikasi to'liq ko'rinadi.

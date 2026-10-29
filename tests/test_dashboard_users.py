@@ -670,6 +670,102 @@ def test_me_super_flag(env):
     assert status == 200 and data.get("super") is False
 
 
+def test_super_telegram_binding_saved(env):
+    """Egasining Telegram chat ID'si panel orqali saqlanadi.
+
+    `data.super` bayrog'i yo'qolmaydi va bot tomonidagi `is_super_chat`
+    aynan shu maydon orqali egalikni aniqlaydi (`/vault` ruxsati).
+    """
+    from bm_automation.app.notifications.ops.roles import is_super_chat
+    hdr = _mk(env, "basi", "ADMIN", data='{"super": true}')
+    body = json.dumps({"action": "update", "username": "basi",
+                       "telegram_chat_id": "555001"}).encode()
+    status, data, _ = _request(env, "/api/dashboard-users", method="POST",
+                               headers=hdr, body=body)
+    assert status == 200 and data.get("ok") is True
+    row = env.dashboard_user_get(username="basi")
+    saved = json.loads(row["data"])
+    assert saved.get("super") is True
+    assert saved.get("telegram_chat_id") == "555001"
+    assert is_super_chat(555001) is True
+    assert is_super_chat(555002) is False
+
+
+def test_bootstrap_admin_gets_super_flag(env, monkeypatch):
+    """Ilgari yaratilgan bootstrap ADMIN `data`si bo'sh bo'lsa ham super
+    bayrog'i qo'yiladi.
+
+    Aks holda hech kim super bo'lmay, "Bilim bazasi" bo'limi va
+    `/api/knowledge` hammaga yopiq qolardi (VDS'da aynan shu holat edi).
+    """
+    st = env
+    monkeypatch.setenv("DASHBOARD_ADMIN_USER", "root")
+    monkeypatch.setenv("DASHBOARD_ADMIN_PASS", "parol1234")
+    st.dashboard_user_add("root", *deps.hash_password("parol1234"),
+                          role="ADMIN", company="", active=1, data='{}')
+    assert json.loads(st.dashboard_user_get(username="root")["data"]) == {}
+
+    deps.ensure_bootstrap_admin()
+
+    saved = json.loads(st.dashboard_user_get(username="root")["data"])
+    assert saved.get("super") is True
+    assert saved.get("pages") is None
+    deps.invalidate_super_cache()
+    assert deps.is_super_username("root") is True
+
+
+def test_bootstrap_admin_promoted_to_admin(env, monkeypatch):
+    """Bootstrap akkaunt boshqa rolда bo'lsa — ADMIN ga o'tkaziladi va
+    bo'limlar ro'yxati olib tashlanadi (super faqat ADMIN bilan ishlaydi)."""
+    st = env
+    monkeypatch.setenv("DASHBOARD_ADMIN_USER", "egasi")
+    monkeypatch.setenv("DASHBOARD_ADMIN_PASS", "parol1234")
+    st.dashboard_user_add("egasi", *deps.hash_password("parol1234"),
+                          role="DIRECTOR", company="XTEST", active=1,
+                          data='{"pages": ["overview"]}')
+
+    deps.ensure_bootstrap_admin()
+
+    row = st.dashboard_user_get(username="egasi")
+    saved = json.loads(row["data"])
+    assert row["role"] == "ADMIN" and (row["company"] or "") == ""
+    assert saved.get("super") is True and "pages" not in saved
+
+
+def test_bootstrap_admin_keeps_other_data(env, monkeypatch):
+    """Super bayrog'i qo'yilganda `data` ichidagi boshqa kalitlar saqlanadi."""
+    st = env
+    monkeypatch.setenv("DASHBOARD_ADMIN_USER", "root")
+    monkeypatch.setenv("DASHBOARD_ADMIN_PASS", "parol1234")
+    st.dashboard_user_add("root", *deps.hash_password("parol1234"),
+                          role="ADMIN", active=1,
+                          data='{"telegram_chat_id": "555001"}')
+
+    deps.ensure_bootstrap_admin()
+
+    saved = json.loads(st.dashboard_user_get(username="root")["data"])
+    assert saved.get("super") is True
+    assert saved.get("telegram_chat_id") == "555001"
+
+
+def test_knowledge_api_super_only(env, monkeypatch, tmp_path):
+    """Bilim bazasi API: faqat super ADMIN; oddiy ADMIN 403 oladi."""
+    monkeypatch.setenv("KNOWLEDGE_VAULT_DIR", str(tmp_path / "vault"))
+    hdr_super = _mk(env, "basi", "ADMIN", data='{"super": true}')
+    hdr_admin = _mk(env, "root", "ADMIN")
+
+    status, data, _ = _request(env, "/api/knowledge/list", headers=hdr_admin)
+    assert status == 403
+    status, _, _ = _request(env, "/api/knowledge/stats", headers=hdr_admin)
+    assert status == 403
+    status, _, _ = _request(env, "/api/knowledge/graph", headers=hdr_admin)
+    assert status == 403
+    status, data, _ = _request(env, "/api/knowledge/list", headers=hdr_super)
+    assert status == 200 and data.get("ok") is True
+    status, data, _ = _request(env, "/api/knowledge/graph", headers=hdr_super)
+    assert status == 200 and data.get("ok") is True
+
+
 def test_non_super_admin_cannot_delete(env):
     """O'chirish huquqi faqat super admin; oddiy ADMIN o'chira olmaydi."""
     st = env
@@ -942,6 +1038,35 @@ def test_dispatcher_cannot_see_electricity_price(env):
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
     status, _, _ = _request(env, "/api/electricity/price", headers=hdr)
     assert status == 200
+
+
+def test_electricity_endpoint_scopes_to_company_routes(env):
+    """Ko'p korxonali rejim: /api/electricity qatorlari haqiqatda bajarilgan
+    yo'nalish (route_daily) bo'yicha filtrlanadi — XTEST hisobotida YTEST
+    yo'nalishi (r2) ko'rinmaydi, hatto haydovchi asosiy yo'nalishi r2 bo'lsa."""
+    st = env
+    st.save_driver(external_id="d1", full_name="Aliyev Aliy", route_id="r1")
+    st.save_driver(external_id="d2", full_name="Karimov Karim", route_id="r2")
+    st.upsert("route_daily", ["date", "route_id", "vehicle_number"], {
+        "date": "2026-08-10", "route_id": "r1", "vehicle_id": "v1",
+        "vehicle_number": "01A123AA", "working_day": 1,
+        "trip_fact": 12, "distance_fact": 180.0})
+    # r1'da o'rinbosar ishlagan r2 haydovchisi — km r1'ga tegishli
+    st.save_driver_work_log("2026-08-10", "d2", "v1", 180.0, 12,
+                            note="AVTO")
+    st.upsert("route_daily", ["date", "route_id", "vehicle_number"], {
+        "date": "2026-08-10", "route_id": "r2", "vehicle_id": "v3",
+        "vehicle_number": "03C789CC", "working_day": 1,
+        "trip_fact": 10, "distance_fact": 150.0})
+    st.save_driver_work_log("2026-08-10", "d2", "v3", 150.0, 10,
+                            note="AVTO")
+    hdr = _mk(env, "xtest_dir", "DIRECTOR", "XTEST", password="x")
+    status, data, _ = _request(
+        env, "/api/electricity?from=2026-08-01&to=2026-08-31", headers=hdr)
+    assert status == 200
+    assert [r["route_id"] for r in data["routes"]] == ["r1"]
+    assert data["totals"]["km"] == 180.0
+    assert {d["company"] for d in data["drivers"]} == {"XTEST"}
 
 
 def test_dispatcher_blocked_from_telegram_user_admin(env):

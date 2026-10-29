@@ -24,6 +24,7 @@ VIEWER faqat ko'rish.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from enum import Enum
 
@@ -307,6 +308,51 @@ def linked_dashboard_pages(chat_id: int | None) -> list | None:
     except Exception:  # noqa: BLE001
         return None
     return None
+
+
+def is_super_chat(chat_id: int | None) -> bool:
+    """chat_id tizim egasiga (super-admin) tegishlimi?
+
+    Ikkita manba:
+      - `TG_OWNER_IDS` env — vergul bilan ajratilgan egalar chat ID'lari;
+      - `dashboard_users` jadvalidagi `super` bayrog'li akkauntga bog'langan
+        Telegram chat (panel'da kiritilgan `telegram_chat_id`).
+
+    Bilim bazasi kabi faqat egasiga ko'rinadigan bo'limlar shu tekshiruv
+    orqali himoyalangan (dashboard tomonidagi `is_super` bilan bir xil).
+    """
+    if not chat_id:
+        return False
+    try:
+        raw = str(os.environ.get("TG_OWNER_IDS") or "")
+        if raw:
+            for item in raw.replace(";", ",").split(","):
+                item = item.strip()
+                if item and item.lstrip("-").isdigit() and int(item) == int(chat_id):
+                    return True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from ...db.storage import get_storage
+        st = get_storage()
+        if not st.enabled:
+            return False
+        want = str(int(chat_id))
+        for row in st.dashboard_users_list():
+            try:
+                data = json.loads(str(row.get("data") or "{}"))
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(data, dict) or not data.get("super"):
+                continue
+            if not int(row.get("active") or 0):
+                continue
+            if str(data.get("telegram_chat_id") or "").strip() != want:
+                continue
+            return True
+    except Exception:  # noqa: BLE001
+        return False
+    return False
 
 
 def pages_for(chat_id: int | None) -> list | None:

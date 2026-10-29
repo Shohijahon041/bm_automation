@@ -569,6 +569,16 @@ def poll_forever() -> None:
             grafik_update.check_and_send()
         except Exception as exc:
             print(f"Grafik yangilash xatosi: {exc}")
+        # Bilim bazasi o'zini o'zi kengaytiradi — AI_AUTO_AGENTS'ga bog'liq
+        # emas: o'z sozlamasi (KNOWLEDGE_AUTO, std: on) va intervali
+        # (KNOWLEDGE_AUTO_INTERVAL_MIN, std: 180 daqiqa) bilan boshqariladi.
+        try:
+            from ...core import knowledge_grow
+            res = knowledge_grow.check_and_grow()
+            if not res.get("skipped") and res.get("notes") is not None:
+                print(f"Bilim bazasi kengaytirildi: {res['notes']} qayd")
+        except Exception as exc:
+            print(f"Bilim bazasi kengaytirish xatosi: {exc}")
         try:
             from ...utils import cleanup
             msg = cleanup.run_once()

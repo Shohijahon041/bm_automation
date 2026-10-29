@@ -472,6 +472,161 @@ def test_work_logs_avto_merge_per_key(met):
     assert d1["attendance"] == 100.0
 
 
+def test_manual_km_day_uses_route_daily(met):
+    """Qo'lda km kiritilgan kunda AVTO qatori bo'lmaydi — km trips emas,
+    brutto-route (saytdagi rasmiy hisob) dan olinadi."""
+    storage = met.storage
+    _save_route_daily(storage, "2026-08-10", "r1", "v1", "01A123AA",
+                      working_day=1, trip_plan=20, trip_fact=18,
+                      distance_plan=240.0, distance_fact=120.0)
+    storage.save_driver_work_log("2026-08-10", "d1", "v1", 25.0, 1,
+                                 note="KM QAYDI")
+    f = {"date": "2026-08-10", "from": "2026-08-10", "to": "2026-08-10"}
+    d1 = {x["driver_id"]: x for x in met.drivers(f)}["d1"]
+    assert d1["automatic_km"] == 120.0   # trips km 0 emas, route_daily
+    assert d1["km"] == 145.0             # + qo'lda 25
+    assert d1["plan_km"] == 240.0
+    assert d1["plan_trips"] == 20
+    assert d1["trips"] == 19             # trip_fact 18 + qo'lda 1
+    # Haydovchi kartasi (driver_detail) ham xuddi shu km'ni ko'rsatadi
+    card = met.driver_detail("d1", f)["driver"]
+    assert card["km"] == 145.0
+    assert card["automatic_km"] == 120.0
+
+
+def test_route_daily_only_for_main_driver(met):
+    """route_daily qatori (sana, avtobus) bo'yicha bitta — eng ko'p reys
+    bajargan haydovchiga yoziladi, ikkinchi haydovchiga takrorlanmaydi."""
+    storage = met.storage
+    _save_route_daily(storage, "2026-08-10", "r1", "v1", "01A123AA",
+                      working_day=1, trip_plan=20, trip_fact=18,
+                      distance_plan=240.0, distance_fact=120.0)
+    storage.save_trip(TripRecord(date="2026-08-10", route_id="r1",
+                                 vehicle_id="v1", driver_id="d2",
+                                 planned_time="08:00",
+                                 status=TripStatus.ACCEPTED.value,
+                                 source=SyncSource.DUTY.value))
+    f = {"date": "2026-08-10", "from": "2026-08-10", "to": "2026-08-10"}
+    rows = {x["driver_id"]: x for x in met.drivers(f)}
+    assert rows["d1"]["automatic_km"] == 120.0   # 2 reys — asosiy haydovchi
+    assert rows["d1"]["plan_trips"] == 20
+    assert rows["d2"]["automatic_km"] == 0.0     # trips hisobi (km 0)
+    assert rows["d2"]["plan_trips"] == 2         # v2 + v1 reyslari, 18 emas
+    assert rows["d2"]["trips"] == 2
+
+
+def test_own_company_scope_excludes_other_firm_km(met, monkeypatch):
+    """`own_company`: boshqa firma yo'nalishidagi o'rinbosarlik kunlari
+    haydovchining o'z firmasi oyligiga (km/brutto/netto) qo'shilmaydi."""
+    import bm_automation.app.core.profiles as pmod
+    from bm_automation.app.dashboard import admin_service
+
+    storage = met.storage
+    monkeypatch.setattr(
+        pmod, "all_profiles",
+        lambda: [
+            {"name": "Firma A", "routeVariantId": "r1",
+             "routeName": "10-yo'nalish", "kmRate": 1000},
+            {"name": "Firma B", "routeVariantId": "r2",
+             "routeName": "20-yo'nalish", "kmRate": 2000},
+        ])
+    storage.save_vehicle(external_id="v3", plate_number="03C789CC",
+                         garage_number="G3", model="MAN", route_id="r2")
+    # d1: o'z yo'nalishi r1'da 100 km, boshqa firma r2'da 50 km
+    storage.save_trip(TripRecord(date="2026-08-10", route_id="r1",
+                                 vehicle_id="v1", driver_id="d1",
+                                 planned_time="08:00", actual_time="08:10",
+                                 status=TripStatus.ACCEPTED.value,
+                                 source=SyncSource.DUTY.value,
+                                 data={"distanceKm": 100.0}))
+    storage.save_trip(TripRecord(date="2026-08-10", route_id="r2",
+                                 vehicle_id="v3", driver_id="d1",
+                                 planned_time="09:00", actual_time="09:10",
+                                 status=TripStatus.ACCEPTED.value,
+                                 source=SyncSource.DUTY.value,
+                                 data={"distanceKm": 50.0}))
+    f = {"from": "2026-08-01", "to": "2026-08-31"}
+
+    full = {x["driver_id"]: x for x in met.drivers(f)}["d1"]
+    assert full["km"] == 150.0                       # ikkala firma
+    assert full["trips"] == 5                        # r1 4 ta + r2 1 ta
+    assert full["gross_pay"] == 200000.0             # 100×1000 + 50×2000
+
+    own = {x["driver_id"]: x
+           for x in met.drivers({**f, "own_company": True})}["d1"]
+    assert own["km"] == 100.0                        # faqat Firma A
+    assert own["automatic_km"] == 100.0
+    assert own["plan_km"] == 100.0
+    assert own["trips"] == 4                         # r2 reysi chiqmaydi
+    assert own["route_id"] == "r1"
+    assert own["company"] == "Firma A"
+    assert own["gross_pay"] == 100000.0
+    assert own["tax"] == 12000.0
+    assert own["net_pay"] == 88000.0
+
+    # Admin oylik yo'li (`_drivers`) ham xuddi shu qoidada ishlaydi.
+    monkeypatch.setattr(admin_service, "Metrics", lambda: met)
+    adm = {x["driver_id"]: x for x in admin_service._drivers(2026, 8)}["d1"]
+    assert adm["km"] == 100.0
+    assert adm["gross_pay"] == 100000.0
+
+    # Haydovchi kartasi / `/hisob` ekrani ham o'z firmasi bilan cheklanadi.
+    detail = met.driver_detail("d1", {**f, "own_company": True})["driver"]
+    assert detail["km"] == 100.0
+    assert detail["trips"] == 4
+    assert detail["gross_pay"] == 100000.0
+    from bm_automation.app.dashboard import hisob
+    monkeypatch.setattr("bm_automation.app.dashboard.metrics.get_storage",
+                        lambda: met.storage)
+    assert hisob.brutto(f, "d1")["gross_pay"] == 100000.0
+
+
+def test_electricity_scope_uses_actual_route(met, monkeypatch):
+    """Elektr hisobotida AVTO qator yo'nalishi rasmiy manba — `route_daily`
+    (haqiqatda bajarilgan yo'nalish) — bo'yicha aniqlanadi. Haydovchining
+    asosiy yo'nalishi yoki avtobusning statik bog'lanishi o'rinbosarlik
+    kunlarida xato beradi (boshqa korxona qatorlari ko'rinib qolardi)."""
+    import bm_automation.app.core.profiles as pmod
+
+    monkeypatch.setattr(
+        pmod, "all_profiles",
+        lambda: [
+            {"name": "Firma A", "routeVariantId": "r1",
+             "routeName": "10-yo'nalish", "kmRate": 1000},
+            {"name": "Firma B", "routeVariantId": "r2",
+             "routeName": "20-yo'nalish", "kmRate": 2000},
+        ])
+    storage = met.storage
+    # d2 — Firma B haydovchisi, bugun Firma A avtobusida (v1) o'rinbosar.
+    storage.save_driver(external_id="d2", full_name="Karimov Karim",
+                        route_id="r2")
+    _save_route_daily(storage, "2026-08-10", "r1", "v1", "01A123AA",
+                      working_day=1, trip_fact=12, distance_fact=180.0)
+    storage.save_driver_work_log("2026-08-10", "d2", "v1", 180.0, 12,
+                                 note="AVTO")
+    # Firma B yo'nalishidagi AVTO qator Firma A hisobotiga kirmaydi.
+    storage.save_vehicle(external_id="v3", plate_number="03C789CC",
+                         garage_number="G3", model="MAN", route_id="r2")
+    _save_route_daily(storage, "2026-08-10", "r2", "v3", "03C789CC",
+                      working_day=1, trip_fact=10, distance_fact=150.0)
+    storage.save_driver_work_log("2026-08-10", "d2", "v3", 150.0, 10,
+                                 note="AVTO")
+    f = {"from": "2026-08-01", "to": "2026-08-31"}
+
+    r1 = met.electricity_report({**f, "route": "r1"})
+    assert r1["totals"]["km"] == 180.0
+    assert [r["route_id"] for r in r1["routes"]] == ["r1"]
+    assert r1["drivers"][0]["company"] == "Firma A"
+    assert r1["drivers"][0]["route_name"] == "10-yo'nalish"
+
+    r2 = met.electricity_report({**f, "route": "r2"})
+    assert r2["totals"]["km"] == 150.0
+    assert [r["route_id"] for r in r2["routes"]] == ["r2"]
+
+    both = met.electricity_report(f)
+    assert both["totals"]["km"] == 330.0
+
+
 def test_work_log_flows_into_monthly_metrics(met):
     """Kunlik km qaydi (qo'lda) oylik ko'rsatkichlarga kiradi: ish kunlari,
     qatnov, km va brutto — bot kartasi va oylik hisobi shu `drivers()` dan."""
@@ -1069,11 +1224,12 @@ def test_not_accepted_report_unattributed_working_day(met):
     assert d["totals"]["qabul_qilinmagan"] == 5
 
 
-def test_attendance_includes_manual_work_log_days(seeded_storage, monkeypatch):
-    """Ishga chiqish kalendarida qo'lda (driver_work_logs, note != 'AVTO')
-    ish kunlari ham ko'rinadi; trips bor kunda trips ustun turadi; qo'lda
-    reys soni 0 bo'lsa ham kun ishlangan deb kiritiladi. AVTO (brutto-route)
-    ishlangan kunlar ham kalendarga kiritiladi, ammo qo'lda qayd ustun."""
+def test_attendance_excludes_manual_km_work_logs(seeded_storage, monkeypatch):
+    """Ishga chiqish kalendarida faqat sayt ma'lumoti ko'rinadi.
+
+    Kunlik km qaydi (super admin bo'limi, note != 'AVTO') ishga chiqishga
+    KIRMAYDI; haqiqiy reyslar va AVTO (brutto-route) ishlangan kunlar
+    avvalgidek kalendarda turadi."""
     import bm_automation.app.db.storage as dbs
     seeded_storage.save_driver(external_id="d1", full_name="Aliyev Aliy",
                                route_id="r1")
@@ -1094,16 +1250,18 @@ def test_attendance_includes_manual_work_log_days(seeded_storage, monkeypatch):
     assert d["ok"] is True
     by_id = {x["driver_id"]: x for x in d["drivers"]}
     d1 = by_id["d1"]
-    assert d1["work_days"]["2026-08-10"] == 2    # trips ustun (qo'lda 3 emas)
-    assert d1["work_days"]["2026-08-14"] == 14
-    assert d1["work_days"]["2026-08-15"] == 14
-    assert d1["work_days"]["2026-08-16"] == 0    # reys 0 bo'lsa ham kiritiladi
+    assert d1["work_days"]["2026-08-10"] == 2    # haqiqiy reyslar ustun
+    # Kunlik km qaydi kunlari davomatga tushmaydi
+    assert "2026-08-14" not in d1["work_days"]
+    assert "2026-08-15" not in d1["work_days"]
+    assert "2026-08-16" not in d1["work_days"]
     assert d1["work_days"]["2026-08-17"] == 5    # AVTO sayti ishlagan kun kiritiladi
     assert "2026-08-18" not in d1["work_days"]   # working_day=0 AVTO kiritilmaydi
-    # Yo'nalish filtri qo'lda kunlarni ham o'z ichiga oladi
+    # Yo'nalish filtri AVTO/reys kunlarini ham qamraydi
     d2 = _get("/api/attendance?month=2026-08&route=r1")
     by_id2 = {x["driver_id"]: x for x in d2["drivers"]}
-    assert "2026-08-14" in by_id2["d1"]["work_days"]
+    assert "2026-08-17" in by_id2["d1"]["work_days"]
+    assert "2026-08-14" not in by_id2["d1"]["work_days"]
     d3 = _get("/api/attendance?month=2026-08&route=r2")
     assert "d1" not in {x["driver_id"] for x in d3["drivers"]}
 

@@ -835,7 +835,10 @@ def salary_export(from_date: str, to_date: str, route: str = "") -> bytes:
     from openpyxl.styles import Font, PatternFill, Alignment
 
     met = m.Metrics()
-    f = {"from": from_date, "to": to_date, "date": from_date}
+    # `own_company`: har haydovchi faqat o'z firmasi yo'nalishlaridagi km
+    # bilan hisoblanadi (boshqa firmadagi o'rinbosarlik kunlari kirmaydi).
+    f = {"from": from_date, "to": to_date, "date": from_date,
+         "own_company": True}
     if route:
         f["route"] = route
     drivers = met.drivers(f)

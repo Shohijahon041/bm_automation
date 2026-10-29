@@ -114,6 +114,7 @@ def check_and_send() -> None:
         if not text and not admins:
             return
         _save({"date": today})
+        _save_to_vault(text)
         for cid in admins:
             try:
                 send_message(text, chat_id=str(cid),
@@ -143,7 +144,29 @@ def send_now(filters: dict | None = None) -> str:
         if not text:
             return "⚠️ Xulosa tayyorlanmadi (DB o'chirilgan bo'lishi mumkin)."
         _save({"date": date.today().isoformat()})
+        _save_to_vault(text)
         return text
+
+
+def _save_to_vault(text: str) -> None:
+    """Kunlik xulosani bilim bazasiga (vault) yozib qo'yadi.
+
+    Xato bo'lsa jim o'tadi — xabar yuborish muhimroq.
+    """
+    if not text:
+        return
+    try:
+        import re
+        from ...core import knowledge
+        plain = re.sub(r"<[^>]+>", "", text)
+        today = date.today()
+        knowledge.append_note(
+            f"Hisobotlar/Kunlik-hisobot-{today.strftime('%Y-%m')}.md",
+            f"## {today.isoformat()}\n\n{plain.strip()}\n",
+            title=f"Kunlik hisobot {today.strftime('%Y-%m')}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"Kunlik xulosani vault'ga saqlash xatosi: {exc}")
 
 
 def status_text() -> str:

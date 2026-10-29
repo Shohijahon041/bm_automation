@@ -333,5 +333,9 @@ def cmd_db_backup(args) -> int:
                     print(f"    [OK] {d['table']}: +{d['inserted']} yangi, ~{d['updated']} yangilandi")
         return 0
     else:
-        print(f"Backup xatolik bilan tugadi: {result.get('error', 'noma\'lum xato')}", file=sys.stderr)
+        reason = result.get('error') or (
+            "; ".join(f"{d['table']}: {d['error']}"
+                      for d in result.get('details', []) if 'error' in d)
+            or "noma'lum xato")
+        print(f"Backup xatolik bilan tugadi: {reason}", file=sys.stderr)
         return 1

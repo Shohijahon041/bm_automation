@@ -236,7 +236,11 @@ class BMClient:
                 "ni ruxsat etilgan IP'da ishga tushiring"))
         from ..auth.browser_login import browser_login
 
-        browser_login(headless=True, timeout=300)
+        # Token AYNAN shu clientning fayliga yoziladi: kompaniya clienti
+        # brauzer orqali login qilsa, asosiy `tokens.json` (boshqa
+        # kompaniyaning tokeni) ustidan yozilmaydi.
+        browser_login(headless=True, timeout=300,
+                      token_path=str(self.token_path) if self.token_path else None)
 
     @staticmethod
     def _token_remaining(token: str) -> int:

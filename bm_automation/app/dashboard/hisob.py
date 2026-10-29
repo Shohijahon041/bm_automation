@@ -102,7 +102,10 @@ def _route_salary(f: dict | None, driver_id: str) -> dict:
     try:
         from .metrics import Metrics
         met = Metrics()
-        detail = met.driver_detail(driver_id, f) or {}
+        # `own_company`: ish haqi faqat haydovchining o'z firmasi
+        # yo'nalishlaridagi km bo'yicha hisoblanadi.
+        detail = met.driver_detail(driver_id, {**(f or {}),
+                                               "own_company": True}) or {}
         row = detail.get("driver") or {}
         gross = _num(row.get("gross_pay"))
         tax = _num(row.get("tax"))

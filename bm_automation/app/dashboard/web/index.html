@@ -1325,6 +1325,34 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
     body.nav-open .mob-more { display: none; }
     body.nav-open .nav-badge { position: static; margin-left: auto; box-shadow: none; }
   }
+  /* Bilim bazasi grafigi (Obsidian uslubi): suzuvchi boshqaruvlar, filtr va tooltip */
+  #vg-chips { pointer-events: none; }
+  .vg-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 5px 4px 10px;
+    border: 1px solid var(--line); border-radius: 999px; background: var(--bg-chip);
+    -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+    color: var(--muted); font: 600 10px "IBM Plex Mono", monospace; letter-spacing: .4px;
+    pointer-events: auto; max-width: 100%; }
+  .vg-chip b { color: var(--ink); font-weight: 600; max-width: 170px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .vg-chip button { width: 20px; height: 20px; padding: 0; border: 1px solid transparent;
+    border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer;
+    font: 600 10px "IBM Plex Mono", monospace; line-height: 1; }
+  .vg-chip button:hover { background: var(--bg-hover); color: var(--ink); }
+  .vg-chip button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .vg-chip button.on { background: var(--teal-soft); border-color: var(--teal-soft-border); color: var(--teal-text); }
+  #vg-tools .button { padding: 5px 9px; min-width: 32px; min-height: 30px; font-size: 11px; line-height: 1.2; }
+  #vg-tip { position: absolute; z-index: 4; pointer-events: none; padding: 7px 10px;
+    border: 1px solid var(--line-strong); border-radius: 9px; background: var(--bg-panel);
+    box-shadow: var(--shadow-md); color: var(--ink); font: 11px "IBM Plex Mono", monospace;
+    max-width: 280px; }
+  #vg-tip .t { font-weight: 700; color: var(--ink-strong); }
+  #vg-tip .m { color: var(--muted); font-size: 10px; margin-top: 2px; line-height: 1.45; }
+  #vault-graph:focus-visible { border-color: var(--teal-soft-border); box-shadow: var(--ring); }
+  @media (max-width: 620px) {
+    #vault-graph { height: 420px !important; }
+    #vg-chips { max-width: calc(100% - 118px); }
+    .vg-chip b { max-width: 96px; }
+  }
 </style>
 </head>
 <body class="auth-locked auth-checking">
@@ -1395,6 +1423,7 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
           <a href="#dusers" data-page="dusers"><i class="nav-ic" data-ic="user-check"></i><span>Panel foydalanuvchilari</span></a>
           <a href="#logs" data-page="logs"><i class="nav-ic" data-ic="terminal"></i><span>Loglar</span></a>
           <a href="#disk" data-page="disk"><i class="nav-ic" data-ic="database"></i><span>Disk</span></a>
+          <a href="#knowledge" data-page="knowledge"><i class="nav-ic" data-ic="book"></i><span>Bilim bazasi</span></a>
           <a href="#settings" data-page="settings"><i class="nav-ic" data-ic="settings"></i><span>Sozlamalar</span></a>
         </div>
       </div>
@@ -2312,6 +2341,31 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
           </div>
           <div id="companies-body" style="padding:0 18px 18px"></div>
         </section>
+
+        <!-- KUNLIK KM QAYDI — faqat super admin (data-super-only) -->
+        <section class="panel" id="km-panel" data-super-only="1" style="margin-bottom:14px">
+          <div class="section-head"><div><div class="eyebrow">SUPER ADMIN</div><h2>Kunlik km qaydi</h2></div>
+            <span class="hint">faqat tizim egasi · bir qayd — bitta kun · km haydovchi oyligiga qo'shiladi</span>
+          </div>
+          <div style="padding:0 18px 18px">
+            <form id="km-form" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:10px;align-items:end;margin-bottom:6px">
+              <label class="filter-field">Haydovchi *<select class="select" id="km-driver"><option value="">— haydovchi tanlang —</option></select></label>
+              <label class="filter-field">Sana *<input class="input" type="date" id="km-date" required></label>
+              <label class="filter-field">Avtobus<select class="select" id="km-vehicle"><option value="">— tanlanmagan —</option></select></label>
+              <label class="filter-field">Km *<input class="input" type="number" id="km-distance" min="0" step="0.1" placeholder="masalan 240.5" required></label>
+              <label class="filter-field">Reys<input class="input" type="number" id="km-trips" min="0" step="1" value="0"></label>
+              <label class="filter-field">Izoh<input class="input" id="km-note" placeholder="Odometr / qo'shimcha izoh"></label>
+              <button class="button" type="submit" style="font-size:11px;padding:9px 14px">KM QAYDINI SAQLASH</button>
+            </form>
+            <div class="hint" id="km-hint" style="min-height:16px;margin-bottom:4px"></div>
+            <div style="display:flex;gap:10px;align-items:center;margin:10px 0 8px;flex-wrap:wrap">
+              <input class="input" type="month" id="km-month" aria-label="Km qaydi oyi" style="width:auto;font-size:12px;padding:6px 10px" onchange="loadKmLogs()">
+              <button class="button ghost" type="button" style="font-size:11px;padding:5px 12px" onclick="loadKmPanel(true)">YANGILASH</button>
+              <span class="hint" id="km-totals"></span>
+            </div>
+            <div id="km-body"></div>
+          </div>
+        </section>
       </section>
 
       <!-- DASHBOARD USERS PAGE -->
@@ -2375,6 +2429,67 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
         <section class="panel" style="margin-bottom:14px">
           <div class="section-head"><div><div class="eyebrow">DATABASE</div><h2>Baza hajmi va o'sish</h2></div><button class="button" onclick="loadDisk()">YANGILASH</button></div>
           <div style="padding:0 18px 18px" id="disk-db"></div>
+        </section>
+      </section>
+
+      <section class="page" id="page-knowledge" data-page-view="knowledge">
+        <div class="page-hero"><div><div class="eyebrow">KNOWLEDGE</div><h2>Bilim bazasi</h2><p>Qoidalar, sozlamalar, xato jurnali va hisobotlar — Obsidian vault bilan bitta papka (markdown).</p></div></div>
+        <section class="panel" style="margin-bottom:14px">
+          <div class="section-head"><div><div class="eyebrow">VAULT</div><h2>Qaydlar</h2></div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <input id="vault-q" class="input" style="min-width:200px" placeholder="Qidirish..." oninput="vaultSearch()">
+              <button class="button ghost" id="vault-view-btn" onclick="vaultToggleGraph()" aria-pressed="false">GRAFIK</button>
+              <button class="button ghost" id="vault-grow-btn" onclick="vaultGrow()" title="Kod xaritasi, holat, log tahlili va bo'shliqlardan yangi qaydlar yozadi">KENGAYTIRISH</button>
+              <button class="button" onclick="loadVault()">YANGILASH</button>
+            </div>
+          </div>
+          <div style="padding:0 18px 18px">
+            <div id="vault-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
+            <div id="vault-grow-status" class="hint" style="margin-bottom:10px"></div>
+            <div id="vault-graph-status" style="margin-bottom:12px"></div>
+            <div id="vault-graph-wrap" hidden>
+              <div id="vg-box" style="position:relative">
+                <canvas id="vault-graph" tabindex="0" role="application"
+                        aria-label="Bilim bazasi grafigi: tugunlar — qaydlar, chiziqlar — havolalar"
+                        style="width:100%;height:540px;display:block;border:1px solid var(--line);border-radius:12px;background:var(--bg-deep);cursor:grab;touch-action:none;outline:none"></canvas>
+                <div id="vg-chips" style="position:absolute;left:10px;top:10px;display:flex;gap:6px;flex-wrap:wrap;max-width:calc(100% - 140px);z-index:3"></div>
+                <div id="vg-tools" style="position:absolute;right:10px;top:10px;display:flex;gap:6px;z-index:3">
+                  <button type="button" class="button ghost" data-vg="in" aria-label="Kattalashtirish" title="Kattalashtirish (+)">+</button>
+                  <button type="button" class="button ghost" data-vg="out" aria-label="Kichiklashtirish" title="Kichiklashtirish (−)">−</button>
+                  <button type="button" class="button ghost" data-vg="fit" aria-label="Grafikni ekranga moslash" title="Ekranga moslash (0)">MOS</button>
+                </div>
+                <div id="vg-tip" hidden></div>
+              </div>
+              <div id="vault-graph-legend" class="hint" style="margin-top:8px"></div>
+            </div>
+            <div id="vault-list"><div class="hint">Yuklanmoqda…</div></div>
+            <div id="vault-info" class="hint" style="margin-top:10px"></div>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="section-head"><div><div class="eyebrow">QAYD</div><h2 id="vault-editor-title">Yangi qayd</h2></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="button ghost" onclick="vaultNew()">YANGI</button>
+              <button class="button ghost" id="vault-preview-btn" onclick="vaultTogglePreview()" aria-pressed="false" aria-controls="vault-preview">KO'RISH</button>
+              <button class="button danger" id="vault-del-btn" onclick="vaultDelete()" hidden>O'CHIRISH</button>
+              <button class="button" id="vault-save-btn" onclick="vaultSave()">SAQLASH</button>
+            </div>
+          </div>
+          <div style="padding:0 18px 18px">
+            <div id="vault-note-path" class="hint" style="margin-bottom:8px"></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+              <input id="vault-title" class="input" style="flex:1;min-width:220px" placeholder="Sarlavha">
+              <select id="vault-cat" class="select" style="max-width:220px">
+                <option value="Qoidalar">Qoidalar</option>
+                <option value="Sozlamalar">Sozlamalar</option>
+                <option value="Xatolar">Xatolar</option>
+                <option value="Hisobotlar">Hisobotlar</option>
+                <option value="">(kategoriyasiz)</option>
+              </select>
+            </div>
+            <textarea id="vault-body" class="input" rows="16" style="width:100%;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;resize:vertical" placeholder="Markdown matn..."></textarea>
+            <div id="vault-preview" hidden style="margin-top:10px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--bg-deep);font-size:13px;line-height:1.65;max-height:420px;overflow:auto"></div>
+          </div>
         </section>
       </section>
     </main>
@@ -2544,6 +2659,7 @@ const FEATHER = {
   "bot": '<rect x="3" y="8" width="18" height="12" rx="2"/><circle cx="9" cy="13" r="1"/><circle cx="15" cy="13" r="1"/><path d="M12 8V4"/><circle cx="12" cy="4" r="1"/>',
   "terminal": '<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>',
   "file-text": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
+  "book": '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',
   "user-plus": '<path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/>',
   "message-square": '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
   "database": '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>',
@@ -2605,7 +2721,7 @@ const PAGE_ROLES = {
   alerts:1, performance:1, 'top-performance':2, electricity:2, rejects:2,
   brutto:2, tariffs:2, insights:4, audit:3, myai:4, gps:1, video:1,
   sms:3, admin:4, logs:4, disk:4, documents:3, users:4, settings:4,
-  dusers:2
+  dusers:2, knowledge:4
 };
 const ROLE_LABEL = {VIEWER:"Kuzatuvchi", DISPATCHER:"Dispetcher",
   MANAGER:"Menejer", DIRECTOR:"Rahbar", ADMIN:"Admin"};
@@ -2619,9 +2735,13 @@ const PAGE_LABEL = {
   insights:"AI tahlil", audit:"Audit", myai:"MyAI", gps:"GPS",
   video:"Video", sms:"SMS", admin:"Admin panel", logs:"Loglar",
   disk:"Disk", documents:"Hujjatlar", users:"Bot foydalanuvchilari",
-  settings:"Sozlamalar", dusers:"Panel foydalanuvchilari"
+  settings:"Sozlamalar", dusers:"Panel foydalanuvchilari",
+  knowledge:"Bilim bazasi"
 };
-const DU_PAGES = Object.keys(PAGE_ROLES);
+/* Faqat tizim egasiga (super) ko'rinadigan bo'limlar — boshqa hech kim
+   (ADMIN ham) ko'rmaydi; server ham `/api/knowledge` ni 403 bilan to'sadi. */
+const SUPER_ONLY_PAGES = ["knowledge"];
+const DU_PAGES = Object.keys(PAGE_ROLES).filter(k => SUPER_ONLY_PAGES.indexOf(k) < 0);
 let me = null;
 let _mePromise = null;
 
@@ -2629,6 +2749,7 @@ function myRank() { return ROLE_RANK[(me && me.role) || ""] || 0; }
 function hasPage(name) {
   const need = PAGE_ROLES[name];
   if (need !== undefined && myRank() < need) return false;
+  if (SUPER_ONLY_PAGES.indexOf(name) >= 0 && !(me && me.super)) return false;
   // Per-user bo'limlar: foydalanuvchiga aniq ro'yxat berilgan bo'lsa faqat
   // shu bo'limlar ishlaydi (rol — yuqori chegara, ro'yxat uni qisqartiradi).
   if (me && Array.isArray(me.pages)) return me.pages.indexOf(name) >= 0;
@@ -3372,14 +3493,7 @@ function renderDriverDialog(data) {
     `<button type="button" class="month-chip${m === selectedMonth ? " active" : ""}" data-driver-month="${esc(m)}">${esc(monthLabel(m))}</button>`).join("");
   const dialog = document.getElementById("driver-dialog");
   const tripRows = (data.trips || []).map(x => `<tr><td>${esc(x.date)}</td><td>${esc(x.vehicle)}</td><td>${esc(x.route)}</td><td>${esc((x.planned_time || "").slice(11) || x.planned_time || "-")}</td><td>${statusPill(x.status)}</td></tr>`);
-  const logRows = (data.work_logs || []).map(x => `<tr><td>${esc(x.date)}</td><td>${esc(x.vehicle)}</td><td>${num(x.distance_km)} km</td><td>${x.trip_count}</td><td>${esc(x.note || "-")}</td><td><button class="button danger" data-wl-date="${esc(x.date)}" data-wl-vehicle="${esc(x.vehicle_id || "")}" style="font-size:11px;padding:3px 8px">O'chirish</button></td></tr>`);
   const fineRows = (data.fine_rows || []).map(x => `<tr><td>${esc(x.date)}</td><td>${money(x.amount)}</td><td>${esc(x.reason || "-")}</td><td>${esc(x.status)}</td></tr>`);
-  const fleet = (state._vehiclesAll && state._vehiclesAll.length)
-    ? state._vehiclesAll
-    : (data.trips || []).map(x => ({vehicle_id: x.vehicle_id, plate_number: x.vehicle}));
-  const vehicleOptions = [...new Map(fleet.map(v => [v.vehicle_id, v.plate_number || v.vehicle_id])).entries()]
-    .sort((a, b) => String(a[1]).localeCompare(String(b[1])))
-    .map(([id, name]) => `<option value="${esc(id)}">${esc(name)} · ${esc(id)}</option>`).join("");
   const photo = d.photo_url
     ? `<img class="avatar avatar-lg" src="${esc(d.photo_url)}" alt="" loading="lazy" decoding="async">`
     : `<span class="avatar avatar-lg avatar-empty">${esc(String(d.name || "?")[0] || "?")}</span>`;
@@ -3442,22 +3556,12 @@ function renderDriverDialog(data) {
           <input id="driver-photo-input" type="file" accept="image/jpeg,image/png,image/webp">
         </section>
       </form>
-      <div class="split-form">
-        <section class="form-panel"><h3>Kunlik km qaydi</h3><form id="driver-work-log"><div class="form-grid">
-          ${inputField("Sana", "date", new Date().toISOString().slice(0, 10), "date")}
-          <div class="field"><label for="log-vehicle">Avtobus</label><input id="log-vehicle" name="vehicle_id" list="driver-vehicles" placeholder="Avtobus ID"><datalist id="driver-vehicles">${vehicleOptions}</datalist></div>
-          ${inputField("Bosilgan km", "distance_km", "", "number", "min=0 step=0.1 required")}
-          ${inputField("Qo'lda reys soni", "trip_count", "", "number", "min=0 step=1")}
-          <div class="field" style="grid-column:span 2"><label for="log-note">Izoh</label><input id="log-note" name="note" placeholder="Odometr / qo'shimcha izoh"></div>
-        </div><div class="form-actions"><button class="button" type="submit">KM QAYDINI SAQLASH</button></div></form>
-        ${historyTable(logRows, ["Sana", "Avtobus", "Km", "Reys", "Izoh", ""], "Bu davrda qo'lda km qaydi yo'q.")}</section>
-        <section class="form-panel"><h3>Jarimalar</h3><form id="driver-fine-form"><div class="form-grid">
+      <section class="form-panel"><h3>Jarimalar</h3><form id="driver-fine-form"><div class="form-grid">
           ${inputField("Sana", "date", new Date().toISOString().slice(0, 10), "date")}
           ${inputField("Summa (so'm)", "amount", "", "number", "min=1 step=1 required")}
           <div class="field" style="grid-column:span 2"><label for="fine-reason">Sabab</label><input id="fine-reason" name="reason" placeholder="Jarima sababi"></div>
         </div><div class="form-actions"><button class="button danger" type="submit">JARIMA QO'SHISH</button></div></form>
         ${historyTable(fineRows, ["Sana", "Summa", "Sabab", "Holat"], "Bu davrda jarima yo'q.")}</section>
-      </div>
       <section class="form-panel"><h3>Avtobus va qatnovlar tarixi</h3>${historyTable(tripRows, ["Sana", "Avtobus", "Yo'nalish", "Vaqt", "Holat"], "Bu davrda qatnov yo'q.")}</section>
       <section class="form-panel" id="driver-appeals-panel"><h3>Taklif va murojaatlar <span class="hint">javob, holat, tahrirlash va o'chirish mumkin</span></h3>
         <div id="driver-appeals-list"></div>
@@ -3476,12 +3580,10 @@ function renderDriverDialog(data) {
   document.getElementById("driver-bm-sync").addEventListener("click", () => syncDriverFromBm(did));
   document.getElementById("driver-profile-form").addEventListener("submit", saveDriverProfile);
   document.getElementById("driver-appeal-form").addEventListener("submit", saveDriverAppeal);
-  document.getElementById("driver-work-log").addEventListener("submit", saveWorkLog);
   document.getElementById("driver-fine-form").addEventListener("submit", saveFine);
   document.getElementById("notification-test").addEventListener("click", testNotification);
   document.getElementById("driver-photo-input").addEventListener("change", uploadPhoto);
   document.querySelectorAll("[data-upload-kind]").forEach(input => input.addEventListener("change", () => uploadDocument(input)));
-  document.querySelectorAll("[data-wl-date]").forEach(b => b.addEventListener("click", () => deleteWorkLog(b.dataset.wlDate, b.dataset.wlVehicle)));
   document.querySelectorAll("[data-driver-month]").forEach(b => b.addEventListener("click", () => showDriver(did, b.dataset.driverMonth)));
   // Telegram user info
   loadTelegramUserInfo(did);
@@ -3593,19 +3695,138 @@ async function saveDriverProfile(event) {
   if (!result.ok) { driverMessage(result.error || "Profil saqlanmadi"); return; }
   await loadDriverDirectory(); await showDriver(did); driverMessage("Profil saqlandi.", true);
 }
-async function saveWorkLog(event) {
-  event.preventDefault();
-  const did = state.currentDriver.driver.driver_id;
-  const result = await postJSON(`/api/drivers/${encodeURIComponent(did)}/work-log`, formPayload(event.currentTarget));
-  if (!result.ok) { driverMessage(result.error || "Km qaydi saqlanmadi"); return; }
-  await loadDriverDirectory(); await showDriver(did); driverMessage("Km qaydi saqlandi.", true);
+/* ---- Kunlik km qaydi (faqat super admin — Sozlamalar sahifasi) ----
+   Haydovchi profilida ko'rinmaydi. Kiritilgan km haydovchi oylik
+   hisob-kitobiga qo'shiladi (metrics.drivers: manual km). Bir qayd —
+   bitta kun; natural kalit (sana, haydovchi, avtobus), qayta kiritilsa
+   yangilanadi. Davomat (ishga chiqish) jadvaliga ta'sir qilmaydi. */
+const KM_STATE = { bound: false, driversLoaded: false, vehiclesLoaded: false };
+
+function kmValue(id) {
+  const el = document.getElementById(id);
+  return el ? String(el.value || "").trim() : "";
 }
-async function deleteWorkLog(date, vehicleId) {
+function kmHint(text, isError) {
+  const el = document.getElementById("km-hint");
+  if (!el) return;
+  el.textContent = text || "";
+  el.style.color = isError ? "var(--danger,#e5484d)" : "var(--muted)";
+}
+
+async function loadKmPanel(force) {
+  const panel = document.getElementById("km-panel");
+  if (!panel) return;
+  if (!(me && me.super)) { panel.style.display = "none"; return; }
+  panel.style.display = "";
+  const today = new Date().toISOString().slice(0, 10);
+  const mEl = document.getElementById("km-month");
+  if (mEl && !mEl.value) mEl.value = today.slice(0, 7);
+  const dEl = document.getElementById("km-date");
+  if (dEl && !dEl.value) dEl.value = today;
+  try {
+    if (force || !KM_STATE.driversLoaded) {
+      const data = await api("/api/drivers/list");
+      const list = (data && data.drivers) || [];
+      const sel = document.getElementById("km-driver");
+      if (sel) {
+        sel.innerHTML = '<option value="">— haydovchi tanlang —</option>' + list.map(d =>
+          `<option value="${esc(d.driver_id)}">${esc(d.name || d.driver_id)}</option>`).join("");
+        KM_STATE.driversLoaded = true;
+      }
+    }
+    if (force || !KM_STATE.vehiclesLoaded) {
+      // Avtobuslar ro'yxati asosiy `load()` dan keladi (state._vehiclesAll);
+      // bo'sh bo'lsa /api/summary dan bir marta olinadi (alohida ro'yxat
+      // endpointi yo'q).
+      let list = Array.isArray(state._vehiclesAll) ? state._vehiclesAll : [];
+      if (!list.length) {
+        const data = await api("/api/summary");
+        list = (data && data.vehicles) || [];
+      }
+      const sel = document.getElementById("km-vehicle");
+      if (sel) {
+        sel.innerHTML = '<option value="">— tanlanmagan —</option>' + list.map(v => {
+          const vid = v.vehicle_id || v.external_id || "";
+          const name = v.plate_number || vid;
+          return vid ? `<option value="${esc(vid)}">${esc(name)}</option>` : "";
+        }).join("");
+        KM_STATE.vehiclesLoaded = true;
+      }
+    }
+  } catch (e) { /* ro'yxat yuklanmasa ham qo'lda kiritish mumkin */ }
+  if (!KM_STATE.bound) {
+    const form = document.getElementById("km-form");
+    if (form) form.addEventListener("submit", saveKmEntry);
+    const body = document.getElementById("km-body");
+    if (body) body.addEventListener("click", function (ev) {
+      const btn = ev.target.closest("button[data-km-del]");
+      if (!btn) return;
+      deleteKmEntry(btn.dataset.date, btn.dataset.driver, btn.dataset.vehicle);
+    });
+    KM_STATE.bound = true;
+  }
+  await loadKmLogs();
+}
+
+async function loadKmLogs() {
+  const body = document.getElementById("km-body");
+  if (!body) return;
+  const totalsEl = document.getElementById("km-totals");
+  const month = kmValue("km-month") || new Date().toISOString().slice(0, 7);
+  const params = new URLSearchParams({ month: month });
+  const did = kmValue("km-driver");
+  if (did) params.set("driver_id", did);
+  body.innerHTML = '<div class="panel-loading"><div class="sk sk-row w100"></div><div class="sk sk-row w100"></div></div>';
+  try {
+    const data = await api("/api/work-logs", params);
+    if (!data || !data.ok) throw new Error((data && data.error) || "Yuklanmadi");
+    const rows = data.entries || [];
+    const t = data.totals || {};
+    if (totalsEl) {
+      totalsEl.textContent = `${monthLabel(month)}: ${num(t.km || 0)} km · ${t.trips || 0} reys · ${t.days || 0} kun · ${t.entries || 0} qayd — oylik hisob-kitobiga qo'shilgan`;
+    }
+    if (!rows.length) {
+      body.innerHTML = '<div class="empty">Bu oyda qo\'lda kiritilgan km qaydi yo\'q.</div>';
+      return;
+    }
+    body.innerHTML = '<div class="driver-history"><table><thead><tr><th>Sana</th><th>Haydovchi</th><th>Avtobus</th><th>Km</th><th>Reys</th><th>Izoh</th><th></th></tr></thead><tbody>'
+      + rows.map(x => `<tr><td>${esc(x.date)}</td><td>${esc(x.driver || x.driver_id)}</td><td>${esc(x.vehicle_id || "-")}</td><td>${num(x.distance_km)} km</td><td>${x.trip_count || 0}</td><td>${esc(x.note || "-")}</td>`
+        + `<td><button class="button danger" data-km-del="1" data-date="${esc(x.date)}" data-driver="${esc(x.driver_id)}" data-vehicle="${esc(x.vehicle_id || "")}" style="font-size:11px;padding:3px 8px">O'chirish</button></td></tr>`).join("")
+      + '</tbody></table></div>';
+  } catch (e) {
+    body.innerHTML = `<div class="empty">Km qaydlari yuklanmadi: ${esc(e.message || e)}</div>`;
+  }
+}
+
+async function saveKmEntry(event) {
+  event.preventDefault();
+  const did = kmValue("km-driver");
+  const day = kmValue("km-date");
+  const vehicle = kmValue("km-vehicle");
+  const note = kmValue("km-note");
+  const km = Number(kmValue("km-distance") || 0);
+  const trips = Number(kmValue("km-trips") || 0);
+  if (!did) { kmHint("Haydovchini tanlang", true); return; }
+  if (!day) { kmHint("Sanani tanlang", true); return; }
+  if (!(km > 0)) { kmHint("Km 0 dan katta bo'lishi kerak", true); return; }
+  const result = await postJSON(`/api/drivers/${encodeURIComponent(did)}/work-log`,
+    { date: day, vehicle_id: vehicle, distance_km: km, trip_count: trips, note: note });
+  if (!result || !result.ok) { kmHint((result && result.error) || "Km qaydi saqlanmadi", true); return; }
+  kmHint(`Saqlandi: ${day} · ${num(km)} km — haydovchi oyligiga qo'shildi`);
+  const kmEl = document.getElementById("km-distance"); if (kmEl) kmEl.value = "";
+  const trEl = document.getElementById("km-trips"); if (trEl) trEl.value = "0";
+  const nEl = document.getElementById("km-note"); if (nEl) nEl.value = "";
+  await loadKmLogs();
+}
+
+async function deleteKmEntry(date, did, vehicle) {
+  if (!date || !did) return;
   if (!confirm("Bu km qaydini o'chirishni tasdiqlaysizmi?")) return;
-  const did = state.currentDriver.driver.driver_id;
-  const result = await postJSON(`/api/drivers/${encodeURIComponent(did)}/work-log-delete`, {date, vehicle_id: vehicleId});
-  if (!result.ok) { driverMessage(result.error || "O'chirilmadi"); return; }
-  await loadDriverDirectory(); await showDriver(did); driverMessage("Km qaydi o'chirildi.", true);
+  const result = await postJSON(`/api/drivers/${encodeURIComponent(did)}/work-log-delete`,
+    { date: date, vehicle_id: vehicle || "" });
+  if (!result || !result.ok) { kmHint((result && result.error) || "O'chirilmadi", true); return; }
+  kmHint("Qayd o'chirildi");
+  await loadKmLogs();
 }
 async function saveFine(event) {
   event.preventDefault();
@@ -4569,6 +4790,7 @@ const PAGE_META = {
   users:{title:'Foydalanuvchilar',subtitle:'Telegram bot foydalanuvchilari va rollari',crumb:'BOT USERS'},
   dusers:{title:'Dashboard foydalanuvchilari',subtitle:'Login+parol bilan kiradigan panel foydalanuvchilari — rol va korxona kesimida',crumb:'DASHBOARD USERS'},
   disk:{title:'Disk holati',subtitle:'Papkalar, baza hajmi va 30 kunlik o\'sish tendensiyasi',crumb:'DISK'},
+  knowledge:{title:'Bilim bazasi',subtitle:'Qoidalar, sozlamalar, xato jurnali va hisobotlar — Obsidian vault bilan bitta papka',crumb:'KNOWLEDGE BASE'},
   settings:{title:'Sozlamalar',subtitle:'Tizim konfiguratsiyasi va global sozlamalar',crumb:'SETTINGS'}
 };
 function showPage(name, updateHash=true){
@@ -4598,8 +4820,9 @@ function showPage(name, updateHash=true){
   if(name==='appeals') loadAppeals();
   if(name==='sms') startSmsPoll(); else stopSmsPoll();
   if(name==='admin') initAdmin();
-  if(name==='settings') { loadSettings(); loadCompanies(); loadEnvSettings(); }
+  if(name==='settings') { loadSettings(); loadCompanies(); loadEnvSettings(); loadKmPanel(); }
   if(name==='dusers') loadDashboardUsers();
+  if(name==='knowledge'){ loadVault(); vaultGrowStatus(); }
   if(name==='disk') loadDisk();
   if(name==='electricity') { bindElectricity(); loadElectricity(); }
   if(name==='rejects') { bindRejects(); loadRejects(); }
@@ -4607,6 +4830,957 @@ function showPage(name, updateHash=true){
   if(name==='tariffs') loadTariffs();
   if(name==='myai') initOccPage();
   if(name==='gps' && window.initGpsFrame) try { initGpsFrame(); } catch(e) { console.warn('gps init', e); }
+}
+/* ---- Bilim bazasi (Obsidian vault) ----
+   `knowledge_vault/` papkasidagi markdown qaydlar: ro'yxat/qidiruv/o'qish,
+tahrirlash, o'chirish va ko'rish. Server tomonda FAQAT tizim egasi
+(super-admin) ruxsat oladi. */
+let _vaultPath = "";
+let _vaultCat = "";
+let _vaultCounts = {};
+let _vaultBase = "";
+let _vaultBound = false;
+function _vaultInfo(msg){ const el = document.getElementById("vault-info"); if (el) el.textContent = msg || ""; }
+function _vaultFmtBytes(b){
+  b = Number(b) || 0;
+  if (b >= 1048576) return (b / 1048576).toFixed(1) + " MB";
+  if (b >= 1024) return (b / 1024).toFixed(0) + " KB";
+  return b + " B";
+}
+function _vaultState(){
+  return [
+    document.getElementById("vault-title")?.value || "",
+    document.getElementById("vault-cat")?.value || "",
+    document.getElementById("vault-body")?.value || "",
+  ].join("\u0000");
+}
+function _vaultDirty(){ return _vaultState() !== _vaultBase; }
+function _vaultMarkClean(){ _vaultBase = _vaultState(); }
+function _vaultGuard(){
+  if (!_vaultDirty()) return true;
+  return confirm("Saqlanmagan o'zgarishlar bor. Ular yo'qoladi — davom etasizmi?");
+}
+function _vaultBindDirty(){
+  if (_vaultBound) return;
+  _vaultBound = true;
+  ["vault-title", "vault-cat", "vault-body"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("input", _vaultPreviewRender);
+  });
+  window.addEventListener("beforeunload", ev => {
+    if (_vaultDirty()) { ev.preventDefault(); ev.returnValue = ""; }
+  });
+  _vaultMarkClean();
+}
+function _vaultMd(src){
+  const lines = String(src || "").replace(/\r\n/g, "\n").split("\n");
+  const inline = s => s
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (m, target, label) =>
+      '<a href="#" data-wikilink="' + target.trim() + '">' +
+      esc((label || target).trim()) + "</a>");
+  const out = [];
+  let inCode = false, inList = false;
+  for (const raw of lines) {
+    if (/^```/.test(raw.trim())) {
+      if (inList) { out.push("</ul>"); inList = false; }
+      out.push(inCode ? "</code></pre>" : "<pre><code>");
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode) { out.push(esc(raw)); continue; }
+    const line = raw.replace(/\s+$/, "");
+    if (!line.trim()) {
+      if (inList) { out.push("</ul>"); inList = false; }
+      continue;
+    }
+    let m;
+    if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
+      if (inList) { out.push("</ul>"); inList = false; }
+      const lvl = Math.min(6, m[1].length + 2);
+      out.push("<h" + lvl + ">" + inline(esc(m[2])) + "</h" + lvl + ">");
+      continue;
+    }
+    if ((m = line.match(/^[-*]\s+(.*)$/))) {
+      if (!inList) { out.push("<ul>"); inList = true; }
+      out.push("<li>" + inline(esc(m[1])) + "</li>");
+      continue;
+    }
+    if (inList) { out.push("</ul>"); inList = false; }
+    if ((m = line.match(/^>\s?(.*)$/))) {
+      out.push("<blockquote>" + inline(esc(m[1])) + "</blockquote>");
+      continue;
+    }
+    out.push("<p>" + inline(esc(line)) + "</p>");
+  }
+  if (inList) out.push("</ul>");
+  if (inCode) out.push("</code></pre>");
+  return out.join("\n");
+}
+function _vaultPreviewRender(){
+  const el = document.getElementById("vault-preview");
+  if (!el || el.hidden) return;
+  const src = document.getElementById("vault-body")?.value || "";
+  el.innerHTML = src.trim()
+    ? _vaultMd(src)
+    : '<div class="hint">Matn bo\'sh</div>';
+  el.querySelectorAll("a[data-wikilink]").forEach(a => {
+    a.style.color = "var(--teal-text)";
+    a.addEventListener("click", ev => {
+      ev.preventDefault();
+      const t = (a.getAttribute("data-wikilink") || "").trim();
+      if (t) vaultOpen(/\.[a-z]+$/i.test(t) ? t : t + ".md");
+    });
+  });
+}
+function vaultTogglePreview(){
+  const el = document.getElementById("vault-preview");
+  const btn = document.getElementById("vault-preview-btn");
+  if (!el) return;
+  el.hidden = !el.hidden;
+  if (btn) {
+    btn.setAttribute("aria-pressed", el.hidden ? "false" : "true");
+    btn.textContent = el.hidden ? "KO'RISH" : "TAHRIRLASH";
+  }
+  if (!el.hidden) _vaultPreviewRender();
+}
+function _vaultSetEditor(title, cat, body, path){
+  const t = document.getElementById("vault-title");
+  const c = document.getElementById("vault-cat");
+  const b = document.getElementById("vault-body");
+  const p = document.getElementById("vault-note-path");
+  const h = document.getElementById("vault-editor-title");
+  const del = document.getElementById("vault-del-btn");
+  if (t) t.value = title || "";
+  if (c) c.value = cat || "";
+  if (b) b.value = body || "";
+  if (p) p.textContent = path ? ("Fayl: " + path) : "Yangi qayd — saqlanganda tanlangan papkaga tushadi";
+  if (h) h.textContent = path ? "Tahrirlash" : "Yangi qayd";
+  if (del) del.hidden = !path;
+  _vaultPath = path || "";
+  if (cat) _vaultCat = cat;
+  _vaultMarkClean();
+  _vaultPreviewRender();
+}
+function vaultNew(){
+  if (!_vaultGuard()) return;
+  _vaultSetEditor("", _vaultCat || "Hisobotlar", "", "");
+  _vaultInfo("");
+}
+function _vaultChips(){
+  const el = document.getElementById("vault-chips");
+  if (!el) return;
+  const cats = ["", "Qoidalar", "Sozlamalar", "Xatolar", "Hisobotlar"];
+  el.innerHTML = cats.map(c => {
+    const active = (c === _vaultCat);
+    const label = c ? (c + (" (" + (_vaultCounts[c] || 0) + ")")) : "Hammasi";
+    return '<button class="button ghost" style="padding:4px 10px;font-size:11px;' +
+      (active ? "border-color:var(--teal);color:var(--teal-text)" : "") +
+      '" onclick="loadVault(' + (c ? "'" + c + "'" : "''") + ')">' + esc(label) + '</button>';
+  }).join("");
+}
+async function loadVault(cat){
+  if (cat !== undefined) _vaultCat = cat || "";
+  // Grafik ko'rinishi ochiq bo'lsa — ro'yxat bilan birga yangilanadi,
+  // aks holda faqat holat kartalari yangilanadi.
+  const _vgWrapNow = document.getElementById("vault-graph-wrap");
+  if (_vgWrapNow && !_vgWrapNow.hidden) setTimeout(loadVaultGraph, 0);
+  else loadVaultGraphStatus();
+  _vaultBindDirty();
+  const listEl = document.getElementById("vault-list");
+  if (!listEl) return;
+  const q = (document.getElementById("vault-q")?.value || "").trim();
+  try {
+    let d;
+    if (q) {
+      d = await api("/api/knowledge/search?q=" + encodeURIComponent(q));
+    } else {
+      d = await api("/api/knowledge/list" + (_vaultCat ? "?category=" + encodeURIComponent(_vaultCat) : ""));
+      _vaultCounts = d.counts || {};
+      _vaultChips();
+    }
+    const items = (q ? d.results : d.files) || [];
+    if (!items.length) {
+      listEl.innerHTML = '<div class="hint">' + (q ? "Hech narsa topilmadi" : "Qaydlar yo'q") + '</div>';
+    } else {
+      const rows = items.map(it =>
+        `<tr><td><a href="#" data-note="${esc(it.path)}" style="color:var(--teal-text)">${esc(it.title)}</a>` +
+        (it.snippet ? `<div class="hint">${esc(it.snippet)}</div>` : "") + `</td>` +
+        `<td>${esc(it.category || "—")}</td><td style="font-family:'IBM Plex Mono',monospace">${esc(it.updated || "")}</td></tr>`
+      ).join("");
+      listEl.innerHTML = `<table class="tbl"><thead><tr><th>QAYD</th><th>KATEGORIYA</th><th>YANGILANGAN</th></tr></thead><tbody>${rows}</tbody></table>`;
+      listEl.querySelectorAll("a[data-note]").forEach(a => {
+        a.addEventListener("click", ev => { ev.preventDefault(); vaultOpen(a.getAttribute("data-note")); });
+      });
+    }
+    if (!q) {
+      const total = (d.files || []).reduce((s, it) => s + (Number(it.size) || 0), 0);
+      _vaultInfo(d.count + " ta qayd · " + _vaultFmtBytes(total));
+    } else {
+      _vaultInfo(d.count + " ta natija: «" + q + "»");
+    }
+  } catch (e) {
+    listEl.innerHTML = '<div style="color:var(--danger,#e5484d)">Xato: ' + esc(e.message) + '</div>';
+  }
+}
+/* ---- Bilim bazasini avtomatik kengaytirish (knowledge_grow) ----
+   Kod xaritasi, API/bot buyruqlari, testlar, sozlamalar, DB jadvallari,
+   holat snapshoti, log tahlili va yechilmagan havolalar uchun bo'sh
+   qaydlar serverda yoziladi (idempotent). */
+async function vaultGrowStatus(){
+  const el = document.getElementById("vault-grow-status");
+  if (!el) return;
+  try {
+    const d = await api("/api/knowledge/grow");
+    const state = d.enabled ? "yoqilgan" : "o'chirilgan";
+    el.textContent = "Avtomatik kengaytirish: " + state + " · har " +
+      (d.interval_min || 0) + " daqiqa · " + (d.notes || 0) + " qayd · oxirgi: " +
+      (d.last_run || "—") + ((d.runs || 0) ? " (" + d.runs + " marta)" : "");
+  } catch (e) {
+    el.textContent = "";
+  }
+}
+async function vaultGrow(){
+  const btn = document.getElementById("vault-grow-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "KENGAYTIRILMOQDA..."; }
+  try {
+    const d = await postJSON("/api/knowledge/grow", {});
+    if (!d.ok) throw new Error("Kengaytirish bajarilmadi");
+    const changed = (d.changed || []).length;
+    let msg = "Kengaytirildi: " + (d.notes || 0) + " qayd, " + changed +
+      " ta yangilandi";
+    if (d.errors && d.errors.length) msg += " · xatolar: " + d.errors.length;
+    _vaultInfo(msg);
+    await loadVault();
+    vaultGrowStatus();
+  } catch (e) {
+    _vaultInfo("Kengaytirish xatosi: " + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "KENGAYTIRISH"; }
+  }
+}
+function vaultSearch(){
+  const q = (document.getElementById("vault-q")?.value || "").trim();
+  if (q.length === 1) return;
+  clearTimeout(window._vaultSearchT);
+  window._vaultSearchT = setTimeout(() => {
+    const wrap = _vgWrap();
+    // Grafik ochiq bo'lsa qidiruv ro'yxatni emas, grafikdagi tugunlarni
+    // yoritadi (Obsidian'da graf qidiruvi ham shunday ishlaydi).
+    if (wrap && !wrap.hidden){ _vgSetQuery(q); return; }
+    loadVault();
+  }, 250);
+}
+async function vaultOpen(path){
+  if (!_vaultGuard()) return;
+  try {
+    const d = await api("/api/knowledge/note?path=" + encodeURIComponent(path));
+    if (!d.ok) throw new Error(d.error || "Fayl o'qilmadi");
+    _vaultSetEditor(d.title || "", d.category || "", d.text || "", d.path || path);
+    _vaultInfo("Tahrirlash rejimi: " + (d.path || path));
+    const b = document.getElementById("vault-body");
+    if (b) b.scrollIntoView({block: "center", behavior: "smooth"});
+  } catch (e) {
+    _vaultInfo("Xato: " + e.message);
+  }
+}
+async function vaultSave(){
+  const title = (document.getElementById("vault-title")?.value || "").trim();
+  const cat = (document.getElementById("vault-cat")?.value || "").trim();
+  const body = (document.getElementById("vault-body")?.value || "");
+  if (!title) { _vaultInfo("Sarlavha bo'sh"); return; }
+  const btn = document.getElementById("vault-save-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "SAQLANMOQDA..."; }
+  try {
+    const d = await postJSON("/api/knowledge/note", {
+      title: title, category: cat, content: body,
+      path: _vaultPath, overwrite: !!_vaultPath,
+    });
+    if (!d.ok) throw new Error(d.error || "Saqlanmadi");
+    // Kategoriyani saqlangan yo'ldan olamiz (tahrirlashda fayl ko'chmaydi)
+    const savedCat = (d.category !== undefined) ? d.category
+      : (String(d.path || "").includes("/") ? String(d.path).split("/")[0] : "");
+    _vaultCat = savedCat;
+    _vaultSetEditor(title, savedCat, body, d.path || _vaultPath);
+    await loadVault();
+    _vaultInfo("Saqlandi: " + (d.path || title));
+  } catch (e) {
+    _vaultInfo("❌ Xato: " + e.message);
+  }
+  if (btn) { btn.disabled = false; btn.textContent = "SAQLASH"; }
+}
+async function vaultDelete(){
+  if (!_vaultPath) return;
+  const title = (document.getElementById("vault-title")?.value || _vaultPath).trim();
+  if (!confirm("«" + title + "» qaydini butunlay o'chirasizmi? Bu amalni qaytarib bo'lmaydi.")) return;
+  const btn = document.getElementById("vault-del-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "O'CHIRILMOQDA..."; }
+  try {
+    const d = await postJSON("/api/knowledge/delete", { path: _vaultPath });
+    if (!d.ok) throw new Error(d.error || "O'chirilmadi");
+    _vaultSetEditor("", _vaultCat, "", "");
+    await loadVault();
+    _vaultInfo("O'chirildi: " + (d.path || ""));
+  } catch (e) {
+    _vaultInfo("Xato: " + e.message);
+  }
+  if (btn) { btn.disabled = false; btn.textContent = "O'CHIRISH"; }
+}
+/* ---- Grafik holati (tugun/havola/yetim/uzilgan) ----
+   Server `/api/knowledge/graph` javobidagi `status` dan qisqa ko'rsatkichlar;
+   ro'yxat ko'rinishida ham doim ko'rinadi, grafik ochilganda yangilanadi. */
+function _vaultGraphStatusHtml(st){
+  const ok = (st.health === "sog'lom");
+  const danger = "var(--danger,#e5484d)";
+  const cards = [
+    ["QAYDLAR", st.notes, ""],
+    ["HAVOLALAR", st.edges, ""],
+    ["YETIM", st.isolated, st.isolated ? danger : ""],
+    ["UZILGAN", st.unresolved, st.unresolved ? danger : ""],
+  ];
+  const hubs = (st.hubs || []).slice(0, 4).map(h =>
+    '<a href="#" data-hub="' + esc(h.path || "") + '" title="' + esc(h.category || "") +
+    '" style="color:var(--teal-text)">' + esc(h.title || h.id) + '</a>' +
+    '<span class="hint"> (' + (h.degree || 0) + ')</span>'
+  ).join(" · ");
+  return '<div style="display:flex;flex-wrap:wrap;gap:8px">' +
+    cards.map(c =>
+      '<div style="flex:1 1 100px;min-width:92px;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg-deep)">' +
+      '<div class="hint" style="font-size:10px;letter-spacing:1px">' + c[0] + '</div>' +
+      '<div style="font-family:\'IBM Plex Mono\',monospace;font-size:19px;font-weight:600;' +
+      (c[2] ? "color:" + c[2] : "") + '">' + c[1] + '</div></div>'
+    ).join("") +
+    '<div style="flex:2 1 240px;min-width:220px;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg-deep)">' +
+      '<div class="hint" style="font-size:10px;letter-spacing:1px">HOLAT · ENG BOG\'LANGAN</div>' +
+      '<div style="font-size:12px;margin-top:3px"><span style="font-weight:600;color:' +
+      (ok ? "var(--teal-text)" : "var(--warn)") + '">' + (ok ? "SOG'LOM" : "E'TIBOR") + '</span>' +
+      (hubs ? ' · ' + hubs : "") + '</div>' +
+    '</div></div>' +
+    (st.auto_only ? '<div class="hint" style="margin-top:6px">' + st.auto_only +
+      " ta qayd faqat avto-havola bilan ulangan (avtomatik hisobotlar)</div>" : "");
+}
+function _vaultRenderGraphStatus(st){
+  const el = document.getElementById("vault-graph-status");
+  if (!el) return;
+  if (!st || !st.notes){ el.innerHTML = ""; return; }
+  el.innerHTML = _vaultGraphStatusHtml(st);
+  el.querySelectorAll("a[data-hub]").forEach(a => {
+    a.addEventListener("click", ev => { ev.preventDefault(); vaultOpen(a.getAttribute("data-hub")); });
+  });
+}
+async function loadVaultGraphStatus(){
+  const el = document.getElementById("vault-graph-status");
+  if (!el) return;
+  try {
+    const d = await api("/api/knowledge/graph");
+    _vaultRenderGraphStatus(d.status);
+  } catch (e) {
+    el.innerHTML = '<div class="hint">Grafik holati yuklanmadi: ' + esc(e.message) + '</div>';
+  }
+}
+/* ---- Obsidian grafigi (canvas: tugun = qayd, qirra = [[havola]]) ----
+   Server `/api/knowledge/graph` dan tugun/qirra oladi va Obsidian'ning
+   asl grafiga o'xshab kuch simulyatsiyasi bilan joylashtiradi: tugunni
+   sudraganda qo'shnilari ham ergashadi, g'ildirak/pinch — masshtab,
+   bo'sh joyni sudrash — ko'chirish, o'ng tugma — lokal graf. */
+let _vgAll = null;                 // {nodes, edges, byId} — to'liq graf
+let _vgNodes = [], _vgEdges = [];  // ko'rinayotgan qism (lokal grafda qism)
+let _vgAlpha = 0, _vgAlphaTarget = 0, _vgRaf = 0;
+let _vgHover = "", _vgQuery = "", _vgFocus = "", _vgDepth = 1;
+/* Ko'rinish (zoom/pan): ekran = world * k + (x, y) */
+let _vgView = {k: 1, x: 0, y: 0};
+let _vgDrag = null, _vgMoved = false, _vgDown = null;
+let _vgPointers = new Map(), _vgPinch = null;
+let _vgThemeKey = "", _vgBg = "#070b11", _vgInk = "#e2e8f0",
+    _vgTeal = "#4fd8bd", _vgAccent = "#a5b4fc";
+let _vgAutoFit = false;
+let _vgUnresolved = 0;
+const _VG_COLORS = {Qoidalar:"#38bdf8", Sozlamalar:"#a78bfa", Xatolar:"#f87171", Hisobotlar:"#34d399"};
+const _VG_COLORS_LIGHT = {Qoidalar:"#0284c7", Sozlamalar:"#7c3aed", Xatolar:"#dc2626", Hisobotlar:"#059669"};
+function _vgIsLight(){ return document.documentElement.getAttribute("data-theme") === "light"; }
+function _vgColor(c){
+  return (_vgIsLight() ? _VG_COLORS_LIGHT : _VG_COLORS)[c] ||
+    (_vgIsLight() ? "#64748b" : "#94a3b8");
+}
+function _vgTheme(){
+  const key = _vgIsLight() ? "l" : "d";
+  if (key !== _vgThemeKey){
+    const cs = getComputedStyle(document.documentElement);
+    const css = (n, d) => (cs.getPropertyValue(n) || "").trim() || d;
+    _vgThemeKey = key;
+    _vgBg = css("--bg-deep", key === "l" ? "#f2f5f9" : "#070b11");
+    _vgInk = css("--ink", key === "l" ? "#1e293b" : "#edf5f7");
+    _vgTeal = css("--teal-text", key === "l" ? "#047857" : "#4fd8bd");
+    _vgAccent = css("--accent-text", key === "l" ? "#4338ca" : "#a5b4fc");
+  }
+  return key;
+}
+function _vgWrap(){ return document.getElementById("vault-graph-wrap"); }
+function vaultToggleGraph(){
+  const wrap = _vgWrap(), listEl = document.getElementById("vault-list");
+  const btn = document.getElementById("vault-view-btn");
+  if (!wrap || !listEl) return;
+  const show = wrap.hidden;
+  wrap.hidden = !show;
+  listEl.hidden = show;
+  if (btn){
+    btn.setAttribute("aria-pressed", show ? "true" : "false");
+    btn.textContent = show ? "RO'YXAT" : "GRAFIK";
+  }
+  if (show) loadVaultGraph();
+  else { _vgStop(); loadVault(); }
+}
+async function loadVaultGraph(){
+  const wrap = _vgWrap();
+  if (!wrap || wrap.hidden) return;
+  try {
+    const d = await api("/api/knowledge/graph");
+    if (!d.ok) throw new Error(d.error || "Grafik yuklanmadi");
+    _vgBuild(d);
+    _vaultRenderGraphStatus(d.status);
+  } catch (e) {
+    _vaultInfo("Xato: " + e.message);
+  }
+}
+function _vgSize(cv){
+  const r = cv.getBoundingClientRect();
+  return {w: Math.max(320, Math.round(r.width) || 640), h: Math.max(320, Math.round(r.height) || 540)};
+}
+function _vgBuild(d){
+  const cv = document.getElementById("vault-graph");
+  if (!cv) return;
+  const {w, h} = _vgSize(cv);
+  const nodes = d.nodes || [];
+  const prev = _vgAll ? _vgAll.byId : null;
+  const byId = {};
+  // Boshlang'ich joylashuv papka bo'yicha sektorlarda — Obsidian ham
+  // grafni klasterlab boshlaydi, keyin fizika uni tekislaydi.
+  const cats = [...new Set(nodes.map(n => n.category || ""))];
+  const all = nodes.map(n => {
+    const deg = (Number(n.links) || 0) + (Number(n.backlinks) || 0);
+    const old = prev && prev[n.id];
+    const ci = cats.indexOf(n.category || "");
+    const a = (ci / Math.max(1, cats.length)) * Math.PI * 2 + (Math.random() - 0.5) * 0.7;
+    const rad = Math.min(w, h) * (0.2 + Math.random() * 0.15);
+    const node = {
+      id: n.id, title: n.title || n.id, path: n.path || "", category: n.category || "",
+      links: Number(n.links) || 0, backlinks: Number(n.backlinks) || 0, deg,
+      r: 4 + Math.min(10, Math.sqrt(deg) * 2),
+      x: old ? old.x : w / 2 + Math.cos(a) * rad,
+      y: old ? old.y : h / 2 + Math.sin(a) * rad,
+      vx: 0, vy: 0, fx: null, fy: null,
+    };
+    byId[node.id] = node;
+    return node;
+  });
+  const edges = (d.edges || [])
+    .map(e => ({s: e.source, t: e.target, a: byId[e.source], b: byId[e.target]}))
+    .filter(e => e.a && e.b && e.s !== e.t);
+  _vgAll = {nodes: all, edges, byId};
+  _vgUnresolved = (d.unresolved || []).length;
+  if (_vgFocus && !byId[_vgFocus]) _vgFocus = "";
+  _vgHover = "";
+  _vgDrag = null;
+  _vgPinch = null;
+  _vgPointers.clear();
+  const qEl = document.getElementById("vault-q");
+  _vgQuery = qEl ? qEl.value.trim() : "";
+  _vgApplyView();
+  _vgBindCanvas(cv);
+  _vgBindChrome();
+  _vgView = {k: 1, x: 0, y: 0};
+  // Dastlabki joylashuvni darhol "pishirish": foydalanuvchi ekranga
+  // tartibsiz bulut emas, tayyor klasterlangan grafni ko'radi.
+  _vgAlpha = 1;
+  for (let i = 0; i < 90; i++) _vgStep();
+  _vgAutoFit = true;
+  _vgFit();
+  _vgReheat(0.5);
+}
+function _vgStop(){
+  cancelAnimationFrame(_vgRaf);
+  _vgRaf = 0;
+  _vgAlpha = 0;
+  _vgAlphaTarget = 0;
+  _vgHover = "";
+  _vgHideTip();
+}
+function _vgReheat(a){
+  _vgAlpha = Math.max(_vgAlpha, a || 0.4);
+  if (!_vgRaf) _vgRaf = requestAnimationFrame(_vgTick);
+}
+/* d3-force uslubidagi simulyatsiya: alpha sovib boradi, sudrash paytida
+   `_vgAlphaTarget` uni issiq ushlaydi — Obsidian'da ham qo'shnilar
+   sudralayotgan tugun ortidan shu tarzda siljiydi. */
+function _vgStep(){
+  const cv = document.getElementById("vault-graph");
+  if (!cv) return;
+  const n = _vgNodes.length;
+  if (!n) return;
+  const {w, h} = _vgSize(cv);
+  const cx = w / 2, cy = h / 2;
+  const k = Math.sqrt((w * h) / n) * 0.46;
+  const alpha = _vgAlpha;
+  for (let i = 0; i < n; i++){
+    const a = _vgNodes[i];
+    for (let j = i + 1; j < n; j++){
+      const b = _vgNodes[j];
+      let dx = b.x - a.x, dy = b.y - a.y;
+      let d2 = dx * dx + dy * dy;
+      if (d2 < 1){ dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 1; }
+      const d = Math.sqrt(d2);
+      const f = (k * k) / d2 * alpha;
+      const fx = (dx / d) * f, fy = (dy / d) * f;
+      a.vx -= fx; a.vy -= fy; b.vx += fx; b.vy += fy;
+    }
+    a.vx += (cx - a.x) * 0.016 * alpha;
+    a.vy += (cy - a.y) * 0.016 * alpha;
+  }
+  for (const e of _vgEdges){
+    const a = e.a, b = e.b;
+    if (!a || !b) continue;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const d = Math.sqrt(dx * dx + dy * dy) || 1;
+    const f = (d - k * 0.9) * 0.05 * alpha;
+    const fx = (dx / d) * f, fy = (dy / d) * f;
+    a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+  }
+  for (const a of _vgNodes){
+    if (a.fx != null){        // sudralayotgan tugun — qo'lda ushlab turilgan
+      a.x = a.fx; a.y = a.fy; a.vx = 0; a.vy = 0;
+      continue;
+    }
+    a.vx *= 0.86; a.vy *= 0.86;
+    a.x += Math.max(-16, Math.min(16, a.vx));
+    a.y += Math.max(-16, Math.min(16, a.vy));
+    a.x = Math.max(a.r + 4, Math.min(w - a.r - 4, a.x));
+    a.y = Math.max(a.r + 12, Math.min(h - a.r - 4, a.y));
+  }
+  _vgAlpha += (_vgAlphaTarget - _vgAlpha) * 0.055;
+  if (_vgAlphaTarget === 0 && _vgAlpha < 0.004) _vgAlpha = 0;
+}
+function _vgDraw(cv){
+  const {w, h} = _vgSize(cv);
+  const dpr = window.devicePixelRatio || 1;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)){
+    cv.width = Math.round(w * dpr);
+    cv.height = Math.round(h * dpr);
+  }
+  const ctx = cv.getContext("2d");
+  if (!ctx) return;
+  const light = _vgTheme() === "l";
+  const view = _vgView;
+  ctx.setTransform(dpr * view.k, 0, 0, dpr * view.k, dpr * view.x, dpr * view.y);
+  ctx.clearRect(0, 0, w, h);
+  const hover = _vgHover, focus = _vgFocus;
+  const q = _vgQuery.toLowerCase();
+  const matches = id => {
+    if (!q) return false;
+    const n = _vgAll && _vgAll.byId[id];
+    return !!n && ((n.title || "").toLowerCase().includes(q) ||
+                   (n.id || "").toLowerCase().includes(q));
+  };
+  const near = {};
+  if (hover){
+    near[hover] = 1;
+    for (const e of _vgEdges){
+      if (e.s === hover) near[e.t] = 1;
+      if (e.t === hover) near[e.s] = 1;
+    }
+  }
+  const edgeOn = e => (hover && (e.s === hover || e.t === hover)) ||
+                      (focus && (e.s === focus || e.t === focus));
+  ctx.lineCap = "round";
+  for (const e of _vgEdges){
+    const on = edgeOn(e), dim = hover && !on;
+    ctx.strokeStyle = on
+      ? (light ? "rgba(30,41,59,.55)" : "rgba(226,232,240,.75)")
+      : (dim ? (light ? "rgba(100,116,139,.10)" : "rgba(148,163,184,.09)")
+             : (light ? "rgba(100,116,139,.26)" : "rgba(148,163,184,.30)"));
+    ctx.lineWidth = (on ? 1.7 : 1) / view.k;
+    ctx.beginPath(); ctx.moveTo(e.a.x, e.a.y); ctx.lineTo(e.b.x, e.b.y); ctx.stroke();
+  }
+  // Kichik tugunlar avval, katta (hub) tugunlar ustida — Obsidian'da ham shunday.
+  const order = _vgNodes.slice().sort((a, b) =>
+    (a.r + (a.id === hover ? 100 : 0)) - (b.r + (b.id === hover ? 100 : 0)));
+  ctx.textAlign = "center";
+  for (const a of order){
+    const isHover = a.id === hover, isFocus = a.id === focus, isMatch = matches(a.id);
+    const dim = (hover && !near[a.id]) || (!hover && q && !isMatch && !isFocus);
+    ctx.globalAlpha = dim ? 0.2 : 1;
+    ctx.beginPath(); ctx.arc(a.x, a.y, a.r, 0, Math.PI * 2);
+    ctx.fillStyle = _vgColor(a.category);
+    ctx.fill();
+    if (isFocus || isHover || isMatch){
+      ctx.beginPath(); ctx.arc(a.x, a.y, a.r + 2.5 / view.k, 0, Math.PI * 2);
+      ctx.lineWidth = 1.8 / view.k;
+      ctx.strokeStyle = isFocus ? _vgTeal : (isHover ? _vgInk : _vgAccent);
+      ctx.stroke();
+    }
+    const showLabel = !dim && view.k > 0.34 &&
+      (isHover || isFocus || isMatch || view.k >= 0.8 || a.deg >= 8 || a.r >= 9);
+    if (showLabel){
+      const title = String(a.title);
+      const label = title.length > 24 ? title.slice(0, 23) + "…" : title;
+      ctx.font = "600 11px 'IBM Plex Mono', monospace";
+      ctx.lineWidth = 3 / view.k;
+      ctx.strokeStyle = _vgBg;
+      ctx.strokeText(label, a.x, a.y - a.r - 5);
+      ctx.fillStyle = light ? "rgba(30,41,59,.92)" : "rgba(226,232,240,.9)";
+      ctx.fillText(label, a.x, a.y - a.r - 5);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+function _vgRender(){
+  const cv = document.getElementById("vault-graph");
+  if (cv && !cv.closest("[hidden]")) _vgDraw(cv);
+}
+function _vgTick(){
+  const cv = document.getElementById("vault-graph");
+  const wrap = _vgWrap();
+  if (!cv || !wrap || wrap.hidden){ _vgRaf = 0; return; }
+  if (_vgAlpha > 0 || _vgAlphaTarget > 0) _vgStep();
+  if (_vgAutoFit && _vgAlpha === 0 && _vgAlphaTarget === 0){
+    _vgAutoFit = false;
+    _vgFit();        // fizika tinchigach, grafni ekranga bir marta moslash
+  }
+  _vgDraw(cv);
+  _vgRaf = (_vgAlpha > 0 || _vgAlphaTarget > 0) ? requestAnimationFrame(_vgTick) : 0;
+}
+/* Ekran koordinatasi → grafik (world) koordinatasi */
+function _vgToWorld(cv, ev){
+  const r = cv.getBoundingClientRect();
+  return {x: (ev.clientX - r.left - _vgView.x) / _vgView.k,
+          y: (ev.clientY - r.top - _vgView.y) / _vgView.k};
+}
+/* Ko'rinishni mavjud tugunlarga moslash (Obsidian'dagi "fit") */
+function _vgFit(){
+  const cv = document.getElementById("vault-graph");
+  if (!cv) return;
+  const {w, h} = _vgSize(cv);
+  if (!_vgNodes.length){ _vgView = {k: 1, x: 0, y: 0}; _vgRender(); return; }
+  let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+  for (const a of _vgNodes){
+    minX = Math.min(minX, a.x - a.r); maxX = Math.max(maxX, a.x + a.r);
+    minY = Math.min(minY, a.y - a.r - 16); maxY = Math.max(maxY, a.y + a.r);
+  }
+  const pad = 28;
+  const k = Math.max(0.2, Math.min(2.5, Math.min(
+    (w - pad * 2) / Math.max(1, maxX - minX),
+    (h - pad * 2) / Math.max(1, maxY - minY))));
+  _vgView.k = k;
+  _vgView.x = w / 2 - k * (minX + maxX) / 2;
+  _vgView.y = h / 2 - k * (minY + maxY) / 2;
+  _vgRender();
+}
+function _vgResetView(){ _vgFit(); }
+function _vgZoomAt(f, mx, my){
+  const k2 = Math.max(0.2, Math.min(4, _vgView.k * f));
+  const s = k2 / _vgView.k;
+  _vgView.x = mx - s * (mx - _vgView.x);
+  _vgView.y = my - s * (my - _vgView.y);
+  _vgView.k = k2;
+  _vgRender();
+}
+/* Lokal graf: tanlangan qayd va uning `_vgDepth` qadamlik qo'shnilari */
+function _vgApplyView(){
+  if (!_vgAll){ _vgNodes = []; _vgEdges = []; _vgUpdateChrome(); return; }
+  const all = _vgAll;
+  if (!_vgFocus || !all.byId[_vgFocus]){
+    _vgNodes = all.nodes;
+    _vgEdges = all.edges;
+  } else {
+    const keep = new Set([_vgFocus]);
+    let frontier = [_vgFocus];
+    for (let d = 0; d < _vgDepth && frontier.length; d++){
+      const next = [];
+      for (const e of all.edges){
+        if (frontier.includes(e.s) && !keep.has(e.t)){ keep.add(e.t); next.push(e.t); }
+        if (frontier.includes(e.t) && !keep.has(e.s)){ keep.add(e.s); next.push(e.s); }
+      }
+      frontier = next;
+    }
+    _vgNodes = all.nodes.filter(n => keep.has(n.id));
+    _vgEdges = all.edges.filter(e => keep.has(e.s) && keep.has(e.t));
+  }
+  if (_vgHover && !_vgNodes.some(n => n.id === _vgHover)) _vgHover = "";
+  _vgUpdateChrome();
+  _vaultInfo(_vgInfoText());
+}
+function _vgInfoText(){
+  if (!_vgAll) return "";
+  const focused = !!(_vgFocus && _vgAll.byId[_vgFocus]);
+  return (focused ? _vgNodes.length + " / " : "") + _vgAll.nodes.length + " tugun · " +
+    (focused ? _vgEdges.length : _vgAll.edges.length) + " havola" +
+    (_vgUnresolved ? " · " + _vgUnresolved + " yechilmagan havola" : "");
+}
+function _vgFocusOn(id){
+  if (!_vgAll || !_vgAll.byId[id]) return;
+  _vgFocus = id;
+  _vgApplyView();
+  _vgFit();
+  _vgReheat(0.5);
+  _vgAutoFit = true;
+  _vgHideTip();
+}
+function _vgUnfocus(){
+  if (!_vgFocus) return;
+  _vgFocus = "";
+  _vgApplyView();
+  _vgFit();
+  _vgReheat(0.35);
+  _vgAutoFit = true;
+}function _vgSetQuery(q){
+  _vgQuery = String(q || "").trim();
+  _vgUpdateChrome();
+  _vgRender();
+}
+function _vgUpdateChrome(){
+  const chips = document.getElementById("vg-chips");
+  if (chips){
+    const parts = [];
+    if (_vgFocus && _vgAll && _vgAll.byId[_vgFocus]){
+      const n = _vgAll.byId[_vgFocus];
+      parts.push('<span class="vg-chip">LOKAL · <b title="' + esc(n.title) + '">' +
+        esc(n.title) + '</b>' +
+        '<button type="button" data-vg="depth" data-depth="1" aria-label="Chuqurlik 1" title="1 qadam" class="' +
+        (_vgDepth === 1 ? "on" : "") + '">1</button>' +
+        '<button type="button" data-vg="depth" data-depth="2" aria-label="Chuqurlik 2" title="2 qadam" class="' +
+        (_vgDepth === 2 ? "on" : "") + '">2</button>' +
+        '<button type="button" data-vg="unfocus" aria-label="Butun grafga qaytish" title="Butun graf">×</button></span>');
+    }
+    if (_vgQuery){
+      parts.push('<span class="vg-chip">QIDIRUV · <b title="' + esc(_vgQuery) + '">' +
+        esc(_vgQuery) + '</b>' +
+        '<button type="button" data-vg="clearq" aria-label="Qidiruvni tozalash" title="Tozalash">×</button></span>');
+    }
+    chips.innerHTML = parts.join("");
+  }
+  const legend = document.getElementById("vault-graph-legend");
+  if (legend){
+    const counts = {};
+    for (const n of _vgNodes) counts[n.category || ""] = (counts[n.category || ""] || 0) + 1;
+    legend.innerHTML = Object.keys(counts).map(c =>
+      '<span style="display:inline-flex;align-items:center;gap:5px;margin-right:14px">' +
+      '<i style="width:9px;height:9px;border-radius:50%;background:' + _vgColor(c) + '"></i>' +
+      esc(c || "kategoriyasiz") + ' (' + counts[c] + ')</span>').join("") +
+      '<span style="display:block;margin-top:6px">Tugunni suring — qo\'shnilari ergashadi · ' +
+      "g'ildirak/pinch — masshtab · bo'sh joyni suring — ko'chirish · ustiga keling — " +
+      "havolalari yorqin · bosish — qaydni ochish · o'ng tugma — lokal graf · " +
+      "bo'sh joyga ikki marta bosish — grafikni moslash.</span>";
+  }
+}
+function _vgShowTip(cv, ev, id){
+  const tip = document.getElementById("vg-tip");
+  if (!tip) return;
+  const n = id && _vgAll ? _vgAll.byId[id] : null;
+  if (!n){ tip.hidden = true; return; }
+  tip.innerHTML = '<div class="t">' + esc(n.title) + '</div><div class="m">' +
+    esc(n.category || "kategoriyasiz") + ' · ' + n.links + ' havola · ' +
+    n.backlinks + " bog'lanish · " + esc(n.path || "") + '</div>';
+  const box = cv.parentElement.getBoundingClientRect();
+  tip.hidden = false;
+  const tw = tip.offsetWidth || 160, th = tip.offsetHeight || 40;
+  const x = ev.clientX - box.left + 14, y = ev.clientY - box.top + 14;
+  tip.style.left = Math.max(6, Math.min(x, box.width - tw - 6)) + "px";
+  tip.style.top = Math.max(6, Math.min(y, box.height - th - 6)) + "px";
+}
+function _vgHideTip(){
+  const tip = document.getElementById("vg-tip");
+  if (tip) tip.hidden = true;
+}
+function _vgBindChrome(){
+  const wrap = _vgWrap();
+  if (!wrap || wrap.dataset.vgChrome) return;
+  wrap.dataset.vgChrome = "1";
+  wrap.addEventListener("click", ev => {
+    const b = ev.target.closest("[data-vg]");
+    if (!b) return;
+    ev.preventDefault();
+    const act = b.getAttribute("data-vg");
+    if (act === "unfocus"){ _vgUnfocus(); return; }
+    if (act === "clearq"){
+      const q = document.getElementById("vault-q");
+      if (q) q.value = "";
+      _vgSetQuery("");
+      return;
+    }
+    if (act === "depth"){
+      _vgDepth = Number(b.getAttribute("data-depth")) === 2 ? 2 : 1;
+      _vgApplyView();
+      _vgFit();
+      _vgReheat(0.35);
+      _vgAutoFit = true;
+      return;
+    }
+    const cv = document.getElementById("vault-graph");
+    if (!cv) return;
+    const {w, h} = _vgSize(cv);
+    if (act === "in") _vgZoomAt(1.25, w / 2, h / 2);
+    else if (act === "out") _vgZoomAt(1 / 1.25, w / 2, h / 2);
+    else if (act === "fit") _vgFit();
+  });
+}
+function _vgHit(cv, ev){
+  const p = _vgToWorld(cv, ev);
+  let best = "", bd = 1e9;
+  for (const a of _vgNodes){
+    const d = Math.hypot(a.x - p.x, a.y - p.y);
+    if (d <= a.r + 8 / _vgView.k && d < bd){ bd = d; best = a.id; }
+  }
+  return best;
+}
+function _vgBindCanvas(cv){
+  if (cv.dataset.vgBound) return;
+  cv.dataset.vgBound = "1";
+  cv.addEventListener("pointerdown", ev => {
+    if (ev.pointerType === "mouse" && ev.button !== 0) return;
+    try { cv.setPointerCapture(ev.pointerId); } catch (_) {}
+    _vgPointers.set(ev.pointerId, {x: ev.clientX, y: ev.clientY});
+    _vgDown = {x: ev.clientX, y: ev.clientY, id: ev.pointerId};
+    _vgMoved = false;
+    if (_vgPointers.size === 1){
+      const id = _vgHit(cv, ev);
+      if (id){
+        const a = _vgAll.byId[id];
+        const p = _vgToWorld(cv, ev);
+        _vgDrag = {node: a, ox: p.x - a.x, oy: p.y - a.y, id: ev.pointerId};
+        a.fx = a.x;
+        a.fy = a.y;
+        _vgHover = id;
+        _vgHideTip();
+      } else {
+        _vgDrag = {pan: true, sx: ev.clientX, sy: ev.clientY,
+                   vx: _vgView.x, vy: _vgView.y, id: ev.pointerId};
+      }
+      cv.style.cursor = "grabbing";
+    } else if (_vgPointers.size === 2){
+      _vgDrag = null;
+      const [p1, p2] = [..._vgPointers.values()];
+      _vgPinch = {d: Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1,
+                  cx: (p1.x + p2.x) / 2, cy: (p1.y + p2.y) / 2,
+                  k: _vgView.k, vx: _vgView.x, vy: _vgView.y};
+    }
+    _vgAlphaTarget = 0.3;
+    _vgReheat(0.5);
+    if (ev.preventDefault) ev.preventDefault();
+  });
+  cv.addEventListener("pointermove", ev => {
+    if (_vgPointers.has(ev.pointerId))
+      _vgPointers.set(ev.pointerId, {x: ev.clientX, y: ev.clientY});
+    if (_vgPinch && _vgPointers.size >= 2){
+      const [p1, p2] = [..._vgPointers.values()];
+      const r = cv.getBoundingClientRect();
+      const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
+      const cx = (p1.x + p2.x) / 2, cy = (p1.y + p2.y) / 2;
+      const k = Math.max(0.2, Math.min(4, _vgPinch.k * (dist / _vgPinch.d)));
+      const wx = ((_vgPinch.cx - r.left) - _vgPinch.vx) / _vgPinch.k;
+      const wy = ((_vgPinch.cy - r.top) - _vgPinch.vy) / _vgPinch.k;
+      _vgView.k = k;
+      _vgView.x = (cx - r.left) - wx * k;
+      _vgView.y = (cy - r.top) - wy * k;
+      _vgMoved = true;
+      _vgRender();
+      return;
+    }
+    if (_vgDrag && _vgDrag.id === ev.pointerId){
+      const moved = _vgDown
+        ? Math.hypot(ev.clientX - _vgDown.x, ev.clientY - _vgDown.y) > 3 : true;
+      if (moved) _vgMoved = true;
+      if (_vgDrag.node){
+        const a = _vgDrag.node, p = _vgToWorld(cv, ev);
+        a.fx = p.x - _vgDrag.ox;
+        a.fy = p.y - _vgDrag.oy;
+        a.x = a.fx; a.y = a.fy;
+        a.vx = 0; a.vy = 0;
+      } else {
+        _vgView.x = _vgDrag.vx + (ev.clientX - _vgDrag.sx);
+        _vgView.y = _vgDrag.vy + (ev.clientY - _vgDrag.sy);
+      }
+      _vgRender();
+      return;
+    }
+    if (_vgPointers.size || ev.pointerType !== "mouse") return;
+    const id = _vgHit(cv, ev);
+    if (id !== _vgHover){
+      _vgHover = id;
+      cv.style.cursor = id ? "pointer" : "grab";
+      _vgShowTip(cv, ev, id);
+      _vgRender();
+    } else if (id){
+      _vgShowTip(cv, ev, id);
+    }
+  });
+  const endDrag = ev => {
+    _vgPointers.delete(ev.pointerId);
+    if (_vgPinch && _vgPointers.size < 2) _vgPinch = null;
+    if (!_vgDrag || _vgDrag.id !== ev.pointerId){
+      if (!_vgPointers.size) cv.style.cursor = _vgHover ? "pointer" : "grab";
+      return;
+    }
+    // Obsidian kabi: qo'yib yuborilgan tugun qotib qolmaydi — fizika davom etadi.
+    if (_vgDrag.node){ _vgDrag.node.fx = null; _vgDrag.node.fy = null; }
+    _vgDrag = null;
+    _vgDown = null;
+    _vgAlphaTarget = 0;
+    _vgReheat(0.3);
+    if (ev.pointerType !== "mouse"){
+      _vgHover = "";
+      _vgHideTip();
+      _vgRender();
+    }
+    cv.style.cursor = _vgHover ? "pointer" : "grab";
+  };
+  cv.addEventListener("pointerup", endDrag);
+  cv.addEventListener("pointercancel", endDrag);
+  cv.addEventListener("pointerleave", () => {
+    if (_vgPointers.size) return;
+    if (_vgHover){ _vgHover = ""; _vgHideTip(); _vgRender(); }
+    cv.style.cursor = "grab";
+  });
+  cv.addEventListener("click", ev => {
+    if (_vgMoved) return;   // pan/sudrash tugadi — qayd ochilmaydi
+    const id = _vgHit(cv, ev);
+    if (!id) return;
+    const a = _vgAll && _vgAll.byId[id];
+    if (a && a.path) vaultOpen(a.path);
+  });
+  cv.addEventListener("contextmenu", ev => {
+    const id = _vgHit(cv, ev);
+    if (!id) return;
+    ev.preventDefault();
+    _vgFocusOn(id);
+    try { cv.focus({preventScroll: true}); } catch (_) {}
+  });
+  cv.addEventListener("dblclick", ev => {
+    if (_vgHit(cv, ev)) return;
+    _vgFit();      // bo'sh joyga ikki marta bosish — grafikni moslash
+  });
+  cv.addEventListener("wheel", ev => {
+    ev.preventDefault();
+    const r = cv.getBoundingClientRect();
+    const f = ev.deltaY < 0 ? 1.15 : 1 / 1.15;
+    _vgZoomAt(f, ev.clientX - r.left, ev.clientY - r.top);
+  }, {passive: false});
+  cv.addEventListener("keydown", ev => {
+    if (ev.key === "Escape"){
+      if (_vgFocus){ _vgUnfocus(); ev.preventDefault(); }
+      return;
+    }
+    if (ev.key === "+" || ev.key === "="){
+      const {w, h} = _vgSize(cv); _vgZoomAt(1.2, w / 2, h / 2); ev.preventDefault();
+    } else if (ev.key === "-" || ev.key === "_"){
+      const {w, h} = _vgSize(cv); _vgZoomAt(1 / 1.2, w / 2, h / 2); ev.preventDefault();
+    } else if (ev.key === "0"){
+      _vgFit(); ev.preventDefault();
+    }
+  });
+  window.addEventListener("resize", () => {
+    const wrap = _vgWrap();
+    if (wrap && !wrap.hidden && !_vgRaf && _vgAll) _vgFit();
+  });
 }
 /* ---- Disk holati (storage panel) ---- */
 function _fmtGB(b){ return b >= 1073741824 ? (b/1073741824).toFixed(2)+" GB" : (b/1048576).toFixed(1)+" MB"; }
@@ -4809,7 +5983,7 @@ async function runBackup() {
   btn.disabled = true;
   btn.textContent = "BACKUP...";
   try {
-    const d = await api("/api/backup/run");
+    const d = await postJSON("/api/backup/run");
     if (d.ok) {
       btn.textContent = "TAYYOR!";
       btn.style.color = "#22c55e";
@@ -8020,6 +9194,9 @@ function applyTheme(t) {
   try { localStorage.setItem("bm-theme", t); } catch (e) {}
   const btn = document.getElementById("theme-toggle");
   if (btn) btn.innerHTML = featherIcon(isDark ? "sun" : "moon");
+  // Grafik canvas CSS o'zgaruvchilaridan rang oladi — mavzuni darhol qo'llash.
+  if (typeof _vgUpdateChrome === "function") _vgUpdateChrome();
+  if (typeof _vgRender === "function") _vgRender();
 }
 function initTheme() {
   const btn = document.getElementById("theme-toggle");
@@ -8067,6 +9244,10 @@ function applyAccessUI() {
   });
   document.querySelectorAll(".fin-block").forEach(el => {
     el.classList.toggle("nav-hidden", myRank() < 2);
+  });
+  // Faqat tizim egasi (super) uchun bloklar — ADMIN ham ko'rmaydi.
+  document.querySelectorAll("[data-super-only]").forEach(el => {
+    el.style.display = (me && me.super) ? "" : "none";
   });
   const sel = document.getElementById("f-route");
   if (sel) sel.disabled = !!(me && !me.is_admin);

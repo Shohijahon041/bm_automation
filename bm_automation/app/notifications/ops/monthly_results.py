@@ -101,6 +101,7 @@ def check_and_send() -> None:
         if _load().get("month") == month:
             return
 
+        sent: list[tuple[str, str]] = []
         for profile in _recipients():
             try:
                 did = str(profile.get("driver_id") or "").strip()
@@ -111,10 +112,36 @@ def check_and_send() -> None:
                 if not text:
                     continue
                 _send_to(chat_id, text)
+                sent.append((did, text))
             except Exception as exc:  # noqa: BLE001
                 print(f"Oylik natijalar tekshiruvi xatosi: {exc}")
 
         _save({"month": month})
+        _save_monthly_note(month, sent)
+
+
+def _save_monthly_note(month: str, sent: list[tuple[str, str]]) -> None:
+    """Yuborilgan oylik natijalarni bilim bazasiga (vault) saqlaydi.
+
+    Xato bo'lsa jim o'tadi — hisobot yuborilishi ayni damda muhimroq.
+    """
+    try:
+        from ...core import knowledge
+        rows = ["| Haydovchi | Natija (birinchi qator) |", "| --- | --- |"]
+        for did, text in sent[:60]:
+            line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+            line = line.replace("|", "/")[:80]
+            rows.append(f"| {did[:24]} | {line} |")
+        body = "\n".join([
+            f"Oylik natijalar — **{month}**",
+            "",
+            f"Yuborilgan haydovchilar: {len(sent)}",
+            "",
+            *rows,
+        ])
+        knowledge.save_report("Oylik-natijalar", body, period=month)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Oylik natijalarni vault'ga saqlash xatosi: {exc}")
 
 
 def status_text() -> str:
