@@ -1045,3 +1045,16 @@ def _doc_in_scope(storage, driver_id: str, scopes: set) -> bool:
         return False
     row = storage.find("drivers", external_id=driver_id)
     return bool(row and str(row.get("route_id") or "") in scopes)
+
+
+def _has_video_perm(scope: dict | None, perm: str) -> bool:
+    if not scope:
+        return True
+    if scope.get('is_admin') or scope.get('role') in ('ADMIN', 'DIRECTOR'):
+        return True
+    perms = scope.get('video_perms')
+    if perms is None:
+        return True
+    if isinstance(perms, (list, tuple, set)):
+        return perm in perms or 'all' in perms
+    return True

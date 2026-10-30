@@ -23,22 +23,24 @@ TASHKENT = (41.3111, 69.2797)
 
 
 def _io_block_8e(event_id: int, io: dict) -> bytes:
-    """Codec 8E IO elementlar bloki (2B id'lar)."""
-    g1 = {k: v for k, v in io.items() if 0 < v <= 0xFF and v >= 0 and v < 256}
-    # Biz sodda qilamiz: barcha qiymatlarni 1B guruhga joylaymiz
+    """Codec 8E IO elementlar bloki (2B id'lar, count'lar aralash)."""
     ids1 = sorted(io.keys())
-    out = struct.pack(">H", event_id)
+    out = struct.pack(">HH", event_id, len(ids1))
+    # 1B qiymatlar guruhi
     out += struct.pack(">H", len(ids1))
-    out += struct.pack(">HHHH", len(ids1), 0, 0, 0)
     for k in ids1:
         out += struct.pack(">H", int(k)) + struct.pack(">B", int(io[k]) & 0xFF)
+    # 2B / 4B / 8B guruhlari bo'sh
+    out += struct.pack(">HHH", 0, 0, 0)
+    # NX (o'zgaruvchan) guruhi bo'sh
+    out += struct.pack(">H", 0)
     return out
 
 
 def build_avl_8e(records: list) -> bytes:
     """records: [(ts_ms, lng, lat, alt, angle, sat, speed, io_dict), ...]"""
     body = b"\x8e"
-    body += struct.pack(">H", len(records))
+    body += struct.pack(">B", len(records))
     for (ts_ms, lng, lat, alt, angle, sat, speed, io) in records:
         body += struct.pack(">Q", ts_ms)
         body += struct.pack(">B", 1)  # priority
@@ -49,8 +51,13 @@ def build_avl_8e(records: list) -> bytes:
         body += struct.pack(">B", sat)
         body += struct.pack(">H", speed)
         body += _io_block_8e(1, io)
-    body += struct.pack(">H", len(records))
-    return struct.pack(">I", 0) + struct.pack(">I", len(body)) + body
+    body += struct.pack(">B", len(records))  # Number of Data 2 (1B)
+    return (
+        struct.pack(">I", 0)
+        + struct.pack(">I", len(body))
+        + body
+        + struct.pack(">I", 0)  # CRC
+    )
 
 
 def simulate(imei: str, host: str, port: int, interval: float, count: int) -> None:

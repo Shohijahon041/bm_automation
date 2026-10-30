@@ -14,7 +14,8 @@ import asyncio
 import logging
 import threading
 
-from . import config, listener, relay, report, rollup, storage
+from . import (config, jt1078, jt808, listener, offline, relay, report,
+               rollup, storage)
 from .api import run_api
 
 logging.basicConfig(
@@ -48,20 +49,42 @@ def main() -> int:
         report.start_monitor()
     except Exception:  # noqa: BLE001
         log.exception("report monitor ishga tushmadi")
+    try:
+        offline.start_monitor()
+    except Exception:  # noqa: BLE001
+        log.exception("offline monitor ishga tushmadi")
 
     httpd = run_api(config.GPS_API_HOST, config.GPS_API_PORT)
     api_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     api_thread.start()
 
     try:
-        # TCP listener — asosiy (bloklovchi) oqim.
-        asyncio.run(listener.run_tcp(config.GPS_TCP_HOST, config.GPS_TCP_PORT))
+        asyncio.run(_run_listeners())
     except KeyboardInterrupt:
         log.info("To'xtatilmoqda (Ctrl+C)...")
     finally:
         httpd.shutdown()
         log.info("GPS servis to'xtadi")
     return 0
+
+
+async def _run_listeners() -> None:
+    """Teltonika + (ixtiyoriy) JT808/JT1078 TCP listener'lari birga."""
+    tasks = [
+        asyncio.create_task(
+            listener.run_tcp(config.GPS_TCP_HOST, config.GPS_TCP_PORT)
+        )
+    ]
+    if config.JT808_ENABLED:
+        tasks.append(asyncio.create_task(
+            jt808.run_tcp(config.GPS_TCP_HOST, config.JT808_TCP_PORT)
+        ))
+        tasks.append(asyncio.create_task(
+            jt1078.run_tcp(config.GPS_TCP_HOST, config.JT1078_TCP_PORT)
+        ))
+    else:
+        log.info("JT808/JT1078 o'chirilgan (JT808_ENABLED=0)")
+    await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":

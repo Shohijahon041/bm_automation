@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS gps_devices (
     vehicle_id TEXT DEFAULT '',
     name TEXT DEFAULT '',
     model TEXT DEFAULT 'FMB920',
+    kind TEXT DEFAULT 'teltonika',
     last_seen TIMESTAMPTZ,
     last_lat DOUBLE PRECISION,
     last_lng DOUBLE PRECISION,
@@ -29,6 +30,9 @@ CREATE TABLE IF NOT EXISTS gps_devices (
     last_ignition INTEGER DEFAULT 0,
     last_satellites INTEGER DEFAULT 0,
     enabled INTEGER DEFAULT 1,
+    count_in INTEGER DEFAULT 0,
+    count_out INTEGER DEFAULT 0,
+    count_updated_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS gps_positions (
@@ -56,6 +60,27 @@ CREATE TABLE IF NOT EXISTS video_cameras (
     url TEXT NOT NULL,
     vehicle_id TEXT DEFAULT '',
     enabled INTEGER DEFAULT 1,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    -- Camera health monitoring
+    last_check_at TIMESTAMPTZ,
+    last_online_at TIMESTAMPTZ,
+    consecutive_failures INTEGER DEFAULT 0,
+    total_failures INTEGER DEFAULT 0,
+    last_error TEXT DEFAULT '',
+    last_fps REAL DEFAULT 0,
+    last_bitrate INTEGER DEFAULT 0,
+    last_resolution TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS video_audit (
+    id BIGSERIAL PRIMARY KEY,
+    camera_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    username TEXT NOT NULL,
+    action TEXT NOT NULL,  -- grid, focus, fullscreen
+    channel INTEGER NOT NULL DEFAULT 1,
+    vehicle_id TEXT DEFAULT '',
+    ip TEXT DEFAULT '',
+    duration_s INTEGER DEFAULT 0,
     created_at TIMESTAMPTZ DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS gps_geofences (
@@ -90,6 +115,14 @@ CREATE TABLE IF NOT EXISTS gps_daily (
     last_ts TIMESTAMPTZ,
     PRIMARY KEY (imei, day)
 );
+CREATE TABLE IF NOT EXISTS gps_route_paths (
+    route_id TEXT PRIMARY KEY,
+    name TEXT DEFAULT '',
+    points JSONB NOT NULL,
+    tolerance_m INTEGER DEFAULT 200,
+    enabled INTEGER DEFAULT 1,
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
 """
 
 
@@ -106,8 +139,100 @@ def init_schema() -> bool:
         return False
     for stmt in [s.strip() for s in _SCHEMA.split(";") if s.strip()]:
         st.db.execute(stmt)
+    _migrate()
     log.info("GPS: sxema tayyor (gps_devices, gps_positions, video_cameras)")
     return True
+
+
+def _migrate() -> None:
+    """Eski bazalarga ustun qo'shadi (idempotent).
+
+    `gps_devices.kind` — 'teltonika' (xarita uchun haqiqiy GPS) yoki
+    'camera' (JT808/JT1078 kamera: faqat video/yordamchi, xaritaga
+    chiqmaydi). Eski qatorlar 'teltonika' bo'lib qoladi.
+
+    Bundan tashqari 12 xonali IMEI'li qatorlar (JT808 kamera BCD 6 bayt)
+    'camera' deb belgilanadi — ilgari noto'g'ri 'teltonika' bo'lib yozilgan
+    bo'lsa tuzatiladi. Teltonika IMEI 15 xonali, shu sababli tegilmaydi.
+
+    `video_cameras` — health ustunlari (last_check_at va h.k.) eski
+    bazalarda yo'q bo'ladi, qo'shib qo'yiladi.
+    """
+    st = _st()
+    try:
+        if getattr(st.db, "driver", "") == "sqlite":
+            cols = {str(r.get("name") or "")
+                    for r in st.db.query("PRAGMA table_info(gps_devices)")}
+            if "kind" not in cols:
+                st.db.execute(
+                    "ALTER TABLE gps_devices ADD COLUMN kind TEXT "
+                    "DEFAULT 'teltonika'")
+        else:
+            st.db.execute(
+                "ALTER TABLE gps_devices ADD COLUMN IF NOT EXISTS "
+                "kind TEXT DEFAULT 'teltonika'")
+    except Exception:  # noqa: BLE001
+        log.exception("GPS: gps_devices.kind migratsiyasi bajarilmadi")
+
+    try:
+        n = st.db.execute(
+            "UPDATE gps_devices SET kind = 'camera' "
+            "WHERE length(imei) = 12 AND COALESCE(kind, '') <> 'camera'")
+        if n:
+            log.info("GPS: %s ta 12-xonali IMEI 'camera' deb belgilandi", n)
+    except Exception:  # noqa: BLE001
+        log.exception("GPS: 12-xonali IMEI -> camera migratsiyasi bajarilmadi")
+
+    try:
+        counter_cols = (
+            ("count_in", "INTEGER DEFAULT 0"),
+            ("count_out", "INTEGER DEFAULT 0"),
+            ("count_updated_at", "TIMESTAMPTZ"),
+        )
+        if getattr(st.db, "driver", "") == "sqlite":
+            have = {str(r.get("name") or "")
+                    for r in st.db.query("PRAGMA table_info(gps_devices)")}
+            if have:
+                for col, typ in counter_cols:
+                    if col not in have:
+                        st.db.execute(
+                            "ALTER TABLE gps_devices ADD COLUMN "
+                            + col + " " + typ)
+        else:
+            for col, typ in counter_cols:
+                st.db.execute(
+                    "ALTER TABLE gps_devices ADD COLUMN IF NOT EXISTS "
+                    + col + " " + typ)
+    except Exception:  # noqa: BLE001
+        log.exception("GPS: gps_devices sanagich ustunlari migratsiyasi bajarilmadi")
+
+    try:
+        health_cols = (
+            ("last_check_at", "TIMESTAMPTZ"),
+            ("last_online_at", "TIMESTAMPTZ"),
+            ("consecutive_failures", "INTEGER DEFAULT 0"),
+            ("total_failures", "INTEGER DEFAULT 0"),
+            ("last_error", "TEXT DEFAULT ''"),
+            ("last_fps", "REAL DEFAULT 0"),
+            ("last_bitrate", "INTEGER DEFAULT 0"),
+            ("last_resolution", "TEXT DEFAULT ''"),
+        )
+        if getattr(st.db, "driver", "") == "sqlite":
+            have = {str(r.get("name") or "")
+                    for r in st.db.query("PRAGMA table_info(video_cameras)")}
+            if have:
+                for col, typ in health_cols:
+                    if col not in have:
+                        st.db.execute(
+                            "ALTER TABLE video_cameras ADD COLUMN "
+                            + col + " " + typ)
+        else:
+            for col, typ in health_cols:
+                st.db.execute(
+                    "ALTER TABLE video_cameras ADD COLUMN IF NOT EXISTS "
+                    + col + " " + typ)
+    except Exception:  # noqa: BLE001
+        log.exception("GPS: video_cameras health ustunlari migratsiyasi bajarilmadi")
 
 
 def purge_old_positions() -> int:
@@ -134,8 +259,13 @@ def upsert_device_position(
     speed: int,
     ignition: int,
     satellites: int,
+    kind: str = "teltonika",
 ) -> None:
-    """Qurilmaning oxirgi holatini yangilaydi (yangi IMEI bo'lsa yaratadi)."""
+    """Qurilmaning oxirgi holatini yangilaydi (yangi IMEI bo'lsa yaratadi).
+
+    kind faqat YANGI qatorda qo'llanadi — mavjud qatorning turi
+    o'zgartirilmaydi (kamera qatori tasodifan Teltonika bo'lib qolmasin).
+    """
     st = _st()
     if not st.enabled:
         return
@@ -143,8 +273,8 @@ def upsert_device_position(
         """
         INSERT INTO gps_devices
             (imei, last_seen, last_lat, last_lng, last_speed,
-             last_ignition, last_satellites)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+             last_ignition, last_satellites, kind)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (imei) DO UPDATE SET
             last_seen = EXCLUDED.last_seen,
             last_lat = EXCLUDED.last_lat,
@@ -153,7 +283,8 @@ def upsert_device_position(
             last_ignition = EXCLUDED.last_ignition,
             last_satellites = EXCLUDED.last_satellites
         """,
-        (imei, ts, lat, lng, speed, ignition, satellites),
+        (imei, ts, lat, lng, speed, ignition, satellites,
+         str(kind or "teltonika")),
     )
 
 
@@ -166,14 +297,20 @@ def device_known(imei: str) -> bool:
     return bool(rows)
 
 
-def register_device(imei: str) -> None:
-    """Yangi IMEI'ni avtomatik ro'yxatga oladi (AUTO_REGISTER=1 bo'lsa)."""
+def register_device(imei: str, kind: str = "teltonika") -> None:
+    """Yangi IMEI'ni avtomatik ro'yxatga oladi (AUTO_REGISTER=1 bo'lsa).
+
+    kind: 'teltonika' (xarita GPS), 'camera' (JT808/JT1078 — xaritada
+    ko'rsatilmaydi, faqat video) yoki 'counter' (odam sanagich — xaritada
+    ko'rsatilmaydi, kirish/chiqish hisobi).
+    """
     st = _st()
     if not st.enabled:
         return
     st.db.execute(
-        "INSERT INTO gps_devices (imei) VALUES (%s) ON CONFLICT DO NOTHING",
-        (imei,),
+        "INSERT INTO gps_devices (imei, kind) VALUES (%s,%s) "
+        "ON CONFLICT DO NOTHING",
+        (imei, str(kind or "teltonika")),
     )
 
 
@@ -229,10 +366,11 @@ def list_devices() -> list:
         return []
     rows = st.db.query(
         """
-        SELECT d.imei, d.vehicle_id, d.name, d.model, d.last_seen,
+        SELECT d.imei, d.vehicle_id, d.name, d.model, d.kind, d.last_seen,
                d.last_lat, d.last_lng, d.last_speed, d.last_ignition,
-               d.last_satellites, d.enabled,
-               v.plate_number
+               d.last_satellites, d.enabled, d.count_in, d.count_out,
+               d.count_updated_at,
+               v.plate_number, v.route_id AS route_id
         FROM gps_devices d
         LEFT JOIN vehicles v ON v.external_id = d.vehicle_id
         ORDER BY d.imei
@@ -240,6 +378,14 @@ def list_devices() -> list:
     )
     now = time.time()
     for r in rows:
+        r["kind"] = str(r.get("kind") or "teltonika")
+        r["count_in"] = int(r.get("count_in") or 0)
+        r["count_out"] = int(r.get("count_out") or 0)
+        cu = r.get("count_updated_at")
+        r["count_updated_s"] = cu.isoformat() if isinstance(cu, datetime) else (
+            str(cu) if cu else ""
+        )
+        r.pop("count_updated_at", None)
         # online: oxirgi ko'rinish ONLINE_WINDOW ichida
         ls = r.get("last_seen")
         online = False
@@ -262,6 +408,151 @@ def list_devices() -> list:
         r["_now"] = now  # debugging uchun emas — API'da ishlatilmaydi
         del r["_now"]
     return rows
+
+
+def _seen_online(ls) -> bool:
+    """Oxirgi ko'rinish ONLINE_WINDOW ichidami (list_devices bilan bir xil)."""
+    if not ls:
+        return False
+    try:
+        ts = ls if isinstance(ls, datetime) else datetime.fromisoformat(
+            str(ls).replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - ts).total_seconds() <= (
+            config.GPS_ONLINE_WINDOW_S)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def teltonika_only(rows: list) -> list:
+    """Ro'yxatdan xarita uchun yaroqsiz qatorlarni chiqarib tashlaydi.
+
+    Kamera (kind='camera') va sanagich (kind='counter') GPS xarita/trek/
+    nazoratda ishlatilmaydi. Test mock'larida `kind` bo'lmasa qator
+    Teltonika deb hisoblanadi (eski xatti-harakat saqlanadi).
+    """
+    return [r for r in (rows or [])
+            if str(r.get("kind") or "teltonika") == "teltonika"]
+
+
+def list_camera_devices() -> list:
+    """Kamera terminallari (kind='camera') + avtobus raqami (O'QISH)."""
+    st = _st()
+    if not st.enabled:
+        return []
+    try:
+        rows = st.db.query(
+            """
+            SELECT d.imei, d.vehicle_id, d.name, d.last_seen, d.last_lat,
+                   d.last_lng, d.last_speed, d.enabled, d.kind,
+                   v.plate_number, v.route_id AS route_id
+            FROM gps_devices d
+            LEFT JOIN vehicles v ON v.external_id = d.vehicle_id
+            WHERE COALESCE(d.kind, 'teltonika') = 'camera'
+            ORDER BY d.imei
+            """
+        )
+    except Exception:  # noqa: BLE001
+        return []
+    for r in rows:
+        r["kind"] = "camera"
+        # `online` va `last_seen_s` list_devices bilan bir xil bo'lishi kerak
+        # (ilgari umuman hisoblanmasdi -> kamera har doim "offline"
+        # ko'rinardi, /api/video/jt-streams va solishtirmada ham).
+        ls = r.get("last_seen")
+        r["online"] = _seen_online(ls) and bool(r.get("enabled"))
+        r["last_seen_s"] = ls.isoformat() if isinstance(ls, datetime) else (
+            str(ls) if ls else ""
+        )
+    return rows
+
+
+def bind_camera(imei: str, vehicle_id: str, name: str = "") -> bool:
+    """Kamera terminalini avtobusga bog'lash (bind_device bilan bir xil)."""
+    return bind_device(imei, vehicle_id, name)
+
+
+def list_vehicles() -> list:
+    """Mavjud avtobuslar + bog'langan qurilmalar (bitta qator = bitta avtobus).
+
+    `vehicles` jadvali BM saytidan sinxronlanadi; bog'lash `gps_devices.vehicle_id`
+    orqali `vehicles.external_id` ga ulanadi. Har avtobusda 3 turdagi qurilma
+    bo'lishi mumkin: GPS (teltonika), kamera(lar) (JT808) va sanagich (counter) —
+    javobda hammasi jamlanadi. `device_imei`/`device_name` (GPS) eski UI
+    mosligi uchun saqlanadi.
+    """
+    st = _st()
+    if not st.enabled:
+        return []
+    try:
+        vrows = st.db.query(
+            "SELECT external_id, plate_number, garage_number, model, route_id "
+            "FROM vehicles ORDER BY plate_number, external_id")
+    except Exception:  # noqa: BLE001
+        return []
+    by_vid: dict = {}
+    for d in list_devices():
+        vid = str(d.get("vehicle_id") or "")
+        if vid:
+            by_vid.setdefault(vid, []).append(d)
+    out = []
+    for v in vrows:
+        vid = str(v.get("external_id") or "")
+        items = by_vid.get(vid, [])
+        gps = next((d for d in items
+                    if str(d.get("kind")) == "teltonika"), None)
+        cams = [d for d in items if str(d.get("kind")) == "camera"]
+        cnt = next((d for d in items
+                    if str(d.get("kind")) == "counter"), None)
+        out.append({
+            "external_id": vid,
+            "plate_number": str(v.get("plate_number") or ""),
+            "garage_number": str(v.get("garage_number") or ""),
+            "model": str(v.get("model") or ""),
+            "route_id": str(v.get("route_id") or ""),
+            "device_imei": str(gps.get("imei") or "") if gps else "",
+            "device_name": str(gps.get("name") or "") if gps else "",
+            "gps": {
+                "imei": str(gps.get("imei") or ""),
+                "name": str(gps.get("name") or ""),
+                "online": bool(gps.get("online")),
+                "last_seen_s": gps.get("last_seen_s") or "",
+                "last_speed": int(gps.get("last_speed") or 0),
+            } if gps else None,
+            "cameras": [{
+                "imei": str(c.get("imei") or ""),
+                "name": str(c.get("name") or ""),
+                "online": bool(c.get("online")),
+            } for c in cams],
+            "counter": {
+                "imei": str(cnt.get("imei") or ""),
+                "name": str(cnt.get("name") or ""),
+                "count_in": int(cnt.get("count_in") or 0),
+                "count_out": int(cnt.get("count_out") or 0),
+                "count_updated_s": cnt.get("count_updated_s") or "",
+            } if cnt else None,
+        })
+    return out
+
+
+def route_names(ids) -> dict:
+    """route_id → nom (routes jadvalidan O'QISH). Topilmasa bo'sh."""
+    clean = [str(i) for i in (ids or []) if str(i or "").strip()]
+    st = _st()
+    if not st.enabled or not clean:
+        return {}
+    out: dict = {}
+    try:
+        ph = ", ".join(st.db.ph for _ in clean)
+        rows = st.db.query(
+            f"SELECT external_id, name FROM routes WHERE external_id IN ({ph})",
+            tuple(clean))
+        for r in rows:
+            out[str(r.get("external_id"))] = str(r.get("name") or "")
+    except Exception:  # noqa: BLE001
+        log.exception("GPS: route nomlari olinmadi")
+    return out
 
 
 def positions(
@@ -319,8 +610,10 @@ def list_cameras() -> list:
     if not st.enabled:
         return []
     return st.db.query(
-        "SELECT id, name, source_type, url, vehicle_id, enabled "
-        "FROM video_cameras ORDER BY id"
+        """SELECT id, name, source_type, url, vehicle_id, enabled,
+                  last_check_at, last_online_at, consecutive_failures,
+                  total_failures, last_error, last_fps, last_bitrate, last_resolution
+           FROM video_cameras ORDER BY id"""
     )
 
 
@@ -330,12 +623,57 @@ def add_camera(name: str, url: str, source_type: str = "hls",
     if not st.enabled:
         return 0
     st.db.execute(
-        "INSERT INTO video_cameras (name, source_type, url, vehicle_id) "
-        "VALUES (%s,%s,%s,%s)",
+        """INSERT INTO video_cameras (name, source_type, url, vehicle_id,
+              consecutive_failures, total_failures, last_error, last_fps, last_bitrate, last_resolution)
+           VALUES (%s,%s,%s,%s, 0, 0, '', 0, 0, '')""",
         (name, source_type, url, vehicle_id),
     )
     rows = st.db.query("SELECT MAX(id) AS id FROM video_cameras", limit=1)
     return int(rows[0]["id"]) if rows else 0
+
+
+def update_camera_health(camera_id: int, success: bool, error: str = "",
+                         fps: float = 0, bitrate: int = 0, resolution: str = "") -> None:
+    """Update camera health metrics after stream check."""
+    st = _st()
+    if not st.enabled:
+        return
+    now = datetime.now(timezone.utc)
+    if success:
+        st.db.execute(
+            """UPDATE video_cameras SET
+                last_check_at = %s, last_online_at = %s,
+                consecutive_failures = 0, last_error = '',
+                last_fps = %s, last_bitrate = %s, last_resolution = %s
+                WHERE id = %s""",
+            (now, now, fps, bitrate, resolution, camera_id),
+        )
+    else:
+        st.db.execute(
+            """UPDATE video_cameras SET
+                last_check_at = %s,
+                consecutive_failures = consecutive_failures + 1,
+                total_failures = total_failures + 1,
+                last_error = %s
+                WHERE id = %s""",
+            (now, error[:500], camera_id),
+        )
+
+
+def get_camera_health(camera_id: int) -> dict | None:
+    """Get camera health metrics."""
+    st = _st()
+    if not st.enabled:
+        return None
+    rows = st.db.query(
+        """SELECT id, name, source_type, vehicle_id, enabled,
+                  last_check_at, last_online_at, consecutive_failures,
+                  total_failures, last_error, last_fps, last_bitrate, last_resolution
+           FROM video_cameras WHERE id = %s""",
+        (camera_id,), limit=1)
+    if not rows:
+        return None
+    return dict(rows[0])
 
 
 def delete_camera(camera_id: int) -> None:
@@ -343,6 +681,21 @@ def delete_camera(camera_id: int) -> None:
     if not st.enabled:
         return
     st.db.execute("DELETE FROM video_cameras WHERE id = %s", (camera_id,))
+
+
+def log_video_audit(camera_id: int, user_id: int, username: str, action: str,
+                    channel: int = 1, vehicle_id: str = "", ip: str = "",
+                    duration_s: int = 0) -> None:
+    """Video ko'rish amalini audit jadvaliga yozadi."""
+    st = _st()
+    if not st.enabled:
+        return
+    ph = ", ".join(st.db.ph for _ in range(8))
+    st.db.execute(
+        "INSERT INTO video_audit (camera_id, user_id, username, action, "
+        f"channel, vehicle_id, ip, duration_s) VALUES ({ph})",
+        (camera_id, user_id, username, action, channel, vehicle_id, ip, duration_s),
+    )
 
 
 def bind_device(imei: str, vehicle_id: str, name: str = "") -> bool:
@@ -365,6 +718,48 @@ def set_device_enabled(imei: str, enabled: bool) -> bool:
         "UPDATE gps_devices SET enabled = %s WHERE imei = %s",
         (1 if enabled else 0, imei),
     )
+    return True
+
+
+def set_device_kind(imei: str, kind: str) -> bool:
+    """Qurilma turini o'zgartirish (teltonika / camera / counter)."""
+    st = _st()
+    if not st.enabled:
+        return False
+    st.db.execute(
+        "UPDATE gps_devices SET kind = %s WHERE imei = %s",
+        (str(kind), imei),
+    )
+    return True
+
+
+def update_counter_counts(imei: str, in_count: int, out_count: int) -> bool:
+    """Sanagich (counter) kirish/chiqish hisobini yozadi.
+
+    Qurilma hali yo'q bo'lsa kind='counter' bilan ro'yxatga oladi —
+    sanagich ma'lumoti qaysi kanaldan kelishidan qat'i nazar (o'z SIM'i,
+    Teltonika IO, tashqi server) bitta joyda saqlanadi.
+    """
+    st = _st()
+    if not st.enabled:
+        return False
+    st.db.execute(
+        "INSERT INTO gps_devices (imei, kind, count_in, count_out, "
+        "count_updated_at) VALUES (%s, 'counter', %s, %s, now()) "
+        "ON CONFLICT (imei) DO UPDATE SET "
+        "count_in = EXCLUDED.count_in, count_out = EXCLUDED.count_out, "
+        "count_updated_at = now()",
+        (imei, int(in_count), int(out_count)),
+    )
+    return True
+
+
+def delete_device(imei: str) -> bool:
+    """Qurilmani ro'yxatdan butunlay o'chirish (bog'lash ham yo'qoladi)."""
+    st = _st()
+    if not st.enabled:
+        return False
+    st.db.execute("DELETE FROM gps_devices WHERE imei = %s", (imei,))
     return True
 
 
@@ -412,6 +807,20 @@ def set_geofence_enabled(fence_id: int, enabled: bool) -> None:
     )
 
 
+def update_geofence(fence_id: int, name: str, lat: float, lng: float,
+                    radius_m: int, vehicle_id: str = "") -> bool:
+    """Zona markazi / radiusi / nomini / avtobusini tahrirlash (koordinata bilan)."""
+    st = _st()
+    if not st.enabled:
+        return False
+    st.db.execute(
+        "UPDATE gps_geofences SET name = %s, lat = %s, lng = %s, "
+        "radius_m = %s, vehicle_id = %s WHERE id = %s",
+        (name, lat, lng, radius_m, vehicle_id, fence_id),
+    )
+    return True
+
+
 def insert_alert(imei: str, vehicle_id: str, kind: str, fence_id: int,
                  message: str) -> None:
     st = _st()
@@ -440,6 +849,81 @@ def list_alerts(limit: int = 50, imei: str = "") -> list:
         r["ts"] = (r["ts"].isoformat()
                     if isinstance(r["ts"], datetime) else str(r["ts"]))
     return rows
+
+
+# -------------------------------------------------------------- route paths
+
+def _route_path_row(r: dict) -> dict:
+    p = r.get("points")
+    if isinstance(p, str):
+        try:
+            r["points"] = json.loads(p)
+        except Exception:  # noqa: BLE001
+            r["points"] = []
+    return r
+
+
+def list_route_paths(only_enabled: bool = False) -> list:
+    st = _st()
+    if not st.enabled:
+        return []
+    sql = ("SELECT route_id, name, points, tolerance_m, enabled, updated_at "
+           "FROM gps_route_paths")
+    if only_enabled:
+        sql += " WHERE enabled = 1"
+    rows = st.db.query(sql + " ORDER BY route_id")
+    return [_route_path_row(r) for r in rows]
+
+
+def get_route_path(route_id: str) -> dict | None:
+    st = _st()
+    if not st.enabled:
+        return None
+    ph = st.db.ph
+    rows = st.db.query(
+        "SELECT route_id, name, points, tolerance_m, enabled "
+        f"FROM gps_route_paths WHERE route_id = {ph}",
+        (str(route_id or ""),), limit=1)
+    return _route_path_row(rows[0]) if rows else None
+
+
+def upsert_route_path(route_id: str, points: list, name: str = "",
+                      tolerance_m: int = 200) -> bool:
+    st = _st()
+    if not st.enabled:
+        return False
+    ph = st.db.ph
+    st.db.execute(
+        "INSERT INTO gps_route_paths "
+        "(route_id, name, points, tolerance_m, enabled) "
+        f"VALUES ({ph},{ph},{ph},{ph},1) "
+        "ON CONFLICT (route_id) DO UPDATE SET "
+        "name = EXCLUDED.name, points = EXCLUDED.points, "
+        "tolerance_m = EXCLUDED.tolerance_m, enabled = 1, "
+        "updated_at = CURRENT_TIMESTAMP",
+        (str(route_id or ""), str(name or ""), json.dumps(points),
+         int(tolerance_m or 0)),
+    )
+    return True
+
+
+def delete_route_path(route_id: str) -> None:
+    st = _st()
+    if not st.enabled:
+        return
+    ph = st.db.ph
+    st.db.execute(f"DELETE FROM gps_route_paths WHERE route_id = {ph}",
+                  (str(route_id or ""),))
+
+
+def set_route_path_enabled(route_id: str, enabled: bool) -> None:
+    st = _st()
+    if not st.enabled:
+        return
+    ph = st.db.ph
+    st.db.execute(
+        f"UPDATE gps_route_paths SET enabled = {ph} WHERE route_id = {ph}",
+        (1 if enabled else 0, str(route_id or "")))
 
 
 # ------------------------------------------------------------------ daily

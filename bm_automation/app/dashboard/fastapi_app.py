@@ -17,11 +17,11 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..utils.logger import get_logger
-from .deps import ensure_bootstrap_admin, _load_sessions, _SESSION_LOCK, _dashboard_token
+from .deps import ensure_bootstrap_admin, _load_sessions, _SESSION_LOCK, _dashboard_token, request_is_https
 
 log = get_logger("bm_automation.dashboard")
 
@@ -69,22 +69,47 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    docs_on = (
+        os.environ.get("BM_TEST_MODE") == "1"
+        or os.environ.get("DASHBOARD_DOCS", "").strip().lower()
+        in ("1", "true", "yes", "on")
+    )
     app = FastAPI(
         title="BM Dashboard",
         version="2.0.0",
         lifespan=lifespan,
-        docs_url="/api/docs",
-        redoc_url="/api/redoc",
-        openapi_url="/api/openapi.json",
+        docs_url="/api/docs" if docs_on else None,
+        redoc_url="/api/redoc" if docs_on else None,
+        openapi_url="/api/openapi.json" if docs_on else None,
     )
 
+    _cors_origins = [
+        o.strip() for o in os.environ.get("DASHBOARD_CORS_ORIGINS", "").split(",")
+        if o.strip()
+    ] or ["http://localhost:8080", "http://127.0.0.1:8080"]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=_cors_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
+        max_age=3600,
     )
+
+    @app.middleware("http")
+    async def host_guard(request: Request, call_next):
+        """Host-header himoyasi (DNS rebinding / virtual-host chalkashligi).
+
+        Ruxsat: `DASHBOARD_ALLOWED_HOSTS` (vergul, `*` = o'chirilgan),
+        lokal nomlar, `*.bmbrutto.uz`, IP-literal va server hostname'i.
+        """
+        from .deps import host_allowed
+        host = (request.headers.get("host") or "").strip()
+        if not host_allowed(host):
+            log.warning("Host rad etildi: %r (%s)", host, request.url.path)
+            return JSONResponse(
+                {"ok": False, "error": "Host ruxsat etilmagan"}, status_code=400)
+        return await call_next(request)
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -92,13 +117,68 @@ def create_app() -> FastAPI:
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        # CSP: `script-src 'unsafe-inline'` saqlanadi — SPA bitta fayl,
+        # inline `<script>` va onclick atributlari bor (nonce'ga o'tkazish
+        # alohida ish). Qolgan direktivalar cheklovni yopadi: object/embed
+        # taqiqlangan, forma faqat o'z manziliga, baza URL o'zgarmaydi.
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com; "
+            "base-uri 'self'; form-action 'self'; object-src 'none'; "
+            "frame-ancestors 'self'; "
+            "frame-src 'self' blob: data: https://leafletjs.com; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "script-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: https:; "
+            "font-src 'self' https://fonts.gstatic.com data:; "
+            "media-src 'self' blob:; "
+            "connect-src 'self' https://bmbrutto.uz http://127.0.0.1:* http://localhost:*;")
+        response.headers.setdefault("X-Robots-Tag", "noindex, nofollow")
+        path = request.url.path
+        is_photo = path.startswith("/api/drivers/") and path.endswith("/photo")
+        is_document = "/document/" in path
+        if path.startswith("/api/") and not (is_photo or is_document):
+            response.headers.setdefault("Cache-Control", "no-store")
         return response
+
+    @app.middleware("http")
+    async def csrf_origin_guard(request: Request, call_next):
+        """Cookie bilan autentifikatsiya qilinadigan mutatsiyalar uchun
+        Origin/`Sec-Fetch-Site` nazorati (CSRF himoyasi).
+
+        Brauzer cross-site POST'da Origin yuboradi; bir xil saytdan kelgan
+        so'rovlar o'tadi, begona sayt esa 403 oladi. Bearer bilan ishlaydigan
+        tashqi integratsiyalar Origin yubormaydi — ular tegilmaydi.
+        """
+        if (request.method in ("POST", "PUT", "PATCH", "DELETE")
+                and request.url.path.startswith("/api/")):
+            if (request.headers.get("sec-fetch-site") or "").strip().lower() \
+                    == "cross-site":
+                return JSONResponse(
+                    {"ok": False, "error": "Cross-site so'rov rad etildi"},
+                    status_code=403)
+            origin = (request.headers.get("origin") or "").strip().rstrip("/")
+            if origin:
+                host = (request.headers.get("host") or "").strip()
+                allowed = {f"https://{host}", f"http://{host}"} if host else set()
+                allowed |= {
+                    o.strip().rstrip("/")
+                    for o in os.environ.get("DASHBOARD_CORS_ORIGINS", "").split(",")
+                    if o.strip()
+                }
+                if origin not in allowed:
+                    return JSONResponse(
+                        {"ok": False, "error": "Origin ruxsat etilmagan"},
+                        status_code=403)
+        return await call_next(request)
 
     @app.middleware("http")
     async def post_rate_limit(request: Request, call_next):
         from .deps import rate_limit_post
         if request.method == "POST" and request.url.path.startswith("/api/"):
-            if request.url.path not in ("/api/login", "/api/logout"):
+            if request.url.path not in ("/api/login", "/api/logout") and not request.url.path.startswith("/api/video/"):
                 if not rate_limit_post(request.url.path):
                     return JSONResponse(
                         {"error": "Juda ko'p so'rov — bir oz kuting"}, status_code=429)
@@ -113,13 +193,31 @@ def create_app() -> FastAPI:
             return denied
         return await call_next(request)
 
+    @app.middleware("http")
+    async def audit_mutations(request: Request, call_next):
+        """API mutatsiyalarini audit logga yozadi (parol/token emas)."""
+        response = await call_next(request)
+        path = request.url.path
+        if (request.method in ("POST", "PUT", "PATCH", "DELETE")
+                and path.startswith("/api/")
+                and path not in ("/api/login", "/api/logout")):
+            from .deps import audit_event
+            scope = getattr(request.state, "scope", None) or {}
+            audit_event("http.mutation", request,
+                        user=str(scope.get("username") or ""),
+                        target=path, ok=response.status_code < 400,
+                        detail=f"method={request.method} "
+                               f"status={response.status_code}")
+        return response
+
     # --- Routers ---
-    from .routers import auth, data, drivers, admin, system
+    from .routers import auth, data, drivers, admin, system, knowledge
     app.include_router(auth.router)
     app.include_router(data.router)
     app.include_router(drivers.router)
     app.include_router(admin.router)
     app.include_router(system.router)
+    app.include_router(knowledge.router)
 
     # --- Static files (SPA) ---
     @app.get("/", include_in_schema=False)
@@ -133,28 +231,27 @@ def create_app() -> FastAPI:
             (client.host or "").lower().rstrip(".") in ("127.0.0.1", "::1", "localhost")
             or (client.host or "").startswith("127.")
         )
-        if dt and is_local:
-            token_lit = json.dumps(dt)
-            script = (
-                "<script>(function(){try{var t=" + token_lit + ";"
-                'if(t){localStorage.setItem("bm-token",t);'
-                'document.cookie="bm_token="+encodeURIComponent(t)'
-                '+"; path=/; SameSite=Lax";}}catch(e){}})();'
-                "</script>"
-            ).encode("utf-8")
-            head_idx = body.lower().find(b"<head")
-            if head_idx >= 0:
-                tag_end = body.find(b">", head_idx)
-                if tag_end >= 0:
-                    body = body[:tag_end + 1] + script + body[tag_end + 1:]
-                else:
-                    body = script + body
-            else:
-                body = script + body
         resp = HTMLResponse(body)
         if dt and is_local:
-            resp.set_cookie("bm_token", dt, path="/", samesite="lax")
+            # Token faqat cookie'da (httponly), HTML body'ga emas — XSS/leak oldini olish.
+            resp.set_cookie("bm_token", dt, path="/", httponly=True,
+                            samesite="lax", secure=request_is_https(request))
         return resp
+
+    if docs_on:
+        @app.get("/openapi.json", include_in_schema=False)
+        async def openapi_alias():
+            """Eski `/openapi.json` yo'lini haqiqiy `/api/openapi.json` ga yo'naltiradi."""
+            return RedirectResponse("/api/openapi.json", status_code=307)
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon_ico():
+        icon = WEB_DIR / "favicon.ico"
+        if icon.exists():
+            return FileResponse(
+                icon, media_type="image/x-icon",
+                headers={"Cache-Control": "public, max-age=604800"})
+        return Response(status_code=204)
 
     if WEB_DIR.exists():
         app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="static")
