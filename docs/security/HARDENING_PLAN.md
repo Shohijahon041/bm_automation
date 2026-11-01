@@ -137,6 +137,8 @@ sshd -T | grep -Ei 'permitrootlogin|passwordauthentication|pubkeyauthentication|
 ufw status verbose        # yoki: nft list ruleset
 fail2ban-client status
 fail2ban-client status sshd
+fail2ban-client status bm-login
+nft list set inet f2b-table addr-set-bm-login   # bloklangan IP'lar
 
 # OS yangilanishlari (o'rnatmasdan)
 apt list --upgradable 2>/dev/null | head -30
@@ -159,12 +161,40 @@ Natijalarni baholash mezonlari:
 - `ss`: faqat kerakli portlar (80/443, SSH cheklangan, 8081/6808/6107 faqat zarur
   bo'lsa); DB porti (5432) tashqariga ochiq bo'lmasligi.
 - SSH: `passwordauthentication no`, root login taqiqlangan yoki kalit bilan.
-- fail2ban: sshd jail aktiv.
+- fail2ban: sshd jail aktiv; `bm-login` jail **faqat 80/443** ni bloklaydi (§2.2).
 - `.env` va `state/`: 600/700; guruh/other o'qishi yo'q.
 - DB roli: `rolsuper=f`, `rolbypassrls=f` — 2026-10-29 da tasdiqlandi (SEC-07 §2.1).
 - RLS: 29 jadvalda `rowsecurity=t`, policy 0 — **qabul qilingan qaror** (§2.1):
   tenant izolyatsiyasi ilova qavatida; policy-asosidagi RLS alohida `bm_app`
   roli bilan kelajakdagi ish.
+
+### 2.2 Fail2ban `bm-login`: port cheklovi (2026-11-01 hodisasi)
+
+**Hodisa:** ofisda parol ketma-ket 8 marta xato terilganda `bm-login` jail'i
+ofisning umumiy IP'sini (`95.214.211.50`) blokladi. Jail'da `port` ko'rsatilmagan
+edi → `jail.conf` standarti `port = 0:65535` qo'llandi va nft qoidasi
+`tcp dport 0-65535 ... reject` bo'lib qoldi. Natijada **SSH ham** uzildi:
+sayt ham, server boshqaruvi ham bir vaqtda yopildi. Serverning o'zi sog'lom edi
+(tashqi tekshiruvda `/` = 200 OK) — muammo faqat manba IP darajasida edi.
+
+**Sabab zanjiri:** 8 × `POST /api/login 401` (bir xil IP) → maxretry 8 →
+barcha portlarga ban → ofis IP'si SSH va HTTPS'dan mahrum.
+
+**Tuzatish (2026-11-01):**
+
+- `/etc/fail2ban/jail.local` → `[bm-login]` ga `port = http,https` qo'shildi;
+  `maxretry` 8 → **20**, `bantime` 1h → **30m** (ofis NAT'i ortida bir necha
+  xodim bor — 8 tasodifiy xato real brute-force bilan bir xil hisoblanardi).
+  Per-akkaunt himoyasi o'zgarmadi: ilova darajasida `_LOGIN_MAX_FAILS = 8`
+  (`username|client_ip` kaliti bilan) — aniq akkauntga hujum shu yerda to'xtaydi.
+- Tekshiruv: `fail2ban-client -t` OK, restart, so'ng sinov IP'sini
+  (`192.0.2.123`) bloklab nft qoidasi tekshirildi —
+  `tcp dport { 80, 443 } ... reject` (SSH qoidaga kirmaydi), keyin unban.
+- Zaxira: `/root/bak/fail2ban_jail.local.20261101_200309`.
+
+**Tezkor yechim (bloklangan IP uchun):**
+`fail2ban-client set bm-login unbanip <IP>` — darhol ochiladi. Blokni ko'rish:
+`fail2ban-client status bm-login`, nft: `nft list set inet f2b-table addr-set-bm-login`.
 
 ---
 
