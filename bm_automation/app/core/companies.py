@@ -117,14 +117,14 @@ def _warn_foreign_token(name: str, client, error: str = "") -> None:
         org = str(data.get("organization") or "").strip()
     except Exception:  # noqa: BLE001
         org = ""
-    me = re.sub(r"\s+", " ", name).strip().lower()
-    other = re.sub(r"\s+", " ", org).strip().lower()
-    same = bool(org) and (me == other or me in other or other in me)
+    me = _norm(name)
+    other = _norm(org)
+    same = bool(other) and (me == other or me in other or other in me)
     if same:
         return
     log.warning(
-        "[%s] kompaniya tokeni yo'q (sabab: %s); hozir "
-        "%r tokeni ishlatilmoqda. Tuzatish: python -m bm_automation "
+        "[%s] kompaniya tokeni yo'q (sabab: %s); hozir %s tokeni "
+        "ishlatilmoqda. Tuzatish: python -m bm_automation "
         "login-browser --company \"%s\" --visible",
         name, error or "noma'lum", org or "asosiy", name)
 
@@ -143,10 +143,16 @@ def client_for_name(name: str, username: str = "", password: str = ""):
 
 
 def _norm(s: str) -> str:
-    """Firma nomlarini solishtirish uchun normalizatsiya (probel/katta harf)."""
+    """Firma nomlarini solishtirish uchun normalizatsiya.
+
+    Qo'shtirnoqlar (tiltli va tekis) hisobga olinmaydi: BM'da profil nomi
+    `"ASL SUNDAY" MCHJ` ko'rinishida, sozlamalarda esa `ASL SUNDAY MCHJ`
+    bo'lishi mumkin — ikkalasi bitta firma.
+    """
     import re
 
-    return re.sub(r"\s+", " ", str(s or "").replace("\u201c", "").replace("\u201d", "")).strip().lower()
+    cleaned = re.sub(r"[\u201c\u201d\"']", "", str(s or ""))
+    return re.sub(r"\s+", " ", cleaned).strip().lower()
 
 
 def _detect_via_route(client, route_id: str) -> bool:
@@ -157,6 +163,7 @@ def _detect_via_route(client, route_id: str) -> bool:
     orqali aniqlaymiz.
     """
     from ..repositories.gross_repo import GrossRepository
+    from ..api.client import BMApiError
 
     from datetime import date
 
@@ -164,7 +171,14 @@ def _detect_via_route(client, route_id: str) -> bool:
     try:
         data = GrossRepository(client).route(route_id, today, today)
         return isinstance(data, dict) and bool(data)
-    except Exception:
+    except BMApiError as exc:
+        # Boshqa firma route'i 403/500 qaytaradi — bu normal "manu emas".
+        log.debug("route %s kirish yoq (%s): %s", route_id, exc.status, exc)
+        return False
+    except Exception as exc:  # noqa: BLE001
+        # Tarmoq/timeout xatosi ham False qaytaradi — aniqlash javobi
+        # "firmani topa olmadim" bo'lib qoladi; sabab jurnaldan ko'rinadi.
+        log.warning("route %s tekshiruvi xato: %s", route_id, exc)
         return False
 
 

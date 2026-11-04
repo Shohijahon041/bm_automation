@@ -35,10 +35,19 @@ def atomic_write(path: str | Path, text: str, encoding: str = "utf-8") -> Path:
 
     O'qish-yozish jarayonlari bir vaqtda bo'lganda buzilgan fayl qolishini
     oldini oladi.
+
+    Katalog yozishga yopiq bo'lsa (masalan deploydan keyin egasi buzilgan)
+    temp yaratish imkonsiz — bunday holatda fayl joyida yoziladi. Aks holda
+    yangilangan token/faolat butunlay yo'qoladi va keyingi so'rov 401 ga
+    tushadi; truncated o'qish xavfi shu yo'l bilan bosiladi.
     """
     p = Path(path)
     ensure_dir(p.parent)
-    fd, tmp = tempfile.mkstemp(prefix=p.stem + ".", suffix=".tmp", dir=str(p.parent))
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=p.stem + ".", suffix=".tmp", dir=str(p.parent))
+    except PermissionError:
+        p.write_text(text, encoding=encoding)
+        return p
     try:
         with os.fdopen(fd, "w", encoding=encoding) as fh:
             fh.write(text)

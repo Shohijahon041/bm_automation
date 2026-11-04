@@ -1415,11 +1415,53 @@ def settings_text(chat_id: int | None) -> str:
         f"  {lang_txt}",
     ]
     try:
+        from ...core.bot_settings import offline_notify, problem_alerts_notify
+        off_on = offline_notify()
+        pr_on = problem_alerts_notify()
+        parts += [
+            "",
+            "🔔 <b>BILDIRISHNOMALAR (TELEGRAM)</b>",
+            f"  📴 Aloqa uzildi (offline): "
+            f"{'✅ YOQILGAN' if off_on else '⛔ O‘CHIRILGAN'}",
+            f"  ⚠️ Muammo holati: "
+            f"{'✅ YOQILGAN' if pr_on else '⛔ O‘CHIRILGAN'}",
+        ]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         from .assistant import ai_status
         parts += ["", ai_status()]
     except Exception:  # noqa: BLE001 - kichik bezak, xato bo'lsa o'tkazib yuboramiz
         pass
     return "\n".join(parts)
+
+
+def offline_notify_text(is_on: bool) -> str:
+    """Offline bildirishnomasi holati ekrani."""
+    status = "✅ YOQILGAN" if is_on else "⛔ O'CHIRILGAN"
+    return (
+        "📴 <b>ALOQA UZILDI (OFFLINE) BILDIRISHNOMASI</b>\n\n"
+        f"Holati: <b>{status}</b>\n\n"
+        "GPS qurilmasidan aloqa uzilganda Telegram bot "
+        "orqali ogohlantirish yuborish sozlamasi.\n\n"
+        "O'zgartirish uchun quyidagi tugmani bosing yoki buyruq bering:\n"
+        "• Yoqish: <code>/offline_on</code>\n"
+        "• O'chirish: <code>/offline_off</code>"
+    )
+
+
+def problem_alerts_notify_text(is_on: bool) -> str:
+    """Muammo holati bildirishnomasi holati ekrani."""
+    status = "✅ YOQILGAN" if is_on else "⛔ O'CHIRILGAN"
+    return (
+        "⚠️ <b>MUAMMO HOLATI O'ZGARISHI BILDIRISHNOMASI</b>\n\n"
+        f"Holati: <b>{status}</b>\n\n"
+        "Avtobuslarda muammo holati o'zgarganda (GPS / Texnik / Jadval) "
+        "Telegram bot orqali ogohlantirish yuborish sozlamasi.\n\n"
+        "O'zgartirish uchun quyidagi tugmani bosing yoki buyruq bering:\n"
+        "• Yoqish: <code>/problems_on</code>\n"
+        "• O'chirish: <code>/problems_off</code>"
+    )
 
 
 def settings_audit_text(chat_id: int | None, limit: int = 20) -> str:

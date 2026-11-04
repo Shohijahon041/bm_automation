@@ -349,6 +349,8 @@ _RAW_TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("user_id", "BIGINT NOT NULL"),
         ("username", "TEXT NOT NULL"),
         ("action", "TEXT NOT NULL"),  # live, archive, export
+        ("channel", "INTEGER NOT NULL DEFAULT 1"),
+        ("vehicle_id", "TEXT NOT NULL DEFAULT ''"),
         ("ip", "TEXT NOT NULL DEFAULT ''"),
         ("duration_s", "INTEGER NOT NULL DEFAULT 0"),
     ],
@@ -543,6 +545,11 @@ _MIGRATIONS: list[str] = [
     # Ikki bosqichli kirish (TOTP) — eski bazalarga ustun qo'shiladi.
     "ALTER TABLE dashboard_users ADD COLUMN IF NOT EXISTS "
     "totp_secret TEXT NOT NULL DEFAULT ''",
+    # Video audit: JT1078 kanali va avtobus (eski bazalarda bu ustunlar yo'q).
+    "ALTER TABLE video_audit ADD COLUMN IF NOT EXISTS "
+    "channel INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE video_audit ADD COLUMN IF NOT EXISTS "
+    "vehicle_id TEXT NOT NULL DEFAULT ''",
 ]
 
 # Tenant migratsiyasi (idempotent): eski bazalarga company_id/created_by/

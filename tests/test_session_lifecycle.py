@@ -44,6 +44,19 @@ def _session_field(token, key):
         return deps._sessions.get(token, {}).get(key)
 
 
+def _mk_req(ua, xff=None, client=("127.0.0.1", 50000)):
+    """Sun'iy Starlette Request — UA/proksi sarlavhalarini sinash uchun."""
+    from starlette.requests import Request
+    headers = [(b"user-agent", str(ua).encode())]
+    if xff:
+        headers.append((b"x-forwarded-for", str(xff).encode()))
+    scope = {"type": "http", "http_version": "1.1", "method": "GET",
+             "scheme": "https", "path": "/api/me", "raw_path": b"/api/me",
+             "query_string": b"", "root_path": "", "headers": headers,
+             "client": client, "server": ("testserver", 80)}
+    return Request(scope)
+
+
 # ------------------------------------------------------------- muddat silashi
 
 def test_session_slides_on_activity(env):
@@ -310,6 +323,132 @@ def test_drop_user_sessions_helper(env):
     assert deps.session_user(a1) is not None
     assert deps.session_user(a2) is None
     assert deps.session_user(b1) is not None
+
+
+# ------------------------------------------------------------- qurilmalar ro'yxati
+
+def test_device_info_parses_user_agent():
+    """User-Agent'dan qurilma turi / OS / brauzer ajratiladi (tashqi libsiz)."""
+    chrome_android = ("Mozilla/5.0 (Linux; Android 13; SM-A536B) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/120.0.0.0 Mobile Safari/537.36")
+    d = deps._device_info(chrome_android)
+    assert d == {"type": "Telefon", "os": "Android", "browser": "Chrome"}
+
+    edge_win = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36 Edg/120.0")
+    d = deps._device_info(edge_win)
+    assert d == {"type": "Kompyuter", "os": "Windows", "browser": "Edge"}
+
+    d = deps._device_info("TelegramBot (like TwitterBot)")
+    assert d["browser"] == "Telegram"
+
+    assert deps._device_info("") == {"type": "", "os": "", "browser": ""}
+
+
+def test_sessions_include_device_and_ip(env):
+    """Login paytida UA va IP sessiyaga yoziladi; qurilma ro'yxatida ko'rinadi."""
+    env.dashboard_user_add("ali", *deps.hash_password("to'g'ri"), role="DISPATCHER",
+                           company="XTEST")
+    body = json.dumps({"username": "ali", "password": "to'g'ri"}).encode()
+    ua = ("Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36")
+    status, _, cookies = _request(
+        env, "/api/login", method="POST",
+        headers={"Content-Length": str(len(body)), "User-Agent": ua}, body=body)
+    assert status == 200 and cookies.get("bm_session")
+
+    status, data, _ = _request(
+        env, "/api/sessions",
+        headers={"Cookie": f"bm_session={cookies['bm_session']}", "User-Agent": ua})
+    assert status == 200 and data.get("ok") is True
+    row = data["sessions"][0]
+    assert row["device"] == "Telefon"
+    assert row["os"] == "Android"
+    assert row["browser"] == "Chrome"
+    assert row["ip"]
+    assert row["current"] is True
+
+
+def test_client_ip_uses_proxy_header():
+    """nginx orqali kelganda haqiqiy IP X-Forwarded-For'dan olinadi."""
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"
+    assert deps.client_ip(_mk_req(ua, "203.0.113.9, 10.0.0.2")) == "203.0.113.9"
+    # bevosita (proksisiz) ulanish — client host ishlatiladi
+    assert deps.client_ip(_mk_req(ua, None, client=("198.51.100.7", 1234))) == "198.51.100.7"
+    # yaroqsiz sarlavha e'tiborsiz qoldiriladi
+    assert deps.client_ip(_mk_req(ua, "not-an-ip")) == "127.0.0.1"
+
+
+def test_session_backfill_adds_device_and_ip(env):
+    """Eski (deploydan oldingi) sessiya keyingi so'rovda to'ldiriladi."""
+    tok = deps.create_session({"username": "ali", "role": "VIEWER", "company": ""})
+    scope = {"username": "ali", "is_admin": False}
+    assert deps.list_sessions(scope, tok)[0]["device"] == ""
+
+    ua = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+          "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+          "Mobile/15E148 Safari/604.1")
+    deps._session_backfill(tok, _mk_req(ua, "203.0.113.9"))
+    row = deps.list_sessions(scope, tok)[0]
+    assert row["device"] == "Telefon"
+    assert row["os"] == "iOS"
+    assert row["browser"] == "Safari"
+    assert row["ip"] == "203.0.113.9"
+
+    # loopback IP saqlangan bo'lsa — proksi bergan haqiqiy IP bilan yangilanadi
+    with deps._SESSION_LOCK:
+        deps._load_sessions()
+        deps._sessions[tok]["ip"] = "127.0.0.1"
+        deps._save_sessions()
+    deps._session_backfill(tok, _mk_req(ua, "203.0.113.10"))
+    assert deps.list_sessions(scope, tok)[0]["ip"] == "203.0.113.10"
+
+
+def test_sessions_admin_sees_all_users(env):
+    """ADMIN barcha foydalanuvchilarning sessiyalarini ko'radi; tokenlar chiqmaydi."""
+    env.dashboard_user_add("root", *deps.hash_password("to'g'ri"), role="ADMIN",
+                           data='{"super": true}')
+    env.dashboard_user_add("ali", *deps.hash_password("eski"), role="DISPATCHER",
+                           company="XTEST")
+    _, _, root_c = _login(env, "root", "to'g'ri")
+    _, _, ali_c = _login(env, "ali", "eski")
+
+    status, data, _ = _request(
+        env, "/api/sessions", headers={"Cookie": f"bm_session={root_c['bm_session']}"})
+    assert status == 200 and data.get("is_admin") is True
+    rows = data["sessions"]
+    assert {r["username"] for r in rows} == {"root", "ali"}
+    # eski shartnoma: sessiya tokeni javobga chiqmaydi
+    raw = json.dumps(data)
+    assert root_c["bm_session"] not in raw
+    assert ali_c["bm_session"] not in raw
+    current = [r for r in rows if r["current"]]
+    assert len(current) == 1 and current[0]["username"] == "root"
+
+
+def test_sessions_non_admin_sees_only_own(env):
+    """Oddiy foydalanuvchi faqat o'z sessiyalarini ko'radi."""
+    env.dashboard_user_add("ali", *deps.hash_password("eski"), role="DISPATCHER",
+                           company="XTEST")
+    env.dashboard_user_add("bola", *deps.hash_password("parol1234"), role="VIEWER",
+                           company="XTEST")
+    _, _, ali_c = _login(env, "ali", "eski")
+    _, _, _ = _login(env, "ali", "eski")
+    _login(env, "bola", "parol1234")
+
+    status, data, _ = _request(
+        env, "/api/sessions", headers={"Cookie": f"bm_session={ali_c['bm_session']}"})
+    assert status == 200 and data.get("is_admin") is False
+    rows = data["sessions"]
+    assert {r["username"] for r in rows} == {"ali"}
+    assert len(rows) == 2
+
+
+def test_sessions_require_auth(env):
+    status, data, _ = _request(env, "/api/sessions")
+    assert status == 401 and data.get("ok") is False
 
 
 # ------------------------------------------------------------- GPS 401 → login

@@ -176,17 +176,20 @@ async def api_logs_stream(request: Request, scope: dict = Depends(Scope())):
         return f"[{tag}] {line}" if (tag and multi) else line
 
     async def gen():
-        initial = _read_tagged(source, backfill) if backfill else []
+        # journalctl/fayl o'qish bloklovchi — event loop'ni ushlab qolmasligi
+        # uchun thread'ga tashlanadi (aks holda 10 soniya butun panel qotadi).
+        initial = (await asyncio.to_thread(_read_tagged, source, backfill)
+                   if backfill else [])
         initial = _apply_filters(initial, level_filter, search)
         yield "event: init\ndata: " + json.dumps({"lines": initial}) + "\n\n"
 
         if source == "journal":
-            seen = len(_journal_lines(200))
+            seen = len(await asyncio.to_thread(_journal_lines, 200))
             while True:
                 if await request.is_disconnected():
                     return
                 await asyncio.sleep(3)
-                cur = _journal_lines(200)
+                cur = await asyncio.to_thread(_journal_lines, 200)
                 if len(cur) > seen:
                     new = _apply_filters(cur[seen:], level_filter, search)
                     seen = len(cur)
@@ -258,7 +261,15 @@ def api_insights(request: Request, scope: dict = Depends(Scope())):
     from ...notifications.ops import self_review, openrouter
     params = _parse_qs(request)
     days = params.get("days")
-    a = self_review.analyze(days=int(days) if days else None)
+    days_int: int | None = None
+    if days:
+        try:
+            days_int = int(days)
+        except ValueError:
+            raise HTTPException(400, "days butun son bo'lishi kerak") from None
+        if not 1 <= days_int <= 365:
+            raise HTTPException(400, "days 1..365 oralig'ida bo'lishi kerak")
+    a = self_review.analyze(days=days_int)
     llm_text = None
     ai_stats = None
     if openrouter.configured():
@@ -616,6 +627,9 @@ def _sync_lines(results: list[dict]) -> list[str]:
 # MyAI Agent
 # ---------------------------------------------------------------------------
 
+_MYAI_SLOTS = threading.BoundedSemaphore(3)
+
+
 def _myai_company(scope: dict) -> str:
     """Sessiya uchun MyAI korxona yorlig'i ('' = global/admin)."""
     from ...myai.scope import scope_company_label, scope_for_session
@@ -647,8 +661,16 @@ async def myai_task_create(request: Request, scope: dict = Depends(Scope())):
     from ...myai.state import create_task
     myai_scope = scope_for_session(scope)
     company = _myai_company(scope)
-    task = create_task(request_text, params={"scope": myai_scope},
-                       company=company)
+    # Har vazifa o'z thread'ida ishlaydi — cheksiz ochilmasligi uchun slot
+    # sanaladi; band bo'lsa mijoz keyinroq qayta urinadi.
+    if not _MYAI_SLOTS.acquire(blocking=False):
+        raise HTTPException(429, "MyAI navbat band — birozdan keyin qayting")
+    try:
+        task = create_task(request_text, params={"scope": myai_scope},
+                           company=company)
+    except Exception:
+        _MYAI_SLOTS.release()
+        raise
     task_id = task["task_id"] if isinstance(task, dict) else task.task_id
 
     def _run_myai():
@@ -660,8 +682,14 @@ async def myai_task_create(request: Request, scope: dict = Depends(Scope())):
         except Exception:
             from ...utils.logger import get_logger
             get_logger("myai").exception("MyAI task xatosi #%s", task_id)
+        finally:
+            _MYAI_SLOTS.release()
 
-    threading.Thread(target=_run_myai, daemon=True).start()
+    try:
+        threading.Thread(target=_run_myai, daemon=True).start()
+    except Exception:
+        _MYAI_SLOTS.release()
+        raise HTTPException(500, "Vazifa ishga tushirilmadi") from None
     return {"ok": True, "task_id": task_id}
 
 

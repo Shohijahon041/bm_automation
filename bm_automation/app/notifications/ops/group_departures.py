@@ -469,8 +469,15 @@ def _plan_for(storage) -> dict:
     if state.get("date") == today and isinstance(state.get("items", []), list):
         return state
     result = _build_plan(storage, today)
-    if not result.get("ok"):
-        return state  # reja saqlanmaydi — keyingi siklda qayta uriniladi
+    if not result.get("ok") or not result.get("items"):
+        # Reja hali tayyor emas (API xatosi yoki DB'da bugungi reys yo'q):
+        # holim SAQLANMAYDI — aks holda bo'sh kun butun kunga qotadi.
+        # Kechagi reja ham qaytarilmaydi (`_due_items` sanani tekshirmaydi,
+        # shuning uchun kechagi jadval bugun shu daqiqada qayta ishga
+        # tushib qolishi mumkin edi).
+        return {"date": today, "build_at": "", "items": [],
+                "sent": state.get("sent", []),
+                "on": state.get("on", []), "off": state.get("off", [])}
     prev_plan = {"items": result.get("items", []), "sent": []}
 
     def _apply(st: dict) -> None:

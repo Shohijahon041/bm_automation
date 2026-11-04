@@ -203,7 +203,12 @@ def test_plan_not_saved_without_client(monkeypatch, tmp_path):
     monkeypatch.setattr(group_departures, "_today", lambda: DAY)
     _at(monkeypatch, "06:00:00")
     plan = group_departures._plan_for(st)
-    assert plan.get("date") != DAY  # saqlanmadi — keyingi siklda qayta urinish
+    # Reja yuklanmadi: bo'sh, lekin BUGUN sana bilan qaytadi — kechagi
+    # jadval bugungi kunda ishga tushmasligi uchun (holma-hol tekshirilmaydi).
+    assert plan.get("date") == DAY
+    assert plan.get("items") == []
+    # Holat fayliga yozilmagan — keyingi sikl qayta urinadi.
+    assert group_departures._load_state().get("date") != DAY
 
 
 # --- yuborish --------------------------------------------------------------

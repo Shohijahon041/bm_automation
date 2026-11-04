@@ -1095,8 +1095,31 @@ def test_not_accepted_km_report_includes_manual_km(met):
     assert r["fact_reys"] == 4            # 3 amalda + 1 qo'lda reys
     assert r["qabul_qilinmagan"] == 1     # 5 - 4 → qo'lda qayd defitsit yopadi
     assert r["diff"] == 30.0              # 150 - 120
+    assert r["details"][0]["qabul_qilinmagan"] == 1  # tafsilot ham yangilangan
     assert d["totals"]["manual_km"] == 30.0
     assert d["totals"]["diff"] == 30.0
+
+
+def test_not_accepted_report_includes_day_details(met):
+    """Har bir reys yetishmagan kun tafsilotda alohida qaytadi: sana,
+    avtobus davlat raqami, reja/amalda reys va km — hisobotdagi raqamni
+    kun/avtobus darajasida tekshirish uchun."""
+    stor = met.storage
+    stor.upsert("route_daily", ["date", "route_id", "vehicle_number"], {
+        "date": "2026-08-10", "route_id": "r1", "vehicle_id": "v1",
+        "vehicle_number": "01A123AA", "working_day": 1,
+        "trip_plan": 5, "trip_fact": 3, "distance_plan": 150.0,
+        "distance_fact": 90.0})
+    stor.save_schedule("2026-08-10", "r1", "P1", driver_id="d1",
+                       vehicle_id="v1", start_time="06:00:00",
+                       end_time="20:00:00", trip_count=5)
+    d = met.not_accepted_km_report({"from": "2026-08-01", "to": "2026-08-31"})
+    r = next(x for x in d["rows"] if x["name"] == "Aliyev Aliy")
+    assert r["details"] == [{
+        "date": "2026-08-10", "vehicle": "01A123AA",
+        "plan_reys": 5, "fact_reys": 3, "qabul_qilinmagan": 2,
+        "plan_km": 150.0, "fact_km": 90.0,
+    }]
 
 
 def test_not_accepted_km_report_ignores_avto_work_logs(met):

@@ -9,6 +9,8 @@ Transport pipeline for bus companies (Fergana). Pulls daily trips from the BM AP
   `C:\Users\User\AppData\Local\Python\pythoncore-3.14-64\python.exe`
 - Add `-X utf8` to every python invocation (Uzbek/Cyrillic output). CI runs Python 3.12; local is 3.14.
 - `.env` holds all secrets (BM creds, Telegram tokens, API keys, DASHBOARD_TOKEN). It is gitignored — **never commit or log it**. `variable_name` in `.env` → read via `os.getenv` in `bm_automation/app/config/settings.py::telegram_settings()`.
+- Fayllar CRLF (`\r\n`) formatida bo'lishi mumkin. `edit_file` vositasida matn almashtirishda LF/CRLF mosligiga e'tibor bering; murakkab tahrirlarda python scratch skriptidan foydalanish xavfsizroq.
+- PowerShell'da inline python (`-c "..."`) chaqiruvlarida qo'shtirnoq va foiz belgilarining (`%s`) eskeypi buzilishi mumkin; ko'p qatorli yoki DB so'rovlari uchun har doim vaqtinchalik scratch skript yozib bajaring.
 
 ## Commands
 
@@ -62,6 +64,8 @@ Transport pipeline for bus companies (Fergana). Pulls daily trips from the BM AP
 - New-user notification (`_notify_new_user`) fires only for real named private chats (`uinfo.first_name`/`username` non-empty); channel posts / `my_chat_member` / unnamed updates are skipped to avoid spam.
 - **`send_message` signature gotcha**: it is `send_message(text, chat_id=None, ...)` — the FIRST positional arg is the text, chat_id is keyword/named. `reply` helpers in dispatch follow `reply(chat_id, text)`.
 - Auto-agents in `poll_forever()` only run when `AI_AUTO_AGENTS=on` (`auto_agents` in settings; default `off` = bot silent except on commands). Individual agents additionally gated by `AI_DAILY_SUMMARY`, `AI_SELFREVIEW`, `FINES_REPORT`. Exception: `group_departures.check_and_send()` runs on every poll loop regardless — gated by its own `GROUP_DEPARTURE_NOTIFY` / per-chat `/chiqish_on|off` state (`state/group_departures.json`).
+- **BM API 404 semantikasi**: `waybill`, `gross/trip`, `duty`, `route` kabi kunlik endpointlarda HTTP 404 kelishi tizim xatosi emas — bu o'sha sana/marshrut bo'yicha ma'lumot hali shakllanmaganligini ("topilmadi / bo'sh") bildiradi. Barcha sinxronlash funksiyalari va `_safe_loop` buni `_not_found(exc)` orqali bo'sh natija sifatida yutishi kerak, `errors` jadvaliga yozilmaydi.
+- **Avto-ishlar muvaffaqiyati (`automation_runs`)**: `already_sent: True`, `monthly_already_sent: True` yoki `no_group: True` bo'lishi normal muvaffaqiyat holati hisoblanadi. Shaxsiy haydovchi SMS yoki bot xabarnomalaridagi individual xatoliklar (masalan haydovchi botni bloklagan bo'lsa) butun kunlik avto-ishni `ERROR`ga aylantirmasligi kerak.
 
 ## Testing quirks
 

@@ -19,8 +19,8 @@ GPS_TCP_PORT = int(os.environ.get("GPS_TCP_PORT", "5027"))
 JT808_ENABLED = os.environ.get("JT808_ENABLED", "1") in ("1", "true", "yes")
 JT808_TCP_PORT = int(os.environ.get("JT808_TCP_PORT", "6808"))
 JT1078_TCP_PORT = int(os.environ.get("JT1078_TCP_PORT", "6107"))
-# Qurilma media oqimini shu hostga yuboradi (VDS public IP bo'lishi kerak)
-JT1078_MEDIA_HOST = os.environ.get("JT1078_MEDIA_HOST", "")
+# Qurilma media oqimini shu hostga yuboradi (VDS public IP yoki domen: bmbrutto.uz)
+JT1078_MEDIA_HOST = os.environ.get("JT1078_MEDIA_HOST", "bmbrutto.uz").strip()
 
 # ---- HTTP API + kuzatuv UI (frontend uchun) ----
 # 0.0.0.0 = tarmoqdan ham ochiq (telefon/planşetda video kuzatuv uchun).
@@ -193,11 +193,16 @@ JT1078_QUEUE_MAX = int(os.environ.get("GPS_JT1078_QUEUE_MAX", "128"))
 JT1078_THREAD_QUEUE = int(os.environ.get("GPS_JT1078_THREAD_QUEUE", "1024"))
 
 # ---- ffmpeg libx264 sozlamalari ----
-# Preset: sifat <-> CPU. 4+ yadroda "veryfast" sifatni oshiradi; kuchsiz
-# serverda "ultrafast". Xato qiymat ffmpeg'ni ishga tushirmaydi.
+# Preset: sifat <-> CPU. 4+ yadroda "veryfast" sifatni sezilarli oshiradi (standart "veryfast").
 JT1078_X264_PRESET = (
-    os.environ.get("GPS_JT1078_X264_PRESET", "ultrafast") or "ultrafast"
+    os.environ.get("GPS_JT1078_X264_PRESET", "veryfast") or "veryfast"
 ).strip()
+# CRF (Constant Rate Factor): pastroq = yuqori sifat, aniqroq detallar (18-23 oralig'i).
+# Jonli oqim uchun 21 (tiniq tasvir), Tarix (playback) uchun 19 (maksimal ravshanlik).
+JT1078_X264_CRF = int(os.environ.get("GPS_JT1078_X264_CRF", "21"))
+JT1078_X264_CRF_PB = int(os.environ.get("GPS_JT1078_X264_CRF_PB", "19"))
+JT1078_X264_MAXRATE = os.environ.get("GPS_JT1078_X264_MAXRATE", "3500k")
+JT1078_X264_BUFSIZE = os.environ.get("GPS_JT1078_X264_BUFSIZE", "7000k")
 # Bitta ffmpeg (muxer) uchun x264 thread soni. 0 = ffmpeg o'zi tanlaydi.
 # Ko'p oqimli serverda har biriga cheklov qo'yish CPU raqobatini kamaytiradi.
 JT1078_X264_THREADS = max(
@@ -234,6 +239,13 @@ JT1078_HLS_LIST_SIZE = max(2, min(20, int(os.environ.get(
 # Chiqish oqim nomi: <prefix><sim>_<kanal> (live=jt_, playback=jtpb_).
 ZLMEDIAKIT_RTMP = (os.environ.get("GPS_ZLMEDIAKIT_RTMP") or "").strip()
 ZLMEDIAKIT_HTTP = (os.environ.get("GPS_ZLMEDIAKIT_HTTP") or "").strip()
+ZLMEDIAKIT_API = (os.environ.get("GPS_ZLMEDIAKIT_API") or "http://127.0.0.1:8090").strip()
+# MUHIM: ZLMediaKit api.secret kod ichida YOZILMAYDI (repo ochiq!).
+# VDS'dagi ishlayotgan config.py'da u fallback ko'rinishida turadi. Bu
+# fayl VDS'ga chiqarilsa, secret'ni GPS_ZLMEDIAKIT_SECRET muhit
+# o'zgaruvchisi bilan berish kerak — aks holda oqimni majburiy yopish
+# ishlamay qoladi (no-op).
+ZLMEDIAKIT_SECRET = (os.environ.get("GPS_ZLMEDIAKIT_SECRET") or "").strip()
 
 # ZLMediaKit yoqilganmi (RTMP push manzili berilgan bo'lsa).
 def zlmediakit_enabled() -> bool:
@@ -256,6 +268,33 @@ def zlmediakit_http_url(stream_name: str, kind: str = "flv") -> str | None:
     if kind == "hls":
         return f"{base}/live/{stream_name}/hls.m3u8"
     return f"{base}/live/{stream_name}.live.flv"
+
+
+def zlmediakit_close_stream(stream_name: str, app: str = "live") -> bool:
+    """ZLMediaKit media-serveridagi oqimni majburiy to'xtatadi va GOP buferini tozalaydi.
+
+    Oqim to'xtatilganda yoki boshqa videoga o'tilganda chaqiriladi, natijada
+    eski videoning qoldiq kadrlari yangi videoga aralashib ketmaydi.
+    """
+    if not ZLMEDIAKIT_API or not ZLMEDIAKIT_SECRET:
+        return False
+    try:
+        import json
+        import urllib.parse
+        import urllib.request
+        params = urllib.parse.urlencode({
+            "secret": ZLMEDIAKIT_SECRET,
+            "app": app,
+            "stream": stream_name,
+            "force": "1",
+        })
+        url = f"{ZLMEDIAKIT_API.rstrip('/')}/index/api/close_streams?{params}"
+        req = urllib.request.Request(url, headers={"User-Agent": "BM-GPS-Backend"})
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+            return data.get("code") == 0
+    except Exception:
+        return False
 
 # ---- RTSP → HLS relay (ffmpeg) ----
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN", "ffmpeg")

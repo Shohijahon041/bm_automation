@@ -43,6 +43,19 @@ def _int_or(qs: dict, key: str, default=None):
         return default
 
 
+def _int_arg(qs: dict, key: str, default: int, lo: int, hi: int) -> int:
+    """Query int parametri — [lo, hi] oralig'iga qisqartiriladi.
+
+    Noto'g'ri qiymat 500 emas, default qaytaradi; juda katta limit DB'ni
+    bir zo'rg'a ushlab qoladigan so'rovga aylanmasligi uchun cheklangan.
+    """
+    try:
+        v = int((qs.get(key) or [""])[0] or default)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(v, hi))
+
+
 def _client_is_local(handler: BaseHTTPRequestHandler) -> bool:
     """So'rov loopback'dan kelganmi (token sozlanmagan rejim uchun)."""
     try:
@@ -183,6 +196,38 @@ def _device_kind(payload: dict, imei: str) -> str:
     return "camera" if len(imei) == 12 else "teltonika"
 
 
+def _has_video_perm(scope: dict | None, perm: str) -> bool:
+    """Video harakati uchun ruxsat bormi?
+
+    `video_perms` ro'yxat bo'lsa — o'sha matritsa; aks holda dashboard'dagi
+    rol matritsasi (VIEWER'da video ruxsati YO'Q). Ro'yxat umuman bo'lmasa
+    ham "hammasi mumkin" deb hisoblash xavfli: bu ruxsat tekshiruvini
+    butunlay o'chirib qo'yardi.
+    """
+    if not scope:
+        return True
+    if scope.get("is_admin"):
+        return True
+    perms = scope.get("video_perms")
+    if isinstance(perms, (list, tuple, set)):
+        return perm in perms or "all" in perms
+    from ..dashboard.routers.admin import _has_video_perm as _role_perm
+    return _role_perm(scope, perm)
+
+
+def _resolve_media_host(req_host: str | None = None) -> str:
+    """Qurilma oqimni yuborishi uchun media host manzilini aniqlash.
+
+    Qurilmalarga 'bmbrutto.uz' va port 6107 sozlangan. 0x9101/0x9201 buyruqlarida
+    domen nomi kelsa, 4G MDVR DNS kechikishlarini oldini olish uchun
+    'bmbrutto.uz' -> '189.74.100.25' ga o'giriladi.
+    """
+    h = (req_host or "").strip() or config.JT1078_MEDIA_HOST or "bmbrutto.uz"
+    if h in ("bmbrutto.uz", "www.bmbrutto.uz"):
+        return "189.74.100.25"
+    return h
+
+
 class GpsHandler(BaseHTTPRequestHandler):
     server_version = "BM-GPS/1.0"
 
@@ -234,7 +279,7 @@ class GpsHandler(BaseHTTPRequestHandler):
             )
             self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
@@ -272,9 +317,15 @@ class GpsHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         # Yangilangandan keyin eski sahifa keshdan ochilib qolmasin.
         self.send_header("Cache-Control", "no-cache")
-        # URL'da token bo'lishi mumkin — tashqi resurslarga Referer ketmasin.
-        self.send_header("Referrer-Policy", "no-referrer")
+        # URL'da token bo'lishi mumkin — tashqi resurslarga token ketmasligi uchun faqat origin.
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self' blob: data: https: 'unsafe-inline' 'unsafe-eval'; "
+            "frame-src 'self' blob: data: https://leafletjs.com; "
+            "frame-ancestors 'self' https: http:;",
+        )
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -336,18 +387,25 @@ class GpsHandler(BaseHTTPRequestHandler):
             return True
         for cam in storage.list_cameras():
             if str(cam.get("id") or "") == str(cam_id):
-                return str(cam.get("vehicle_id") or "") in allowed
+                vid = str(cam.get("vehicle_id") or "").strip()
+                return not vid or vid in allowed
         return False
 
     def _phone_allowed(self, phone: str) -> bool:
         allowed = self._company_vehicles()
         if allowed is None:
             return True
-        return any(
-            str(device.get("imei") or "") == phone
-            and str(device.get("vehicle_id") or "") in allowed
-            for device in storage.list_camera_devices()
-        )
+        cam_devices = storage.list_camera_devices()
+        phone_norm = phone.lstrip("0")
+        for device in cam_devices:
+            dev_imei = str(device.get("imei") or "").lstrip("0")
+            if dev_imei == phone_norm:
+                vid = str(device.get("vehicle_id") or "").strip()
+                return not vid or vid in allowed
+        connected = [p.lstrip("0") for p in jt808.connected_phones()]
+        if phone_norm in connected:
+            return True
+        return False
 
     @staticmethod
     def _valid_phone(phone: str) -> bool:
@@ -367,7 +425,6 @@ class GpsHandler(BaseHTTPRequestHandler):
         scope = _user_scope(self)
         if scope is None:
             return True
-        from ..dashboard.routers.admin import _has_video_perm
         if _has_video_perm(scope, perm):
             return True
         self._json({"error": "Sizda bu video harakati uchun ruxsat yo'q"}, 403)
@@ -432,12 +489,23 @@ class GpsHandler(BaseHTTPRequestHandler):
             return
         is_playlist = fname.endswith(".m3u8")
         etag = '"%x-%x"' % (int(st.st_mtime), st.st_size)
+        # HLS oqimi SEC-06 geytiridan chiqib ketmasligi uchun _cors_origin()
+        # (whitelist) qiymatini ishlatadi — istalgan Origin aks etilmaydi.
+        origin = self._cors_origin()
         if self.headers.get("If-None-Match") == etag:
             self.send_response(304)
+            if origin:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Access-Control-Allow-Credentials", "true")
             self.send_header("ETag", etag)
             self.end_headers()
             return
         self.send_response(200)
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Range, Authorization, Content-Type")
         self.send_header(
             "Content-Type",
             "application/vnd.apple.mpegurl" if is_playlist else "video/mp2t")
@@ -582,9 +650,9 @@ class GpsHandler(BaseHTTPRequestHandler):
                     vehicle_id=(qs.get("vehicle_id") or [""])[0].strip(),
                     date_from=(qs.get("from") or [""])[0].strip(),
                     date_to=(qs.get("to") or [""])[0].strip(),
-                    limit=int((qs.get("limit") or ["5000"])[0] or 5000),
+                    limit=_int_arg(qs, "limit", 5000, 1, 50000),
                 )
-                if imes:
+                if vehicles is not None:
                     rows = [p for p in rows
                             if str(p.get("imei") or "") in imes
                             or str(p.get("vehicle_id") or "") in vehicles]
@@ -600,9 +668,9 @@ class GpsHandler(BaseHTTPRequestHandler):
                             "cameras": safe_cams})
             elif path == "/api/video/grid":
                 # Video setka: bitta kanal bo'yicha barcha avtobuslar
-                channel = int((qs.get("channel") or ["1"])[0] or 1)
-                page = int((qs.get("page") or ["1"])[0] or 1)
-                page_size = int((qs.get("page_size") or ["25"])[0] or 25)
+                channel = _int_arg(qs, "channel", 1, 1, 64)
+                page = _int_arg(qs, "page", 1, 1, 100000)
+                page_size = _int_arg(qs, "page_size", 25, 1, 200)
                 cams = self._only_vehicles(storage.list_cameras(), vehicles)
                 result = []
                 for cam in cams:
@@ -670,15 +738,21 @@ class GpsHandler(BaseHTTPRequestHandler):
                 if vehicles is not None:
                     cams = [d for d in cams
                             if str(d.get("vehicle_id") or "") in vehicles]
-                allowed_phones = {str(d.get("imei") or "") for d in cams}
-                bindings: dict = {
-                    str(d.get("imei") or ""): {
+                allowed_phones_norm = {str(d.get("imei") or "").lstrip("0") for d in cams}
+                bindings: dict = {}
+                for d in cams:
+                    raw_imei = str(d.get("imei") or "").strip()
+                    if not raw_imei:
+                        continue
+                    val = {
                         "vehicle_id": str(d.get("vehicle_id") or ""),
                         "plate": str(d.get("plate_number") or ""),
                         "name": str(d.get("name") or ""),
                     }
-                    for d in cams
-                }
+                    bindings[raw_imei] = val
+                    norm_imei = raw_imei.lstrip("0")
+                    if norm_imei:
+                        bindings[norm_imei] = val
                 assist: list = []
                 try:
                     assist = camera.assist()
@@ -687,10 +761,11 @@ class GpsHandler(BaseHTTPRequestHandler):
                 recent = jt1078.recent_streams() if enabled else []
                 if vehicles is not None:
                     streams = [s for s in streams
-                               if str(s.get("sim") or "") in allowed_phones]
+                               if str(s.get("sim") or "").lstrip("0") in allowed_phones_norm]
                     recent = [s for s in recent
-                              if str(s.get("sim") or "") in allowed_phones]
-                    phones = [p for p in phones if str(p) in allowed_phones]
+                              if str(s.get("sim") or "").lstrip("0") in allowed_phones_norm]
+                    phones = [p for p in phones
+                              if str(p).lstrip("0") in allowed_phones_norm]
                     assist = _scope_assist(assist, vehicles)
                 self._json({
                     "ok": True,
@@ -742,7 +817,7 @@ class GpsHandler(BaseHTTPRequestHandler):
                         "info": jt808.device_info(phone),
                         "extras": jt808.av_info(phone),
                         "raw": jt808.raw_log(
-                            int((qs.get("raw") or ["40"])[0] or 40), phone),
+                            _int_arg(qs, "raw", 40, 1, 500), phone),
                     })
                     return
                 phones = jt808.connected_phones()
@@ -777,7 +852,7 @@ class GpsHandler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "count": len(paths), "paths": paths})
             elif path == "/api/gps/alerts":
                 alerts = storage.list_alerts(
-                    limit=int((qs.get("limit") or ["50"])[0] or 50),
+                    limit=_int_arg(qs, "limit", 50, 1, 1000),
                     imei=(qs.get("imei") or [""])[0].strip(),
                 )
                 if vehicles is not None:
@@ -930,7 +1005,10 @@ class GpsHandler(BaseHTTPRequestHandler):
                          "error": "kind noto'g'ri "
                                   "(teltonika/camera/counter)"}, 400)
                     return
-                storage.register_device(imei, kind=kind)
+                try:
+                    storage.register_device(imei, kind=kind)
+                except TypeError:
+                    storage.register_device(imei)
                 storage.bind_device(
                     imei,
                     str(payload.get("vehicle_id") or "").strip(),
@@ -1053,14 +1131,12 @@ class GpsHandler(BaseHTTPRequestHandler):
                 if not phone:
                     self._json({"ok": False, "error": "phone kerak"}, 400)
                     return
-                host = (str(payload.get("host") or "").strip()
-                        or config.JT1078_MEDIA_HOST)
+                host = _resolve_media_host(str(payload.get("host") or "").strip())
                 if not host:
                     self._json({"ok": False,
                                 "error": "media host belgilanmagan: "
-                                         ".env ga JT1078_MEDIA_HOST=qurilma "
-                                         "internetdan yetadigan public IP "
-                                         "qo'shing (masalan 1.2.3.4)"}, 400)
+                                         ".env ga JT1078_MEDIA_HOST=bmbrutto.uz "
+                                         "qo'shing"}, 400)
                     return
                 try:
                     channel = int(payload.get("channel") or 1)
@@ -1092,12 +1168,22 @@ class GpsHandler(BaseHTTPRequestHandler):
                     channel = int(payload.get("channel") or 1)
                 except (TypeError, ValueError):
                     channel = 0
+                if channel in (0, -1):
+                    for c in range(1, 9):
+                        jt808.send_live_stop(phone, c)
+                        jt1078.forget_live_request(phone, c)
+                        jt1078.close_stream(phone, c, "live")
+                        jt1078.close_stream(phone, c, "playback")
+                        jt1078.clear_playback(phone, c)
+                    self._json({"ok": True, "phone": phone, "channel": "all", "closed": True})
+                    return
                 if not 1 <= channel <= 255:
                     self._json({"ok": False, "error": "channel noto'g'ri"}, 400)
                     return
                 ok = jt808.send_live_stop(phone, channel)
                 jt1078.forget_live_request(phone, channel)
                 closed = jt1078.close_stream(phone, channel, "live")
+                jt1078.close_stream(phone, channel, "playback")
                 jt1078.clear_playback(phone, channel)
                 self._log_jt_video(phone, channel, "live_stop")
                 self._json({"ok": bool(ok), "phone": phone,
@@ -1159,14 +1245,12 @@ class GpsHandler(BaseHTTPRequestHandler):
                 if not phone:
                     self._json({"ok": False, "error": "phone kerak"}, 400)
                     return
-                host = (str(payload.get("host") or "").strip()
-                        or config.JT1078_MEDIA_HOST)
+                host = _resolve_media_host(str(payload.get("host") or "").strip())
                 if not host:
                     self._json({"ok": False,
                                 "error": "media host belgilanmagan: "
-                                         ".env ga JT1078_MEDIA_HOST=qurilma "
-                                         "internetdan yetadigan public IP "
-                                         "qo'shing (masalan 1.2.3.4)"}, 400)
+                                         ".env ga JT1078_MEDIA_HOST=bmbrutto.uz "
+                                         "qo'shing"}, 400)
                     return
                 start_text = str(payload.get("start") or "").strip()
                 end_text = str(payload.get("end") or "").strip()
@@ -1175,7 +1259,10 @@ class GpsHandler(BaseHTTPRequestHandler):
                 try:
                     channel = int(payload.get("channel") or 1)
                     media_type = int(payload.get("media") or 0)
-                    stream_type = int(payload.get("stream") or 0)
+                    raw_st = payload.get("stream")
+                    if raw_st is None:
+                        raw_st = payload.get("stream_type")
+                    stream_type = int(raw_st if raw_st is not None else 0)
                     memory_type = int(payload.get("memory") or 0)
                     method = int(payload.get("method") or 0)
                     multiples = int(payload.get("multiples") or 0)
@@ -1196,6 +1283,9 @@ class GpsHandler(BaseHTTPRequestHandler):
                     return
                 start = jt808.iso_to_bcd6(start_text)
                 end = jt808.iso_to_bcd6(end_text)
+                # Yangi playback so'rashdan oldin, eski oqim va GOP buferini tozalaymiz
+                jt1078.close_stream(phone, channel, "playback")
+                jt1078.clear_playback(phone, channel)
                 ok = jt808.send_playback(
                     phone, host, config.JT1078_TCP_PORT, start, end, channel,
                     media_type=media_type, stream_type=stream_type,

@@ -1262,7 +1262,8 @@ def test_drivers_list_scoped(env):
 
 
 def test_driver_write_scoped_to_route(env):
-    """/api/drivers/{id} POST (profil/rasm) boshqa route uchun 404."""
+    """/api/drivers/{id} POST: DISPATCHER umuman yozolmaydi (403), MANAGER
+    bo'lsa faqat o'z route'idagi haydovchiga — begona route 404."""
     st = env
     st.save_driver("d1", full_name="Ali", route_id="r1")
     st.save_driver("d2", full_name="Vali", route_id="r2")
@@ -1272,10 +1273,30 @@ def test_driver_write_scoped_to_route(env):
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}",
            "Content-Type": "application/json"}
     body = json.dumps({"phone": "+998"}).encode()
+    clen = {"Content-Length": str(len(body))}
+    # Moliyaviy bo'lim: DISPATCHER'ga yozish ham taqiqlangan.
+    status, _, _ = _request(env, "/api/drivers/d2/profile", method="POST",
+                            headers={**hdr, **clen}, body=body)
+    assert status == 403
+    status, _, _ = _request(env, "/api/drivers/d1/profile", method="POST",
+                            headers={**hdr, **clen}, body=body)
+    assert status == 403
+
+    st.dashboard_user_add("mgr", *deps.hash_password("to'g'ri"),
+                          role="MANAGER", company="XTEST")
+    _, _, cookies = _login(env, "mgr", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}",
+           "Content-Type": "application/json"}
+    body = json.dumps({"phone": "+998"}).encode()
     status, _, _ = _request(env, "/api/drivers/d2/profile", method="POST",
                             headers={**hdr, "Content-Length": str(len(body))},
                             body=body)
     assert status == 404
+    # O'z route'i — yozish o'tadi.
+    status, _, _ = _request(env, "/api/drivers/d1/profile", method="POST",
+                            headers={**hdr, "Content-Length": str(len(body))},
+                            body=body)
+    assert status == 200
 
 
 def test_vehicle_detail_scoped(env, monkeypatch):

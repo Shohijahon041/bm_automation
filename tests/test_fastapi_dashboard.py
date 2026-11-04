@@ -580,3 +580,9 @@ def test_attendance_ignores_manual_work_logs(seeded_storage):
     assert "2026-08-05" not in worked          # qo'lda km qaydi — davomat emas
     assert "2026-08-06" in worked              # sayt hisobi — davomat
     assert "2026-08-10" in worked              # haqiqiy reys
+
+
+def test_insights_days_validated(client):
+    """`days` son bo'lmasa yoki oralikdan chiqsa — 500 emas, 400 qaytadi."""
+    for q in ("days=abc", "days=0", "days=9999"):
+        assert client.get(f"/api/insights?{q}").status_code == 400

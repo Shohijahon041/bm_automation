@@ -27,8 +27,14 @@ from .schema import TENANT_TABLES, init_db
 log = get_logger("bm_automation.db")
 
 
+def _valid_tin(tin: str) -> bool:
+    """Faqat to'liq 14 xonali JSHSHR (BM ro'yxati ``31******33`` kabi maska
+    qaytaradi — maska shaxsni aniqlamaydi va kalit bo'la olmaydi)."""
+    tin = str(tin or "").strip()
+    return len(tin) == 14 and tin.isdigit() and "*" not in tin
+
+
 def _safe_default(kind: str) -> Any:
-    """No-op holatda qaytariladigan qiymat (DB o'chiq bo'lganda)."""
     if kind == "int":
         return 0
     if kind == "bool":
@@ -111,9 +117,13 @@ class Storage:
             return 0
 
     def _warn(self, exc: Exception) -> None:
-        if not getattr(self, "_warned", False):
+        self._warn_count = getattr(self, "_warn_count", 0) + 1
+        # Birinchi xato va keyin har 50-borda yoziladi: chronic yozuv
+        # buzilishi "bitta qator" bo'lib qolmasligi uchun.
+        if not getattr(self, "_warned", False) or self._warn_count % 50 == 0:
             self._warned = True
-            log.warning("DB yozuv xatosi (keyingilari ham o'tkazib yuboriladi): %s", exc)
+            log.warning("DB yozuv xatosi (jami %d, o'tkazib yuborildi): %s",
+                        self._warn_count, exc)
 
     def _tenant_fill(self, table: str, values: dict) -> dict:
         """Tenant jadvali yozuviga company_id ni avtomatik qo'shadi.
@@ -308,9 +318,9 @@ class Storage:
         })
 
     def find_driver_by_tin(self, tin: str) -> dict | None:
-        """JSHSHR (tin) bo'yicha haydovchi qatorini qaytaradi."""
+        """JSHSHR (tin) bo'yicha haydovchi qatorini qaytaradi (faqat to'liq 14-xonali)."""
         tin = str(tin or "").strip()
-        if not self.enabled or not tin:
+        if not self.enabled or not tin or "*" in tin or len(tin) != 14 or not tin.isdigit():
             return None
         rows = self.query(
             f"SELECT * FROM drivers WHERE TRIM(tin)={self.db.ph} LIMIT 1", (tin,))
@@ -319,7 +329,7 @@ class Storage:
     def canonical_driver_id(self, external_id: str = "", tin: str = "") -> str:
         """BM id'sini kanonik (JSHSHR bo'yicha birlashtirilgan) id'ga aylantiradi."""
         external_id = str(external_id or "").strip()
-        hit = self.find_driver_by_tin(tin) if tin else None
+        hit = self.find_driver_by_tin(tin) if (tin and "*" not in tin and len(tin) == 14 and tin.isdigit()) else None
         if hit:
             return str(hit.get("external_id") or "") or external_id
         if external_id:
@@ -358,6 +368,8 @@ class Storage:
         orig = str(external_id or "").strip()
         eid = orig
         tin = str(tin or "").strip()
+        if not _valid_tin(tin):
+            tin = ""
         cur: dict = {}
         if tin:
             hit = self.find_driver_by_tin(tin)
@@ -374,6 +386,8 @@ class Storage:
             cur = self.find("drivers", external_id=eid) or {}
         if not tin:
             tin = str(cur.get("tin") or "").strip()
+        if not _valid_tin(tin):
+            tin = ""  # maskalangan/buzilgan qiymat JSHSHR sifatida saqlanmaydi
         values = {
             "external_id": eid,
             "full_name": str(full_name or "").strip()

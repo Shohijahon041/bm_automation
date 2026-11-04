@@ -19,7 +19,7 @@ from ..utils.io import atomic_write
 
 STATE_FILE = Path("state") / "bot_settings.json"
 
-_LOCK = threading.Lock()
+_LOCK = threading.RLock()
 _CACHE: dict = {}
 _LOADED = False
 _CACHE_MTIME: float | None = None
@@ -53,21 +53,25 @@ def _clean_amount(value, default: float = 0.0) -> float:
 
 def _load() -> dict:
     global _LOADED, _CACHE_MTIME
-    mtime = _file_mtime()
-    # Fayl boshqa jarayon (dashboard) tomonidan o'zgartirilgan bo'lsa — qayta o'qiladi.
-    if _LOADED and mtime is not None and mtime == _CACHE_MTIME:
+    # `_CACHE` mutasi (_save json.dumps, set_* keylari) bilan bir vaqtda
+    # clear/update bo'lsa "dictionary changed size during iteration" yoki
+    # concurrent yozuv yo'qoladi — shu sabab lock ostida qayta o'qiladi.
+    with _LOCK:
+        mtime = _file_mtime()
+        # Fayl boshqa jarayon (dashboard) tomonidan o'zgartirilgan bo'lsa — qayta o'qiladi.
+        if _LOADED and mtime is not None and mtime == _CACHE_MTIME:
+            return _CACHE
+        try:
+            with open(STATE_FILE, encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                _CACHE.clear()
+                _CACHE.update(data)
+            _CACHE_MTIME = _file_mtime()
+        except Exception:
+            pass
+        _LOADED = True
         return _CACHE
-    try:
-        with open(STATE_FILE, encoding="utf-8") as fh:
-            data = json.load(fh)
-        if isinstance(data, dict):
-            _CACHE.clear()
-            _CACHE.update(data)
-        _CACHE_MTIME = _file_mtime()
-    except Exception:
-        pass
-    _LOADED = True
-    return _CACHE
 
 
 def _file_mtime() -> float | None:
@@ -357,6 +361,48 @@ def set_show_driver_salary(value: bool | None) -> bool:
         on = bool(value)
         _CACHE["bot_driver_salary"] = on
         _audit("bot_driver_salary", old, on)
+        _save()
+    return on
+
+
+# ------------------------------------------------------------- bildirishnomalar
+
+def offline_notify() -> bool:
+    """GPS aloqa uzilganda bot ogohlantirsinmi (standart: yo'q)."""
+    try:
+        val = _load().get("offline_notify")
+    except Exception:
+        val = None
+    return False if val is None else bool(val)
+
+
+def set_offline_notify(value: bool | None, by: str = "") -> bool:
+    with _LOCK:
+        _load()
+        old = offline_notify()
+        on = bool(value)
+        _CACHE["offline_notify"] = on
+        _audit("offline_notify", old, on, by=by)
+        _save()
+    return on
+
+
+def problem_alerts_notify() -> bool:
+    """Muammo holati o'zgarganda bot ogohlantirsinmi (standart: yo'q)."""
+    try:
+        val = _load().get("problem_alerts_notify")
+    except Exception:
+        val = None
+    return False if val is None else bool(val)
+
+
+def set_problem_alerts_notify(value: bool | None, by: str = "") -> bool:
+    with _LOCK:
+        _load()
+        old = problem_alerts_notify()
+        on = bool(value)
+        _CACHE["problem_alerts_notify"] = on
+        _audit("problem_alerts_notify", old, on, by=by)
         _save()
     return on
 

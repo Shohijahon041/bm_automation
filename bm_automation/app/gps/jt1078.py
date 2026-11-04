@@ -205,6 +205,8 @@ def clear_playback(sim: str | None = None, channel: int | None = None) -> None:
         _PLAYBACK.clear()
     else:
         _PLAYBACK.pop(f"{sim}_{channel}", None)
+        if channel is not None:
+            _reset_session_stream(str(sim), int(channel))
 
 
 def _touch_playback(sim: str, channel: int) -> None:
@@ -275,7 +277,7 @@ class _Pacer:
     """Qurilma ts (ms) asosida oqimni real vaqt tezligida o'qish uchun
     hisoblagich. `delay()` — qancha kutish kerakligini (s) qaytaradi."""
 
-    def __init__(self, max_sleep: float = 1.0, reset_gap_ms: int = 30000):
+    def __init__(self, max_sleep: float = 1.0, reset_gap_ms: int = 3000):
         self._base_ts = None
         self._base_wall = None
         self._last_ts = None
@@ -449,6 +451,24 @@ def recent_streams(limit: int = 8) -> list:
             for v in items[:max(1, limit)]]
 
 
+def _reset_session_stream(sim: str, channel: int) -> None:
+    """Oqim to'xtatilganda yoki yangi video boshlanganda TCP sessiyadagi
+    kadr buferi va I-kadr bayrog'ini tozalaydi.
+    Shunda eski videoning qoldiq kadrlari yangi videoga aralashib ketmaydi
+    va keyingi video faqat toza I-kadr (SPS/PPS) bilan boshlanadi."""
+    sim_str = str(sim)
+    ch_int = int(channel)
+    key = (sim_str, ch_int)
+    for sess in list(_SESSIONS.values()):
+        sess.primed.discard(key)
+        sess.last_ts.pop(key, None)
+        sess.pacers.pop(key, None)
+        cur = sess.frames.get(key)
+        if cur is not None:
+            cur["buf"] = bytearray()
+            cur["open"] = False
+
+
 def _close_stream_direct(sim: str, channel: int, mode: str = "live") -> bool:
     """Muxer'ni joyida yopadi (registry'dan chiqaradi + ffmpeg'ni o'ldiradi).
 
@@ -456,20 +476,31 @@ def _close_stream_direct(sim: str, channel: int, mode: str = "live") -> bool:
     (qarang: close_stream). Shunda `_MUXERS.pop` va keyingi `_get_muxer`
     o'rtasida poyga bo'lmaydi — bir (sim,kanal,mode) uchun doimo bitta ffmpeg.
     """
-    key = _muxer_key(str(sim), int(channel), mode)
+    sim_str = str(sim)
+    ch_int = int(channel)
+    key = _muxer_key(sim_str, ch_int, mode)
     m = _MUXERS.get(key)
-    if m is None or getattr(m, "closed", False):
-        return False
-    # Avval registry'dan chiqaramiz — shunda haligacha yopilgan muxer'ni
-    # _get_muxer "mavjud, ammo closed" deb qayta yopishga urinmaydi.
-    _MUXERS.pop(key, None)
-    _mark_suppressed(key)   # "to'xtatish" — kech kelgan paketlar qayta ochmasin
-    try:
-        m.close()
-    except Exception:  # noqa: BLE001
-        log.exception("JT1078: muxer yopilishida xato (%s)", key)
+    closed = False
+    if m is not None:
         _MUXERS.pop(key, None)
-    return True
+        _mark_suppressed(key)   # "to'xtatish" — kech kelgan paketlar qayta ochmasin
+        try:
+            m.close()
+            closed = True
+        except Exception:  # noqa: BLE001
+            log.exception("JT1078: muxer yopilishida xato (%s)", key)
+            _MUXERS.pop(key, None)
+
+    # 1. TCP sessiyalaridagi qoldiq kadrlar va IDR holatini tozalash
+    _reset_session_stream(sim_str, ch_int)
+
+    # 2. Agar ZLMediaKit yoqilgan bo'lsa, ZLMediaKit'dagi oqimni va GOP buferini tozalaymiz
+    if config.zlmediakit_enabled():
+        prefix = "jtpb_" if mode == "playback" else "jt_"
+        stream_name = config.zlmediakit_stream_name(prefix, sim_str, ch_int)
+        config.zlmediakit_close_stream(stream_name)
+
+    return closed or (m is not None)
 
 
 async def _aclose_stream(sim: str, channel: int, mode: str) -> bool:
@@ -734,12 +765,19 @@ class _Muxer:
             "-framerate", str(fps_in),
             "-f", self.codec, "-i", "pipe:0",
         ]
+        crf = str(config.JT1078_X264_CRF_PB if self.mode == "playback" else config.JT1078_X264_CRF)
         cmd += [
             "-c:v", "libx264", "-preset", config.JT1078_X264_PRESET,
             "-tune", "zerolatency", "-pix_fmt", "yuv420p",
+            "-crf", crf,
+            "-maxrate", config.JT1078_X264_MAXRATE,
+            "-bufsize", config.JT1078_X264_BUFSIZE,
             # -vsync eskirgan (ffmpeg "deprecated" ogohlantiradi) ->
             # -fps_mode cfr (bir xil ma'no).
             "-fps_mode", "cfr", "-r", str(fps_out),
+            "-g", str(max(int(fps_out), int(fps_out) * config.JT1078_HLS_SECONDS)),
+            "-keyint_min", str(int(fps_out)),
+            "-sc_threshold", "0",
             "-force_key_frames",
             "expr:gte(t,n_forced*%d)" % config.JT1078_HLS_SECONDS,
             "-max_muxing_queue_size", "1024",
@@ -969,8 +1007,8 @@ class _Muxer:
             except Exception:  # noqa: BLE001
                 pass
         if self._pump_thread is not None:
-            self._pump_thread.join(timeout=2.0)
-            if self._pump_thread.is_alive() and self._proc is not None:
+            self._pump_thread.join(timeout=0.8)
+            if self._proc is not None:
                 try:
                     self._proc.kill()
                 except Exception:  # noqa: BLE001
@@ -984,11 +1022,15 @@ class _Muxer:
         if self._proc:
             try:
                 self._proc.stdin.close()
-                self._proc.wait(timeout=3)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                self._proc.terminate()
+                self._proc.wait(timeout=0.8)
             except Exception:  # noqa: BLE001
                 try:
                     self._proc.kill()
-                    self._proc.wait(timeout=3)
+                    self._proc.wait(timeout=0.5)
                 except Exception:  # noqa: BLE001
                     pass
             self._proc = None
@@ -1271,6 +1313,7 @@ class _Session:
         # Shu ulanishda ko'rilgan (sim, kanal) juftliklari — log yorlig'i uchun.
         self.keys: set = set()
         self.frames: dict = {}
+        self.pacers: dict = {}
         self.primed: set = set()  # I-kadr ko'rilgan (sim,ch) — shundagina yozamiz
         self.codec: dict = {}     # (sim,ch) -> ffmpeg kirish kodeki (h264/hevc)
         # (sim,ch) -> "live"|"playback". Rejim ULANISH darajasida qotiriladi:
@@ -1300,6 +1343,16 @@ class _Session:
             # Katta oldinga sakrash — yozuv tugab, jonli oqim qaytdi.
             elif delta > 5000 and not active and mode != "live":
                 mode = "live"
+            # Yangi: timestamp uzilishi yoki yangi video boshlanishi (seek/yangi klip)
+            # Agar ts keskin o'zgarsa (|delta| > 3000 ms), eski GOP buziladi —
+            # yangi kadrlar dekoderni buzmasligi uchun primed holatini tozalaymiz.
+            if abs(delta) > 3000 and mode == "playback":
+                self.primed.discard(key)
+                cur = self.frames.get(key)
+                if cur is not None:
+                    cur["buf"] = bytearray()
+                    cur["open"] = False
+
             if mode != self.modes.get(key):
                 self.modes[key] = mode
                 # Yangi rejim boshqa muxer'ga yoziladi — eski bufer va
@@ -1310,7 +1363,7 @@ class _Session:
                     cur["buf"] = bytearray()
                     cur["open"] = False
         if isinstance(ts, int) and ts > 0:
-            self.last_ts[key] = ts if last is None else max(last, ts)
+            self.last_ts[key] = ts
         return mode
 
     def on_packet(self, p: dict) -> None:
@@ -1496,7 +1549,7 @@ async def handle_session(reader: asyncio.StreamReader,
     buf = first
     # Playback uchun (sim,kanal) -> _Pacer: kelayotgan oqimni qurilma ts'iga
     # qarab real tezlikda o'qiymiz (o'qishni to'xtatib TCP orqaga bosim).
-    pacers: dict = {}
+    pacers = sess.pacers
     try:
         while True:
             # TCP paketlarni birlashtirishi/bo'laklashi mumkin — FLAG+body_len

@@ -62,6 +62,8 @@ def _safe_loop(storage: Storage, source: str, body: Callable[[], SyncResult]) ->
     try:
         return body()
     except Exception as exc:  # noqa: BLE001 - DB/api xatolari tizimni sindirmaydi
+        if _not_found(exc):
+            return SyncResult(entity=source)
         storage.record_error(source=source, message=str(exc),
                              traceback=_tb.format_exc())
         return SyncResult(entity=source, error=str(exc))
@@ -373,8 +375,8 @@ def refresh_driver_from_bm(storage: Storage, client: BMClient, driver_id: str,
     # guvohnoma almashsa ham o'zgarmaydi. BM ba'zan bir shaxsni ikki id ostida
     # qaytaradi — profil shu id ostida ALOHIDA qator bo'lib qolmasligi uchun
     # kanonik (JSHSHR bo'yicha birlashtirilgan) id'ga yo'naltiriladi.
-    pinfl = str(_get(detail, "pinfl") or "").strip()
-    canonical = storage.canonical_driver_id(did, pinfl)
+    pinfl = _full_pinfl(_get(detail, "pinfl"))
+    canonical = storage.canonical_driver_id(did, pinfl) if pinfl else did
     alias = ""
     if canonical and did and canonical != did:
         alias = did
@@ -444,28 +446,34 @@ def sync_vehicles(storage: Storage, client: BMClient, route_id: str,
     return _safe_loop(storage, "vehicles", _run)
 
 
-_NOT_FOUND_CODES = {"TRIP_NOT_FOUND", "DUTY_NOT_FOUND", "NOT_FOUND"}
+_NOT_FOUND_CODES = {
+    "TRIP_NOT_FOUND", "DUTY_NOT_FOUND", "WAYBILL_NOT_FOUND",
+    "ROUTE_NOT_FOUND", "NOT_FOUND", "404",
+}
 
 
 def _not_found(exc) -> bool:
     """404'da 'ma'lumot yo'q' holatini aniqlaydi (xato emas).
 
     BM API bugungi sana uchun hali yaratilmagan hisobotlarda 404 qaytaradi
-    (masalan `gross/trip` -> TRIP_NOT_FOUND, `duty` -> DUTY_NOT_FOUND).
+    (masalan `gross/trip` -> TRIP_NOT_FOUND, `duty` -> DUTY_NOT_FOUND,
+    `waybills` -> 404, `route` -> 404).
     Bu dastur xatosi emas — oddiygina o'sha sana uchun ma'lumot yo'q.
     """
     from ..api.client import BMApiError
 
     if not isinstance(exc, BMApiError) or exc.status != 404:
         return False
-    code = str(exc.code or "").upper()
-    message = str(exc.message or "").upper()
+    code = str(exc.code or "").upper().strip()
+    message = str(exc.message or "").upper().strip()
     if not code and not message:
         return True  # 404 — yo'q ob'ekt, xato emas
+    if code in _NOT_FOUND_CODES or message in _NOT_FOUND_CODES:
+        return True
     for tok in (code, message):
-        if tok in _NOT_FOUND_CODES or tok.endswith("_NOT_FOUND"):
+        if tok in _NOT_FOUND_CODES or tok.endswith("_NOT_FOUND") or "NOT FOUND" in tok or "TOPILMADI" in tok:
             return True
-    return False
+    return True
 
 
 def sync_duties(storage: Storage, client: BMClient, route_id: str,
@@ -585,7 +593,12 @@ def sync_waybills(storage: Storage, client: BMClient, route_id: str,
     repo = WaybillRepository(client)
 
     def _run() -> SyncResult:
-        data = repo.report(route_id, from_date, to_date)
+        try:
+            data = repo.report(route_id, from_date, to_date)
+        except Exception as exc:
+            if _not_found(exc):
+                return result  # o'sha sana uchun waybill yo'q — xato emas
+            raise
         rows = _waybill_rows(data)
         plate_veh = {
             str(v.get("plate_number") or "").strip(): str(v.get("external_id") or "")
@@ -707,8 +720,10 @@ def sync_work_logs(storage: Storage, from_date: str = "", to_date: str = "",
     if route_id:
         trip_scope.append(f"route_id = {ph}")
         trip_bind.append(route_id)
-        log_scope.append(f"driver_id IN (SELECT external_id FROM drivers "
-                         f"WHERE route_id = {ph})")
+        log_scope.append(f"vehicle_id IN (SELECT external_id FROM vehicles "
+                         f"WHERE route_id = {ph} UNION SELECT DISTINCT vehicle_id "
+                         f"FROM route_daily WHERE route_id = {ph})")
+        log_bind.append(route_id)
         log_bind.append(route_id)
     rows = storage.query(
         "SELECT date, driver_id, vehicle_id, distance_km, status, data FROM trips "
@@ -746,8 +761,7 @@ def sync_work_logs(storage: Storage, from_date: str = "", to_date: str = "",
     # Noma'lum haydovchilarni ro'yxatdan o'tkazamiz (waybill'da bor, drivers'da yo'q).
     if route_id and driver_names:
         known = {str(x.get("external_id") or "") for x in storage.query(
-            f"SELECT external_id FROM drivers WHERE route_id = {ph}",
-            (route_id,), limit=50000)}
+            "SELECT external_id FROM drivers", limit=50000)}
         for did, nm in driver_names.items():
             if did in known:
                 continue
@@ -1124,9 +1138,9 @@ class AutomationLogger:
                 continue
             if r.get("error") or r.get("monthly_error"):
                 return True
-            if r.get("image") and not r.get("sent"):
+            if r.get("image") and not (r.get("sent") or r.get("already_sent") or r.get("no_group")):
                 return True
-            if r.get("monthly_excel") and not r.get("monthly_sent"):
+            if r.get("monthly_excel") and not (r.get("monthly_sent") or r.get("already_sent") or r.get("monthly_already_sent")):
                 return True
         return False
 

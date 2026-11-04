@@ -306,3 +306,63 @@ def test_save_driver_tin_conflict_falls_back_to_holder(storage, monkeypatch):
     assert "b" in driver_aliases(storage.find("drivers", external_id="a"))
 
 
+# ------------------------------------------- birlashtirish xavfsizlik himoyasi
+
+def _driver(eid: str, name: str, tin: str = TIN) -> dict:
+    return {"external_id": eid, "full_name": name, "tin": tin,
+            "route_id": "r1", "data": "{}"}
+
+
+def test_merge_by_tin_skips_different_people(tmp_path):
+    """Bir xil JSHSHR, lekin butunlay boshqa F.I.Sh — birlashtirilmaydi."""
+    st = _raw_storage(tmp_path)
+    st.upsert("drivers", ["external_id"],
+              _driver("a", "SHARAFUTDINOV AKMALJON ALIYEVICH"))
+    st.upsert("drivers", ["external_id"],
+              _driver("b", "ABDUKAXAROV PAXLOVON TILAVOLDIYEVICH"))
+
+    report = merge_drivers_by_tin(st)
+    assert report["merged_rows"] == 0
+    assert report["skipped"] == 1
+    assert len(st.query("SELECT external_id FROM drivers")) == 2
+
+
+def test_merge_by_alias_drops_poisoned_alias(storage):
+    """Nom mos kelmaydigan alias saqlanmaydi va ma'lumot qayta yo'naltirilmaydi."""
+    storage.save_driver(external_id="a", tin=TIN,
+                        full_name="SHARAFUTDINOV AKMALJON ALIYEVICH", data={})
+    storage.save_driver(external_id="b",
+                        full_name="ABDUKAXAROV PAXLOVON TILAVOLDIYEVICH", data={})
+    storage.save_driver_alias("a", "b")
+
+    report = merge_drivers_by_alias(storage)
+    assert report["folded"] == 0
+    assert storage.find("drivers", external_id="b")
+    assert "b" not in driver_aliases(storage.find("drivers", external_id="a"))
+    assert storage.canonical_driver_id("b") == "b"
+
+
+def test_merge_keeps_schedule_rows_with_own_driver(tmp_path):
+    """Reja qatorining JSON'i boshqa haydovchini ko'rsatsa — tegmaymiz."""
+    st = _raw_storage(tmp_path)
+    st.upsert("drivers", ["external_id"], _driver("a", "IVANOV IVAN IVANOVICH"))
+    st.upsert("drivers", ["external_id"], _driver("b", "IVANOV IVAN IVANOVICH"))
+    st.save_schedule(date="2026-11-02", route_id="r1", graph_name="P9",
+                     driver_id="a", data={"driverId": "a"})
+    st.save_schedule(date="2026-11-03", route_id="r1", graph_name="P9",
+                     driver_id="b", data={"driverId": "boshqa-haydovchi"})
+
+    report = merge_drivers_by_tin(st)
+    assert report["merged_rows"] == 0
+    assert report["skipped"] == 1
+    rows = st.query("SELECT driver_id FROM schedules ORDER BY date")
+    assert [r["driver_id"] for r in rows] == ["a", "b"]
+    assert len(st.query("SELECT external_id FROM drivers")) == 2
+
+
+def test_save_driver_ignores_masked_tin(storage):
+    """`31******33` kabi maska JSHSHR emas — saqlanmaydi."""
+    storage.save_driver(external_id="a", full_name="A", tin="31******33", data={})
+    assert storage.find("drivers", external_id="a")["tin"] == ""
+
+

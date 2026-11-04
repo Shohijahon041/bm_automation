@@ -15,10 +15,16 @@ from __future__ import annotations
 import os
 import tempfile
 import threading
+import warnings
 from pathlib import Path
 
 import openpyxl
 from openpyxl.styles import Alignment, Font, Border, Side, PatternFill
+
+# BM export shablonlarida default style yo'q; openpyxl buni har o'qishda
+# stderr'ga yozadi — zararsiz, lekin log shovqini.
+warnings.filterwarnings(
+    "ignore", message="Workbook contains no default style", category=UserWarning)
 
 from .excel_cells import set_cell
 
@@ -44,6 +50,7 @@ def fill_export_workbook(template_bytes: bytes, date_label: str,
                                         prefix=f"graph_export_{threading.get_ident()}_")
     os.close(fd)
     tmp = Path(tmp_path_str)
+    wb = None
     try:
         tmp.write_bytes(template_bytes)
 
@@ -224,6 +231,11 @@ def fill_export_workbook(template_bytes: bytes, date_label: str,
         wb.save(out_path)
     finally:
         # ★ Har doim vaqtinchalik faylni tozalash
+        if wb is not None:
+            try:
+                wb.close()
+            except Exception:  # noqa: BLE001
+                pass
         try:
             tmp.unlink(missing_ok=True)
         except OSError:

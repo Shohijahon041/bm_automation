@@ -69,6 +69,31 @@ RETRY_JITTER = 0.15
 # POST takrorlanmaydi — ikkilamchi yozuv (dublikat) xavfi tufayli.
 _IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
 
+# `get-token-by-profile` rad etgan profileId'lar (401/403). Har so'rovda
+# qayta sinash kuniga yuzlab 401 va WARNING qo'shadi (AND ECO kabi
+# profillar BM tomonida mavjud emas) — rad etilgan profil qisqa vaqtga
+# eslab qolinadi va asosiy token bilan davom etiladi.
+PROFILE_REJECT_TTL_S = float(os.getenv("BM_PROFILE_REJECT_TTL_S", "900"))
+_rejected_profiles: dict[str, float] = {}
+
+# Refresh 401 bo'lsa boshqa jarayonning yangi refresh'ini fayldan kutish
+# vaqti (sekund). BM refresh tokenni bir marta ishlatadi — kim oldin
+# yozsa, keyingisi shuni oladi.
+REFRESH_FILE_WAIT_S = float(os.getenv("BM_REFRESH_FILE_WAIT_S", "2.0"))
+REFRESH_FILE_POLL_S = 0.4
+
+
+def _remember_rejected_profile(pid: str) -> None:
+    now = time.time()
+    if len(_rejected_profiles) > 50:
+        for stale in [k for k, v in _rejected_profiles.items() if v <= now]:
+            _rejected_profiles.pop(stale, None)
+    _rejected_profiles[pid] = now + PROFILE_REJECT_TTL_S
+
+
+def _profile_rejected(pid: str) -> bool:
+    return _rejected_profiles.get(pid, 0.0) > time.time()
+
 # Log yoki exception'ga tushganda yashiradigan kalitlar.
 _SENSITIVE_KEYS = frozenset({
     "password", "oldpassword", "newpassword", "passcode", "secret",
@@ -141,6 +166,9 @@ class BMClient:
         )
         self.access_token: Optional[str] = None
         self.refresh_token: Optional[str] = None
+        # `login_by_profile` bilan olingan token: qaysi profil (kompaniya)
+        # ekani — 401'da shu profilga qaytish uchun.
+        self.profile_id: Optional[str] = None
         self.logger: logging.Logger = get_logger("bm_automation.http")
         # Bir nechta so'rovdan iborat bajarilish uchun session-level ID.
         self.correlation_id: str = uuid.uuid4().hex
@@ -226,6 +254,10 @@ class BMClient:
 
         `BM_BROWSER_LOGIN=off` bo'lsa brauzer umuman ochilmaydi — buning
         o'rniga tokenlarni qo'lda yangilash haqida aniq xato beriladi.
+
+        Kredensiallar SHU clientning config'idan olinadi: kompaniya clienti
+        adminning `.env` hisob-kirimi bilan login qilsa, kompaniya token
+        fayliga boshqa kompaniyaning tokeni yoziladi (ma'lumot aralashadi).
         """
         from ..config.settings import browser_login_enabled
 
@@ -234,12 +266,25 @@ class BMClient:
                 "avtorizatsiya talab qilinadi: tokenlar yangilanmadi "
                 "(refresh/password 401). `python -m bm_automation login-browser` "
                 "ni ruxsat etilgan IP'da ishga tushiring"))
+
+        username = str(getattr(self.config, "username", "") or "")
+        password = str(getattr(self.config, "password", "") or "")
+        if not (username and password):
+            # Kreditrarsiz headless brauzer faqat 300 s kutib, baribir
+            # javobsiz qoladi — darhol aniq xato beramiz.
+            raise BMAuthError(401, message=(
+                "OneID brauzer login uchun login/parol kerak: `python -m "
+                "bm_automation login-browser --company \"%s\" --visible`"
+                % (getattr(self.config, "organization", "") or "asosiy")))
+
         from ..auth.browser_login import browser_login
 
         # Token AYNAN shu clientning fayliga yoziladi: kompaniya clienti
         # brauzer orqali login qilsa, asosiy `tokens.json` (boshqa
         # kompaniyaning tokeni) ustidan yozilmaydi.
-        browser_login(headless=True, timeout=300,
+        browser_login(username=username, password=password,
+                      organization=str(getattr(self.config, "organization", "") or ""),
+                      headless=True, timeout=300,
                       token_path=str(self.token_path) if self.token_path else None)
 
     @staticmethod
@@ -273,6 +318,9 @@ class BMClient:
 
         Token faqat xotirada o'rnatiladi, tokens.json YOZILMAYDI — aks holda
         asosiy (OneID) token muddatidan oldin bekor bo'lib qoladi.
+        `refresh_token` ham SHU asosiy tokenda qoladi: profil javobidagi
+        refresh qabul qilinsa, keyingi `_refresh()` uni tokens.json ga
+        yozib, boshqa kompaniyaning tokenini asosiy faylga aralashtiradi.
         """
         url = f"{self.config.base_url}{USER_MGMT}/user-profile/get-token-by-profile/{profile_id}"
         cid = self._new_cid()
@@ -283,8 +331,8 @@ class BMClient:
         data = self._parse(resp, cid=cid)
         if isinstance(data, dict) and data.get("access_token"):
             self.access_token = data["access_token"]
-            self.refresh_token = data.get("refresh_token", self.refresh_token)
             self.session.headers["Authorization"] = f"Bearer {self.access_token}"
+            self.profile_id = str(profile_id or "").strip() or self.profile_id
         else:
             raise BMAuthError(200, message="get-token-by-profile javobi noto'g'ri")
 
@@ -300,11 +348,21 @@ class BMClient:
         pid = str(profile_id or "").strip()
         if not pid:
             return
+        # Hozirgi so'rov SHU kompaniyaga tegishli — 401'dan keyin shu
+        # profilga qaytish kerak (aks holda eski profil tokeni yangi
+        # kompaniya so'rovlariga aralashadi).
+        self.profile_id = pid
+        if fallback_to_main and _profile_rejected(pid):
+            self.logger.debug(
+                "profil tokeni avval rad etilgan (%s) — asosiy token bilan "
+                "davom etiladi", pid[:8])
+            return
         try:
             self.login_by_profile(pid)
         except BMAuthError as exc:
             if not fallback_to_main:
                 raise
+            _remember_rejected_profile(pid)
             self.logger.warning(
                 "profil tokeni olinmadi (%s) — asosiy token bilan davom "
                 "etiladi", exc)
@@ -315,6 +373,7 @@ class BMClient:
             status = getattr(exc, "status", 0) or 0
             if not fallback_to_main or status not in (401, 403):
                 raise
+            _remember_rejected_profile(pid)
             self.logger.warning(
                 "profil tokeni olinmadi (%s) — asosiy token bilan davom "
                 "etiladi", exc)
@@ -369,6 +428,30 @@ class BMClient:
             raise
         return result
 
+    def _adopt_rotated_refresh(self) -> bool:
+        """Boshqa jarayon refresh qilgan bo'lsa — fayldan yangi refresh oladi.
+
+        BM refresh tokenni har ishlatishda almashtiradi (single-use). Bot,
+        dashboard va systemd task'ları bitta tokens.json'ni baham ko'radi:
+        ikki jarayon bir vaqtda eskirgan refresh yuborsa ikkinchisi 401
+        oladi. G'olib tokenni faylga bir necha yuz ms ichida yozadi — shu
+        qisqa kutish brauzer loginigacha borishning oldini oladi.
+        """
+        deadline = time.time() + REFRESH_FILE_WAIT_S
+        while True:
+            data = load_tokens(path=self.token_path) or {}
+            fresh = data.get("refresh_token")
+            if fresh and fresh != self.refresh_token:
+                self.refresh_token = fresh
+                access = data.get("access_token")
+                if access:
+                    self.access_token = access
+                    self.session.headers["Authorization"] = f"Bearer {access}"
+                return True
+            if time.time() >= deadline:
+                return False
+            time.sleep(REFRESH_FILE_POLL_S)
+
     def _refresh(self) -> None:
         """Refresh token orqali yangi access token oladi va saqlaydi.
 
@@ -392,15 +475,12 @@ class BMClient:
                 raise BMAuthError(401, message="refresh so'rovi tarmoq xatosi") from exc
             self._monitor(cid=cid, method="POST", url=url,
                           status=resp.status_code, duration_ms=(time.monotonic() - start) * 1000)
-            if resp.status_code != 401 or attempt:
+            if resp.status_code != 401:
                 break
-            data = load_tokens(path=self.token_path)
-            fresh = (data or {}).get("refresh_token")
-            if not fresh or fresh == self.refresh_token:
+            if attempt or not self._adopt_rotated_refresh():
                 break
             self.logger.warning("refresh boshqa jarayon tomonidan aylantirilgan — "
                                 "yangilangan token bilan qayta urinilmoqda")
-            self.refresh_token = fresh
         try:
             data = self._parse(resp, cid=cid)
         except BMApiError as exc:
@@ -414,24 +494,54 @@ class BMClient:
         self.set_tokens(new_access, new_refresh)
 
     def _refresh_or_relogin(self) -> None:
-        """401'da: avval refresh; ishlamasa password login; so'ngra OneID."""
+        """401'da: avval refresh; ishlamasa password login; so'ngra OneID.
+
+        Brauzer bir marta ochiladi: `login()` ichida ham brauzer zaxirasi
+        bor, shu yerda u vaqtincha o'chirib turadi (aks holda muvaffaqiyatsiz
+        401 sikli ikki marta Chromium ochib xotirani ishlatardi).
+        """
         try:
             self._refresh()
-        except Exception:
-            self.logger.warning("refresh token ishlamadi; qayta login qilinmoqda")
+        except Exception as exc:  # noqa: BLE001 - har qanday xatoda qayta login
+            self.logger.warning("refresh token ishlamadi (%s); qayta login qilinmoqda", exc)
             if not self.auto_relogin:
-                raise
+                raise BMAuthError(401, message="token yangilab bo'lmadi") from exc
+            saved, self.auto_relogin = self.auto_relogin, False
             try:
                 # To'g'ridan-to'g'ri username/password bilan qayta login —
                 # OneID brauzer oqimi (id.egov.uz) sekin va noqulay, u faqat
                 # oxirgi chora.
                 self.login(force=True)
-            except Exception:
-                self.logger.warning("password login ham ishlamadi; OneID brauzer login uriniladi")
+            except Exception as pw_exc:  # noqa: BLE001
+                self.logger.warning("password login ham ishlamadi (%s); "
+                                    "OneID brauzer login uriniladi", pw_exc)
                 self._browser_relogin()
                 self.load_tokens_from_file()
                 if not self.access_token:
-                    raise BMAuthError(401, message="OneID login access token bermadi")
+                    raise BMAuthError(
+                        401, message="OneID login access token bermadi") from pw_exc
+            finally:
+                self.auto_relogin = saved
+        # Profil (kompaniya) tokeni bilan ishlaydigan client: token
+        # yangilanganidan keyin profil tokenini qayta oling — aks holda
+        # so'rov asosiy (boshqa kompaniya) scope'i bilan ketadi.
+        self._restore_profile_token()
+
+    def _restore_profile_token(self) -> None:
+        """Profil scoped client uchun profil tokenini qayta oladi.
+
+        `login_for_profile` orqali: rad etilgan profil qayta takrorlanmaydi
+        va 401/403 bo'lsa asosiy token bilan davom etadi.
+        """
+        pid = self.profile_id
+        if not pid:
+            return
+        try:
+            self.login_for_profile(pid)
+        except Exception as exc:  # noqa: BLE001 - asosiy token ham ishlaydi
+            self.logger.warning(
+                "profil tokeni qayta olinmadi (%s) — asosiy token bilan "
+                "davom etiladi", exc)
 
     def _ensure_auth(self) -> None:
         if not self.access_token:

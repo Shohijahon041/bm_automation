@@ -581,3 +581,31 @@ def test_detect_company_fields_requires_super_admin(env):
         headers={**_mk(env, "boss", "ADMIN"), "Content-Length": str(len(body))},
         body=body)
     assert status == 403 and data.get("ok") is False
+
+
+def test_warn_foreign_token_skips_same_company(monkeypatch, caplog):
+    """Firma nomi qo'shtirnoqli formatda bo'lsa ham yolg'on ogohlantirish yo'q."""
+    monkeypatch.setattr(companies_mod, "load_tokens",
+                        lambda path=None: {"organization": "\u201cASL SUNDAY\u201d MCHJ"})
+
+    class C:
+        token_path = "x.json"
+
+    with caplog.at_level("WARNING", logger="bm_automation.companies"):
+        companies_mod._warn_foreign_token("ASL SUNDAY MCHJ", C())
+    assert not caplog.records
+
+
+def test_warn_foreign_token_logs_other_company(monkeypatch, caplog):
+    """Boshqa firma tokeni ishlatilsa — sabab va tuzatish buyrug'i log bo'ladi."""
+    monkeypatch.setattr(companies_mod, "load_tokens",
+                        lambda path=None: {"organization": "AND ECO TRANSPORT MCHJ"})
+
+    class C:
+        token_path = "x.json"
+
+    with caplog.at_level("WARNING", logger="bm_automation.companies"):
+        companies_mod._warn_foreign_token("ASL SUNDAY MCHJ", C(), error="401")
+    assert len(caplog.records) == 1
+    msg = caplog.records[0].getMessage()
+    assert "401" in msg and "login-browser" in msg

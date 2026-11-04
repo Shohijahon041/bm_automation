@@ -26,6 +26,23 @@ def test_has_failures_no_group_is_not_failure():
                            "no_group": True}]) is False
 
 
+def test_has_failures_already_sent_is_not_failure():
+    """Allaqachon yuborilgan jadval/oylik — xato emas."""
+    assert _has_failures([{"image": "x.png", "sent": False, "already_sent": True}]) is False
+    assert _has_failures([{"monthly_excel": "x.xlsx", "monthly_sent": False,
+                           "monthly_already_sent": True}]) is False
+    assert _has_failures([{"monthly_excel": "x.xlsx", "monthly_sent": False,
+                           "already_sent": True}]) is False
+
+
+def test_automation_logger_has_failures_handles_already_sent():
+    from bm_automation.app.db.sync import AutomationLogger
+    assert AutomationLogger._has_failures([{"image": "x.png", "sent": False, "already_sent": True}]) is False
+    assert AutomationLogger._has_failures([{"image": "x.png", "sent": False, "no_group": True}]) is False
+    assert AutomationLogger._has_failures([{"monthly_excel": "x.xlsx", "monthly_sent": False,
+                                            "monthly_already_sent": True}]) is False
+
+
 def _sheet_env(monkeypatch, tmp_path, admin_targets):
     """driver_sheet_service send testlari uchun izolyatsiya."""
     from bm_automation.app.notifications import telegram as tg
@@ -143,6 +160,71 @@ def test_run_sheet_no_targets_no_group(monkeypatch, tmp_path):
     assert res["sent"] is False
     assert res["no_group"] is True
     assert sent == []
+
+
+def test_run_sheet_partial_send_failure_isolated(monkeypatch, tmp_path):
+    """Bitta chatga yuborishdagi xato qolgan chatlarni bloklamasin.
+
+    AGENTS.md: individual bildirishnoma xatolari butun kunlik avto-ishni
+    ERRORga aylantirmasligi kerak (masalan chat egasi botni bloklagan).
+    """
+    from bm_automation.app.notifications import telegram as tg
+
+    dss_mod, client, duty, sent = _sheet_env(
+        monkeypatch, tmp_path, ["-100BLOK", "-100ADMIN"])
+
+    def _photo(f, caption="", chat_id=None, **kw):
+        if str(chat_id) == "-100BLOK":
+            raise RuntimeError("bot bloklangan")
+        sent.append(chat_id)
+        return True
+
+    monkeypatch.setattr(tg, "send_photo", _photo)
+    res = dss_mod.run(client, "r-ferg", date_str="2026-10-01",
+                      out_dir=str(tmp_path), send=True, chat_id=None,
+                      duty_data=duty)
+    assert sent == ["-100ADMIN"]            # qolgan chat yetib bordi
+    assert res["sent"] is True
+    assert res["send_errors"]
+
+    # Ikkinchi urinish: faqat bloklangan qoladi — kun baribir yetgan,
+    # shuning uchun ERROR emas (already_sent).
+    res2 = dss_mod.run(client, "r-ferg", date_str="2026-10-01",
+                       out_dir=str(tmp_path), send=True, chat_id=None,
+                       duty_data=duty)
+    assert res2["already_sent"] is True
+    assert _has_failures([dict(res2, image="x.png")]) is False
+
+
+def test_norm_time_orders_and_prefers_real_start():
+    from bm_automation.app.services.driver_sheet_service import (
+        _norm_time, _starts_earlier)
+
+    assert _norm_time("9:5") == "09:05"      # qisqartirilgan yozuv
+    assert _norm_time("06:30:00") == "06:30"
+    assert _starts_earlier("06:00", "") is True    # bo'sh vaqt yutmasligi kerak
+    assert _starts_earlier("", "06:00") is False
+    assert _starts_earlier("07:00", "06:00") is False
+
+
+def test_cmd_daily_exit_code_reflects_errors(monkeypatch, capsys):
+    """Buzilgan kun systemd'ga 0 bilan 'muvaffaqiyatli' bo'lib ketmasin."""
+    from types import SimpleNamespace
+
+    from bm_automation.cli import commands
+
+    args = SimpleNamespace(no_send=True, chat="", month_offset=0, offset=0,
+                           no_fresh_login=True, attempts=1, delay=0,
+                           only="", trigger="cli")
+
+    monkeypatch.setattr("bm_automation.app.services.daily_service.run_daily",
+                        lambda **kw: [{"profile": "AND ECO", "error": "HTTP 401"}])
+    assert commands.cmd_daily(args) == 1
+    assert "AND ECO" in capsys.readouterr().err
+
+    monkeypatch.setattr("bm_automation.app.services.daily_service.run_daily",
+                        lambda **kw: [{"image": "x.png", "sent": True}])
+    assert commands.cmd_daily(args) == 0
 
 
 def test_auth_error_detection():

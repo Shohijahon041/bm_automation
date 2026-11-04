@@ -89,6 +89,10 @@ def load_profiles() -> dict:
             data = json.load(fh)
     except (json.JSONDecodeError, OSError):
         data = copy.deepcopy(DEFAULT_PROFILES)
+    if not isinstance(data, dict):
+        # Fayl mazmuni ro'yxat/satr bo'lsa `data["profiles"]` TypeError
+        # berardi — defaults'ga qaytamiz.
+        data = copy.deepcopy(DEFAULT_PROFILES)
     if "profiles" not in data:
         data["profiles"] = []
     with _PROFILES_LOCK:

@@ -15,13 +15,14 @@ from ...core.sections import clean_sections
 from ..deps import (
     PAGE_KEYS, Scope, audit_event, client_ip,
     create_session, drop_session, drop_user_sessions, effective_pages,
-    hash_password, needs_rehash, optional_scope, password_error, user_tg,
+    hash_password, list_sessions, needs_rehash, optional_scope, password_error,
+    user_tg,
     is_super_username, login_allowed, login_fail, login_success,
     refresh_session_cookie, resolve_scope, session_user, super_admin_names,
     sync_env_admin_password, verify_password,
     invalidate_super_cache, invalidate_user_access,
-    _ROLE_RANK, _session_token_from_request, _dashboard_token,
-    request_is_https,
+    _ROLE_RANK, _session_token_from_headers, _session_token_from_request,
+    _dashboard_token, request_is_https,
 )
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -238,7 +239,7 @@ def login(body: LoginRequest, request: Request, response: Response):
         except Exception:  # noqa: BLE001
             pass
     token = create_session({"username": username, "id": user.get("id"),
-                            "role": role, "company": company})
+                            "role": role, "company": company}, request)
     audit_event("login.success", request, user=username, target=company,
                 detail=role)
 
@@ -261,6 +262,19 @@ def logout(request: Request, creds: HTTPAuthorizationCredentials | None = Depend
     result = _JR({"ok": True})
     result.delete_cookie("bm_session", path="/")
     return result
+
+
+@router.get("/api/sessions")
+def get_sessions(request: Request, scope: dict = Depends(Scope())):
+    """Faol sessiyalar: qurilma, brauzer, IP, oxirgi faollik.
+
+    ADMIN barcha foydalanuvchilarning sessiyalarini ko'radi, qolganlar
+    faqat o'zinikini. Sessiya tokenlari qaytarilmaydi.
+    """
+    token = _session_token_from_headers(request)
+    return {"ok": True,
+            "is_admin": bool(scope.get("is_admin")),
+            "sessions": list_sessions(scope, token)}
 
 
 @router.get("/api/me")

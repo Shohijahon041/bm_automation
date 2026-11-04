@@ -185,6 +185,8 @@ def get_settings(request: Request, scope: dict = Depends(Scope())):
             "show_driver_salary": bot_settings.show_driver_salary(),
             "auto_sync": bot_settings.auto_sync(),
             "auto_sync_interval_min": bot_settings.auto_sync_interval_min(),
+            "offline_notify": bot_settings.offline_notify(),
+            "problem_alerts_notify": bot_settings.problem_alerts_notify(),
             "departure_offset_min": bot_settings.departure_offset_min(),
             "audit": bot_settings.audit_log(10),
         },
@@ -253,6 +255,20 @@ async def update_settings(request: Request, scope: dict = Depends(Scope())):
             return {"ok": False, "error": "departure_offset_min noto'g'ri qiymat"}
         bot_settings.set_departure_offset_min(int(val))
         changed.append("departure_offset_min")
+
+    ofn = payload.get("offline_notify")
+    if ofn is not None:
+        if isinstance(ofn, str):
+            ofn = str(ofn).strip().lower() in ("1", "true", "yes", "on", "ha")
+        bot_settings.set_offline_notify(bool(ofn))
+        changed.append("offline_notify")
+
+    pan = payload.get("problem_alerts_notify")
+    if pan is not None:
+        if isinstance(pan, str):
+            pan = str(pan).strip().lower() in ("1", "true", "yes", "on", "ha")
+        bot_settings.set_problem_alerts_notify(bool(pan))
+        changed.append("problem_alerts_notify")
 
     rskm = payload.get("route_skm")
     if isinstance(rskm, dict):

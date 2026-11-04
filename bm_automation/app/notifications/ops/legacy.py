@@ -228,9 +228,10 @@ def load_pending_exports() -> dict:
 
 def save_pending_exports(data: dict) -> None:
     try:
+        from ...utils.io import atomic_write
         EXPORTS_STORE.parent.mkdir(parents=True, exist_ok=True)
-        EXPORTS_STORE.write_text(json.dumps(data, ensure_ascii=False, indent=2),
-                                 encoding="utf-8")
+        atomic_write(EXPORTS_STORE,
+                     json.dumps(data, ensure_ascii=False, indent=2))
     except Exception as exc:
         print(f"Exportlar store saqlanmadi: {exc}")
 

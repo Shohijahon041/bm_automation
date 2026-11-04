@@ -476,3 +476,21 @@ def test_settings_api_auto_sync_roundtrip(client):
     out2 = client.get("/api/settings").json()
     assert out2["global"]["auto_sync"] is False
     assert out2["global"]["auto_sync_interval_min"] == 15
+
+def test_sync_not_found_handles_404_cleanly(storage):
+    """HTTP 404 (har qanday shakli) ma'lumot yo'q deb qabul qilinadi, xato yozilmaydi."""
+    from bm_automation.app.api.client import BMApiError
+    from bm_automation.app.db.sync import _not_found, _safe_loop
+
+    exc = BMApiError(404, code="404", message="404")
+    assert _not_found(exc) is True
+    exc2 = BMApiError(404, code="TRIP_NOT_FOUND")
+    assert _not_found(exc2) is True
+    exc3 = BMApiError(404)
+    assert _not_found(exc3) is True
+
+    # _safe_loop 404'da error saqlamasligi va bo'sh SyncResult qaytarishi kerak
+    res = _safe_loop(storage, "waybills", lambda: (_ for _ in ()).throw(exc))
+    assert res.error == ""
+    assert storage.query("SELECT COUNT(*) as c FROM errors")[0]["c"] == 0
+

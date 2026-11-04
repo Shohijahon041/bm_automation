@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BM — GPS &amp; Video Kuzatuv</title>
+<meta name="referrer" content="strict-origin-when-cross-origin">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%234f46e5'/%3E%3Crect x='13' y='11' width='38' height='32' rx='7' fill='%23ffffff'/%3E%3Crect x='19' y='17' width='26' height='13' rx='3' fill='%234f46e5'/%3E%3Crect x='19' y='33' width='26' height='3' rx='1.5' fill='%23c7d2fe'/%3E%3Ccircle cx='23' cy='46' r='5' fill='%23ffffff'/%3E%3Ccircle cx='41' cy='46' r='5' fill='%23ffffff'/%3E%3Ccircle cx='23' cy='46' r='2' fill='%234f46e5'/%3E%3Ccircle cx='41' cy='46' r='2' fill='%234f46e5'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://unpkg.com" crossorigin>
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
@@ -351,7 +352,15 @@
   /* pleyer */
   .rec-player{position:sticky;top:14px}
   .rec-video-wrap{position:relative;background:#000;aspect-ratio:16/9}
-  .rec-video-wrap video{position:absolute;inset:0;width:100%;height:100%;display:block;object-fit:contain}
+  .rec-video-wrap video{position:absolute;inset:0;width:100%;height:100%;display:block;object-fit:contain;image-rendering:-webkit-optimize-contrast}
+  .cam .body video{image-rendering:-webkit-optimize-contrast}
+  .rec-video-wrap.vfilter-sharp video, .cam .body.vfilter-sharp video{filter:contrast(1.15) brightness(1.05) saturate(1.1);-webkit-filter:contrast(1.15) brightness(1.05) saturate(1.1)}
+  .rec-video-wrap.vfilter-bright video, .cam .body.vfilter-bright video{filter:brightness(1.28) contrast(1.15);-webkit-filter:brightness(1.28) contrast(1.15)}
+  .rec-video-wrap.vfilter-contrast video, .cam .body.vfilter-contrast video{filter:contrast(1.35) saturate(1.15);-webkit-filter:contrast(1.35) saturate(1.15)}
+  .rec-video-wrap.vfilter-mono video, .cam .body.vfilter-mono video{filter:grayscale(1) contrast(1.35) brightness(1.1);-webkit-filter:grayscale(1) contrast(1.35) brightness(1.1)}
+  .rec-video-wrap.vaspect-43, .cam .body.vaspect-43{aspect-ratio:4/3!important}
+  .rec-video-wrap.vaspect-169, .cam .body.vaspect-169{aspect-ratio:16/9!important}
+  .rec-video-wrap.vaspect-fill video, .cam .body.vaspect-fill video{object-fit:fill!important}
   .rec-ph{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
     text-align:center;padding:20px;background:radial-gradient(circle at 50% 35%,rgba(63,182,168,.12),rgba(6,10,18,.94));
     color:var(--muted);font-size:12px}
@@ -483,6 +492,36 @@
   .sc-head-ic svg{width:100%;height:100%;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
   #sel-card .sc-x{display:inline-flex}
   #sel-card .sc-x svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
+  /* Leaflet layer control dark theme */
+  .leaflet-control-layers {
+    background: rgba(15, 21, 36, 0.94) !important;
+    backdrop-filter: blur(10px) !important;
+    -webkit-backdrop-filter: blur(10px) !important;
+    color: #e6ecf5 !important;
+    border: 1px solid rgba(148, 163, 184, 0.22) !important;
+    border-radius: 10px !important;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45) !important;
+    font: 12.5px/1.4 system-ui, -apple-system, sans-serif !important;
+    padding: 8px 12px !important;
+  }
+  .leaflet-control-layers-toggle {
+    background-color: rgba(15, 21, 36, 0.9) !important;
+    border-radius: 8px !important;
+  }
+  .leaflet-control-layers label {
+    display: flex !important;
+    align-items: center !important;
+    gap: 7px !important;
+    margin-bottom: 6px !important;
+    cursor: pointer !important;
+    user-select: none !important;
+    font-weight: 500 !important;
+  }
+  .leaflet-control-layers input[type="radio"] {
+    cursor: pointer;
+    accent-color: #3fb6a8;
+  }
 </style>
 </head>
 <body>
@@ -776,6 +815,12 @@
       <label class="f">Gacha
         <input type="datetime-local" id="rec-to" step="1" aria-label="Tugash vaqti">
       </label>
+      <label class="f">Sifat
+        <select id="rec-stream-type" aria-label="Oqim sifati">
+          <option value="0" selected>HD (Asosiy oqim — yuqori)</option>
+          <option value="1">SD (Kichik oqim — tezkor)</option>
+        </select>
+      </label>
       <button class="btn primary" id="rec-load" onclick="loadRecList()"><i class="ic sm" data-ic="search"></i>Yozuvlarni topish</button>
     </div>
     <div class="rec-presets">
@@ -820,7 +865,7 @@
           <span class="muted" id="rec-pos"></span>
         </div>
         <div class="rec-video-wrap">
-          <video id="rec-video" controls muted playsinline></video>
+          <video id="rec-video" controls playsinline></video>
           <div class="rec-ph" id="rec-ph">
             <i class="ic" data-ic="hard-drive"></i>
             <b>Yozuv tanlanmagan</b>
@@ -835,6 +880,8 @@
         </div>
         <div class="rec-controls">
           <button class="btn primary sm" id="rec-play" onclick="recPlayToggle()" disabled><i class="ic sm" data-ic="pause"></i>Pauza</button>
+          <button class="btn sm" title="10 soniya orqaga" onclick="seekRecRel(-10)"><i class="ic sm" data-ic="rotate-ccw"></i>-10s</button>
+          <button class="btn sm" title="10 soniya oldinga" onclick="seekRecRel(10)"><i class="ic sm" data-ic="rotate-cw"></i>+10s</button>
           <button class="btn sm" onclick="recCtrl('rew')"><i class="ic sm" data-ic="rewind"></i>Orqaga</button>
           <button class="btn sm" onclick="recCtrl('fwd')"><i class="ic sm" data-ic="fast-forward"></i>Tez</button>
           <label class="muted">Tezlik <select id="rec-speed" onchange="setRecSpeed()">
@@ -845,6 +892,37 @@
           <button class="btn sm" title="To'liq ekran" aria-label="To'liq ekran" onclick="fullscreenVid('rec-video')"><i class="ic sm" style="margin:0" data-ic="maximize"></i></button>
           <span class="grow"></span>
           <button class="btn danger sm" id="rec-stop" onclick="stopRec()" disabled><i class="ic sm" data-ic="square"></i>To'xtatish</button>
+        </div>
+        <div class="rec-audio-bar" style="display:flex;align-items:center;gap:6px;margin-top:8px;padding:6px 10px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;flex-wrap:wrap">
+          <span class="muted" style="font-size:11px"><i class="ic sm" data-ic="volume-2"></i>Ovoz kuchaytirish:</span>
+          <button class="btn sm primary" id="rec-boost-1" onclick="setRecBoost(1.0)">100%</button>
+          <button class="btn sm" id="rec-boost-15" onclick="setRecBoost(1.5)">150%</button>
+          <button class="btn sm" id="rec-boost-2" onclick="setRecBoost(2.0)">200%</button>
+          <button class="btn sm" id="rec-boost-3" onclick="setRecBoost(3.0)">300%</button>
+          <span class="grow" style="flex:1"></span>
+          <label class="muted" style="font-size:11px;display:inline-flex;align-items:center;gap:5px;cursor:pointer">
+            <input type="checkbox" id="rec-auto-next" checked> Keyingi 10 min avto
+          </label>
+          <button class="btn sm" title="Vaqt belgisini saqlash" onclick="addRecBookmark()"><i class="ic sm" data-ic="bookmark"></i>Belgilash</button>
+        </div>
+        <div id="rec-bookmarks-wrap" style="display:none;margin-top:6px;padding:6px 10px;background:var(--panel2);border:1px solid var(--line);border-radius:8px">
+          <div class="muted" style="font-size:11px;margin-bottom:4px">📌 Saqlangan vaqt belgilari:</div>
+          <div id="rec-bookmarks-list" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+        </div>
+        <div class="rec-video-bar" style="display:flex;align-items:center;gap:6px;margin-top:6px;padding:6px 10px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;flex-wrap:wrap">
+          <span class="muted" style="font-size:11px"><i class="ic sm" data-ic="sliders"></i>Tasvir filtri:</span>
+          <button class="btn sm primary" id="rec-vfilt-none" onclick="setRecVideoFilter('none')">Standart</button>
+          <button class="btn sm" id="rec-vfilt-sharp" onclick="setRecVideoFilter('sharp')" title="Kontrast va aniqlikni oshirish">Tiniq (+Sharp)</button>
+          <button class="btn sm" id="rec-vfilt-bright" onclick="setRecVideoFilter('bright')" title="Qorong'i salonlar uchun yorug'lik">Yorug' (+Night)</button>
+          <button class="btn sm" id="rec-vfilt-contrast" onclick="setRecVideoFilter('contrast')" title="Yuqori kontrast">Kontrast</button>
+          <button class="btn sm" id="rec-vfilt-mono" onclick="setRecVideoFilter('mono')" title="Raqam, belgi va detallarni ko'rish">Monoxrom</button>
+          <span class="grow" style="flex:1"></span>
+          <span class="muted" style="font-size:11px">Proporsiya:</span>
+          <select id="rec-aspect" onchange="setRecAspect(this.value)" style="padding:2px 6px;font-size:11px">
+            <option value="169" selected>16:9</option>
+            <option value="43">4:3 (asl)</option>
+            <option value="fill">To'ldirish</option>
+          </select>
         </div>
         <div class="rec-note" id="rec-now-info">Qurilma xotirasidagi yozuv jonli oqim sifatida uzatiladi (0x9201). To'xtatilsa oqim qurilmada ham yopiladi.</div>
       </div>
@@ -1001,9 +1079,35 @@ var markers = {}, trajStart = null, trajEnd = null;
 var didFit = false; /* jonli fitBounds faqat birinchi yuklashda — refresh foydalanuvchi view'ini buzmasin */
 function initMaps() {
   if (map) return;
-  map = L.map('map', { zoomControl: false }).setView([41.2995, 69.2401], 12);
+  map = L.map('map', { zoomControl: false, attributionControl: false }).setView([41.2995, 69.2401], 12);
   L.control.zoom({ position: 'bottomleft' }).addTo(map);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' }).addTo(map);
+
+  var googleRoads = L.tileLayer('https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
+    maxZoom: 20,
+    subdomains: ['0', '1', '2', '3'],
+    attribution: '&copy; Google'
+  });
+
+  var googleHybrid = L.tileLayer('https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
+    maxZoom: 20,
+    subdomains: ['0', '1', '2', '3'],
+    attribution: '&copy; Google'
+  });
+
+  var esriStreets = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19,
+    attribution: '&copy; Esri'
+  });
+
+  googleRoads.addTo(map);
+
+  var baseMaps = {
+    "Google Ko'chalar": googleRoads,
+    "Google Sun'iy yo'ldosh": googleHybrid,
+    "ESRI Xarita": esriStreets
+  };
+  L.control.layers(baseMaps, null, { position: 'topright' }).addTo(map);
+
   trajLayer = L.layerGroup().addTo(map);   /* traektoriya + to'xtashlar + harakat markeri */
   map.on('click', onMapClick);              /* zona koordinatasini xaritadan tanlash */
 }
@@ -1236,7 +1340,7 @@ function renderMap() {
         iconSize: [0, 0], iconAnchor: [0, 0]
       })
     });
-    m.bindTooltip('<i class="ic sm">' + featherIcon("bus") + '</i>' + devLabel(d) + (rn ? ' · ' + rn : '') + ' · ' + (d.last_speed || 0).toFixed(0) + ' km/h' +
+    m.bindTooltip('<i class="ic sm">' + featherIcon("bus") + '</i>' + esc(devLabel(d)) + (rn ? ' · ' + esc(rn) : '') + ' · ' + (d.last_speed || 0).toFixed(0) + ' km/h' +
       (ag2 ? ' · ' + ag2 + ' oldin' : ''), { direction: 'top', offset: [0, -12] });
     m.on('click', (function (im) { return function () { selectBus(im); }; })(d.imei));
     if (cluster) cluster.addLayer(m); else m.addTo(map);
@@ -1521,7 +1625,7 @@ function durHm(sec) {
   return h + ' soat' + (r ? ' ' + r + ' daq' : '');
 }
 function stopLabel(st) {
-  return "To'xtash " + hm(st.start) + '–' + hm(st.end) + ' (' + durHm(st.duration_s) + ')' + (st.fence ? ' — ' + st.fence : '');
+  return "To'xtash " + hm(st.start) + '–' + hm(st.end) + ' (' + durHm(st.duration_s) + ')' + (st.fence ? ' — ' + esc(st.fence) : '');
 }
 function focusStop(i) {
   var st = curStops[i];
@@ -1989,10 +2093,17 @@ function delCam(id) { if (!confirm("Kamerani o'chirish?")) return; API.del('/api
 /* ============ JT1078 / CMSV6 4G kameralar (avto-aniqlangan) ============ */
 var jtStreams = [], jtDevices = [], jtSig = '', jtHlsMap = {};
 var jtRecent = [], jtStarting = {};
+var _serverMediaHost = '';
 /* sim -> oxirgi marta JT808 signal ro'yxatida ko'rilgan vaqt (ms). Kamera
    qayta ulanganda ro'yxatdan bir zum tushib qoladi — 60s "imtiyoz" bilan
    online/offline holati va video devori sakrab o'zgarmaydi. */
 var jtOnlineSeen = {}, JT_ONLINE_GRACE_MS = 60000;
+function _jtBind(sim) {
+  if (!sim) return {};
+  var s = String(sim);
+  var norm = s.replace(/^0+/, '');
+  return jtBindings[s] || jtBindings[norm] || {};
+}
 function fmtBytes(n) {
   n = n || 0;
   if (n < 1024) return n + ' B';
@@ -2002,22 +2113,43 @@ function fmtBytes(n) {
 function loadJtStreams() {
   API.get('/api/video/jt-streams').then(function (d) {
     var now = Date.now();
+    if (d && d.media_host) _serverMediaHost = d.media_host;
     jtStreams = (d.streams || []).map(function (s) { s._at = now; return s; });
     jtDevices = d.devices || [];
     var _nowMs = Date.now();
-    jtDevices.forEach(function (p) { jtOnlineSeen[String(p)] = _nowMs; });
+    jtDevices.forEach(function (p) {
+      var s = String(p);
+      jtOnlineSeen[s] = _nowMs;
+      jtOnlineSeen[s.replace(/^0+/, '')] = _nowMs;
+    });
     jtBindings = d.bindings || {};
     jtChannels = parseInt(d.camera_channels, 10) || 4;
     jtAssist = {};
-    (d.assist || []).forEach(function (a) { jtAssist[String(a.phone)] = a; });
+    (d.assist || []).forEach(function (a) {
+      var p = String(a.phone);
+      jtAssist[p] = a;
+      jtAssist[p.replace(/^0+/, '')] = a;
+    });
     jtRecent = (d.recent || []).map(function (s) { s._at = now; return s; });
+
+    /* Jonli boshlangan oqimlarning jtStarting bayrog'ini tozalash */
+    jtStreams.forEach(function (s) {
+      if (s.active && s.kind !== 'playback') {
+        var k = jtStartKey(s.sim, s.channel);
+        if (jtStarting[k]) {
+          delete jtStarting[k];
+          syncJtStarting(k);
+        }
+      }
+    });
+
     var st = document.getElementById('jt-status');
     if (st) {
       var bits = [];
       if (d.enabled === false) bits.push('JT808 o\'chirilgan');
       else {
         var tot = _jtDeviceUniverse().length;
-        var on = jtDevices.length;
+        var on = _jtOnlineCount();
         bits.push(tot ? (on + '/' + tot + ' kamera onlayn') : 'kamera yo\'q');
       }
       if (d.ffmpeg === false) bits.push('ffmpeg topilmadi');
@@ -2123,25 +2255,40 @@ function _jtShownStreams() {
    Shu orqali kamera oflayn bo'lsa ham kartasi ko'rinib turadi. */
 function _jtDeviceUniverse() {
   var m = {};
-  jtDevices.forEach(function (p) { m[String(p)] = 1; });
-  /* Imtiyoz oynasidagi qurilmalar ham ro'yxatda qoladi (signal sakrashi). */
+  var add = function (k) {
+    if (!k) return;
+    m[String(k)] = 1;
+  };
+  jtDevices.forEach(add);
   var tn = Date.now();
   Object.keys(jtOnlineSeen).forEach(function (p) {
-    if (tn - jtOnlineSeen[p] < JT_ONLINE_GRACE_MS) m[String(p)] = 1;
+    if (tn - jtOnlineSeen[p] < JT_ONLINE_GRACE_MS) add(p);
   });
-  Object.keys(jtBindings).forEach(function (p) { m[String(p)] = 1; });
-  Object.keys(jtAssist).forEach(function (p) { m[String(p)] = 1; });
-  jtStreams.forEach(function (s) { m[String(s.sim)] = 1; });
-  return Object.keys(m);
+  Object.keys(jtBindings).forEach(add);
+  Object.keys(jtAssist).forEach(add);
+  jtStreams.forEach(function (s) { add(s.sim); });
+
+  /* Simlar takrorlanmasligi (0 bilan va 0 siz) uchun normallashgan holda bittalab olamiz */
+  var normMap = {};
+  Object.keys(m).forEach(function (raw) {
+    var norm = raw.replace(/^0+/, '');
+    if (!normMap[norm] || raw.length > normMap[norm].length) {
+      normMap[norm] = raw;
+    }
+  });
+  var res = [];
+  Object.keys(normMap).forEach(function (k) { res.push(normMap[k]); });
+  return res;
 }
 function _jtIsOnline(sim) {
-  if (jtDevices.some(function (p) { return String(p) === String(sim); })) return true;
-  /* Kamera JT808 signal ulanishini qisqa-qisqa yangilaydi — bir poll'da
-     ro'yxatdan tushib qolsa karta "oflayn"ga sakrab, video devori qayta
-     qurilib, barcha pleyerlar uzilardi. Shu sababli qurilma 60s ichida
-     ko'rilgan bo'lsa ham onlayn hisoblanadi. */
-  var t = jtOnlineSeen[String(sim)];
+  if (!sim) return false;
+  var s = String(sim).replace(/^0+/, '');
+  if (jtDevices.some(function (p) { return String(p).replace(/^0+/, '') === s; })) return true;
+  var t = jtOnlineSeen[String(sim)] || jtOnlineSeen[s];
   return !!t && (Date.now() - t) < JT_ONLINE_GRACE_MS;
+}
+function _jtOnlineCount() {
+  return _jtDeviceUniverse().filter(_jtIsOnline).length;
 }
 function _jtShownDevices() {
   return _jtDeviceUniverse().filter(_jtCamOn);
@@ -2207,6 +2354,7 @@ function jtStreamCard(s) {
     '<div class="jt-diag" id="d-' + vid + '"></div>' +
     '<div class="foot"><span class="muted" id="b-' + vid + '">' + fmtBytes(s.bytes) + '</span>' +
     '<span class="grow"></span>' +
+    '<button class="btn sm" title="Tasvirni tiniqlashtirish / filtr" aria-label="Tasvir filtri" onclick="toggleJtFilter(\'' + vid + '\')"><i class="ic sm" style="margin:0">' + featherIcon("sun") + '</i></button>' +
     '<button class="btn sm" title="Kadr (rasm) sifatida saqlash" aria-label="Kadr sifatida saqlash" onclick="snapVideo(\'' + vid + '\')"><i class="ic sm" style="margin:0">' + featherIcon("camera") + '</i></button>' +
     '<button class="btn sm" title="To\'liq ekran" aria-label="To\'liq ekran" onclick="fullscreenVid(\'' + vid + '\')"><i class="ic sm" style="margin:0">' + featherIcon("maximize") + '</i></button>' +
     '<button class="btn sm" onclick="openRec(\'' + esc(s.sim) + '\',' + s.channel + ')"><i class="ic sm">' + featherIcon("hard-drive") + '</i>Xotira</button>' +
@@ -2346,15 +2494,10 @@ function bindCameraTo(sim, vehicleId) {
     }).catch(function (e) { alert(e.message); });
 }
 function jtMediaHost() {
-  // Qurilma oqimni shu hostga yuboradi — bu serverga tashqaridan (internetdan)
-  // yetib boradigan manzil bo'lishi kerak. localhost/ichki IP bo'lsa, qurilma
-  // ulana olmaydi; shu sabab bunday holda bo'sh qaytaramiz (server
-  // JT1078_MEDIA_HOST dan foydalanadi).
+  if (_serverMediaHost) return _serverMediaHost;
   var h = (window.location.hostname || '').toLowerCase();
-  if (!h || h === 'localhost' || h === '127.0.0.1' || h === '::1'
-      || h.indexOf('192.168.') === 0 || h.indexOf('10.') === 0
-      || h.indexOf('172.') === 0 || h.indexOf('169.254.') === 0) return '';
-  return h;
+  if (h === 'bmbrutto.uz' || h === 'www.bmbrutto.uz') return 'bmbrutto.uz';
+  return 'bmbrutto.uz';
 }
 function jtStartKey(sim, ch) { return String(sim) + '_' + Number(ch); }
 function syncJtStarting(key) {
@@ -2367,31 +2510,47 @@ function syncJtStarting(key) {
     else el.removeAttribute('aria-busy');
   });
 }
-function startJtLive(sim, btn, chArg, stArg) {
+function startJtLive(sim, btn, chArg, stArg, silent) {
   var ch = parseInt(chArg, 10) || 0;
   if (!ch) {
     var sel = document.getElementById('ch-' + sim);
     ch = sel ? parseInt(sel.value, 10) : 1;
   }
   var key = jtStartKey(sim, ch);
-  if (jtStarting[key]) return jtStarting[key];
+  if (jtStarting[key] && jtStarting[key] !== true) return jtStarting[key];
   /* stArg: 0 = main (yuqori sifat, bitta kanal uchun), 1 = substream
      (past bitrate — qurilma bir vaqtda ko'proq kanal yubora oladi). */
   var st = (stArg === undefined || stArg === null) ? 0 : (parseInt(stArg, 10) || 0);
   if (btn) btn.setAttribute('data-jt-key', key);
   var request = API.post('/api/video/jt-live', { phone: sim, channel: ch, host: jtMediaHost(),
     stream_type: st }).then(function (d) {
-    if (d && d.ok === false) alert('Buyruq yuborilmadi: ' + (d.error || 'qurilma ulanmagan'));
-    setTimeout(loadJtStreams, 1500);
-    setTimeout(loadJtStreams, 4000);
-    setTimeout(loadJtStreams, 8000);
-  }).catch(function (e) { alert('Xato: ' + e.message); });
-  jtStarting[key] = request;
-  syncJtStarting(key);
-  request.then(function () {
+    if (d && d.ok === false) {
+      delete jtStarting[key];
+      syncJtStarting(key);
+      if (!silent) uiToast('Buyruq yuborilmadi: ' + (d.error || 'qurilma ulanmagan'));
+    } else {
+      /* Muvaffaqiyatli buyruq — kamera oqim boshlaguncha (15s) starting saqlanadi */
+      setTimeout(function () {
+        if (jtStarting[key] === request) {
+          delete jtStarting[key];
+          syncJtStarting(key);
+          sgRender();
+        }
+      }, 15000);
+    }
+    if (!silent) {
+      setTimeout(loadJtStreams, 1500);
+      setTimeout(loadJtStreams, 4000);
+      setTimeout(loadJtStreams, 8000);
+    }
+    return d;
+  }).catch(function (e) {
     delete jtStarting[key];
     syncJtStarting(key);
+    if (!silent) uiToast('Xato: ' + (e && e.message ? e.message : 'Ulanishda xato'));
   });
+  jtStarting[key] = request;
+  syncJtStarting(key);
   return request;
 }
 /* Shu qurilmaning BARCHA kanallarini birdan ochish.
@@ -2406,6 +2565,30 @@ function startJtAll(sim) {
   setTimeout(loadJtStreams, 8000);
 }
 function stopJtLive(sim, ch) {
+  var vid = 'jt-' + sim + '-' + ch;
+  if (jtHlsMap[vid]) {
+    _cleanDestroyFlv(jtHlsMap[vid]);
+    delete jtHlsMap[vid];
+  }
+  var v = document.getElementById(vid);
+  if (v) {
+    try { v.pause(); } catch (e) {}
+    v.removeAttribute('src');
+    try { v.load(); } catch (e) {}
+  }
+  var sgKey = 'sgv-' + sim;
+  if (sgPlayers[sgKey]) {
+    _cleanDestroyFlv(sgPlayers[sgKey]);
+    delete sgPlayers[sgKey];
+  }
+  delete streamMounts[vid];
+  delete flvRetry[vid];
+  delete _streamWatch[vid];
+  delete _streamRestart[vid];
+  delete streamMounts[sgKey];
+  delete flvRetry[sgKey];
+  delete _streamWatch[sgKey];
+  delete _streamRestart[sgKey];
   API.post('/api/video/jt-stop', { phone: sim, channel: ch }).then(function () {
     /* Server muxer'ni darhol yopdi — kartani kutmasdan yo'qotamiz. */
     jtSig = '';
@@ -2451,9 +2634,27 @@ function updateJtDiag() {
     if (d) d.innerHTML = jtDiagHtml(s);
   });
 }
+function _cleanDestroyFlv(p) {
+  if (!p) return;
+  try { p.pause(); } catch (e) {}
+  try { p.unload(); } catch (e) {}
+  try { p.detachMediaElement(); } catch (e) {}
+  try { p.destroy(); } catch (e) {}
+}
+function _cleanDestroyHls(h) {
+  if (!h) return;
+  try { h.stopLoad(); } catch (e) {}
+  try { h.detachMedia(); } catch (e) {}
+  try { h.destroy(); } catch (e) {}
+}
 function destroyJtPlayers() {
   Object.keys(jtHlsMap).forEach(function (k) {
-    try { if (jtHlsMap[k]) jtHlsMap[k].destroy(); } catch (e) {}
+    var p = jtHlsMap[k];
+    if (p) {
+      if (typeof p.unload === 'function') _cleanDestroyFlv(p);
+      else if (typeof p.stopLoad === 'function') _cleanDestroyHls(p);
+      else { try { p.destroy(); } catch (e) {} }
+    }
   });
   Object.keys(streamMounts).forEach(function (k) {
     if (streamMounts[k].map === jtHlsMap) { delete streamMounts[k]; delete flvRetry[k]; }
@@ -2568,7 +2769,7 @@ function mountStreamTo(s, v, key, map) {
      Birinchi so'rovni oqim ~2.5s yoshga to'lguncha kechiktiramiz —
      konsolda qizil xato chiqmaydi (priming ~0.6s + ffmpeg start). */
   var up = s._at ? _ageAt(s, 'uptime_s') : null;
-  var waitMs = (up === null) ? 0 : Math.max(0, 2500 - up * 1000);
+  var waitMs = (up === null) ? 2000 : Math.max(0, 2500 - up * 1000);
   if (waitMs > 50) {
     streamState(v, key, 'loading', 'Oqim tayyorlanmoqda…');
     setTimeout(function () {
@@ -2596,16 +2797,18 @@ function mountStreamTo(s, v, key, map) {
     });
     return;
   }
-  if (s.flv && window.flvjs && flvjs.isSupported && flvjs.isSupported()) {
+  var flvUrl = s.flv ? (s.flv + (s.flv.indexOf('?') >= 0 ? '&' : '?') + '_t=' + Date.now()) : null;
+  if (flvUrl && window.flvjs && flvjs.isSupported && flvjs.isSupported()) {
     try {
       var p = flvjs.createPlayer(
-        { type: 'flv', isLive: true, url: s.flv, cors: true },
+        { type: 'flv', isLive: true, url: flvUrl, cors: true },
         { enableWorker: false, enableStashBuffer: false, stashInitialSize: 128,
-          autoCleanupSourceBuffer: true, lazyLoad: false });
+          autoCleanupSourceBuffer: true, autoCleanupMaxBackwardDuration: 12,
+          autoCleanupMinBackwardDuration: 6, lazyLoad: false });
       p.attachMediaElement(v);
       p.on(flvjs.Events.ERROR, function () {
         // FLV uzilsa (muxer yopildi / server ishtamaydi) — HLS'ga qaytamiz.
-        try { p.destroy(); } catch (e) {}
+        _cleanDestroyFlv(p);
         if (map[key] !== p) return;
         delete map[key];
         // ZLMediaKit oqimni 1-2s kech ro'yxatga oladi; startdan keyingi
@@ -2613,8 +2816,8 @@ function mountStreamTo(s, v, key, map) {
         // cheklangan marta FLV'ni qayta so'raymiz.
         var n = (flvRetry[key] || 0) + 1;
         flvRetry[key] = n;
-        if (n <= 3 && v.isConnected) {
-          streamState(v, key, 'loading', 'Oqim tayyorlanmoqda…');
+        if (n <= 5 && v.isConnected) {
+          streamState(v, key, 'loading', 'Oqim tayyorlanmoqda (' + n + '/5)…');
           setTimeout(function () {
             if (!_mountAlive(key, v, map)) return;
             if (!v.isConnected || map[key]) return;
@@ -2635,9 +2838,30 @@ function mountStreamTo(s, v, key, map) {
 function mountHlsTo(s, v, key, map) {
   if (!s.hls) { streamState(v, key, 'error', 'Video manzili topilmadi'); return; }
   if (v.canPlayType('application/vnd.apple.mpegurl')) {
-    v.onerror = function () { streamState(v, key, 'error', 'Video oqimini yuklab bo‘lmadi'); };
-    v.src = s.hls;
-    v.play().catch(function () {});
+    var hlsRetries = 0;
+    var maxHlsRetries = 6;
+    var hlsTimer = null;
+    function tryNativeHls() {
+      v.onerror = function () {
+        hlsRetries++;
+        if (hlsRetries <= maxHlsRetries && v.isConnected && _mountAlive(key, v, map)) {
+          streamState(v, key, 'loading', 'Oqim tayyorlanmoqda (' + hlsRetries + '/' + maxHlsRetries + ')…');
+          if (hlsTimer) clearTimeout(hlsTimer);
+          hlsTimer = setTimeout(function () {
+            if (!_mountAlive(key, v, map) || !v.isConnected) return;
+            v.removeAttribute('src');
+            v.src = s.hls + (s.hls.indexOf('?') >= 0 ? '&' : '?') + '_t=' + Date.now();
+            try { v.load(); } catch (e) {}
+            v.play().catch(function () {});
+          }, 1200);
+          return;
+        }
+        streamState(v, key, 'error', 'Video oqimini yuklab bo‘lmadi');
+      };
+      v.src = s.hls + (s.hls.indexOf('?') >= 0 ? '&' : '?') + '_t=' + Date.now();
+      v.play().catch(function () {});
+    }
+    tryNativeHls();
     return;
   }
   if (!window.Hls) {
@@ -2656,11 +2880,15 @@ function mountHlsTo(s, v, key, map) {
   hls.on(Hls.Events.ERROR, function (ev, data) {
     if (!data || !data.fatal) return;
     hls._fatalRetries++;
-    if (hls._fatalRetries <= 2 && data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-      try { hls.startLoad(); } catch (e) {}
+    if (hls._fatalRetries <= 6 && (data.type === Hls.ErrorTypes.NETWORK_ERROR || (data.response && data.response.code === 404))) {
+      streamState(v, key, 'loading', 'Oqim tayyorlanmoqda (' + hls._fatalRetries + ')…');
+      setTimeout(function () {
+        if (!_mountAlive(key, v, map) || !v.isConnected) return;
+        try { hls.startLoad(); } catch (e) {}
+      }, 1200);
       return;
     }
-    if (hls._fatalRetries <= 2 && data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+    if (hls._fatalRetries <= 3 && data.type === Hls.ErrorTypes.MEDIA_ERROR) {
       try { hls.recoverMediaError(); } catch (e) {}
       return;
     }
@@ -2682,13 +2910,13 @@ function _sgVisible() {
   return !!b && b.style.display !== 'none';
 }
 function _sgName(sim) {
-  var b = jtBindings[sim] || {};
+  var b = _jtBind(sim);
   return b.plate || vidBusName(b.vehicle_id) || String(sim);
 }
 function sgDevices() {
-  /* Barcha kameralar: jonlilari panjarada video bilan, onlayn-holsizlari
-     "boshlash" plitkasi bilan, OFLAYNlari pastki bo'limda ko'rinadi. */
-  return _jtDeviceUniverse().filter(_jtCamOn).sort(function (a, b) {
+  /* Setka barcha kameralar devori — barcha ma'lum kameralar
+     (jtBindings + jtDevices + jtStreams) bir varaqda ko'rinadi. */
+  return _jtDeviceUniverse().sort(function (a, b) {
     return String(_sgName(a)).localeCompare(String(_sgName(b)), 'uz');
   });
 }
@@ -2816,6 +3044,8 @@ function sgUnmountTile(sim) {
       delete streamMounts[key];
     }
     delete flvRetry[key];
+    delete _streamWatch[key];
+    delete _streamRestart[key];
   }
   if (t.el && t.el.parentNode) t.el.parentNode.removeChild(t.el);
   delete sgTiles[sim];
@@ -2859,7 +3089,7 @@ function sgIdleTile(sim) {
 }
 /* Oflayn kamera qatori — panjarada joy olmaydi, pastki bo'limga tushadi. */
 function sgOffRow(sim) {
-  var b = jtBindings[sim] || {};
+  var b = _jtBind(sim);
   var a = jtAssist[String(sim)] || {};
   var seen = (a.last_seen_s != null)
     ? '<span class="muted" id="sgo-' + esc(sim) + '">oxirgi ko\'rinish: ' +
@@ -2922,10 +3152,20 @@ function sgClick(sim) {
 }
 function sgDestroyPlayers() {
   Object.keys(sgPlayers).forEach(function (k) {
-    try { if (sgPlayers[k]) sgPlayers[k].destroy(); } catch (e) {}
+    var p = sgPlayers[k];
+    if (p) {
+      if (typeof p.unload === 'function') _cleanDestroyFlv(p);
+      else if (typeof p.stopLoad === 'function') _cleanDestroyHls(p);
+      else { try { p.destroy(); } catch (e) {} }
+    }
   });
   Object.keys(streamMounts).forEach(function (k) {
-    if (streamMounts[k].map === sgPlayers) { delete streamMounts[k]; delete flvRetry[k]; }
+    if (streamMounts[k].map === sgPlayers) {
+      delete streamMounts[k];
+      delete flvRetry[k];
+      delete _streamWatch[k];
+      delete _streamRestart[k];
+    }
   });
   sgPlayers = {};
 }
@@ -2938,43 +3178,133 @@ function sgSetCh(c) {
   sgRenderCh();
   sgRender();
 }
-/* "Barchasini boshlash" — tanlangan kanaldagi barcha ONLAYN kameralarni
-   birdan ochadi (substream, yengil oqim). Allaqachon ochilganlar tegilmaydi;
-   startJtLive o'zi oqimlar ro'yxatini yangilab turadi. */
+/* "Barchasini boshlash" — Setka panjarasidagi barcha kameralarga
+   tanlangan kanal (sgCh) bo'yicha start buyrug'ini (substream) yuboradi. */
 function sgStartAll() {
-  var n = 0;
-  sgDevices().forEach(function (sim) {
-    if (!_jtIsOnline(sim) || jtChLive(sim, sgCh) || jtStarting[jtStartKey(sim, sgCh)]) return;
-    n++;
-    startJtLive(sim, null, sgCh, 1);
+  sgChSet = true; /* foydalanuvchi joriy kanalni tasdiqladi — _sgPoll o'zgartirmaydi */
+  var allDevs = sgDevices();
+  var targets = [];
+  allDevs.forEach(function (sim) {
+    if (!_jtIsOnline(sim)) return;
+    if (jtChLive(sim, sgCh)) return;
+    var k = jtStartKey(sim, sgCh);
+    if (jtStarting[k] && jtStarting[k] !== true) return;
+    targets.push(sim);
   });
-  if (!n) { uiToast('Ochiladigan onlayn kamera yo\'q'); return; }
-  uiToast('ch' + sgCh + ' — ' + n + ' kameraga buyruq yuborildi…');
+  if (!targets.length) {
+    var totalOnline = allDevs.filter(_jtIsOnline).length;
+    if (totalOnline === 0) {
+      uiToast('Hozirda onlayn kameralar yo\'q');
+    } else {
+      uiToast('Barcha onlayn kameralar allaqachon ochilgan yoki so\'ralmoqda');
+    }
+    return;
+  }
+  uiToast('ch' + sgCh + ' — ' + targets.length + ' ta onlayn kameraga buyruq yuborilmoqda…');
+
+  /* Har bir katakni DARHOL "SO'RALMOQDA" holatiga o'tkazamiz */
+  targets.forEach(function (sim) {
+    var key = jtStartKey(sim, sgCh);
+    jtStarting[key] = true;
+    syncJtStarting(key);
+  });
+  sgRender();
+
+  /* Buyruqlarni tezkor ketma-ketlikda (50ms) yuboramiz */
+  targets.forEach(function (sim, idx) {
+    setTimeout(function () {
+      startJtLive(sim, null, sgCh, 1, true);
+    }, idx * 50);
+  });
+
+  /* Barcha buyruqlar yuborilgach, koordinatsiyalashgan reload sikli */
+  var totalWait = targets.length * 50;
+  setTimeout(loadJtStreams, totalWait + 1200);
+  setTimeout(loadJtStreams, totalWait + 3000);
+  setTimeout(loadJtStreams, totalWait + 6000);
+  setTimeout(loadJtStreams, totalWait + 10000);
 }
+/* "Hammasini to'xtatish" — Setka panjarasidagi barcha jonli oqimlar va
+   boshlanayotgan so'rovlarni darhol to'xtatadi. */
 function sgStopAll() {
+  sgChSet = true;
   var sims = {};
+  /* 1) Barcha ma'lum kameralar */
+  sgDevices().forEach(function (sim) { sims[String(sim)] = 1; });
+  /* 2) Ochiq oqimlar */
   jtStreams.forEach(function (s) {
     if (s.kind === 'playback') return;
-    if (Number(s.channel) === sgCh) sims[String(s.sim)] = 1;
+    sims[String(s.sim)] = 1;
   });
+  /* 3) Setka pleyerlari */
+  Object.keys(sgPlayers).forEach(function (k) {
+    var sim = k.replace(/^sgv-/, '');
+    if (sim) sims[sim] = 1;
+  });
+  /* 4) Boshlanish arafasidagilar (k = "SIM_CH") */
+  Object.keys(jtStarting).forEach(function (k) {
+    var parts = k.split('_');
+    if (parts.length >= 2) sims[parts[0]] = 1;
+  });
+
   var ks = Object.keys(sims);
-  if (!ks.length) { loadJtStreams(); return; }
-  /* Kartani kutmasdan darhol tushiramiz (stopJtAll kabi). */
+  if (!ks.length) {
+    sgResetTiles();
+    sgRender();
+    loadJtStreams();
+    uiToast('To\'xtatish uchun faol oqim yo\'q');
+    return;
+  }
+
+  uiToast(ks.length + ' ta kamera to\'xtatilmoqda…');
+
+  /* UI va pleyerlarni kechiktirmasdan darhol tozalaymiz */
+  sgDestroyPlayers();
+  sgResetTiles();
+
+  /* jtStarting bayroqlarini va streamMounts larni bekor qilamiz */
+  ks.forEach(function (sim) {
+    for (var c = 1; c <= 8; c++) {
+      var k = jtStartKey(sim, c);
+      delete jtStarting[k];
+      syncJtStarting(k);
+    }
+    var sgKey = 'sgv-' + sim;
+    delete streamMounts[sgKey];
+    delete flvRetry[sgKey];
+    delete _streamWatch[sgKey];
+    delete _streamRestart[sgKey];
+  });
+
   jtSig = '';
   jtStreams = jtStreams.filter(function (s) {
     return !(s.kind !== 'playback' && Number(s.channel) === sgCh);
   });
   renderJtStreams();
-  Promise.all(ks.map(function (sim) {
-    return API.post('/api/video/jt-stop', { phone: sim, channel: sgCh }).catch(function () {});
-  })).then(function () { loadJtStreams(); setTimeout(loadJtStreams, 1500); });
+  sgRender();
+
+  /* Har bir kameraga stop buyrug'ini tezkor yuboramiz (50ms oralig'i bilan) */
+  ks.forEach(function (sim, idx) {
+    setTimeout(function () {
+      API.post('/api/video/jt-stop', { phone: sim, channel: sgCh }).catch(function () {});
+    }, idx * 50);
+  });
+
+  var totalWait = ks.length * 50;
+  setTimeout(function () {
+    loadJtStreams();
+    sgRender();
+  }, totalWait + 800);
+  setTimeout(function () {
+    loadJtStreams();
+    sgRender();
+  }, totalWait + 2000);
 }
 function _sgPoll() {
   if (!_sgVisible()) return;
-  /* Avto-kanal: joriy kanalda jonli oqim yo'q bo'lsa (va foydalanuvchi
-     qo'lda kanal tanlamagan bo'lsa) eng ko'p oqimli kanalga o'tamiz —
-     ko'pchilik qurilmalar videoni faqat bitta kanalda (masalan ch3) beradi. */
-  if (!sgChSet) {
+  /* Avto-kanal: faqat foydalanuvchi kanal tanlamagan va so'rovlar in-flight bo'lmaganda */
+  var hasStarting = Object.keys(jtStarting).length > 0;
+  if (!sgChSet && !hasStarting) {
     var liveC = _sgLiveChannelCounts();
     if (!liveC[sgCh]) {
       var bc = _sgBestChannel();
@@ -3046,6 +3376,154 @@ var recRange = null;                 /* so'ralgan oraliq: {a: epoch_ms, b: epoch
 var recPollTimer = null, recReqSeq = 0;
 var recHls = null, recFlv = null, recWait = null, recWaitN = 0;
 var recVideoBound = false, recPlaying = false, recTick = null;
+var recAudioCtx = null, recGainNode = null, recSourceNode = null, recCurrentBoost = 1.0;
+var recBookmarks = [];
+var recCurrentFilter = 'none', recCurrentAspect = '169';
+
+function setRecVideoFilter(name) {
+  recCurrentFilter = name || 'none';
+  var wrap = document.getElementById('rec-player-card') ? document.getElementById('rec-player-card').querySelector('.rec-video-wrap') : null;
+  if (!wrap) return;
+  wrap.classList.remove('vfilter-sharp', 'vfilter-bright', 'vfilter-contrast', 'vfilter-mono');
+  if (name !== 'none') wrap.classList.add('vfilter-' + name);
+  var fMap = { 'none': 'rec-vfilt-none', 'sharp': 'rec-vfilt-sharp', 'bright': 'rec-vfilt-bright', 'contrast': 'rec-vfilt-contrast', 'mono': 'rec-vfilt-mono' };
+  Object.keys(fMap).forEach(function (k) {
+    var el = document.getElementById(fMap[k]);
+    if (el) el.classList.toggle('primary', recCurrentFilter === k);
+  });
+}
+
+function setRecAspect(aspect) {
+  recCurrentAspect = aspect || '169';
+  var wrap = document.getElementById('rec-player-card') ? document.getElementById('rec-player-card').querySelector('.rec-video-wrap') : null;
+  if (!wrap) return;
+  wrap.classList.remove('vaspect-169', 'vaspect-43', 'vaspect-fill');
+  wrap.classList.add('vaspect-' + recCurrentAspect);
+}
+
+function toggleJtFilter(vid) {
+  var v = document.getElementById(vid);
+  if (!v) return;
+  var b = v.closest('.body');
+  if (!b) return;
+  if (!b.classList.contains('vfilter-sharp') && !b.classList.contains('vfilter-bright') && !b.classList.contains('vfilter-contrast')) {
+    b.classList.add('vfilter-sharp');
+    if (typeof uiToast === 'function') uiToast('Tasvir: Tiniq (+Sharp)');
+  } else if (b.classList.contains('vfilter-sharp')) {
+    b.classList.remove('vfilter-sharp');
+    b.classList.add('vfilter-bright');
+    if (typeof uiToast === 'function') uiToast("Tasvir: Yorug' (+Night/Bright)");
+  } else if (b.classList.contains('vfilter-bright')) {
+    b.classList.remove('vfilter-bright');
+    b.classList.add('vfilter-contrast');
+    if (typeof uiToast === 'function') uiToast('Tasvir: Yuqori kontrast');
+  } else {
+    b.classList.remove('vfilter-contrast');
+    if (typeof uiToast === 'function') uiToast('Tasvir: Standart');
+  }
+}
+
+function initRecAudioBoost() {
+  var v = document.getElementById('rec-video');
+  if (!v) return;
+  try { v.muted = false; } catch (e) {}
+  if (!recAudioCtx) {
+    try {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      recAudioCtx = new AC();
+      recSourceNode = recAudioCtx.createMediaElementSource(v);
+      recGainNode = recAudioCtx.createGain();
+      recGainNode.gain.value = recCurrentBoost;
+      recSourceNode.connect(recGainNode);
+      recGainNode.connect(recAudioCtx.destination);
+    } catch (e) {
+      console.warn('Rec audio boost xatosi:', e);
+    }
+  }
+  if (recAudioCtx && recAudioCtx.state === 'suspended') {
+    recAudioCtx.resume().catch(function () {});
+  }
+}
+
+function setRecBoost(val) {
+  recCurrentBoost = Number(val) || 1.0;
+  initRecAudioBoost();
+  if (recGainNode) {
+    recGainNode.gain.value = recCurrentBoost;
+  }
+  var bMap = { '1': 'rec-boost-1', '1.5': 'rec-boost-15', '2': 'rec-boost-2', '3': 'rec-boost-3' };
+  Object.keys(bMap).forEach(function (k) {
+    var el = document.getElementById(bMap[k]);
+    if (el) el.classList.toggle('primary', String(recCurrentBoost) === k);
+  });
+}
+
+function seekRecRel(sec) {
+  var v = document.getElementById('rec-video');
+  if (!v || !recCurrent || !recSess) return;
+  var cur = _recNow();
+  var maxDur = recAnchor.len || (v.duration && isFinite(v.duration) ? v.duration : 600);
+  var target = Math.max(0, Math.min(maxDur, cur + sec));
+  recAnchor.t = target;
+  recAnchor.at = Date.now();
+  if (v && isFinite(v.duration) && v.duration > 0 && target <= v.duration) {
+    try { v.currentTime = target; } catch (e) {}
+  }
+  var sk = document.getElementById('rec-seek');
+  if (sk && maxDur) sk.value = String(Math.round(target / maxDur * 1000));
+  var ce = document.getElementById('rec-cur');
+  if (ce) ce.textContent = _recFmtClock(target);
+  var iso = _recAbsIso(target);
+  if (iso) {
+    recCtrl('drag', { time: iso });
+  }
+  _recSetStatus('Vaqtga o\'tildi: ' + _recFmtClock(target) + (iso ? ' (' + iso + ')' : ''));
+}
+
+function addRecBookmark() {
+  var v = document.getElementById('rec-video');
+  if (!v || !recCurrent) return;
+  var cur = Math.floor(_recNow());
+  var timeStr = _recFmtClock(cur);
+  var label = (recCurrent ? _recShort(recCurrent.start) : '') + ' +' + timeStr;
+  var note = prompt("Vaqt belgisi uchun izoh kiriting (" + label + "):");
+  if (!note) return;
+  recBookmarks.push({ recIndex: recIndex, timeSec: cur, label: label, note: note });
+  renderRecBookmarks();
+}
+
+function renderRecBookmarks() {
+  var wrap = document.getElementById('rec-bookmarks-wrap');
+  var list = document.getElementById('rec-bookmarks-list');
+  if (!wrap || !list) return;
+  wrap.style.display = recBookmarks.length ? 'block' : 'none';
+  list.innerHTML = recBookmarks.map(function (b, i) {
+    return '<div class="vh-bookmark" onclick="jumpRecBookmark(' + i + ')">' +
+      '<b style="color:var(--teal)">' + esc(b.label) + '</b> ' +
+      '<span>' + esc(b.note) + '</span>' +
+      '<span style="color:var(--red);cursor:pointer;margin-left:4px" onclick="event.stopPropagation();delRecBookmark(' + i + ')">✕</span>' +
+    '</div>';
+  }).join('');
+}
+
+function jumpRecBookmark(i) {
+  var b = recBookmarks[i];
+  if (!b) return;
+  if (b.recIndex !== recIndex) {
+    playRec(b.recIndex);
+    setTimeout(function () {
+      seekRecRel(b.timeSec);
+    }, 2000);
+  } else {
+    seekRecRel(b.timeSec - _recNow());
+  }
+}
+
+function delRecBookmark(i) {
+  recBookmarks.splice(i, 1);
+  renderRecBookmarks();
+}
 var recSess = null;                  /* faol playback sessiyasi: {sim, ch} */
 /* Joriy pozitsiya hisobi (HLS jonli qayta uzatish bo'lgani uchun buffer emas,
    soat bo'yicha): t = langar offset, at = langar epoch(ms), rate = tezlik. */
@@ -3471,8 +3949,14 @@ function _recPanelOpen() {
   return !!p && p.style.display === 'block';
 }
 function _recDestroyPlayers() {
-  if (recHls) { try { recHls.destroy(); } catch (e) {} recHls = null; }
-  if (recFlv) { try { recFlv.destroy(); } catch (e) {} recFlv = null; }
+  if (recHls) { _cleanDestroyHls(recHls); recHls = null; }
+  if (recFlv) { _cleanDestroyFlv(recFlv); recFlv = null; }
+  var v = document.getElementById('rec-video');
+  if (v) {
+    try { v.pause(); } catch (e) {}
+    v.removeAttribute('src');
+    try { v.load(); } catch (e) {}
+  }
 }
 function _recShowPh(on, title, sub) {
   var ph = document.getElementById('rec-ph');
@@ -3493,22 +3977,31 @@ function _recStopSess(send) {
     }).catch(function () {});
   }
 }
+var recPlaySeq = 0, recFlvRetry = 0;
 function playRec(i) {
   var it = recItems[i];
   if (!it) { _recSetStatus('Yozuv topilmadi.', true); return; }
   var sim = recSel.sim || _val('rec-dev');
   if (!sim) { _recSetStatus('Avval qurilma tanlang.', true); return; }
   var ch = _recChOf(it);
+  var playId = ++recPlaySeq;
+  recFlvRetry = 0;
   _recStopSess(true);                    /* oldingi yozuv oqimini yopamiz */
   recIndex = i; recCurrent = it;
-  recSess = { sim: sim, ch: ch };
+  recSess = { sim: sim, ch: ch, startedAt: Date.now() / 1000, playId: playId };
   var len = _recDur(it);
   recAnchor = { t: 0, at: 0, rate: _recRate(), len: len };
   recPlaying = false;
   _recStopTick();
   _recDestroyPlayers();
   var v = document.getElementById('rec-video');
-  if (v) { try { v.pause(); } catch (e) {} v.removeAttribute('src'); v.load(); }
+  if (v) {
+    try { v.pause(); } catch (e) {}
+    v.removeAttribute('src');
+    v.load();
+    try { v.muted = false; } catch (e) {}
+    initRecAudioBoost();
+  }
   _recShowPh(true, 'Yozuv yuklanmoqda…', sim + ' · ch' + ch + ' · ' + _recShort(it.start));
   _recShowWait(true, 'Yozuv oqimi so\'ralmoqda…');
   _recTimeline(0, len);
@@ -3524,11 +4017,14 @@ function playRec(i) {
     var pc = document.getElementById('rec-player-card');
     if (pc && pc.scrollIntoView) pc.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
+  var stSel = document.getElementById('rec-stream-type');
+  var st = stSel ? (parseInt(stSel.value, 10) || 0) : (it.stream_type != null ? it.stream_type : 0);
   API.post('/api/video/jt-playback', {
     phone: sim, channel: ch, start: it.start, end: it.end,
+    stream: st, stream_type: st,
     host: jtMediaHost()
   }).then(function (d) {
-    if (!recSess || recSess.sim !== sim || recSess.ch !== ch) return;
+    if (!recSess || recSess.playId !== playId) return;
     if (d && d.ok === false) {
       var msg = d.error || 'qurilma ulanmagan';
       _recStopSess(false);
@@ -3542,7 +4038,7 @@ function playRec(i) {
     _recShowWait(true, 'Qurilma yozuvni yubormoqda…');
     waitRecStream();
   }).catch(function (e) {
-    if (!recSess || recSess.sim !== sim || recSess.ch !== ch) return;
+    if (!recSess || recSess.playId !== playId) return;
     _recStopSess(false);
     _recShowWait(false);
     _recShowPh(true, 'Yozuv boshlanmadi', e.message);
@@ -3565,6 +4061,10 @@ function _recTimeline(cur, dur) {
 }
 function _recNow() {
   if (!recCurrent) return 0;
+  var v = document.getElementById('rec-video');
+  if (v && !v.paused && isFinite(v.currentTime) && v.currentTime > 0) {
+    return v.currentTime;
+  }
   if (!recPlaying) return recAnchor.t;
   var adv = (Date.now() - recAnchor.at) / 1000 * (recAnchor.rate || 1);
   return recAnchor.t + adv;
@@ -3576,40 +4076,61 @@ function _recStartTick() {
 function _recStopTick() { if (recTick) { clearInterval(recTick); recTick = null; } }
 function _recTick() {
   if (!recPlaying || !recCurrent) return;
+  var v = document.getElementById('rec-video');
   var cur = _recNow();
   _recTimeline(cur, recAnchor.len);
   var pos = document.getElementById('rec-pos');
   if (pos) pos.textContent = 'Joriy: ' + _recFmtClock(cur) +
     (recAnchor.len ? ' / ' + _recFmtClock(recAnchor.len) : '');
-  if (recAnchor.len && cur >= recAnchor.len - 0.5) _recOnSegmentEnd();
+  if (v && v.ended) {
+    _recOnSegmentEnd();
+  } else if (recAnchor.len && cur >= recAnchor.len - 0.5) {
+    if (!v || v.ended || v.paused || (isFinite(v.currentTime) && v.currentTime >= recAnchor.len - 1)) {
+      _recOnSegmentEnd();
+    }
+  }
 }
 function _recOnSegmentEnd() {
   if (!recPlaying) return;
   recPlaying = false; _recStopTick();
   _recTimeline(recAnchor.len, recAnchor.len);
+  var autoNext = document.getElementById('rec-auto-next');
+  if (autoNext && !autoNext.checked) {
+    recCtrl('pause');
+    _recSetStatus('10 minutlik qism yakunlandi (pauzada).');
+    return;
+  }
   if (recIndex >= 0 && recIndex + 1 < recItems.length) {
-    _recSetStatus('Keyingi yozuvga o\'tilmoqda…');
+    _recSetStatus('Keyingi 10 minutlik yozuvga o\'tilmoqda…');
     var nx = recIndex + 1;
     setTimeout(function () {
       if (!_recPanelOpen()) return;
       playRec(nx);
-    }, 700);
+    }, 1200);
   } else {
     stopRec();
-    _recSetStatus('Yozuvlar tugadi.');
+    _recSetStatus('Barcha yozuvlar tugadi.');
   }
 }
 function waitRecStream() {
   if (recWait) { clearTimeout(recWait); recWait = null; }
   var sess = recSess;
   if (!sess || !_recPanelOpen()) return;
+  var playId = sess.playId;
   recWaitN += 1;
   API.get('/api/video/jt-streams').then(function (d) {
-    if (recSess !== sess || !_recPanelOpen()) return;
+    if (!recSess || recSess.playId !== playId || !_recPanelOpen()) return;
     var list = (d && d.streams) || [], hit = null;
     for (var i = 0; i < list.length; i++) {
-      if (String(list[i].sim) === sess.sim && list[i].kind === 'playback' &&
-          parseInt(list[i].channel, 10) === sess.ch) { hit = list[i]; break; }
+      var item = list[i];
+      if (String(item.sim) === sess.sim && item.kind === 'playback' &&
+          parseInt(item.channel, 10) === sess.ch) {
+        if (sess.startedAt && item.since && item.since < (sess.startedAt - 1.0)) {
+          continue;
+        }
+        hit = item;
+        break;
+      }
     }
     if (hit && hit.active) {
       _recShowWait(true, 'Oqim ulanyapti…');
@@ -3739,20 +4260,31 @@ function mountRecStream(s) {
     });
     return;
   }
-  if (s.flv && window.flvjs && flvjs.isSupported && flvjs.isSupported()) {
+  var flvUrl = s.flv ? (s.flv + (s.flv.indexOf('?') >= 0 ? '&' : '?') + '_t=' + Date.now()) : null;
+  var hlsUrl = s.hls ? (s.hls + (s.hls.indexOf('?') >= 0 ? '&' : '?') + '_t=' + Date.now()) : null;
+  if (flvUrl && window.flvjs && flvjs.isSupported && flvjs.isSupported()) {
     try {
       var p = flvjs.createPlayer(
-        { type: 'flv', isLive: true, url: s.flv, cors: true },
+        { type: 'flv', isLive: true, url: flvUrl, cors: true },
         { enableWorker: false, enableStashBuffer: false, stashInitialSize: 128,
-          autoCleanupSourceBuffer: true, lazyLoad: false });
+          autoCleanupSourceBuffer: true, autoCleanupMaxBackwardDuration: 12,
+          autoCleanupMinBackwardDuration: 6, lazyLoad: false });
       recFlv = p;
       p.attachMediaElement(v);
       p.on(flvjs.Events.ERROR, function () {
-        try { p.destroy(); } catch (e) {}
+        _cleanDestroyFlv(p);
         if (recFlv === p) recFlv = null;
         if (recSess !== sess) return;
+        recFlvRetry = (recFlvRetry || 0) + 1;
+        if (recFlvRetry <= 2 && _recPanelOpen()) {
+          _recSetStatus('FLV qayta ulanmoqda (' + recFlvRetry + '/2)…');
+          setTimeout(function () {
+            if (recSess === sess && _recPanelOpen()) mountRecStream(s);
+          }, 800);
+          return;
+        }
         _recSetStatus('FLV uzildi — HLS ga o\'tilmoqda…', true);
-        mountRecHls(s.hls);
+        mountRecHls(hlsUrl || s.hls);
       });
       p.load();
       var pr = v.play();
@@ -3766,13 +4298,17 @@ function mountRecStream(s) {
 function bindRecVideo(v) {
   if (recVideoBound) return;
   recVideoBound = true;
-  v.addEventListener('loadedmetadata', function () { _recTimeline(_recNow(), recAnchor.len); });
+  v.addEventListener('loadedmetadata', function () {
+    initRecAudioBoost();
+    _recTimeline(_recNow(), recAnchor.len);
+  });
   v.addEventListener('waiting', function () {
     if (!recSess) return;
     _recShowWait(true, 'Bufer to\'lmoqda…');
   });
   v.addEventListener('playing', function () {
     if (!recSess) return;
+    initRecAudioBoost();
     _recShowWait(false);
     _recShowPh(false);
     _recSessionUI(true);
@@ -3780,6 +4316,9 @@ function bindRecVideo(v) {
       _recSetStatus('Ijro etilmoqda: ch' + _recChOf(recCurrent) + ' · ' +
         _recShort(recCurrent.start) + ' → ' + _recShort(recCurrent.end));
     }
+  });
+  v.addEventListener('ended', function () {
+    _recOnSegmentEnd();
   });
   v.addEventListener('error', function () {
     if (!recSess) return;

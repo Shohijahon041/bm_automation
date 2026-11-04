@@ -318,6 +318,9 @@ def filters_for(chat_id: int) -> dict:
     """
     role = resolve_role(chat_id)
     if role is not Role.ADMIN:
+        _init()  # _ACTIVE_ROUTE fayldan endigina o'qilgan bo'lishi kerak —
+                 # aks holda restart'dan keyin birinchi so'rov tanlangan
+                 # yo'nalishni ko'rmay qoladi.
         owned = allowed_names(chat_id)
         if not owned:
             return {"profile": "__none__", "route": "__deny__"}

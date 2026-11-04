@@ -113,14 +113,19 @@ def check_and_send() -> None:
         text = _build_text()
         if not text and not admins:
             return
-        _save({"date": today})
         _save_to_vault(text)
-        for cid in admins:
-            try:
-                send_message(text, chat_id=str(cid),
-                             reply_markup=kb.nav_kb("nav:settings"))
-            except Exception as exc:  # noqa: BLE001
-                print(f"Ertalabki xulosa yuborilmadi [{cid}]: {exc}")
+        # "Kun yuborildi" belgisi faqat kamida bitta xabar muvaffaqiyatli
+        # ketgandan KEYIN saqlanadi — aks holda Telegram/network xatosi
+        # bo'lgan kunda xulosa butunlay yuborilmay qolardi.
+        delivered = 0
+        if text:
+            for cid in admins:
+                try:
+                    send_message(text, chat_id=str(cid),
+                                 reply_markup=kb.nav_kb("nav:settings"))
+                    delivered += 1
+                except Exception as exc:  # noqa: BLE001
+                    print(f"Ertalabki xulosa yuborilmadi [{cid}]: {exc}")
         # Har kompaniya faqat o'z raqamlarini ko'radi (boshqa firmaga oqmaydi).
         for name in context.company_names():
             chats = [c for c in context.chats_for_company(name)
@@ -133,8 +138,11 @@ def check_and_send() -> None:
             for cid in chats:
                 try:
                     send_message(ctext, chat_id=str(cid))
+                    delivered += 1
                 except Exception as exc:  # noqa: BLE001
                     print(f"Ertalabki xulosa yuborilmadi [{cid}]: {exc}")
+        if delivered:
+            _save({"date": today})
 
 
 def send_now(filters: dict | None = None) -> str:

@@ -98,12 +98,11 @@ def _has_failures(results: list) -> bool:
     if not results:
         return True
     for r in results:
-        if (r.get("error") or r.get("monthly_error")
-                or r.get("driver_notification_error") or r.get("driver_sms_error")):
+        if r.get("error") or r.get("monthly_error"):
             return True
-        if r.get("image") and not r.get("sent") and not r.get("no_group"):
+        if r.get("image") and not (r.get("sent") or r.get("already_sent") or r.get("no_group")):
             return True
-        if r.get("monthly_excel") and not r.get("monthly_sent"):
+        if r.get("monthly_excel") and not (r.get("monthly_sent") or r.get("already_sent") or r.get("monthly_already_sent")):
             return True
     return False
 
@@ -400,10 +399,20 @@ def run_daily_once(send: bool = True, chat_id: str | None = None, month_offset: 
                              to_date=today.isoformat(), out_dir=base,
                              download_missing=True)
             entry["monthly_excel"] = sm["excel_file"]
-            if sm.get("days_with_duty", 0) == 0:
-                entry["monthly_error"] = "Oylik ma'lumot topilmadi (0 kun)"
-                print(f"  XATO [{name}] oylik: ma'lumot topilmadi (0 kun)")
+            if sm.get("days_with_duty", 0) == 0 and not sm.get("download_errors"):
+                # Ma'lumot haqiqatan yo'q (oy boshida / reys bo'lmagan) — bu
+                # XATO emas: aks holda har kecha 10 marta takrorlanardi.
+                entry["monthly_empty"] = True
+                print(f"  [{name}] oylik: ma'lumot topilmadi (0 kun)")
+            elif sm.get("days_with_duty", 0) == 0:
+                entry["monthly_error"] = "Oylik yuklanmadi: " + "; ".join(
+                    sm["download_errors"][:3])
+                print(f"  XATO [{name}] oylik: {entry['monthly_error']}")
             else:
+                if sm.get("download_errors"):
+                    # Ba'zi kunlar o'qilmadi — hisobot qisman yuboriladi,
+                    # lekin sabab ko'rinadigan bo'lsin.
+                    entry["monthly_partial"] = "; ".join(sm["download_errors"][:3])
                 if send:
                     # Qo'lda so'rov (shaxsiy chat_id) — har doim yuboriladi;
                     # avtomatik oqimda bir kunda bir marta: retry (masalan

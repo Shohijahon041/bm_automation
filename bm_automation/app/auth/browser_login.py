@@ -33,34 +33,79 @@ LAUNCH_TIMEOUT_MS = int(os.getenv("BM_BROWSER_LAUNCH_TIMEOUT_MS", "60000"))
 # har safar Chromium ochib xotirani yeydi. Shu sababli cooldown qo'llanadi.
 COOLDOWN_S = float(os.getenv("BM_BROWSER_LOGIN_COOLDOWN_S", "600"))
 
+# /sign-in sahifasi nginx tomonidan 403 bilan bloklangan bo'lsa (datacenter
+# IP) shu oqimga umuman qaytishmaymiz: token faqat to'g'ridan-to'g'ri SSO
+# orqali olinadi. Bloklandi belgisi COOLDOWN_S'dan ancha uzoq saqlanadi.
+BLOCKED_SIGNIN_COOLDOWN_S = float(
+    os.getenv("BM_BROWSER_LOGIN_BLOCKED_SIGNIN_COOLDOWN_S", "21600"))
+
 
 def _cooldown_path() -> Path:
     default = Path("state") / "browser_login_cooldown.json"
     return Path(os.getenv("BM_BROWSER_LOGIN_STATE", str(default)))
 
 
-def _cooldown_remaining() -> float:
-    """Cooldown qolgan sekundlar (0 bo'lsa bloklanmagan)."""
+def _cooldown_state() -> dict:
     try:
         data = json.loads(_cooldown_path().read_text(encoding="utf-8"))
-        last = float(data.get("failed_at", 0.0))
+        return data if isinstance(data, dict) else {}
     except Exception:  # noqa: BLE001 - fayl yo'q/buzilgan bo'lsa blok yo'q
-        return 0.0
-    return max(0.0, COOLDOWN_S - (time.time() - last))
+        return {}
 
 
-def _mark_failed() -> None:
+def _cooldown_remaining() -> float:
+    """Cooldown qolgan sekundlar (0 bo'lsa bloklanmagan)."""
+    data = _cooldown_state()
+    window = float(data.get("window") or COOLDOWN_S)
+    return max(0.0, window - (time.time() - float(data.get("failed_at") or 0.0)))
+
+
+def _signin_blocked_remaining() -> float:
+    """/sign-in oqimi IP bloklangani uchun qolgan kutish vaqti (sekund)."""
+    until = float(_cooldown_state().get("signin_blocked_until") or 0.0)
+    return max(0.0, until - time.time())
+
+
+def _mark_signin_blocked() -> None:
     try:
         path = _cooldown_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"failed_at": time.time()}), encoding="utf-8")
+        state = _cooldown_state()
+        state["signin_blocked_until"] = time.time() + BLOCKED_SIGNIN_COOLDOWN_S
+        path.write_text(json.dumps(state), encoding="utf-8")
+    except Exception:  # noqa: BLE001 - holat yozilmasa ham davom etamiz
+        pass
+
+
+def _mark_failed(window: float | None = None) -> None:
+    try:
+        path = _cooldown_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"failed_at": time.time()}
+        if window:
+            payload["window"] = window
+        state = _cooldown_state()
+        state.update(payload)
+        path.write_text(json.dumps(state), encoding="utf-8")
     except Exception:  # noqa: BLE001 - holat yozilmasa ham davom etamiz
         pass
 
 
 def _clear_failed() -> None:
+    """Login muvaffaqiyatli bo'lsa faqat urinish-xato belgisini o'chiradi.
+
+    `/sign-in` IP bloki belgisi saqlanadi — u BM/nginx tomonidagi holat,
+    bizning muvaffaqiyatimiz bilan yo'qolmaydi.
+    """
     try:
-        _cooldown_path().unlink()
+        path = _cooldown_path()
+        state = _cooldown_state()
+        state.pop("failed_at", None)
+        state.pop("window", None)
+        if state:
+            path.write_text(json.dumps(state), encoding="utf-8")
+        else:
+            path.unlink()
     except Exception:  # noqa: BLE001
         pass
 
@@ -396,6 +441,14 @@ def _browser_login_impl(
         except Exception as exc:  # noqa: BLE001 - fallback ataylab
             print(f"  to'g'ridan-to'g'ri SSO ishlamadi ({exc}); /sign-in oqimiga o'tilmoqda")
 
+    # /sign-in IP bo'yicha bloklangani ma'lum bo'lsa Chromium ochilmaydi:
+    # token faqat to'g'ridan-to'g'ri SSO orqali olinadi (yuqoridagi yo'l).
+    blocked = _signin_blocked_remaining()
+    if blocked > 0:
+        raise RuntimeError(
+            f"BM /sign-in sahifasi bu IP'dan bloklangan (403), "
+            f"{int(blocked)}s davomida qayta sinalmaydi")
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless, timeout=LAUNCH_TIMEOUT_MS)
         context = browser.new_context(ignore_https_errors=True, locale="uz")
@@ -429,7 +482,13 @@ def _browser_login_impl(
                 if body.strip():
                     print("  Sahifa matni:", body.replace("\n", " | ")[:200])
             except Exception:
-                pass
+                body = ""
+            # nginx 403 — bu IP doimiy bloklangan, 5 marta qayta yukashning
+            # keragi yo'q (har safar Chromium + ~40s + Playwright crash'i).
+            if "403 Forbidden" in body:
+                _mark_signin_blocked()
+                raise RuntimeError(
+                    "BM /sign-in sahifasi bu IP'dan bloklangan (nginx 403)")
             try:
                 page.goto(f"{site}/sign-in", wait_until="load", timeout=30000)
             except Exception:

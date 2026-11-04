@@ -142,3 +142,52 @@ def test_browser_login_success_clears_cooldown(monkeypatch, tmp_path):
 
     assert bl.browser_login(force=True)["access_token"] == "A"
     assert bl._cooldown_remaining() == 0.0
+
+
+def test_signin_blocked_marker_survives_clear_failed(tmp_path, monkeypatch):
+    """/sign-in IP bloki BM tomondagi holat — muvaffaqiyatli login bilan o'chmaydi."""
+    monkeypatch.setenv("BM_BROWSER_LOGIN_STATE", str(tmp_path / "cd4.json"))
+    bl._mark_failed()
+    bl._mark_signin_blocked()
+
+    bl._clear_failed()
+    assert bl._cooldown_remaining() == 0.0
+    assert bl._signin_blocked_remaining() > 0
+
+
+def test_mark_failed_keeps_signin_blocked(tmp_path, monkeypatch):
+    """Coyoldown belgisi yozilganda IP blok belgisi buzilmaydi."""
+    monkeypatch.setenv("BM_BROWSER_LOGIN_STATE", str(tmp_path / "cd5.json"))
+    bl._mark_signin_blocked()
+    bl._mark_failed()
+
+    assert bl._signin_blocked_remaining() > 0
+    assert bl._cooldown_remaining() > 0
+
+
+def test_impl_skips_signin_when_ip_blocked(monkeypatch, tmp_path):
+    """Bloklangan /sign-in uchun Chromium umuma ochilmaydi."""
+    monkeypatch.setenv("BM_BROWSER_LOGIN_STATE", str(tmp_path / "cd6.json"))
+    cfg = type("C", (), {"username": "u", "password": "p", "organization": "",
+                         "base_url": "https://bmapi.dtransport.uz"})()
+    monkeypatch.setattr(bl, "get_config", lambda: cfg)
+    monkeypatch.setattr(bl, "_direct_sso_code",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("yok")))
+
+    used = {"n": 0}
+
+    class FakePW:
+        def __enter__(self):
+            used["n"] += 1
+            raise AssertionError("bloklangan oqimda brauzer ochilmasligi kerak")
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(bl, "sync_playwright", lambda: FakePW())
+    bl._mark_signin_blocked()
+
+    with pytest.raises(RuntimeError) as ei:
+        bl._browser_login_impl()
+    assert "bloklangan" in str(ei.value)
+    assert used["n"] == 0

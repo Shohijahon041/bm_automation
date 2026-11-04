@@ -16,6 +16,7 @@ import logging
 
 import pytest
 
+from bm_automation.app.api import client as client_mod
 from bm_automation.app.api.client import (
     BMApiError,
     BMAuthError,
@@ -26,6 +27,14 @@ from bm_automation.app.api.client import (
 
 TOKEN = "secret-access-token-123"
 REFRESH = "secret-refresh-token-456"
+
+
+@pytest.fixture(autouse=True)
+def _clear_profile_rejects():
+    """Rad etilgan profil cache'i testlar orasida oqib qolmasin."""
+    client_mod._rejected_profiles.clear()
+    yield
+    client_mod._rejected_profiles.clear()
 
 
 class FakeResponse:
@@ -544,6 +553,32 @@ def test_profile_empty_id_noop(client, monkeypatch):
     assert not client.session.calls
 
 
+def test_rejected_profile_not_retried(client, monkeypatch):
+    """Rad etilgan profil TTL davomida qayta sinalmaydi (401 shovqini)."""
+    client.session = FakeSession([_err(401), _err(401)])
+    monkeypatch.setattr(client, "load_tokens_from_file", lambda: None)
+
+    client.login_for_profile("101")
+    client.login_for_profile("101")
+    assert len(client.session.calls) == 1
+
+    # TTL tugagach — qayta sinaladi (profil BM tomonida qayta paydo bo'lsa).
+    client_mod._rejected_profiles["101"] = 0.0
+    client.login_for_profile("101")
+    assert len(client.session.calls) == 2
+
+
+def test_rejected_profile_not_cached_without_fallback(client, monkeypatch):
+    """fallback_to_main=False bo'lsa xato ko'tariladi va cache'lanmaydi."""
+    client.session = FakeSession([_err(401), _err(401)])
+    monkeypatch.setattr(client, "load_tokens_from_file", lambda: None)
+
+    for _ in range(2):
+        with pytest.raises(BMApiError):
+            client.login_for_profile("101", fallback_to_main=False)
+    assert len(client.session.calls) == 2
+
+
 # ---------- keepalive (12h timer) ----------
 
 def _write_tokens(tmp_path, access="old-access", refresh="old-refresh"):
@@ -662,3 +697,91 @@ def test_download_4xx_raises_without_retry(client):
         client.download("/photo", headers={"Accept": "*/*"}, retries=3)
     assert ei.value.status == 400
     assert len(client.session.calls) == 1
+
+
+# ---------- auth silsilasi: brauzer marta-soni va profil scope'i ----------
+
+def _patch_browser_login(monkeypatch, launches):
+    import importlib
+
+    bl = importlib.import_module("bm_automation.app.auth.browser_login")
+    monkeypatch.setattr(bl, "browser_login", lambda **kw: launches.append(kw))
+    return bl
+
+
+def test_full_chain_failure_opens_browser_once(client, monkeypatch):
+    """401 -> refresh -> password ham xato: Chromium BIR marta ochiladi.
+
+    `_refresh_or_relogin` `login()`dagi brauzer zaxirasini vaqtincha
+    o'chiradi — ikki marta ochilish (14 ta urinishda kuzatilgan) xotirani
+    tugatib, token siklini butunlay buzardi.
+    """
+    launches = []
+    _patch_browser_login(monkeypatch, launches)
+    monkeypatch.setattr(client_mod, "REFRESH_FILE_WAIT_S", 0.0)
+    monkeypatch.setenv("BM_BROWSER_LOGIN", "on")
+
+    def fake_load_from_file():
+        client.access_token = "browser-access"
+        client.refresh_token = "browser-refresh"
+        return True
+
+    monkeypatch.setattr(client, "load_tokens_from_file", fake_load_from_file)
+    client.session = FakeSession([
+        _err(401),                                    # asosiy so'rov
+        _err(401, {"message": "refresh eskirgan"}),   # refresh
+        _err(401, {"message": "password xato"}),      # password login
+        _ok({"data": "after-relogin"}),               # replay
+    ])
+    client.auto_relogin = True
+    assert client.get("/secure") == "after-relogin"
+    assert len(launches) == 1, "brauzer login takrorlanmasligi kerak"
+    assert [c["method"] for c in client.session.calls] == ["GET", "POST", "POST", "GET"]
+
+
+def test_profile_token_reacquired_after_refresh(client):
+    """Kompaniya scoped client: refresh'dan keyin profil tokeni qayta olinadi.
+
+    Aks holda so'rov asosiy (boshqa kompaniya) scope'i bilan ketadi va
+    ma'lumot aralashadi.
+    """
+    client.profile_id = "101"
+    client.session = FakeSession([
+        _err(401),
+        _ok({"data": {"access_token": "MAIN-NEW", "refresh_token": "MAIN-R"}}),
+        _ok({"data": {"access_token": "PROF-A"}}),
+        _ok({"data": "ok"}),
+    ])
+    assert client.get("/secure") == "ok"
+    calls = client.session.calls
+    assert [c["method"] for c in calls] == ["GET", "POST", "POST", "GET"]
+    assert "get-token-by-profile" in calls[2]["url"]
+    assert client.session.headers["Authorization"] == "Bearer PROF-A"
+
+
+def test_login_by_profile_keeps_main_refresh_token(client):
+    """Profil javobidagi refresh QABUL QILINMAYDI — tokens.json aralashadi.
+
+    Profil refreshi keyingi `_refresh()`da asosiy faylga yozilsa, boshqa
+    kompaniyaning tokeni asosiy hisobning o'rnini bosadi.
+    """
+    client.refresh_token = REFRESH
+    client.session = FakeSession([
+        _ok({"data": {"access_token": "PROF-A", "refresh_token": "PROF-R"}}),
+    ])
+    client.login_by_profile("101")
+    assert client.access_token == "PROF-A"
+    assert client.refresh_token == REFRESH
+
+
+def test_browser_relogin_without_credentials_raises(client, monkeypatch):
+    """Kredentialsiz headless brauzer 300 s kutib baribir javobsiz qoladi."""
+    launches = []
+    _patch_browser_login(monkeypatch, launches)
+    monkeypatch.setenv("BM_BROWSER_LOGIN", "on")
+    client.config.username = ""
+    client.config.password = ""
+    with pytest.raises(BMAuthError) as ei:
+        client._browser_relogin()
+    assert "login-browser" in str(ei.value)
+    assert not launches

@@ -774,11 +774,13 @@ def test_jt_live_uses_role_and_company_scope(env, monkeypatch):
     status, _ = _request(monkeypatch, "/api/video/jt-live", method="POST",
                          headers=_auth(), scope=None, body=b'{}')
     assert status == 400
+    # JT1078_MEDIA_HOST bo'sh bo'lsa ham oqim ishlaydi: qurilmalar
+    # 'bmbrutto.uz'ga yuboradi, API esa DNS kechikishisiz IP'ga o'giradi.
     monkeypatch.setattr(gps_api.config, "JT1078_MEDIA_HOST", "")
     status, data = _request(monkeypatch, "/api/video/jt-live", method="POST",
                             headers=_auth(), scope=None,
                             body=b'{"phone":"123"}')
-    assert status == 400 and "host" in data["error"]
+    assert status == 200 and data["host"] == "189.74.100.25"
 
 
 def test_jt_inputs_are_validated(env, monkeypatch):
@@ -1137,3 +1139,12 @@ def test_gps_video_token_matches_dashboard_verifier(env, monkeypatch):
     assert len(tok.split("|")) == 5
     assert _verify_video_token(tok) == (7, 0, "grid")
 
+
+
+def test_int_arg_clamps_and_defaults():
+    """Noto'g'ri query int — 500 emas default; katta limit DB'ni ushlab qolmasin."""
+    assert gps_api._int_arg({"limit": ["abc"]}, "limit", 50, 1, 1000) == 50
+    assert gps_api._int_arg({}, "limit", 50, 1, 1000) == 50
+    assert gps_api._int_arg({"limit": ["0"]}, "limit", 50, 1, 1000) == 1
+    assert gps_api._int_arg({"limit": ["999999"]}, "limit", 50, 1, 1000) == 1000
+    assert gps_api._int_arg({"limit": ["-5"]}, "limit", 50, 1, 1000) == 1

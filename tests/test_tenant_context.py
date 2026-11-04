@@ -114,6 +114,27 @@ def test_company_routes_db_fallback(tenv, monkeypatch, tmp_path):
         ids["okco-transport"]
 
 
+def test_company_routes_comma_list_profile(tenv):
+    """Profil `routeVariantId: "ro9,ro10"` bersa ham scope to'liq qolinadi.
+
+    Butun satr kalit qilib qo'yilsa (`"ro9,ro10"`), `_force_route` hech
+    qachon mos kelmasdi va korxona o'z yo'nalishlarini ko'ra olmasdi.
+    """
+    profiles_mod.save_profiles({"active": "KOMBI MCHJ", "profiles": [
+        {"name": "KOMBI MCHJ", "routeVariantId": "ro9,ro10"},
+    ]})
+    tenant_mod.reset()
+    assert tenant_mod.company_routes("KOMBI MCHJ") == ["ro9", "ro10"]
+
+
+def test_route_map_splits_comma_list():
+    from bm_automation.app.db.tenancy import _route_map
+
+    got = _route_map([{"name": "KOMBI MCHJ", "routeVariantId": "ro9, ro10"}],
+                     {"kombi-mchj": 7})
+    assert got == {7: ["ro9", "ro10"]}
+
+
 # ------------------------------------------------------------ company_active
 
 def test_company_active_semantics():

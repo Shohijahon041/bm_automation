@@ -71,14 +71,22 @@ def collect_days(
         d = from_date + timedelta(days=i)
         ds = d.isoformat()
         data = saved.get(ds)
+        error = ""
         if data is None and repo is not None:
             try:
                 data = repo.by_date(route_id, ds)
             except BMApiError as exc:
+                # 404 = o'sha kuni ma'lumoti yo'q (normal); boshqa xato
+                # (429/500/tarmoq) = kun O'QILMADI — qatorga yozib olamiz,
+                # aks holda oylik varaqada kun jim yo'qolardi.
                 if exc.status != 404:
-                    print(f"  {ds}: yuklab bo'lmadi: {exc}")
+                    error = f"{ds}: {exc}"
+                    print(f"  {error}")
                 data = None
-        days.append({"date": ds, "duty": data})
+        day = {"date": ds, "duty": data}
+        if error:
+            day["error"] = error
+        days.append(day)
     return days
 
 
@@ -126,6 +134,27 @@ def monthly_rows(days: list[dict]) -> tuple[list[dict], list[str]]:
     return rows, graphs
 
 
+def _shift_hours(start, end) -> float:
+    """Smena davomiyligi (soat).
+
+    Yarim tuni kesib o'tuvchi smena (22:00–06:00) terf manfiy chiqadi —
+    shunday holatda 24 qo'shiladi. Noma'lum format → 0 (avvalgidek).
+    """
+    if not start or not end:
+        return 0.0
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            t1 = datetime.strptime(str(start), fmt)
+            t2 = datetime.strptime(str(end), fmt)
+        except (TypeError, ValueError):
+            continue
+        hours = (t2 - t1).total_seconds() / 3600.0
+        if hours < 0:
+            hours += 24.0
+        return round(hours, 1)
+    return 0.0
+
+
 def driver_summary(days: list[dict]) -> list[dict]:
     """Haydovchi bo'yicha: ishlagan kunlar, smena soatlari, avtobuslar."""
     stats = defaultdict(lambda: {"days": 0, "hours": 0.0, "buses": set(), "graphics": set()})
@@ -140,14 +169,7 @@ def driver_summary(days: list[dict]) -> list[dict]:
                     continue
                 st = g.get("startTime" if key == "driver" else "secondStartTime")
                 et = g.get("endTime" if key == "driver" else "secondEndTime")
-                hours = 0.0
-                try:
-                    if st and et:
-                        t1 = datetime.strptime(st, "%H:%M:%S")
-                        t2 = datetime.strptime(et, "%H:%M:%S")
-                        hours = round((t2 - t1).total_seconds() / 3600, 1)
-                except ValueError:
-                    pass
+                hours = _shift_hours(st, et)
                 s = stats[name]
                 s["days"] += 1
                 s["hours"] += hours
@@ -198,6 +220,8 @@ def run(
         "to": to_date,
         "days_total": len(days),
         "days_with_duty": loaded,
+        # 404 bo'lmagan xatolar bilan qolgan kunlar (0 = hammasi o'qildi).
+        "download_errors": [d["error"] for d in days if d.get("error")],
         "graphs": graphs,
         "drivers": len(driver_rows),
         "excel_file": out_file,

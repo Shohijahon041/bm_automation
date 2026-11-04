@@ -99,12 +99,33 @@ def _pending_targets(route_id: str, date_str: str, targets: list[str]) -> list[s
 
 
 def _norm_time(t: str) -> str:
-    """Vaqtni HH:MM formatiga tekislaydi (string taqqoslash uchun)."""
+    """Vaqtni HH:MM formatiga tekislaydi (string taqqoslash uchun).
+
+    BM'da "9:5" kabi qisqartirilgan yozuv ham uchraydi: daqiqa ham
+    to'ldirilmasa "06:5" "06:30"dan KATTA bo'lib qoladi va jadval
+    tartivi buziladi.
+    """
     t = (t or "").strip()
-    if ":" in t:
-        parts = t.split(":", 1)
-        return f"{int(parts[0]):02d}:{parts[1][:2]}"
-    return t
+    if ":" not in t:
+        return t
+    parts = t.split(":", 2)
+    try:
+        hh = int(parts[0])
+        mm = int(parts[1][:2] or 0)
+    except ValueError:
+        return t
+    return f"{hh:02d}:{mm:02d}"
+
+
+def _starts_earlier(a: str, b: str) -> bool:
+    """a smena b'dan oldinmi. Bo'sh vaqt eng KEYIN turadi (g'alati qator
+    aniq vaqti bo'lgan qatorni yutu olmasligi uchun)."""
+    na, nb = _norm_time(a), _norm_time(b)
+    if not na:
+        return False
+    if not nb:
+        return True
+    return na < nb
 
 
 def graph_start_direction(client: BMClient, shift_graph_id: str, start_time: str) -> str | None:
@@ -311,7 +332,7 @@ def build_rows(client: BMClient, route_id: str, date_str: str,
         if idx is None:
             best[key] = len(groups[direction])
             groups[direction].append(row)
-        elif row["start"] and _norm_time(row["start"]) < _norm_time(groups[direction][idx]["start"]):
+        elif _starts_earlier(row["start"], groups[direction][idx]["start"]):
             groups[direction][idx] = row
     for d in groups:
         groups[d].sort(key=lambda r: _norm_time(r["start"]))
@@ -376,14 +397,30 @@ def run(
             # Avtomatik yuborishda (so'rov chatisiz) retry takror yubormaydi.
             pending = (targets if manual
                        else _pending_targets(route_id, date_str, targets))
+            # Bitta chatga yuborishdagi xato (masalan bot bloklangan) qolgan
+            # kompaniya chatlarini bloklamasligi uchun har birini alohida
+            # ushlaymiz — AGENTS.md: individual bildirishnoma xatolari
+            # butun kunlik avto-ishni ERRORga aylantirmasligi kerak.
+            sent_ok: list[str] = []
+            send_errors: list[str] = []
+            # Kun allaqachon biror chatga borganmi (keyingi urinishlarda
+            # bloklangan chat butun avto-ishni ERROR qilmasligi uchun).
+            prior = bool(_sent_state().get(f"{route_id}|{date_str}"))
             for t in pending:
-                send_photo(str(img), caption=caption, chat_id=t,
-                           reply_markup=resend_keyboard(profile.get("name") if profile else None))
-            if pending and not manual:
-                _mark_sent(route_id, date_str, pending)
-            result["sent"] = True
+                try:
+                    send_photo(str(img), caption=caption, chat_id=t,
+                               reply_markup=resend_keyboard(profile.get("name") if profile else None))
+                    sent_ok.append(t)
+                except Exception as exc:  # noqa: BLE001
+                    send_errors.append(f"{t}: {exc}")
+                    print(f"  [driver_sheet] rasm yuborilmadi ({t}): {exc}")
+            if sent_ok and not manual:
+                _mark_sent(route_id, date_str, sent_ok)
+            result["sent"] = bool(sent_ok) or not pending
             result["sent_to"] = targets
-            if not pending:
+            if send_errors:
+                result["send_errors"] = send_errors
+            if not pending or (prior and not sent_ok):
                 result["already_sent"] = True
         else:
             # Yuboriladigan chat yo'q — xato emas, retry ham kerak emas.

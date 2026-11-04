@@ -17,10 +17,16 @@ ID yechish `app.repositories` (driver/vehicle), Excel chiqishi
 from __future__ import annotations
 
 import re
+import warnings
 from datetime import date, datetime, time
 from pathlib import Path
 
 import openpyxl
+
+# BM export fayllarida default style yo'q; openpyxl buni har o'qishda
+# stderr'ga yozadi — zararsiz, lekin log shovqini.
+warnings.filterwarnings(
+    "ignore", message="Workbook contains no default style", category=UserWarning)
 
 from ..api.client import BMClient
 from ..config.settings import BRUTTO_MGMT

@@ -430,6 +430,14 @@ def settings_kb(chat_id: int | None = None) -> dict:
         rows.append([{"text": "🔗 Haydovchi bog'lash (izlash)",
                       "callback_data": "settings:linkdriver"}])
     rows.append([{"text": "🌐 Til tanlash", "callback_data": "settings:lang"}])
+    if role in (Role.ADMIN, Role.MANAGER, Role.DISPATCHER):
+        from ...core import bot_settings
+        off_txt = "YOQ" if bot_settings.offline_notify() else "O'CH"
+        prob_txt = "YOQ" if bot_settings.problem_alerts_notify() else "O'CH"
+        rows.append([{"text": f"📴 Offline alert: {off_txt}",
+                      "callback_data": "settings:toggle_offline"}])
+        rows.append([{"text": f"⚠️ Muammo alert: {prob_txt}",
+                      "callback_data": "settings:toggle_problems"}])
     return {"inline_keyboard": rows}
 
 
@@ -465,3 +473,21 @@ def plan_cancel_kb() -> dict:
     return {"inline_keyboard": [
         [{"text": "❌ Bekor qilish", "callback_data": "plan:cancel"}],
     ]}
+
+
+def offline_toggle_kb(is_on: bool) -> dict:
+    """Offline (aloqa uzildi) bildirishnomasini yoqish/o'chirish tugmasi."""
+    btn = [{"text": "🔕 O'chirish", "callback_data": "toggle:offline_off"}] \
+        if is_on else [
+            {"text": "🔔 Yoqish", "callback_data": "toggle:offline_on"}
+        ]
+    return {"inline_keyboard": [btn]}
+
+
+def problems_notify_toggle_kb(is_on: bool) -> dict:
+    """Muammo holati bildirishnomasini yoqish/o'chirish tugmasi."""
+    btn = [{"text": "🔕 O'chirish", "callback_data": "toggle:problems_off"}] \
+        if is_on else [
+            {"text": "🔔 Yoqish", "callback_data": "toggle:problems_on"}
+        ]
+    return {"inline_keyboard": [btn]}

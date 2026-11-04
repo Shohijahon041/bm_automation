@@ -182,8 +182,12 @@ def company_routes(company_name: str, storage=None) -> list[str]:
             if str(p.get("name") or "").strip().lower() != name:
                 continue
             rid = str(p.get("routeVariantId") or "").strip()
-            if rid and rid not in out:
-                out.append(rid)
+            # Bitta profil bir nechta yo'nalishni vergul bilan berishi
+            # mumkin (`12,13`) — butun satrni kalit qilib qo'ysak scope
+            # hech qachon mos kelmasdi.
+            for part in rid.replace(",", " ").split():
+                if part not in out:
+                    out.append(part)
     except Exception:  # noqa: BLE001
         pass
     if out:

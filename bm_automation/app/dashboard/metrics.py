@@ -1017,10 +1017,15 @@ class Metrics:
         dnames = {r["external_id"]: (r["full_name"] or r["external_id"] or "")
                   for r in self.storage.query(
                       "SELECT external_id, full_name FROM drivers")}
+        vplates = {str(v.get("external_id") or ""):
+                   str(v.get("plate_number") or "")
+                   for v in self.storage.query(
+                       "SELECT external_id, plate_number FROM vehicles")}
 
         per: dict[str, dict] = defaultdict(
             lambda: {"plan_reys": 0, "fact_reys": 0, "days": set(),
-                     "plan_km": 0.0, "fact_km": 0.0, "manual_km": 0.0})
+                     "plan_km": 0.0, "fact_km": 0.0, "manual_km": 0.0,
+                     "detail": []})
 
         # --- Vaqtga asoslangan taqsimot: (date, route, graph) guruhlari ---
         # Bitta grafik = bitta kunlik reja. Haydovchi/avtobus almashtirilgan
@@ -1073,6 +1078,18 @@ class Metrics:
                 p["plan_km"] += sa["plan_km"]
                 p["fact_km"] += sa["fact_km"]
                 p["days"].add((d, s["vehicle_id"]))
+                if sa["plan_reys"] > sa["fact_reys"]:
+                    # Kunlik tafsilot: qaysi sanada/avtobusda reys yetmagan.
+                    p["detail"].append({
+                        "date": d,
+                        "vehicle": vplates.get(s["vehicle_id"],
+                                               s["vehicle_id"]),
+                        "plan_reys": sa["plan_reys"],
+                        "fact_reys": sa["fact_reys"],
+                        "qabul_qilinmagan": sa["plan_reys"] - sa["fact_reys"],
+                        "plan_km": round(sa["plan_km"], 2),
+                        "fact_km": round(sa["fact_km"], 2),
+                    })
 
         # --- Fallback: schedule ma'lumoti bo'lmagan (sana, avtobus) uchun
         # birinchi haydovchi butun route_daily qatorini oladi.
@@ -1091,6 +1108,16 @@ class Metrics:
             per[did]["fact_reys"] += acc["trip_fact"]
             per[did]["plan_km"] += acc["distance_plan"]
             per[did]["fact_km"] += acc["distance_fact"]
+            if acc["trip_plan"] > acc["trip_fact"]:
+                per[did]["detail"].append({
+                    "date": key[0],
+                    "vehicle": vplates.get(key[1], key[1]),
+                    "plan_reys": acc["trip_plan"],
+                    "fact_reys": acc["trip_fact"],
+                    "qabul_qilinmagan": acc["trip_plan"] - acc["trip_fact"],
+                    "plan_km": round(acc["distance_plan"], 2),
+                    "fact_km": round(acc["distance_fact"], 2),
+                })
 
         # --- Yetim ish kunlari: wd=1, lekin na schedules, na trips (haydovchi
         # aniqlab bo'lmaydi). Jami jadvalga to'liq mos bo'lishi uchun bunday
@@ -1147,6 +1174,21 @@ class Metrics:
                 per[did]["manual_km"] += km
                 per[did]["fact_km"] += km
                 per[did]["fact_reys"] += tr
+                # Qo'lda reyslar defitsitni yopadi — kunlik tafsilotdan ham
+                # ayiriladi (oxirgi kunlardan boshlab), 0 bo'lsa olib
+                # tashlanadi, aks holda tafsilot yig'indisi qator raqamiga
+                # mos kelmay qolardi.
+                left = tr
+                detail = per[did]["detail"]
+                for i in range(len(detail) - 1, -1, -1):
+                    if left <= 0:
+                        break
+                    dec = min(left, detail[i]["qabul_qilinmagan"])
+                    detail[i]["qabul_qilinmagan"] -= dec
+                    detail[i]["fact_reys"] += dec
+                    left -= dec
+                per[did]["detail"] = [x for x in detail
+                                      if x["qabul_qilinmagan"] > 0]
 
         # Sayt bilan bir xil hisobni ko'rsatish uchun BARCHA ishlagan
         # haydovchilar chiqadi — qabul qilinmagan reysi 0 bo'lganlar ham.
@@ -1155,16 +1197,32 @@ class Metrics:
         for did, d in per.items():
             if did == orph:
                 continue
+            details = sorted(d["detail"], key=lambda x: x["date"])
+            qabu = max(0, d["plan_reys"] - d["fact_reys"])
+            # Ortiqcha bajarilgan kunlar defitsitni qoplaydi — kunlik
+            # tafsilot yig'indisi qator raqamiga teng bo'lishi uchun ortiqcha
+            # qism oxirgi kunlardan boshlab olib tashlanadi.
+            excess = sum(x["qabul_qilinmagan"] for x in details) - qabu
+            if excess > 0:
+                for i in range(len(details) - 1, -1, -1):
+                    if excess <= 0:
+                        break
+                    cut = min(excess, details[i]["qabul_qilinmagan"])
+                    details[i]["qabul_qilinmagan"] -= cut
+                    details[i]["fact_reys"] += cut
+                    excess -= cut
+                details = [x for x in details if x["qabul_qilinmagan"] > 0]
             rows.append({
                 "name": dnames.get(did, did),
                 "plan_reys": d["plan_reys"],
                 "fact_reys": d["fact_reys"],
-                "qabul_qilinmagan": max(0, d["plan_reys"] - d["fact_reys"]),
+                "qabul_qilinmagan": qabu,
                 "days": len({k[0] for k in d["days"]}),
                 "plan_km": round(d["plan_km"], 2),
                 "fact_km": round(d["fact_km"], 2),
                 "manual_km": round(d["manual_km"], 2),
                 "diff": round(max(0.0, d["plan_km"] - d["fact_km"]), 2),
+                "details": details,
             })
         rows.sort(key=lambda r: (-r["qabul_qilinmagan"], -r["fact_reys"]))
 
@@ -1648,7 +1706,23 @@ class Metrics:
         route_ids = {t.strip() for t in
                      str(f.get("route") or "").replace(",", " ").split() if t.strip()}
         if route_ids:
+            for did in set(per.keys()):
+                if did not in names or not names[did] or names[did] == did:
+                    tr_row = self.storage.query(
+                        f"SELECT data FROM trips WHERE driver_id = {ph} LIMIT 1", (did,))
+                    if tr_row and tr_row[0].get("data"):
+                        raw = tr_row[0]["data"]
+                        d_json = json.loads(raw) if isinstance(raw, str) else raw
+                        if isinstance(d_json, dict):
+                            d_nm = (d_json.get("driverName") or d_json.get("driver_name")
+                                    or d_json.get("fullName") or d_json.get("name"))
+                            if d_nm:
+                                names[did] = str(d_nm)
             allowed = {did for did, rid in driver_routes.items() if rid in route_ids}
+            # Uy yo'nalishi noma'lum (qatori yo'q yoki route_id bo'sh) haydovchi
+            # shu yo'nalishda reysi bo'lsa ko'rsatiladi. Uyi boshqa yo'nalishda
+            # bo'lgan o'rinbosar esa qolmaydi — u boshqa kompaniyaning aktivi.
+            allowed |= {did for did in per if not driver_routes.get(did)}
             names = {k: v for k, v in names.items() if k in allowed}
             profiles = {k: v for k, v in profiles.items() if k in allowed}
             per = {k: v for k, v in per.items() if k in allowed}

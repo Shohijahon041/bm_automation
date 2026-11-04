@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import secrets
@@ -127,6 +128,7 @@ _POST_ROLE_MIN: dict[str, int] = {
     "/api/dashboard-users": 2, "/api/admin": 4, "/api/myai": 4,
     "/api/sms": 3, "/api/documents": 3, "/api/rejects/tariff": 2,
     "/api/kmrate": 2, "/api/route-skm": 2, "/api/sync": 2,
+    "/api/drivers": 2,
     "/api/electricity/price": 4, "/api/users": 4, "/api/dispatchers": 4,
     "/api/video/cameras": 4, "/api/video/relay": 4, "/api/video/archive": 4,
     "/api/video/export": 4,
@@ -209,9 +211,59 @@ def _prune_sessions() -> None:
         _sessions.pop(t, None)
 
 
-def create_session(user: dict) -> str:
+def _device_info(ua: str) -> dict:
+    """User-Agent'dan qurilma / OS / brauzer nomini ajratadi (tashqi libsiz)."""
+    s = str(ua or "")
+    low = s.lower()
+    if "android" in low:
+        os_name = "Android"
+    elif "ipad" in low or "ipod" in low:
+        os_name = "iPadOS"
+    elif "iphone" in low:
+        os_name = "iOS"
+    elif "windows" in low:
+        os_name = "Windows"
+    elif "mac os x" in low or "macintosh" in low:
+        os_name = "macOS"
+    elif "linux" in low:
+        os_name = "Linux"
+    else:
+        os_name = ""
+    if "telegram" in low:
+        browser = "Telegram"
+    elif "edg/" in low or "edga/" in low or "edgios/" in low:
+        browser = "Edge"
+    elif "opr/" in low or "opera" in low:
+        browser = "Opera"
+    elif "firefox/" in low or "fxios/" in low:
+        browser = "Firefox"
+    elif "chrome/" in low or "crios/" in low:
+        browser = "Chrome"
+    elif "safari/" in low:
+        browser = "Safari"
+    else:
+        browser = ""
+    if "telegram" in low:
+        kind = "Telegram"
+    elif "ipad" in low or ("android" in low and "mobile" not in low):
+        kind = "Planshet"
+    elif "mobile" in low or "iphone" in low or "android" in low:
+        kind = "Telefon"
+    elif not s:
+        kind = ""
+    else:
+        kind = "Kompyuter"
+    return {"type": kind, "os": os_name, "browser": browser}
+
+
+def create_session(user: dict, request: Request | None = None) -> str:
     token = secrets.token_urlsafe(32)
     name = str(user.get("username") or "").strip().lower()
+    ua = ""
+    ip = ""
+    if request is not None:
+        ua = str(request.headers.get("user-agent") or "")[:300]
+        ip = client_ip(request)
     with _SESSION_LOCK:
         _load_sessions()
         _prune_sessions()
@@ -235,9 +287,38 @@ def create_session(user: dict) -> str:
             # yo'q — birinchi tekshiruvda `setdefault` bilan to'ldiriladi).
             "last_seen": now,
             "created_at": now,
+            # Sozlamalar > Qurilmalar paneli uchun (eski yozuvlarda bo'sh).
+            "ip": ip,
+            "user_agent": ua,
+            "device": _device_info(ua) if ua else {},
         }
         _save_sessions()
     return token
+
+
+def _session_backfill(token: str, request: Request) -> None:
+    """Eski (deploydan oldingi) sessiyalarga IP/qurilma ma'lumotini to'ldiradi."""
+    if not token:
+        return
+    ua = str(request.headers.get("user-agent") or "")[:300]
+    ip = client_ip(request)
+    with _SESSION_LOCK:
+        _load_sessions()
+        s = _sessions.get(token)
+        if not s:
+            return
+        changed = False
+        old_ip = str(s.get("ip") or "")
+        if ip and ip != "?" and old_ip != ip and (
+                not old_ip or old_ip in ("127.0.0.1", "::1", "testclient")):
+            s["ip"] = ip
+            changed = True
+        if not s.get("user_agent") and ua:
+            s["user_agent"] = ua
+            s.setdefault("device", _device_info(ua))
+            changed = True
+        if changed:
+            _save_sessions()
 
 
 def drop_session(token: str) -> None:
@@ -272,6 +353,44 @@ def drop_user_sessions(username: str, keep_token: str = "") -> int:
         if closed:
             _save_sessions()
     return closed
+
+
+def list_sessions(scope: dict | None, current_token: str = "") -> list[dict]:
+    """Faol sessiyalar ro'yxati — qurilma/IP bilan (token oshkor qilinmaydi).
+
+    ADMIN barcha sessiyalarni ko'radi, boshqa rollar faqat o'zinikini.
+    `id` — token'dan olingan qisqa sha256 (UI uchun identifikator).
+    """
+    who = str((scope or {}).get("username") or "").strip().lower()
+    is_admin = bool((scope or {}).get("is_admin"))
+    out: list[dict] = []
+    with _SESSION_LOCK:
+        _load_sessions()
+        _prune_sessions()
+        for token, s in _sessions.items():
+            name = str(s.get("username") or "").strip().lower()
+            if not is_admin and name != who:
+                continue
+            dev = s.get("device") if isinstance(s.get("device"), dict) else {}
+            ua = str(s.get("user_agent") or "")
+            if not dev and ua:
+                dev = _device_info(ua)
+            out.append({
+                "id": hashlib.sha256(token.encode("utf-8")).hexdigest()[:12],
+                "username": s.get("username") or "",
+                "role": s.get("role") or "VIEWER",
+                "company": s.get("company") or "",
+                "ip": s.get("ip") or "",
+                "device": str(dev.get("type") or ""),
+                "os": str(dev.get("os") or ""),
+                "browser": str(dev.get("browser") or ""),
+                "created_at": float(s.get("created_at") or 0),
+                "last_seen": float(s.get("last_seen") or 0),
+                "expires_at": float(s.get("expires_at") or 0),
+                "current": bool(current_token) and token == current_token,
+            })
+    out.sort(key=lambda r: (not r["current"], -r["last_seen"]))
+    return out
 
 
 def refresh_session_cookie(request: Request, response: Response) -> bool:
@@ -852,6 +971,8 @@ async def resolve_scope(
                 "is_admin": True, "is_super": True, "routes": None}
 
     token = _session_token_from_request(request, creds)
+    if token:
+        _session_backfill(token, request)
     session = session_user(token) if token else None
     if session:
         # Per-user bo'limlar ro'yxati keshlangan holda o'qiladi: admin
@@ -1049,6 +1170,13 @@ def tenant_guard(request: Request):
 
 
 def client_ip(request: Request) -> str:
-    if request.client:
-        return (request.client.host or "").lower().rstrip(".") or "?"
-    return "?"
+    host = ((request.client.host if request.client else "") or "").lower().rstrip(".")
+    if host in ("127.0.0.1", "::1", "localhost"):
+        # Panel nginx orqali keladi — haqiqiy mijoz IP'si sarlavhada.
+        xff = str(request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        cand = xff or str(request.headers.get("x-real-ip") or "").strip()
+        try:
+            return str(ipaddress.ip_address(cand))
+        except ValueError:
+            pass
+    return host or "?"

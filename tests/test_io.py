@@ -31,3 +31,20 @@ def test_atomic_write(tmp_path):
     target = tmp_path / "f.txt"
     atomic_write(target, "hello")
     assert target.read_text(encoding="utf-8") == "hello"
+
+
+def test_atomic_write_falls_back_when_dir_not_writable(tmp_path, monkeypatch):
+    """Katalog yozishga yopiq bo'lsa fayl joyida yoziladi.
+
+    Deploydan keyin katalog egasi buzilsa temp yaratish PermissionError
+    beradi — aks holda yangilangan token butunlay yo'qoladi.
+    """
+    target = tmp_path / "tokens.json"
+    target.write_text('{"old": 1}', encoding="utf-8")
+
+    def boom(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr("bm_automation.app.utils.io.tempfile.mkstemp", boom)
+    atomic_write(target, '{"new": 2}')
+    assert json.loads(target.read_text(encoding="utf-8")) == {"new": 2}

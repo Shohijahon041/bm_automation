@@ -67,3 +67,23 @@ def test_driver_summary_counts_days_and_hours():
 
 def test_driver_summary_empty():
     assert driver_summary([]) == []
+
+
+def test_shift_hours_crosses_midnight():
+    """Yarim tuni kesib o'tuvchi smena (22:00–06:00) manfiy chiqmasligi kerak."""
+    from bm_automation.app.services.summary_service import _shift_hours
+
+    assert _shift_hours("22:00:00", "06:00:00") == 8.0
+    assert _shift_hours("06:00", "14:00") == 8.0
+    assert _shift_hours("", "06:00:00") == 0.0
+    assert _shift_hours("not-a-time", "06:00:00") == 0.0
+
+
+def test_driver_summary_overnight_shift_hours():
+    days = [{"date": "2026-08-15", "duty": {"graphs": [
+        {"graphName": "P2", "driverName": "Tun Osirovi",
+         "startTime": "22:00:00", "endTime": "06:00:00",
+         "plateNum": "01B456BB", "shiftName": "TUN", "hasSecond": False},
+    ]}}]
+    rows = driver_summary(days)
+    assert rows[0]["hours"] == 8.0

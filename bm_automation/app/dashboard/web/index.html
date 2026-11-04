@@ -170,7 +170,7 @@
     transition: transform .16s var(--ease), background .16s var(--ease), color .16s var(--ease), border-color .16s var(--ease), box-shadow .16s var(--ease);
   }
   .pill:hover { background: var(--bg-raised); color: var(--ink); border-color: #3a4356; transform: translateY(-1px); }
-  .pill.active { background: var(--amber); color: #10131A; border-color: var(--amber); font-weight: 600; box-shadow: 0 2px 12px rgba(240,169,62,.35); }
+  .pill.active { background: var(--amber); color: #10131A; border-color: var(--warn); font-weight: 600; box-shadow: 0 2px 12px rgba(240,169,62,.35); }
   .pill:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
 
   .clock { text-align: right; }
@@ -232,7 +232,7 @@
     line-height: 1.05; margin-top: 8px;
   }
   .kpi .num.teal  { color: var(--teal); }
-  .kpi .num.amber { color: var(--amber); }
+  .kpi .num.amber { color: var(--warn); }
   .kpi .num.alert { color: var(--alert); }
   .kpi .foot { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--muted); margin-top: 6px; }
 
@@ -290,7 +290,7 @@
   .board tbody tr:last-child td, .table tbody tr:last-child td { border-bottom: none; }
   .board .badge { display: inline-grid; place-items: center; width: 28px; height: 28px;
     background: var(--bg-deep); border: 1px solid var(--line); border-radius: 8px;
-    font-family: "IBM Plex Mono", monospace; font-size: 12px; font-weight: 600; color: var(--amber);
+    font-family: "IBM Plex Mono", monospace; font-size: 12px; font-weight: 600; color: var(--warn);
     box-shadow: 0 1px 0 rgba(255,255,255,.03) inset; }
   .board .who { font-weight: 600; }
   .board .who-sub { display: block; font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--muted); margin-top: 2px; }
@@ -303,7 +303,7 @@
 
   .pct { font-family: "IBM Plex Mono", monospace; font-size: 12px; font-weight: 600; }
   .pct.teal  { color: var(--teal); }
-  .pct.amber { color: var(--amber); }
+  .pct.amber { color: var(--warn); }
   .pct.alert { color: var(--alert); }
 
   .pill-status { display: inline-block; padding: 3px 10px; border-radius: 999px;
@@ -311,7 +311,7 @@
     box-shadow: 0 1px 0 rgba(255,255,255,.03) inset; }
   .pill-status.done { color: var(--teal); border-color: rgba(63,182,168,.4); background: rgba(63,182,168,.1); }
   .pill-status.late { color: var(--alert); border-color: rgba(232,90,79,.4); background: rgba(232,90,79,.1); }
-  .pill-status.run  { color: var(--amber); border-color: rgba(240,169,62,.4); background: rgba(240,169,62,.1); }
+  .pill-status.run  { color: var(--warn); border-color: rgba(240,169,62,.4); background: rgba(240,169,62,.1); }
   .pill-status.gray { color: var(--muted); border-color: var(--line); background: transparent; }
 
   .hide-sm { }
@@ -329,7 +329,7 @@
   .problem .p-main { font-size: 13px; font-weight: 600; }
   .problem .p-meta { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--muted); margin-top: 2px; }
   .problem.serious .p-main { color: var(--alert); }
-  .problem.warn .p-main { color: var(--amber); }
+  .problem.warn .p-main { color: var(--warn); }
 
   .chart-wrap { position: relative; height: 220px; }
   .trend-foot { display: flex; gap: 16px; margin-top: 12px;
@@ -351,7 +351,7 @@
   .registry tbody tr:last-child td { border-bottom: none; }
   .registry tbody tr:focus-visible { outline: 2px solid var(--amber); outline-offset: -2px; }
   .registry .driver-name { transition: color .14s var(--ease); }
-  .registry tbody tr:hover .driver-name { color: var(--amber); }
+  .registry tbody tr:hover .driver-name { color: var(--warn); }
   .registry .driver-open { padding: 6px 9px; min-height: 0; font-size: 11px; }
 
   .empty { color: var(--muted); padding: 26px 18px; font-size: 13px; text-align: center;
@@ -371,7 +371,7 @@
     padding: 8px 10px; font: 12px "IBM Plex Mono", monospace; min-height: 34px;
     transition: border-color .14s var(--ease), box-shadow .14s var(--ease);
   }
-  .input:focus, .select:focus { outline: none; border-color: var(--amber); box-shadow: var(--ring); }
+  .input:focus, .select:focus { outline: none; border-color: var(--warn); box-shadow: var(--ring); }
   .input[type="search"] { min-width: 190px; }
   .button {
     appearance: none; border: 1px solid var(--amber); background: var(--amber); color: #10131A;
@@ -402,13 +402,15 @@
   .tag { display: inline-block; padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted);
     font: 10px "IBM Plex Mono", monospace; box-shadow: 0 1px 0 rgba(255,255,255,.03) inset; }
   .tag.good { color: var(--teal); border-color: rgba(63,182,168,.45); background: rgba(63,182,168,.08); }
-  .tag.warn { color: var(--amber); border-color: rgba(240,169,62,.45); background: rgba(240,169,62,.08); }
+  .tag.warn { color: var(--warn); border-color: rgba(240,169,62,.45); background: rgba(240,169,62,.08); }
   .tag.bad { color: var(--alert); border-color: rgba(232,90,79,.45); background: rgba(232,90,79,.08); }
   .documents-mark { display: flex; gap: 4px; }
   .doc-mark { width: 18px; height: 18px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 5px;
     color: var(--muted); font: 10px "IBM Plex Mono", monospace; background: var(--bg-deep); }
   .doc-mark.ready { color: var(--teal); border-color: rgba(63,182,168,.45); background: rgba(63,182,168,.08); }
 
+  dialog:not([open]), dialog[hidden] { display: none !important; }
+  dialog.driver-dialog:not([open]) { display: none !important; }
   dialog.driver-dialog { width: min(1180px, calc(100vw - 28px)); max-height: calc(100vh - 28px); padding: 0; overflow: auto;
     color: var(--ink); background: var(--bg-glass);
     border: 1px solid var(--line-strong); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);
@@ -457,7 +459,7 @@
   /* Textarea baland — label markazda emas, yuqorida turadi */
   .field.float:has(> textarea) > label:not(.check-field) { top: 10px; transform: none; }
   .field.float:has(> textarea).floated > label:not(.check-field) { top: 0; transform: translateY(-50%) scale(.78); }
-  .field input:focus, .field textarea:focus { outline: none; border-color: var(--amber); box-shadow: var(--ring); }
+  .field input:focus, .field textarea:focus { outline: none; border-color: var(--warn); box-shadow: var(--ring); }
   .check-field { display: flex; align-items: center; gap: 8px; color: var(--ink); font-size: 12px; }
   .du-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 10px; }
   @media (max-width: 720px) { .du-grid { grid-template-columns: 1fr 1fr; } }
@@ -480,7 +482,7 @@
   .document-preview img { width: 100%; height: 100%; display: block; object-fit: cover; }
   .document-card footer { display: flex; justify-content: space-between; align-items: center; padding: 8px; text-align: left; color: var(--ink); font-size: 11px; }
   .document-card input { display: none; }
-  .upload-label { color: var(--amber); cursor: pointer; font: 11px "IBM Plex Mono", monospace; transition: color .14s var(--ease); }
+  .upload-label { color: var(--warn); cursor: pointer; font: 11px "IBM Plex Mono", monospace; transition: color .14s var(--ease); }
   .upload-label:hover { color: var(--ink); }
   .upload-label:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
   .driver-history { max-height: 360px; overflow-y: auto; overflow-x: hidden; border: 1px solid var(--line-soft); border-radius: var(--radius-sm); scroll-behavior: smooth; }
@@ -505,7 +507,7 @@
   .side-card:last-child { margin-bottom: 0; }
   .side-card h2 { font-size: 16px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; letter-spacing: 1px; }
   .side-card h2 .hint { margin-left: auto; font-size: 10px; }
-  .sec-ic { display: inline-flex; color: var(--amber); flex: none; filter: drop-shadow(0 0 6px rgba(240,169,62,.35)); }
+  .sec-ic { display: inline-flex; color: var(--warn); flex: none; filter: drop-shadow(0 0 6px rgba(240,169,62,.35)); }
   .dash-side .hero { grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 0; }
   .dash-side .kpi { padding: 10px 11px 11px; }
   .dash-side .kpi .num { font-size: 30px; margin-top: 4px; }
@@ -523,7 +525,7 @@
   .side-drv:hover { background: var(--bg-hover); padding-left: 8px; }
   .side-drv-name { font-size: 12px; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .side-drv-meta { font: 10px "IBM Plex Mono", monospace; color: var(--muted); flex: none; }
-  .side-drv b { flex: none; font-size: 12px; color: var(--amber); }
+  .side-drv b { flex: none; font-size: 12px; color: var(--warn); }
 
   /* ------------------------------------------------ system status + filters */
   .sys { display: flex; gap: 12px; flex-wrap: wrap; }
@@ -673,7 +675,7 @@ footer{border-top:1px solid var(--line)!important;background:#070b11!important;c
 .dispatch-stat small{display:block;margin-top:3px;color:var(--muted);font:9px "IBM Plex Mono",monospace;letter-spacing:.7px;text-transform:uppercase;white-space:nowrap}
 .dispatch-stat .ds-ic{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;flex:0 0 auto;background:var(--line-soft);color:var(--muted)}
 .dispatch-stat .ds-ic svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-.dispatch-stat.run .ds-ic{color:var(--amber);background:rgba(240,169,62,.1)}
+.dispatch-stat.run .ds-ic{color:var(--warn);background:rgba(240,169,62,.1)}
 .dispatch-stat.done .ds-ic{color:var(--teal);background:rgba(63,182,168,.1)}
 .dispatch-stat.late .ds-ic{color:var(--alert);background:rgba(232,90,79,.1)}
 .dispatch-board{--db-cols:5;display:grid;grid-template-columns:repeat(var(--db-cols),minmax(210px,1fr));gap:12px;overflow-x:auto;padding:2px 2px 8px;align-items:start}
@@ -687,7 +689,7 @@ footer{border-top:1px solid var(--line)!important;background:#070b11!important;c
 .db-count{display:inline-grid;place-items:center;min-width:22px;height:20px;padding:0 6px;border-radius:6px;background:var(--line-soft);font:700 10px "IBM Plex Mono",monospace;color:var(--muted)}
 .db-cards{display:flex;flex-direction:column;gap:7px;overflow-y:auto;min-height:80px;padding-right:2px;scrollbar-width:thin}
 .dispatch-card{border:1px solid var(--line);border-left:3px solid var(--muted);border-radius:10px;background:var(--bg-raised);padding:9px 10px}
-.dispatch-card.run{border-left-color:var(--amber)}
+.dispatch-card.run{border-left-color:var(--warn)}
 .dispatch-card.done{border-left-color:var(--teal)}
 .dispatch-card.late{border-left-color:var(--alert)}
 .dispatch-card .dc-head{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:6px}
@@ -701,7 +703,7 @@ footer{border-top:1px solid var(--line)!important;background:#070b11!important;c
 .rejects-unattributed b{color:var(--ink)}
 @media(max-width:1100px){.dispatch-summary{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:620px){.dispatch-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.dispatch-board{grid-template-columns:repeat(var(--db-cols),minmax(78vw,78vw))}}
-.alert-grid{display:grid;gap:13px}.metric-row,.performance-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.metric-box{min-width:0;background:linear-gradient(160deg,rgba(15,22,35,.95),rgba(10,14,24,.98));border:1px solid rgba(148,163,184,.08);border-radius:14px;padding:18px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);transition:all .2s ease}.metric-box:hover{border-color:rgba(148,163,184,.15);transform:translateY(-1px)}.metric-box span{display:block;color:var(--muted);font:10px "IBM Plex Mono",monospace;letter-spacing:1.2px;text-transform:uppercase}.metric-box b{display:block;margin-top:8px;font:800 30px "IBM Plex Sans",sans-serif;color:var(--ink)}.metric-box.critical b{color:var(--alert-text)}.metric-box.warning b{color:var(--amber)}.metric-box.success b{color:var(--teal-text)}.performance-summary{margin-bottom:13px}.performance-summary .metric-box b{color:var(--teal-text)}.performance-chart{height:440px;padding:18px}.audit-placeholder{display:flex;flex-direction:column;gap:5px;margin-top:13px;color:var(--ink)}.audit-placeholder span{color:var(--muted);font-size:12px}.rec-list{display:flex;flex-direction:column;gap:9px;padding:6px}.rec-item{background:var(--bg-glass);border:1px solid var(--line);border-radius:10px;padding:12px 14px;color:var(--ink);font-size:13px;line-height:1.55;backdrop-filter:blur(8px)}.rec-item:before{content:"▸";color:var(--teal-text);margin-right:8px}.page-breadcrumb{padding:6px 9px;border:1px solid var(--line);border-radius:8px;color:var(--muted-2);font:9px "IBM Plex Mono",monospace;letter-spacing:1px}.mobile-menu{display:none;background:transparent;border:1px solid var(--line);color:var(--ink);border-radius:9px;width:34px;height:34px;cursor:pointer}
+.alert-grid{display:grid;gap:13px}.metric-row,.performance-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.metric-box{min-width:0;background:linear-gradient(160deg,rgba(15,22,35,.95),rgba(10,14,24,.98));border:1px solid rgba(148,163,184,.08);border-radius:14px;padding:18px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);transition:all .2s ease}.metric-box:hover{border-color:rgba(148,163,184,.15);transform:translateY(-1px)}.metric-box span{display:block;color:var(--muted);font:10px "IBM Plex Mono",monospace;letter-spacing:1.2px;text-transform:uppercase}.metric-box b{display:block;margin-top:8px;font:800 30px "IBM Plex Sans",sans-serif;color:var(--ink)}.metric-box.critical b{color:var(--alert-text)}.metric-box.warning b{color:var(--warn)}.metric-box.success b{color:var(--teal-text)}.performance-summary{margin-bottom:13px}.performance-summary .metric-box b{color:var(--teal-text)}.performance-chart{height:440px;padding:18px}.audit-placeholder{display:flex;flex-direction:column;gap:5px;margin-top:13px;color:var(--ink)}.audit-placeholder span{color:var(--muted);font-size:12px}.rec-list{display:flex;flex-direction:column;gap:9px;padding:6px}.rec-item{background:var(--bg-glass);border:1px solid var(--line);border-radius:10px;padding:12px 14px;color:var(--ink);font-size:13px;line-height:1.55;backdrop-filter:blur(8px)}.rec-item:before{content:"▸";color:var(--teal-text);margin-right:8px}.page-breadcrumb{padding:6px 9px;border:1px solid var(--line);border-radius:8px;color:var(--muted-2);font:9px "IBM Plex Mono",monospace;letter-spacing:1px}.mobile-menu{display:none;background:transparent;border:1px solid var(--line);color:var(--ink);border-radius:9px;width:34px;height:34px;cursor:pointer}
 .nav-section-note{padding:8px 10px;color:#546478;font:9px "IBM Plex Mono",monospace;line-height:1.5}.command-bar{position:relative}.right-stack{display:none!important}
 @media(max-width:1100px){.overview-grid{grid-template-columns:1fr}.page-hero h2{font-size:24px}.performance-chart{height:380px}}
 @media(max-width:850px){.page-hero{align-items:flex-start;flex-direction:column}.page-kicker,.hero-live{align-self:flex-start}.metric-row,.performance-summary{grid-template-columns:1fr}.performance-chart{height:320px}}
@@ -785,13 +787,13 @@ footer{border-top:1px solid var(--line)!important;background:#070b11!important;c
   --alert-strong: #d95b3c;
   --alert-soft: rgba(225,112,85,.08);
   --alert-soft-border: rgba(225,112,85,.30);
-  --alert-text: #c44e30;
+  --alert-text: #b8452a;
   --ink: #1e293b;
   --ink-soft: #253244;
   --ink-strong: #0f1520;
   --muted: #5b6b7d;
   --muted-2: #64748b;
-  --muted-3: #94a3b8;
+  --muted-3: #7c8ba1;
   --line: rgba(99,102,241,.12);
   --line-strong: rgba(99,102,241,.28);
   --line-soft: rgba(99,102,241,.07);
@@ -1143,6 +1145,28 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
 .sk-row.w60 { width: 60%; } .sk-row.w40 { width: 40%; } .sk-row.w30 { width: 30%; }
 .sk-block { height: 200px; border-radius: var(--radius); }
 .sk-card { height: 120px; border-radius: var(--radius); }
+/* --- Qurilmalar (sessiyalar) paneli --- */
+.sess-dev { display: inline-flex; align-items: center; gap: 7px; }
+.sess-ic { display: inline-flex; width: 15px; height: 15px; flex: 0 0 auto; color: var(--muted-2); }
+.sess-ic svg { width: 100%; height: 100%; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.sess-name { font-weight: 600; }
+.sess-os { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.tag.sess-me { color: var(--accent-text); border-color: var(--accent-soft-border); background: var(--accent-soft); }
+#sessions-body td { vertical-align: middle; }
+#sessions-body tr.sess-current td { background: var(--accent-soft); }
+#sessions-body .err { display: block; }
+#sessions-body .button:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+@@CSS@@; display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+@media(max-width:620px){
+  #sessions-body table { min-width: 0 !important; }
+  #sessions-body thead { display: none; }
+  #sessions-body tbody, #sessions-body tr, #sessions-body td { display: block; }
+  #sessions-body tr { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 10px; margin-bottom: 8px; }
+  #sessions-body tr.sess-current { background: var(--accent-soft); border-color: var(--accent-soft-border); }
+  #sessions-body td { border: 0; padding: 3px 0; font-size: 12px; display: flex; align-items: baseline; justify-content: space-between; gap: 10px; background: transparent !important; }
+  #sessions-body td::before { content: attr(data-label); flex: 0 0 auto; font-family: var(--font-mono); font-size: 9px; font-weight: 600; letter-spacing: 1.2px; text-transform: uppercase; color: var(--muted); }
+  #sessions-body td:first-child { position: static !important; box-shadow: none !important; }
+}
 .hero-loading, .panel-loading { display: grid; gap: 12px; }
 .hero-loading { grid-template-columns: repeat(4, minmax(0,1fr)); }
 @media(max-width:760px){ .hero-loading { grid-template-columns: repeat(2, minmax(0,1fr)); } }
@@ -1354,8 +1378,53 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
     .vg-chip b { max-width: 96px; }
   }
 </style>
+<style id="bm-ux-audit-2026-11">
+/* ===== UI/UX audit 2026-11-02: kontrast, sensorli nishon, fokus, o'tish havolasi ===== */
+:root { --danger-solid: #b42318; }
+:root { --accent-btn: #5b57e8; --accent-btn-strong: #4f46e5; }
+:root[data-theme="light"] { --teal: #0a7d63; --accent: #5b57e8; --muted-2: #5f6d82; --muted-3: #5f6d82; --alert: #c0392b; --alert-strong: #a63a22; }
+:root[data-theme="dark"] { --accent: #8b93f8; --muted-3: #8593a8; }
+.button { background: linear-gradient(135deg, var(--accent-btn), var(--accent-btn-strong)) !important; border-color: transparent !important; }
+.button.danger { background: var(--danger-solid) !important; border-color: var(--danger-solid) !important; }
+.button:disabled, .button[disabled], .icon-button:disabled, .pill:disabled {
+  cursor: not-allowed !important; opacity: .55 !important; transform: none !important; box-shadow: none !important;
+}
+.icon-button > svg, .drawer-close > svg, .mobile-menu > svg, .side-logout-btn > svg {
+  width: 18px; height: 18px; stroke: currentColor; fill: none;
+  stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+}
+.skip-link { position: fixed; top: 10px; left: 10px; z-index: 400; padding: 10px 16px;
+  background: var(--accent); color: var(--accent-ink); border-radius: var(--radius-sm);
+  font: 700 13px var(--font-ui, system-ui); text-decoration: none; transform: translateY(-200%); }
+.skip-link:focus { transform: none; }
+[tabindex]:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, a:focus-visible,
+.pill:focus-visible, .skip-link:focus-visible {
+  outline: 2px solid var(--accent) !important; outline-offset: 2px !important;
+}
+@media (max-width:640px) {
+  .button, .command-actions .button, .command-exports .button { min-height: 44px; }
+  .icon-button, .drawer-close, .side-logout-btn, .mobile-menu { width: 44px !important; height: 44px !important; }
+  .input, .select, .side-search, .side-search-reset-btn, #side-search-input, textarea,
+  input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="color"]),
+  select, .occ-feed-tab, .pill-tw { min-height: 44px !important; }
+  .button { min-width: 44px; }
+  input[type="checkbox"], input[type="radio"], .check-field input[type="checkbox"], .check-field input[type="radio"] {
+    width: 22px !important; height: 22px !important; min-width: 22px !important; min-height: 22px !important;
+    flex: 0 0 22px !important; box-sizing: border-box;
+  }
+  .occ-feed-tab { min-width: 44px; }
+  .check-field { min-height: 44px; }
+  .pill { min-height: 44px; }
+  dialog.driver-dialog { width: calc(100vw - 16px) !important; max-height: calc(100dvh - 20px) !important; margin: auto !important; }
+  dialog:not([open]), dialog[hidden], dialog.driver-dialog:not([open]) { display: none !important; }
+  .driver-modal-head { padding: 12px 14px !important; gap: 8px !important; }
+  .driver-modal-head > div:first-child { min-width: 0; flex: 1; }
+  .driver-modal-head .icon-button { flex-shrink: 0 !important; }
+  .driver-modal-title { font-size: 20px !important; line-height: 1.2 !important; }
+}
+</style>
 </head>
-<body class="auth-locked auth-checking">
+<body class="auth-locked auth-checking"><a class="skip-link" href="#main-content">Asosiy kontentga o‘tish</a>
 <div id="global-bar"></div>
 <div class="app">
   <div class="navbar-overlay" id="navbar-overlay"></div>
@@ -1448,7 +1517,7 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
       </div>
     </header>
 
-    <main>
+    <main id="main-content">
       <section class="command-bar-wrap" id="cmd-wrap">
         <div class="command-title"><div><div class="eyebrow">GLOBAL CONTROL</div><div class="section-title">Filtr va boshqaruv</div></div><button class="cb-toggle" id="cmd-toggle" type="button" onclick="toggleCmdBar()" aria-expanded="true" aria-controls="cmd-panel">Filtr ▼</button></div>
         <section class="command-bar" id="cmd-panel">
@@ -1464,7 +1533,7 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
           <div class="command-exports"><button id="btn-check" class="button ghost">SAYT ↔ BAZA</button><button id="btn-check-monthly" class="button ghost">OYLIK TEKSHIRUV</button><button class="button ghost" data-exp="csv">CSV</button><button class="button ghost" data-exp="xls">XLS</button><button class="button ghost" data-exp="xlsx">XLSX</button><button class="button ghost" data-exp="pdf">PDF</button><button class="button ghost fin-block" data-exp="xlsx" data-scope="companies">FIRMA YIG'MA</button><button class="button ghost fin-block" data-exp="xlsx" data-scope="drivers" data-split="company">FIRMA VARAQLARI</button><span class="mono export-hint" id="export-hint"></span></div>
         </section>
       </section>
-      <div class="err" id="err"></div>
+      <div class="err" id="err" role="alert" aria-live="assertive"></div>
       <div id="sync-result" class="sync-result" style="display:none"></div>
 
       <section class="page active-page" id="page-overview" data-page-view="overview">
@@ -1607,7 +1676,7 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
       </section>
 
       <section class="page" id="page-rejects" data-page-view="rejects">
-        <div class="page-hero"><div><div class="eyebrow">REJECTS</div><h2>Qabul qilinmagan KM hisoboti</h2><p>Sayt bilan bir xil hisob — haydovchi bo'yicha rejadagi, qabul qilinmagan va amalda bajarilgan reyslar hamda km.</p></div></div>
+        <div class="page-hero"><div><div class="eyebrow">REJECTS</div><h2>Qabul qilinmagan KM hisoboti</h2><p>Sayt bilan bir xil hisob — haydovchi bo'yicha rejadagi, qabul qilinmagan va amalda bajarilgan reyslar hamda km. <b>Qabul qilinmagan = reja − amalda</b>: reyslar hammasi qabul qilingan bo'lsa ham, rejadagi bajarilmagan reyslar shu hisobga kiradi (kunlik tafsilot jadval ostida).</p></div></div>
         <div class="err" id="rejects-err" style="display:none"></div>
         <section class="panel">
           <div class="section-head"><div><div class="eyebrow">HISOBOT DAVRI</div><h2>Davrni tanlang <span class="hint">oy yoki sanadan–sanagacha; yo'nalish yuqoridagi filtrdan olinadi</span></h2></div>
@@ -1905,7 +1974,7 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
               <button class="button ghost" id="sms-routes-offall" style="font-size:12px">HAMMASINI O'CHIRISH</button>
             </div>
           </div>
-          <div style="padding:0 18px 4px;font-size:11px;color:var(--muted)"><span id="sms-routes-fallback" style="display:none;color:var(--amber)"></span></div>
+          <div style="padding:0 18px 4px;font-size:11px;color:var(--muted)"><span id="sms-routes-fallback" style="display:none;color:var(--warn)"></span></div>
           <div id="sms-routes-body" class="sms-routes-wrap" style="margin:0 18px 18px"></div>
         </section>
 
@@ -2293,6 +2362,18 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
             <button class="button" id="settings-save" onclick="saveSettings()">SAQLASH</button>
           </div>
         </section>
+        <!-- Qurilmalar / sessiyalar -->
+        <section class="panel" style="margin-bottom:14px">
+          <div class="section-head"><div><div class="eyebrow">SESSIONS</div><h2>Qurilmalar (sessiyalar)</h2></div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <span class="pill-status gray" id="sessions-count">—</span>
+              <button class="button ghost" id="sessions-refresh" style="font-size:11px;padding:5px 10px"
+                      onclick="loadSessions()" title="Ro'yxatni qayta yuklash">YANGILASH</button>
+            </div>
+          </div>
+          <div class="hint" style="padding:0 18px 10px">Saytga qaysi qurilmalardan kirilgan: qurilma turi, brauzer, IP va oxirgi faollik. Faolsiz sessiya 12 soatda yopiladi.</div>
+          <div id="sessions-body" aria-live="polite" style="padding:0 18px 18px"></div>
+        </section>
         <!-- Kompaniyalar credentials -->
         <section class="panel" style="margin-bottom:14px">
           <div class="section-head"><div><div class="eyebrow">COMPANIES</div><h2>Kompaniya kredensiallari</h2></div>
@@ -2401,7 +2482,7 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
       <section class="page" id="page-dusers" data-page-view="dusers">
         <div class="page-hero"><div><div class="eyebrow">DASHBOARD USERS</div><h2>Dashboard foydalanuvchilari</h2><p>Login + parol bilan panelga kirish — rol va korxona kesimida. O'chirish huquqi faqat Super Adminda; Super adminni hech kim o'chira olmaydi.</p></div></div>
         <section class="panel" style="margin-bottom:14px">
-          <div class="section-head"><div><div class="eyebrow">DASHBOARD USERS</div><h2>Dashboard foydalanuvchilari</h2></div>
+          <div class="section-head"><div><div class="eyebrow">RO'YXAT</div><h2>Foydalanuvchilar reyestri</h2></div>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
               <span class="hint">Login + parol bilan panelga kirish — rol va korxona kesimida</span>
               <select class="select" id="dusers-filter" aria-label="Yo'nalish bo'yicha filtr" style="font-size:11px;padding:4px 8px" onchange="renderDashboardUsers()"><option value="">Barcha yo'nalishlar</option></select>
@@ -2551,9 +2632,9 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
 <dialog class="driver-dialog" id="driver-dialog" aria-labelledby="driver-dialog-title"><div id="driver-dialog-content"></div></dialog>
 <dialog class="driver-dialog" id="appeal-dialog" style="max-width:560px;width:95%" aria-labelledby="appeal-dialog-title"><div id="appeal-dialog-content"></div></dialog>
 <dialog class="driver-dialog" id="vehicle-dialog" aria-labelledby="vehicle-dialog-title"><div id="vehicle-dialog-content"></div></dialog>
-<dialog class="driver-dialog" id="sync-dialog" aria-labelledby="sync-dialog-title" style="width:min(720px,calc(100vw - 28px))">
-  <div class="driver-modal-head"><div><div class="eyebrow">SYNC</div><div id="sync-dialog-title" class="driver-modal-title">Kunlik sinxronlash</div>
-    <div class="driver-modal-meta">BM API'dan ma'lumotni ma'lumotlar bazasiga yangilash.</div></div><button class="icon-button" id="sync-close" aria-label="Yopish"><i class="ic" data-ic="x"></i></button></div>
+<dialog class="driver-dialog" id="sync-dialog" aria-labelledby="sync-dialog-title" hidden style="display:none;width:min(720px,calc(100vw - 28px))">
+  <div class="driver-modal-head"><div style="min-width:0;flex:1"><div class="eyebrow">SYNC</div><div id="sync-dialog-title" class="driver-modal-title">Kunlik sinxronlash</div>
+    <div class="driver-modal-meta">BM API'dan ma'lumotni ma'lumotlar bazasiga yangilash.</div></div><button type="button" class="icon-button" id="sync-close" style="flex-shrink:0" onclick="closeSyncDialog()" aria-label="Yopish"><svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button></div>
   <div class="driver-modal-body">
     <div class="driver-message" id="sync-message"></div>
     <div class="form-grid" style="margin-bottom:12px">
@@ -2564,7 +2645,10 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
         <label class="check-field"><input type="checkbox" id="sync-all-days" checked> Har bir kunni alohida sinxronlash</label>
       </div>
     </div>
-    <div class="form-actions"><button class="button" id="btn-sync-go">SINXRONLASH</button></div>
+    <div class="form-actions" style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
+      <button type="button" class="button ghost" id="btn-sync-cancel" onclick="closeSyncDialog()">YOPISH</button>
+      <button type="button" class="button" id="btn-sync-go">SINXRONLASH</button>
+    </div>
     <div id="sync-log" style="display:none;margin-top:14px;padding:12px 14px;background:var(--bg-deep);border:1px solid var(--line);border-radius:var(--radius);font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;max-height:320px;overflow:auto;white-space:pre-wrap"></div>
   </div>
 </dialog>
@@ -2695,6 +2779,9 @@ const FEATHER = {
   "book": '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',
   "user-plus": '<path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/>',
   "message-square": '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  "monitor": '<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>',
+  "smartphone": '<rect x="7" y="2" width="10" height="20" rx="2"/><line x1="11" y1="18" x2="13" y2="18"/>',
+  "tablet": '<rect x="4" y="2" width="16" height="20" rx="2"/><line x1="11" y1="18" x2="13" y2="18"/>',
   "database": '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>',
   "briefcase": '<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>',
   "map-pin": '<path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>',
@@ -2722,6 +2809,16 @@ const FEATHER = {
   "play": '<polygon points="5 3 19 12 5 21 5 3"/>',
   "refresh-cw": '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>',
 };
+/* Klaviatura: faqat bosiladigan (role=button) div/qatorlar uchun Enter/Space ko'prigi */
+document.addEventListener("keydown", function (e) {
+  if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+  var t = e.target;
+  if (!t || !t.getAttribute || t.getAttribute("role") !== "button") return;
+  var tag = t.tagName;
+  if (tag === "BUTTON" || tag === "A" || tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+  e.preventDefault();
+  t.click();
+});
 function featherIcon(name) { const p = FEATHER[name] || FEATHER["activity"]; return `<svg viewBox="0 0 24 24" aria-hidden="true">${p}</svg>`; }
 function _initKpiIcons(root) { (root || document).querySelectorAll(".kpi-ic, .nav-ic, .ic, .ds-ic").forEach(el => { if (!el.dataset.ic) return; el.innerHTML = featherIcon(el.dataset.ic); }); }
 /* sidebar ikonkalari (statik HTML) darhol chiziladi */
@@ -3652,7 +3749,7 @@ async function loadTelegramUserInfo(driverId) {
       h += '</div>';
       el.innerHTML = h;
     } else {
-      el.innerHTML = '<div style="display:flex;align-items:center;gap:8px;color:var(--amber)"><i class="ic" style="margin-right:0;width:16px;height:16px">' + featherIcon("alert-triangle") + '</i><span style="font-size:12px">Chat ID ' + tgChatId + ' botda topilmadi (foydalanuvchi botni hali ishlatmagan).</span></div>';
+      el.innerHTML = '<div style="display:flex;align-items:center;gap:8px;color:var(--warn)"><i class="ic" style="margin-right:0;width:16px;height:16px">' + featherIcon("alert-triangle") + '</i><span style="font-size:12px">Chat ID ' + tgChatId + ' botda topilmadi (foydalanuvchi botni hali ishlatmagan).</span></div>';
     }
   } catch(ex) {
     el.innerHTML = '<div style="color:var(--muted);font-size:12px">Telegram ma\'lumotini olishda xatolik</div>';
@@ -4517,6 +4614,9 @@ function renderSyncLines(d, el, btn) {
 
 async function syncDaily() {
   const dlg = document.getElementById("sync-dialog");
+  if (!dlg) return;
+  dlg.removeAttribute("hidden");
+  dlg.style.display = "block";
   const today = localToday();
   document.getElementById("sync-from").value = today;
   document.getElementById("sync-to").value = today;
@@ -4530,12 +4630,17 @@ async function syncDaily() {
   log.style.display = "none";
   btn.disabled = false;
   btn.onclick = runDailySync;
-  document.getElementById("sync-close").onclick = () => dlg.close();
+  const syncClose = document.getElementById("sync-close");
+  if (syncClose) syncClose.onclick = closeSyncDialog;
+  const syncCancel = document.getElementById("btn-sync-cancel");
+  if (syncCancel) syncCancel.onclick = closeSyncDialog;
   // yo'nalishlar ro'yxatini f-route'dan nusxalaymiz
   const routes = document.getElementById("f-route").innerHTML;
   document.getElementById("sync-route").innerHTML = routes || "<option value=''>Barchasi</option>";
   document.getElementById("sync-route").value = route || "";
-  if (!dlg.open) dlg.showModal();
+  if (!dlg.open) {
+    try { dlg.showModal(); } catch (_) { dlg.setAttribute("open", ""); }
+  }
 }
 async function runDailySync() {
   const log = document.getElementById("sync-log");
@@ -4853,7 +4958,7 @@ function showPage(name, updateHash=true){
   if(name==='appeals') loadAppeals();
   if(name==='sms') startSmsPoll(); else stopSmsPoll();
   if(name==='admin') initAdmin();
-  if(name==='settings') { loadSettings(); loadCompanies(); loadEnvSettings(); loadKmPanel(); mfaRefresh(); }
+  if(name==='settings') { loadSettings(); loadCompanies(); loadEnvSettings(); loadKmPanel(); mfaRefresh(); loadSessions(); }
   if(name==='dusers') loadDashboardUsers();
   if(name==='knowledge'){ loadVault(); vaultGrowStatus(); }
   if(name==='disk') loadDisk();
@@ -5139,7 +5244,7 @@ async function vaultSave(){
     await loadVault();
     _vaultInfo("Saqlandi: " + (d.path || title));
   } catch (e) {
-    _vaultInfo("❌ Xato: " + e.message);
+    _vaultInfo("Xato: " + e.message);
   }
   if (btn) { btn.disabled = false; btn.textContent = "SAQLASH"; }
 }
@@ -6064,6 +6169,97 @@ function departureOffsetValue() {
   const n = Math.max(1, Math.min(180, parseInt(minEl && minEl.value, 10) || 0));
   return modeEl.value === "before" ? -n : n;
 }
+function _fmtTs(ts) {
+  const n = Number(ts || 0);
+  if (!n) return "—";
+  try {
+    return new Date(n * 1000).toLocaleString("uz-UZ", {timeZone: "Asia/Tashkent", hour12: false});
+  } catch (e) { return "—"; }
+}
+function _fmtTsShort(ts) {
+  const n = Number(ts || 0);
+  if (!n) return "—";
+  try {
+    return new Date(n * 1000).toLocaleString("uz-UZ", {timeZone: "Asia/Tashkent", hour12: false,
+      day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit"});
+  } catch (e) { return "—"; }
+}
+function _ago(ts) {
+  const n = Number(ts || 0);
+  if (!n) return "—";
+  const s = Math.max(0, Date.now() / 1000 - n);
+  if (s < 60) return "hozir";
+  if (s < 3600) return Math.floor(s / 60) + " daq. oldin";
+  if (s < 86400) return Math.floor(s / 3600) + " soat oldin";
+  return Math.floor(s / 86400) + " kun oldin";
+}
+const _SESS_ICON = {"Telefon": "smartphone", "Planshet": "tablet",
+                    "Kompyuter": "monitor", "Telegram": "message-square"};
+function _sessStatus(ts) {
+  const n = Number(ts || 0);
+  if (!n) return '<span class="tag">Ma\'lumot yo\'q</span>';
+  const s = Math.max(0, Date.now() / 1000 - n);
+  if (s < 300) return '<span class="tag good">Faol</span>';
+  if (s < 7200) return '<span class="tag">Jim</span>';
+  return '<span class="tag">Uzoq vaqt jim</span>';
+}
+let _sessionsBusy = false;
+async function loadSessions() {
+  const el = document.getElementById("sessions-body");
+  if (!el || _sessionsBusy) return;
+  _sessionsBusy = true;
+  const btn = document.getElementById("sessions-refresh");
+  if (btn) { btn.disabled = true; btn.textContent = "YUKLANMOQDA…"; }
+  el.innerHTML = '<div class="panel-loading">' +
+    [0, 1, 2, 3].map(() => '<div class="sk sk-row w100"></div>').join("") + "</div>";
+  let d = null, err = "";
+  try { d = await api("/api/sessions"); }
+  catch (e) { err = "Sessiyalar ro'yxatini olib bo'lmadi."; }
+  if (!err && (!d || !d.ok)) err = (d && d.error) ? d.error : "Sessiyalarni olishda xatolik.";
+  if (err) {
+    el.innerHTML = '<div class="err" role="alert">' + esc(err) +
+      ' <button class="button ghost" style="margin-left:10px" onclick="loadSessions()">QAYTA URISH</button></div>';
+  } else {
+    const rows = Array.isArray(d.sessions) ? d.sessions : [];
+    const active = rows.filter(s => (Date.now() / 1000 - Number(s.last_seen || 0)) < 300).length;
+    const cnt = document.getElementById("sessions-count");
+    if (cnt) cnt.textContent = rows.length + " sessiya · " + active + " faol";
+    if (!rows.length) {
+      el.innerHTML = '<div class="empty">Faol sessiya yo\'q. Panelga qayta kirilganda qurilma shu yerda paydo bo\'ladi.</div>';
+    } else {
+      let h = '<div class="new-table-wrap"><table aria-label="Sessiyalar ro\'yxati"><thead><tr>' +
+              '<th scope="col">Qurilma</th><th scope="col">Brauzer</th><th scope="col">IP manzil</th>';
+      if (d.is_admin) h += '<th scope="col">Foydalanuvchi</th>';
+      h += '<th scope="col">Holat</th><th scope="col">Oxirgi faollik</th><th scope="col">Kirgan</th></tr></thead><tbody>';
+      rows.forEach(function (s) {
+        const dev = String(s.device || "");
+        h += '<tr' + (s.current ? ' class="sess-current"' : "") + '>';
+        h += '<td data-label="Qurilma"><span class="sess-dev">' +
+             (_SESS_ICON[dev] ? '<span class="sess-ic">' + featherIcon(_SESS_ICON[dev]) + "</span>" : "") +
+             '<span class="sess-name">' + esc(dev || "Qurilma noma'lum") + "</span>" +
+             (s.os ? '<span class="sess-os">· ' + esc(s.os) + "</span>" : "") + "</span>" +
+             (s.current ? ' <span class="tag sess-me">Shu qurilma</span>' : "") + "</td>";
+        h += '<td data-label="Brauzer">' + esc(s.browser || "Aniqlanmagan") + "</td>";
+        h += '<td data-label="IP manzil" class="mono">' + esc(s.ip || "—") + "</td>";
+        if (d.is_admin) h += '<td data-label="Foydalanuvchi">' + esc(s.username || "—") +
+                             (s.role ? ' <span class="tag">' + esc(s.role) + "</span>" : "") + "</td>";
+        h += '<td data-label="Holat">' + _sessStatus(s.last_seen) + "</td>";
+        h += '<td data-label="Oxirgi faollik" class="mono" title="' + esc(_fmtTs(s.last_seen)) + '">' +
+             _ago(s.last_seen) + "</td>";
+        h += '<td data-label="Kirgan" class="mono" title="' + esc(_fmtTs(s.created_at)) + '">' +
+             _fmtTsShort(s.created_at) + "</td>";
+        h += "</tr>";
+      });
+      h += "</tbody></table></div>";
+      h += '<div id="sessions-foot" class="hint">So\'nggi yangilash: ' +
+           new Date().toLocaleTimeString("uz-UZ", {timeZone: "Asia/Tashkent",
+             hour: "2-digit", minute: "2-digit", hour12: false}) + "</div>";
+      el.innerHTML = h;
+    }
+  }
+  _sessionsBusy = false;
+  if (btn) { btn.disabled = false; btn.textContent = "YANGILASH"; }
+}
 async function loadSettings() {
   const errEl = document.getElementById("settings-err");
   if (errEl) errEl.style.display = "none";
@@ -6646,7 +6842,7 @@ function duMfaBadge(u) {
 }
 function duPagesBadge(u) {
   if (!Array.isArray(u.pages)) return '';
-  return ' <span style="color:var(--amber)">\u00b7 ' + u.pages.length + " bo'lim</span>";
+  return ' <span style="color:var(--warn)">\u00b7 ' + u.pages.length + " bo'lim</span>";
 }
 function buPagesBadge(u) { return duPagesBadge(u); }
 
@@ -7296,12 +7492,31 @@ function renderRejects(d) {
       (u.qabul_qilinmagan ? " (qabul qilinmagan: <b>" + u.qabul_qilinmagan + "</b>)" : "") +
       ". Bu kunlar haydovchiga bog'lanmagan, lekin JAMI hisobiga qo'shilgan.</div>"
     : "";
+  // Kunlik tafsilot — har bir yetishmagan kun alohida ko'rinadi, shunda
+  // "qabul qilinmagan = reja − amalda" qaysi sana/avtobusdan kelgani
+  // tekshiriladi. Reyslari hammasi qabul qilingan, lekin rejadagi 2 reys
+  // bajarilmagan haydovchi ham shu yerda ko'rinadi.
+  const det = [];
+  (d.rows || []).forEach(r => (r.details || []).forEach(x => det.push(Object.assign({ driver: r.name }, x))));
+  det.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const detRows = det.map((x, i) => [
+    i + 1, esc(x.driver), esc(x.date), esc(x.vehicle || "-"),
+    x.plan_reys, x.fact_reys, '<b>' + x.qabul_qilinmagan + '</b>',
+    elecNum(x.plan_km, 1) + " km", elecNum(x.fact_km, 1) + " km"
+  ]);
+  const detailsHTML = det.length
+    ? '<div class="section-head" style="margin-top:22px"><div><div class="eyebrow">TAFSILOT</div>' +
+      "<h2>Qaysi kunda bajarilmagan <span class=\"hint\">" + det.length + " kun</span></h2></div></div>" +
+      tableHTML(["№", "Haydovchi", "Sana", "Avtobus", "Reja reys", "Amalda",
+        "Bajarilmagan", "Reja km", "Amalda km"], detRows)
+    : "";
   document.getElementById("rejects-body").innerHTML = unattributed +
     (driverCount ? tableHTML(["№", "Haydovchi (F.I.Sh.)", "Ish kuni", "Jami reys",
       "Qabul qilinmagan reys", "Amalda bajarilgan reyslar", "Rejadagi km",
       "Amalda km", "Farq", "Qabul qilinmagan so'm (QQSsiz)",
       "Qabul qilinmagan so'm (QQS bilan)"], rows)
-      : '<div class="empty">Bu oy / yo’nalish uchun qabul qilinmagan reys topilmadi.</div>');
+      : '<div class="empty">Bu oy / yo’nalish uchun qabul qilinmagan reys topilmadi.</div>') +
+    detailsHTML;
 }
 
 /* ------------------------------------------------ BRUTTO (116-son qaror) */
@@ -7654,7 +7869,7 @@ function renderDocTemplates() {
   grid.innerHTML = _docTemplates.map(t =>
     '<div class="kpi" style="cursor:pointer;position:relative" onclick="openDocDialog(\'' + t.key + '\')">'
     + '<div class="label" style="text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">' + esc(t.category) + '</div>'
-    + '<div style="font-size:15px;font-weight:700;margin-bottom:6px;color:var(--amber)">' + esc(t.name) + '</div>'
+    + '<div style="font-size:15px;font-weight:700;margin-bottom:6px;color:var(--warn)">' + esc(t.name) + '</div>'
     + '<div class="foot" style="font-size:11px;line-height:1.4">' + esc(t.description) + '</div>'
     + '</div>'
   ).join('');
@@ -7693,7 +7908,7 @@ function renderDocsList(docs) {
     + '<td class="mono">' + (d.id||i+1) + '</td>'
     + '<td style="font-weight:600">' + esc(d.title||'') + '</td>'
     + '<td class="mono muted">' + esc(d.template_key||'') + '</td>'
-    + '<td class="mono muted" style="font-size:11px">' + (d.driver_id ? '<span style="color:var(--amber)">' + esc(docDriverLabel(d.driver_id)) + '</span>' : '<span style="opacity:.45">—</span>') + '</td>'
+    + '<td class="mono muted" style="font-size:11px">' + (d.driver_id ? '<span style="color:var(--warn)">' + esc(docDriverLabel(d.driver_id)) + '</span>' : '<span style="opacity:.45">—</span>') + '</td>'
     + '<td><span class="pill-status ' + (d.status||'draft') + '">' + esc(statusLabel[d.status]||d.status) + '</span></td>'
     + '<td class="mono muted" style="font-size:11px">' + esc((d.created_at||'').slice(0,10)) + '</td>'
     + '<td style="white-space:nowrap">'
@@ -8013,7 +8228,7 @@ function roleColor(role) {
   const r = (role || '').toUpperCase();
   if (r.includes('ADMIN')) return '<span style="color:var(--alert-text);font-weight:700">&#x1f6e1; ADMIN</span>';
   if (r.includes('DISPATCHER')) return '<span style="color:var(--accent-text);font-weight:700">&#x1f4e1; DISPATCHER</span>';
-  if (r.includes('MANAGER') || r.includes('BOSHQARUVCHI')) return '<span style="color:var(--amber);font-weight:700">&#x1f3e2; MANAGER</span>';
+  if (r.includes('MANAGER') || r.includes('BOSHQARUVCHI')) return '<span style="color:var(--warn);font-weight:700">&#x1f3e2; MANAGER</span>';
   if (r.includes('DRIVER') || r.includes('HAYDOVCHI')) return '<span style="color:var(--teal-text);font-weight:700">&#x1f697; DRIVER</span>';
   return '<span style="color:var(--muted);font-weight:700">&#x1f441; ' + esc(role || 'VIEWER') + '</span>';
 }
@@ -8023,7 +8238,7 @@ function smsStatusBadge(status) {
   if (s === 'SENT') return '<span style="color:var(--teal-text);font-weight:700">&#x2705; SENT</span>';
   if (s === 'DELIVERED') return '<span style="color:var(--teal-text);font-weight:700">&#x1f4f1; DELIVERED</span>';
   if (s === 'PROCESSED') return '<span style="color:var(--accent-text);font-weight:700">&#x267b; PROCESSED</span>';
-  if (s === 'PENDING') return '<span style="color:var(--amber);font-weight:700">&#x23f3; PENDING</span>';
+  if (s === 'PENDING') return '<span style="color:var(--warn);font-weight:700">&#x23f3; PENDING</span>';
   if (s === 'FAILED') return '<span style="color:var(--alert-text);font-weight:700">&#x274c; FAILED</span>';
   if (s === 'INVALID') return '<span style="color:var(--muted);font-weight:700">&#x26d4; RAQAMSIZ</span>';
   if (s === 'SKIPPED') return '<span style="color:var(--muted-2);font-weight:700">&#x23ed; DUBLIKAT</span>';
@@ -8057,7 +8272,7 @@ function renderSmsLog(d) {
     k.innerHTML = 'Jami: <b>' + (c.total||0) + '</b> · Delivered: <b style="color:var(--teal-text)">' + (c.delivered||0)
       + '</b> · Sent: <b style="color:var(--teal-text)">' + (c.sent||0)
       + '</b> · Xato: <b style="color:var(--alert-text)">' + (c.failed||0)
-      + '</b> · Kutilmoqda: <b style="color:var(--amber)">' + (c.pending||0) + '</b>';
+      + '</b> · Kutilmoqda: <b style="color:var(--warn)">' + (c.pending||0) + '</b>';
   }
   const hint = document.getElementById('sms-config-hint');
   if (hint) hint.innerHTML = (d.configured) ? 'Shlyuz: sozlangan <i class="ic sm" style="margin:0 0 0 6px;color:var(--green)">' + featherIcon("check-circle") + '</i>' : 'Shlyuz: sozlanmagan — .env (ANDROID_SMS_GATEWAY_*)';
@@ -8309,7 +8524,7 @@ function renderAdminSummary(d){
       + '<td style="text-align:right">' + _fmtSoom(r.tax) + '</td>'
       + '<td style="text-align:right">' + _fmtSoom(r.fines) + '</td>'
       + '<td style="text-align:right">' + _fmtSoom(r.net) + '</td>'
-      + '<td style="text-align:right;color:var(--amber)">' + _fmtSoom(r.avans) + '</td>'
+      + '<td style="text-align:right;color:var(--warn)">' + _fmtSoom(r.avans) + '</td>'
       + '<td style="text-align:right;color:var(--teal-text)"><b>' + _fmtSoom(r.payable) + '</b></td>'
       + '<td style="text-align:right"><a class="button ghost" style="font-size:11px;padding:4px 8px" href="/api/admin/download?route_id=' + encodeURIComponent(r.route_id) + '&year=' + d.month.slice(0,4) + '&month=' + d.month.slice(5,7) + '">XLSX</a></td>'
       + '</tr>';
@@ -8337,7 +8552,7 @@ async function loadAvansJournal(){
         + '<td>' + esc(r.pay_date || '') + '</td>'
         + '<td>' + esc(r.name || r.driver_id || '') + '</td>'
         + '<td>' + esc(shortRouteName(r.route_name) || r.route_id || '—') + '</td>'
-        + '<td style="text-align:right;color:var(--amber)">' + _fmtSoom(r.amount) + '</td>'
+        + '<td style="text-align:right;color:var(--warn)">' + _fmtSoom(r.amount) + '</td>'
         + '<td>' + esc(r.note || '') + '</td>'
         + '<td style="text-align:right"><button class="button danger ghost" style="font-size:11px;padding:3px 8px" onclick="deleteAvans(' + Number(r.id) + ')">X</button></td>'
         + '</tr>';
@@ -8732,7 +8947,7 @@ async function openUserDetail(chatId) {
     html += '<div style="margin-bottom:16px;padding:12px;background:var(--bg-deep);border-radius:8px;border:1px solid var(--line)">';
     html += '<div style="font-size:12px;font-weight:700;margin-bottom:8px;color:var(--muted-2)">BO\'LIMLAR (BOT RUXSATI)</div>';
     if (d.dashboard_user && d.dashboard_user.username) {
-      html += '<div class="hint" style="margin-bottom:6px;color:var(--amber)">Panel akkaunti bog\'langan: <b>' + esc(d.dashboard_user.username) + '</b> — bo\'limlar o\'sha akkauntdan olinadi.</div>';
+      html += '<div class="hint" style="margin-bottom:6px;color:var(--warn)">Panel akkaunti bog\'langan: <b>' + esc(d.dashboard_user.username) + '</b> — bo\'limlar o\'sha akkauntdan olinadi.</div>';
     }
     html += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">';
     html += '<b style="font:600 11px \'IBM Plex Mono\',monospace;color:var(--ink)">BO\'LIMLAR</b>';
@@ -9281,8 +9496,26 @@ document.getElementById("driver-dialog").addEventListener("click", event => {
 document.getElementById("appeal-dialog").addEventListener("click", event => {
   if (event.target === event.currentTarget) event.currentTarget.close();
 });
+function closeSyncDialog() {
+  const dlg = document.getElementById("sync-dialog");
+  if (!dlg) return;
+  try {
+    if (typeof dlg.close === "function" && dlg.open) dlg.close();
+  } catch (_) {}
+  dlg.removeAttribute("open");
+  dlg.setAttribute("hidden", "");
+  dlg.style.display = "none";
+}
+closeSyncDialog();
+["sync-close", "btn-sync-cancel"].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) {
+    el.addEventListener("click", closeSyncDialog);
+    el.addEventListener("touchend", e => { e.preventDefault(); closeSyncDialog(); }, {passive: false});
+  }
+});
 /* Barcha dialoglarni backdrop bosilganda yopish */
-["user-dialog","vehicle-dialog","doc-dialog"].forEach(id => {
+["user-dialog","vehicle-dialog","doc-dialog","sync-dialog","appeal-dialog","driver-dialog"].forEach(id => {
   const d = document.getElementById(id);
   if (d) d.addEventListener("click", event => {
     if (event.target === event.currentTarget) event.currentTarget.close();
@@ -9291,7 +9524,7 @@ document.getElementById("appeal-dialog").addEventListener("click", event => {
 /* Escape tugmasi bilan ham yopilsin */
 document.addEventListener("keydown", event => {
   if (event.key === "Escape") {
-    ["user-dialog","vehicle-dialog","doc-dialog","driver-dialog"].forEach(id => {
+    ["user-dialog","vehicle-dialog","doc-dialog","driver-dialog","sync-dialog","appeal-dialog"].forEach(id => {
       const d = document.getElementById(id);
       if (d && d.open) d.close();
     });
@@ -9965,7 +10198,7 @@ function addFeedItem(agentId, type, text, timestamp) {
   if (!list) return;
 
   const agentInfo = AGENT_STATE[agentId] || {};
-  const icon = agentInfo.icon || (type === 'completed' ? '✅' : type === 'error' ? '❌' : '●');
+  const icon = agentInfo.icon || (type === 'completed' ? '✓' : type === 'error' ? '✕' : '●');
   const color = agentInfo.color || '#5a6274';
   const time = timestamp ? new Date(timestamp).toLocaleTimeString('uz-UZ', {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : new Date().toLocaleTimeString('uz-UZ', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
 
@@ -10038,7 +10271,7 @@ async function loadOccHistory(reset) {
       const color = STATUS_COLORS[stv] || '#5a6274';
       const dt = t.created_at ? new Date(t.created_at) : null;
       const dateStr = dt ? (dt.toLocaleDateString('uz-UZ') + ' ' + dt.toLocaleTimeString('uz-UZ', {hour:'2-digit',minute:'2-digit'})) : '';
-      const icon = (stv === 'completed') ? '✅' : ((stv === 'failed' || stv === 'error' || stv === 'cancelled') ? '❌' : '●');
+      const icon = (stv === 'completed') ? '✓' : ((stv === 'failed' || stv === 'error' || stv === 'cancelled') ? '✕' : '●');
       const running = (stv === 'running' || stv === 'pending');
       const el = document.createElement('div');
       el.className = 'occ-feed-item occ-history-row';
@@ -10049,7 +10282,7 @@ async function loadOccHistory(reset) {
           <div class="occ-feed-time">${dateStr}</div>
           ${running ? `<div class="occ-progress"><div class="occ-progress-fill" style="width:${t.progress || 0}%;background:${color}"></div></div>` : ''}
         </div>
-        <button class="occ-rerun" title="Qayta ishga tushirish" onclick="event.stopPropagation();quickOccText(${JSON.stringify(escAttr(t.user_request))})">${featherIcon("refresh-cw")}</button>`;
+        <button class="occ-rerun" title="Qayta ishga tushirish" onclick="event.stopPropagation();quickOccText(${JSON.stringify(escHtmlAttr(t.user_request))})">${featherIcon("refresh-cw")}</button>`;
       el.onclick = () => openOccHistoryTask(t.task_id);
       list.appendChild(el);
     }
@@ -10069,7 +10302,7 @@ async function loadOccHistory(reset) {
   }
 }
 
-function escAttr(v) {
+function escHtmlAttr(v) {
   return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 

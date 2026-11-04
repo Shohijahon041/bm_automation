@@ -128,10 +128,12 @@ def _route_map(profiles: list[dict],
         if not rid:
             continue
         bucket = seen.setdefault(int(cid), set())
-        if rid in bucket:
-            continue
-        bucket.add(rid)
-        out.setdefault(int(cid), []).append(rid)
+        # Vergul bilan berilgan bir nechta yo'nalishni alohida yozamiz.
+        for part in rid.replace(",", " ").split():
+            if part in bucket:
+                continue
+            bucket.add(part)
+            out.setdefault(int(cid), []).append(part)
     return out
 
 

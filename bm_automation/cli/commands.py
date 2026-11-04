@@ -318,6 +318,13 @@ def cmd_daily(args) -> int:
                         max_attempts=args.attempts, attempt_delay=args.delay,
                         only=args.only or None, trigger=args.trigger)
     print(json.dumps(results, ensure_ascii=False, indent=2))
+    # `run_daily` xatolarni entry'lar ichida ushlab qoladi — systemd uchun
+    # 0 qaytarsa buzilgan kun "muvaffaqiyatli" bo'lib yozilardi.
+    failed = [str(r.get("profile") or "?")
+              for r in results if isinstance(r, dict) and r.get("error")]
+    if failed:
+        print("XATO (korxonalar): " + ", ".join(failed), file=sys.stderr)
+        return 1
     return 0
 
 
