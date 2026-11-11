@@ -199,6 +199,23 @@ def _normalize_name(name: str | None) -> str:
     return " ".join(s.split())
 
 
+def _names_match(n1: str | None, n2: str | None) -> bool:
+    """Ikki ismning bir xil shaxsga tegishli ekanligini tekshiradi (to'liq yoki qisqartma)."""
+    s1 = _normalize_name(n1)
+    s2 = _normalize_name(n2)
+    if not s1 or not s2:
+        return False
+    if s1 == s2 or s1 in s2 or s2 in s1:
+        return True
+    t1 = s1.replace(".", "").split()
+    t2 = s2.replace(".", "").split()
+    if t1 and t2 and t1[0] == t2[0]:
+        if len(t1) > 1 and len(t2) > 1:
+            return t1[1][0] == t2[1][0]
+        return True
+    return False
+
+
 def build_poll_data(
     route_id: str,
     target_date: date | str,
@@ -244,6 +261,9 @@ def build_poll_data(
 
     if graphs is None:
         graphs = _fetch_duty_graphs(route_id, d_str)
+        if not graphs and existing.get("items"):
+            log.info("Duty bo'sh qaytdi, mavjud %d ta grafik saqlab qolindi: %s", len(existing["items"]), pid)
+            return existing
 
     items = []
     used_did: set[str] = set()
@@ -330,6 +350,8 @@ def build_poll_data(
         "chat_messages": existing.get("chat_messages", []),
         "created_at": existing.get("created_at") or datetime.now().isoformat(),
         "updated_at": datetime.now().isoformat(),
+        "all_confirmed_sent": existing.get("all_confirmed_sent", False),
+        "all_confirmed_at": existing.get("all_confirmed_at", ""),
         "items": items,
     }
     save_poll(poll)
@@ -679,6 +701,24 @@ def handle_group_callback(chat_id: int | str, cq: dict, data: str) -> None:
         _answer_cq(cq_id, "⚠️ So'rovnoma ma'lumoti topilmadi yoki eskirgan.", alert=True)
         return
 
+    # Guruh va yo'nalish nazorati (Cross-group / cross-route protection)
+    chat_id_str = str(chat_id).strip()
+    poll_rid = str(poll.get("route_id") or "").strip()
+    if chat_id_str.startswith("-"):
+        allowed_chats = {str(m.get("chat_id")).strip() for m in poll.get("chat_messages", []) if m.get("chat_id")}
+        from .group_departures import _route_chats
+        route_chats = _route_chats()
+        for c in route_chats.get(poll_rid) or []:
+            allowed_chats.add(str(c).strip())
+
+        if allowed_chats and chat_id_str not in allowed_chats:
+            _answer_cq(
+                cq_id,
+                f"⛔️ Ushbu grafik so'rovnomasi ({poll.get('route_name')}) bu guruhga tegishli emas!",
+                alert=True,
+            )
+            return
+
     items = poll.get("items", [])
 
     # ---- 1. INFO TUGMASI ----
@@ -745,6 +785,11 @@ def handle_group_callback(chat_id: int | str, cq: dict, data: str) -> None:
             if did and did == bound_did:
                 matched_item = it
                 break
+            if _names_match(it.get("driver_name"), bound_dname):
+                matched_item = it
+                if not did and bound_did:
+                    it["driver_id"] = bound_did
+                break
 
         if not matched_item:
             _answer_cq(
@@ -796,11 +841,12 @@ def handle_group_callback(chat_id: int | str, cq: dict, data: str) -> None:
             _answer_cq(cq_id, "⚠️ Noto'g'ri grafik indeksi.", alert=True)
             return
 
-        if target_idx < 0 or target_idx >= len(items):
+        item = next((it for it in items if it.get("idx") == target_idx), None)
+        if not item and 0 <= target_idx < len(items):
+            item = items[target_idx]
+        if not item:
             _answer_cq(cq_id, "⚠️ Grafik ro'yxatda topilmadi.", alert=True)
             return
-
-        item = items[target_idx]
 
         # 1. Allaqachon tasdiqlanganmi?
         if item.get("confirmed"):
@@ -841,7 +887,10 @@ def handle_group_callback(chat_id: int | str, cq: dict, data: str) -> None:
                 )
             return
 
-        if not target_did or target_did != bound_did:
+        id_match = bool(target_did and bound_did and target_did == bound_did)
+        name_match = bool(_names_match(item.get("driver_name"), bound_dname))
+
+        if not (id_match or name_match):
             _answer_cq(
                 cq_id,
                 f"⛔️ Siz boshqa haydovchining grafigini tasdiqlay olmaysiz!\n\n"
@@ -850,6 +899,9 @@ def handle_group_callback(chat_id: int | str, cq: dict, data: str) -> None:
                 alert=True,
             )
             return
+
+        if not target_did and bound_did:
+            item["driver_id"] = bound_did
 
         # 3. Bu foydalanuvchi allaqachon boshqa grafikni tasdiqlagan bo'lsa (bitta kishi 2 ta bosmasligi uchun)
         if user_id:
@@ -889,6 +941,201 @@ def handle_group_callback(chat_id: int | str, cq: dict, data: str) -> None:
         return
 
     _answer_cq(cq_id, "Qabul qilindi", alert=False)
+
+
+def routes_for_chat(chat_id: int | str) -> list[str]:
+    """Berilgan chat (ayniqsa Telegram guruh) ga biriktirilgan routeVariantId'lar."""
+    cid_str = str(chat_id).strip()
+    if not cid_str:
+        return []
+    from .group_departures import _route_chats
+    route_chats = _route_chats()
+    matching = []
+    for rid, chats in route_chats.items():
+        if cid_str in [str(c).strip() for c in chats]:
+            matching.append(rid)
+    return matching
+
+
+def get_or_create_sheet_image(
+    route_id: str,
+    date_str: str,
+    poll: dict | None = None,
+) -> str | None:
+    """Ushbu yo'nalish va sana uchun jadval rasmini (PNG) topadi yoki generatsiya qiladi."""
+    clean_rid = str(route_id or "").replace("-", "")[:8]
+    clean_date = str(date_str or "").replace("-", "")[:8]
+    expected_file = f"driver-sheet_{clean_rid}_{clean_date}.png"
+
+    # 1. reports/ papkasidagi mavjud fayllarni tekshirish
+    from ...core.profiles import all_profiles
+    profiles = all_profiles()
+    prof = next((p for p in profiles if str(p.get("routeVariantId") or "").strip() == route_id), {})
+
+    candidate_paths = [
+        Path("reports") / (prof.get("name") or "") / expected_file,
+        Path("reports") / expected_file,
+    ]
+    for p in profiles:
+        pname = p.get("name")
+        if pname:
+            candidate_paths.append(Path("reports") / pname / expected_file)
+
+    for cand in candidate_paths:
+        try:
+            if cand.exists() and cand.stat().st_size > 0:
+                return str(cand.resolve())
+        except Exception:
+            pass
+
+    # 2. driver_sheet_service orqali yuklashga urinish
+    if prof and not os.getenv("BM_TEST_MODE"):
+        try:
+            from ...core.companies import client_for_profile
+            from ...services.driver_sheet_service import run as run_sheet
+            client = client_for_profile(prof, auto_relogin=False)
+            if client:
+                out_dir = Path("reports") / (prof.get("name") or "default")
+                res = run_sheet(
+                    client,
+                    route_id,
+                    date_str=date_str,
+                    out_dir=str(out_dir),
+                    send=False,
+                    profile=prof,
+                )
+                img = res.get("image")
+                if img and Path(img).exists() and Path(img).stat().st_size > 0:
+                    return str(Path(img).resolve())
+        except Exception as exc:
+            log.info("driver_sheet_service rasm yaratish xatosi (fallback ishlatiladi): %s", exc)
+
+    # 3. Fallback: make_sheet_image orqali so'rovnoma ma'lumotlaridan chizish
+    try:
+        from ...exporters.sheet_image import make_sheet_image
+        route_name = (poll.get("route_name") if poll else "") or prof.get("routeName") or "Yo'nalish"
+        up_konechka = prof.get("start1") or "1-chiqish"
+        down_konechka = prof.get("start2") or "2-chiqish"
+
+        items = (poll.get("items") if poll else []) or []
+        groups = {"UP": [], "DOWN": []}
+        mid = (len(items) + 1) // 2
+        for idx, it in enumerate(items):
+            row = {
+                "graph": str(it.get("graph") or (idx + 1)),
+                "driver": str(it.get("driver_name") or "Haydovchi"),
+                "bus": str(it.get("plate") or "-"),
+                "start": str(it.get("start_time") or "06:00"),
+                "end": str(it.get("end_time") or "19:00"),
+            }
+            if idx < mid:
+                groups["UP"].append(row)
+            else:
+                groups["DOWN"].append(row)
+
+        sheet_data = {
+            "date": date_str,
+            "routeName": route_name,
+            "konechka": {"UP": up_konechka, "DOWN": down_konechka},
+            "groups": groups,
+            "drivers": [],
+        }
+        prof_name = prof.get("name") or "reports"
+        out_dir = Path("reports") / prof_name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        target_img = out_dir / expected_file
+        make_sheet_image(sheet_data, str(target_img))
+        if target_img.exists() and target_img.stat().st_size > 0:
+            return str(target_img.resolve())
+    except Exception as exc:
+        log.warning("Fallback make_sheet_image xatosi: %s", exc)
+
+    return None
+
+
+def _check_and_notify_all_confirmed(poll: dict) -> bool:
+    """Barcha haydovchilar grafikni tasdiqlaganda rasm va yakuniy xabarni guruhlarga yuboradi."""
+    items = poll.get("items", [])
+    total = len(items)
+    if total == 0:
+        return False
+
+    confirmed_count = sum(1 for it in items if it.get("confirmed"))
+    if confirmed_count < total:
+        return False
+
+    if poll.get("all_confirmed_sent"):
+        return False
+
+    poll["all_confirmed_sent"] = True
+    poll["all_confirmed_at"] = datetime.now().isoformat()
+    save_poll(poll)
+
+    route_name = poll.get("route_name") or "Yo'nalish"
+    d_str = poll.get("date") or ""
+    weekday = poll.get("weekday") or ""
+    try:
+        d_obj = datetime.strptime(d_str, "%Y-%m-%d").date()
+        date_formatted = d_obj.strftime("%d.%m.%Y")
+    except Exception:
+        date_formatted = d_str
+
+    caption = (
+        f"🎉 <b>BARCHA SHAFYORLAR XABAR TOPDI!</b>\n\n"
+        f"🚌 <b>Yo'nalish:</b> {escape(route_name)}\n"
+        f"📅 <b>Sana:</b> {date_formatted} ({escape(weekday)})\n"
+        f"✅ <b>Kunlik grafik to'liq tasdiqlandi!</b> Barcha ({total}/{total}) haydovchilar ertaga ishga chiqishini tasdiqladi.\n\n"
+        f"📋 <b>Tasdiqlangan yakuniy chiqish jadvali:</b>"
+    )
+
+    rid = poll.get("route_id", "")
+    img_path = get_or_create_sheet_image(rid, d_str, poll=poll)
+
+    targets = set()
+    for m in poll.get("chat_messages", []):
+        cid = m.get("chat_id")
+        if cid:
+            targets.add(str(cid).strip())
+
+    from .group_departures import _route_chats
+    route_chats = _route_chats()
+    for cid in route_chats.get(rid) or []:
+        if cid:
+            targets.add(str(cid).strip())
+
+    sent_any = False
+    from ..telegram import send_message, send_photo
+    for cid in targets:
+        if not cid:
+            continue
+        try:
+            if img_path and Path(img_path).exists() and Path(img_path).stat().st_size > 0:
+                send_photo(str(img_path), caption=caption, chat_id=cid)
+            else:
+                send_message(caption, chat_id=cid)
+            sent_any = True
+            log.info("Barcha tasdiqlagandan keyingi rasm/xabar yuborildi: chat_id=%s route=%s", cid, route_name)
+        except Exception as exc:
+            log.warning("Barcha tasdiqlangan rasmni yuborishda xatolik (%s): %s", cid, exc)
+            try:
+                send_message(caption, chat_id=cid)
+                sent_any = True
+            except Exception:
+                pass
+
+    try:
+        st = get_storage()
+        if st and st.enabled:
+            st.record_notification(
+                channel="poll_all_confirmed",
+                target=route_name,
+                message=f"{route_name} ({d_str}) barcha {total} ta grafik tasdiqlandi, rasm va xulosa guruhga yuborildi",
+                status="SUCCESS" if sent_any else "FAILED",
+            )
+    except Exception:
+        pass
+
+    return sent_any
 
 
 def _confirm_item(
@@ -941,6 +1188,9 @@ def _confirm_item(
     # 4. Guruhdagi xabarni yangilash
     update_poll_messages(poll)
 
+    # 5. Barcha haydovchilar tasdiqlaganda rasm va yakuniy xabarni guruhlarga yuborish
+    _check_and_notify_all_confirmed(poll)
+
 
 def reset_confirmation(
     route_id_or_poll: str, target_date: str, graph_name: str
@@ -967,8 +1217,20 @@ def reset_confirmation(
             break
 
     if found:
+        poll["all_confirmed_sent"] = False
         save_poll(poll)
         update_poll_messages(poll)
+        try:
+            st = get_storage()
+            if st and st.enabled:
+                st.record_notification(
+                    channel="admin_poll_reset",
+                    target="Dispetcher",
+                    message=f"{poll.get('route_name')} {poll.get('date')} Grafik {graph_name} tasdig'i bekor qilindi",
+                    status="RESET",
+                )
+        except Exception:
+            pass
     return found
 
 
@@ -978,6 +1240,9 @@ def confirm_by_admin(
     graph_name: str,
     admin_name: str = "Dispetcher",
 ) -> bool:
+    if isinstance(admin_name, dict):
+        admin_name = admin_name.get("name") or "Dispetcher"
+    admin_name = str(admin_name or "Dispetcher")
     """Grafikni admin/dispetcher tomonidan qo'lda tasdiqlaydi (buyruq yoki Dashboard orqali)."""
     pid = (
         route_id_or_poll
@@ -1007,6 +1272,18 @@ def confirm_by_admin(
     poll["updated_at"] = datetime.now().isoformat()
     save_poll(poll)
     update_poll_messages(poll)
+    _check_and_notify_all_confirmed(poll)
+    try:
+        st = get_storage()
+        if st and st.enabled:
+            st.record_notification(
+                channel="admin_poll_confirm",
+                target=admin_name,
+                message=f"{poll.get('route_name')} {poll.get('date')} Grafik {found_item.get('graph')} ({found_item.get('driver_name')}) admin tomonidan tasdiqlandi",
+                status="CONFIRMED",
+            )
+    except Exception:
+        pass
     return True
 
 
@@ -1070,6 +1347,7 @@ def swap_graphs(
     item2["swapped_by"] = admin_name
 
     poll["updated_at"] = datetime.now().isoformat()
+    poll["all_confirmed_sent"] = False
     save_poll(poll)
     update_poll_messages(poll)
 
@@ -1122,6 +1400,7 @@ def replace_driver(
     found["swapped_by"] = admin_name
 
     poll["updated_at"] = datetime.now().isoformat()
+    poll["all_confirmed_sent"] = False
     save_poll(poll)
     update_poll_messages(poll)
 

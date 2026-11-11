@@ -2544,23 +2544,43 @@ def handle_message(chat_id: int, text: str) -> None:
         if not can(role, "sync"):
             reply(chat_id, DENIED_TEXT)
             return
-        from datetime import date, timedelta
+        from datetime import date, datetime, timedelta
         from . import grafik_poll
         from ...core.profiles import all_profiles
 
         target_date = date.today() + timedelta(days=1)
-        if len(parts) > 1 and parts[1].lower() == "bugun":
-            target_date = date.today()
+        for p in parts[1:]:
+            p_low = p.strip().lower()
+            if p_low == "bugun":
+                target_date = date.today()
+            elif p_low == "ertaga":
+                target_date = date.today() + timedelta(days=1)
+            else:
+                try:
+                    target_date = datetime.strptime(p.strip(), "%Y-%m-%d").date()
+                except ValueError:
+                    pass
 
-        f = context.filters_for(chat_id)
-        rfilter = (f.get("route") or "").strip() if role is not Role.ADMIN else ""
-        allowed_rids = [t.strip() for t in rfilter.replace(",", " ").split() if t.strip()] if rfilter else None
+        if str(chat_id).startswith("-"):
+            group_rids = grafik_poll.routes_for_chat(chat_id)
+            if not group_rids:
+                reply(chat_id, "⚠️ Bu guruhga biriktirilgan yo'nalish topilmadi.\n/guruh <firma> orqali guruhni bog'lang.")
+                return
+            all_rids = []
+            for p in all_profiles():
+                rid = str(p.get("routeVariantId") or "").strip()
+                if rid and rid in group_rids:
+                    all_rids.append((rid, str(p.get("routeName") or p.get("name") or rid[:8])))
+        else:
+            f = context.filters_for(chat_id)
+            rfilter = (f.get("route") or "").strip() if role is not Role.ADMIN else ""
+            allowed_rids = [t.strip() for t in rfilter.replace(",", " ").split() if t.strip()] if rfilter else None
 
-        all_rids = []
-        for p in all_profiles():
-            rid = str(p.get("routeVariantId") or "").strip()
-            if rid and (allowed_rids is None or rid in allowed_rids):
-                all_rids.append((rid, str(p.get("routeName") or p.get("name") or rid[:8])))
+            all_rids = []
+            for p in all_profiles():
+                rid = str(p.get("routeVariantId") or "").strip()
+                if rid and (allowed_rids is None or rid in allowed_rids):
+                    all_rids.append((rid, str(p.get("routeName") or p.get("name") or rid[:8])))
 
         if not all_rids:
             reply(chat_id, "⚠️ Yo'nalishlar topilmadi.")
@@ -2583,23 +2603,39 @@ def handle_message(chat_id: int, text: str) -> None:
         if not can(role, "sync"):
             reply(chat_id, DENIED_TEXT)
             return
-        from datetime import date, timedelta
+        from datetime import date, datetime, timedelta
         from . import grafik_poll
         from ...core.profiles import all_profiles
 
         target_date = date.today() + timedelta(days=1)
-        if len(parts) > 1 and parts[1].lower() == "bugun":
-            target_date = date.today()
+        for p in parts[1:]:
+            p_low = p.strip().lower()
+            if p_low == "bugun":
+                target_date = date.today()
+            elif p_low == "ertaga":
+                target_date = date.today() + timedelta(days=1)
+            else:
+                try:
+                    target_date = datetime.strptime(p.strip(), "%Y-%m-%d").date()
+                except ValueError:
+                    pass
 
-        f = context.filters_for(chat_id)
-        rfilter = (f.get("route") or "").strip() if role is not Role.ADMIN else ""
-        allowed_rids = [t.strip() for t in rfilter.replace(",", " ").split() if t.strip()] if rfilter else None
+        if str(chat_id).startswith("-"):
+            group_rids = grafik_poll.routes_for_chat(chat_id)
+            if not group_rids:
+                reply(chat_id, "⚠️ Bu guruhga biriktirilgan yo'nalish topilmadi.")
+                return
+            all_rids = group_rids
+        else:
+            f = context.filters_for(chat_id)
+            rfilter = (f.get("route") or "").strip() if role is not Role.ADMIN else ""
+            allowed_rids = [t.strip() for t in rfilter.replace(",", " ").split() if t.strip()] if rfilter else None
 
-        all_rids = []
-        for p in all_profiles():
-            rid = str(p.get("routeVariantId") or "").strip()
-            if rid and (allowed_rids is None or rid in allowed_rids):
-                all_rids.append(rid)
+            all_rids = []
+            for p in all_profiles():
+                rid = str(p.get("routeVariantId") or "").strip()
+                if rid and (allowed_rids is None or rid in allowed_rids):
+                    all_rids.append(rid)
 
         reports = []
         for rid in all_rids:
@@ -2617,19 +2653,66 @@ def handle_message(chat_id: int, text: str) -> None:
         from ...core.profiles import all_profiles
 
         if len(parts) < 2:
-            reply(chat_id, "ℹ️ Foydalanish: <code>/sorov_bekor &lt;grafik_raqami&gt;</code>\nMasalan: <code>/sorov_bekor 2</code>")
+            reply(chat_id, "ℹ️ Foydalanish: <code>/sorov_bekor &lt;grafik_raqami&gt; [yo'nalish] [sana]</code>\nMasalan: <code>/sorov_bekor 2</code> yoki <code>/sorov_bekor 2 80 bugun</code>")
             return
         g_target = parts[1].strip()
         target_date = date.today() + timedelta(days=1)
-        f = context.filters_for(chat_id)
-        rfilter = (f.get("route") or "").strip() if role is not Role.ADMIN else ""
-        allowed_rids = [t.strip() for t in rfilter.replace(",", " ").split() if t.strip()] if rfilter else None
+        target_route = None
+        for extra in parts[2:]:
+            ex = extra.strip().lower()
+            if ex == "bugun":
+                target_date = date.today()
+            elif ex == "ertaga":
+                target_date = date.today() + timedelta(days=1)
+            elif not target_route:
+                target_route = extra.strip()
 
-        all_rids = []
-        for p in all_profiles():
-            rid = str(p.get("routeVariantId") or "").strip()
-            if rid and (allowed_rids is None or rid in allowed_rids):
-                all_rids.append(rid)
+        if str(chat_id).startswith("-"):
+            group_rids = grafik_poll.routes_for_chat(chat_id)
+            if not group_rids:
+                reply(chat_id, "⚠️ Bu guruhga biriktirilgan yo'nalish topilmadi.")
+                return
+            if target_route:
+                tr_lower = target_route.lower()
+                matched_group_rids = []
+                for p in all_profiles():
+                    rid = str(p.get("routeVariantId") or "").strip()
+                    if rid in group_rids:
+                        rname = str(p.get("routeName") or p.get("name") or rid).lower()
+                        if tr_lower in rid.lower() or tr_lower in rname:
+                            matched_group_rids.append(rid)
+                if not matched_group_rids:
+                    reply(chat_id, "⛔️ Ushbu guruhda faqat unga biriktirilgan yo'nalish grafiklarini bekor qilishingiz mumkin!")
+                    return
+                all_rids = matched_group_rids
+            else:
+                all_rids = group_rids
+        else:
+            f = context.filters_for(chat_id)
+            rfilter = (f.get("route") or "").strip() if role is not Role.ADMIN else ""
+            allowed_rids = [t.strip() for t in rfilter.replace(",", " ").split() if t.strip()] if rfilter else None
+
+            all_rids = []
+            for p in all_profiles():
+                rid = str(p.get("routeVariantId") or "").strip()
+                if rid and (allowed_rids is None or rid in allowed_rids):
+                    all_rids.append(rid)
+
+            if target_route:
+                tr_lower = target_route.lower()
+                filtered = []
+                for rid in all_rids:
+                    p_match = False
+                    for p in all_profiles():
+                        if str(p.get("routeVariantId")) == rid:
+                            rname = str(p.get("routeName") or p.get("name") or rid).lower()
+                            if tr_lower in rid.lower() or tr_lower in rname:
+                                p_match = True
+                                break
+                    if p_match:
+                        filtered.append(rid)
+                if filtered:
+                    all_rids = filtered
 
         reset_done = False
         for rid in all_rids:
@@ -2653,19 +2736,66 @@ def handle_message(chat_id: int, text: str) -> None:
         from ...core.profiles import all_profiles
 
         if len(parts) < 2:
-            reply(chat_id, "ℹ️ Foydalanish: <code>/sorov_tasdiq &lt;grafik_raqami&gt;</code>\nMasalan: <code>/sorov_tasdiq 2</code>")
+            reply(chat_id, "ℹ️ Foydalanish: <code>/sorov_tasdiq &lt;grafik_raqami&gt; [yo'nalish] [sana]</code>\nMasalan: <code>/sorov_tasdiq 2</code> yoki <code>/sorov_tasdiq 2 80 bugun</code>")
             return
         g_target = parts[1].strip()
         target_date = date.today() + timedelta(days=1)
-        f = context.filters_for(chat_id)
-        rfilter = (f.get("route") or "").strip() if role is not Role.ADMIN else ""
-        allowed_rids = [t.strip() for t in rfilter.replace(",", " ").split() if t.strip()] if rfilter else None
+        target_route = None
+        for extra in parts[2:]:
+            ex = extra.strip().lower()
+            if ex == "bugun":
+                target_date = date.today()
+            elif ex == "ertaga":
+                target_date = date.today() + timedelta(days=1)
+            elif not target_route:
+                target_route = extra.strip()
 
-        all_rids = []
-        for p in all_profiles():
-            rid = str(p.get("routeVariantId") or "").strip()
-            if rid and (allowed_rids is None or rid in allowed_rids):
-                all_rids.append(rid)
+        if str(chat_id).startswith("-"):
+            group_rids = grafik_poll.routes_for_chat(chat_id)
+            if not group_rids:
+                reply(chat_id, "⚠️ Bu guruhga biriktirilgan yo'nalish topilmadi.")
+                return
+            if target_route:
+                tr_lower = target_route.lower()
+                matched_group_rids = []
+                for p in all_profiles():
+                    rid = str(p.get("routeVariantId") or "").strip()
+                    if rid in group_rids:
+                        rname = str(p.get("routeName") or p.get("name") or rid).lower()
+                        if tr_lower in rid.lower() or tr_lower in rname:
+                            matched_group_rids.append(rid)
+                if not matched_group_rids:
+                    reply(chat_id, "⛔️ Ushbu guruhda faqat unga biriktirilgan yo'nalish grafiklarini tasdiqlashingiz mumkin!")
+                    return
+                all_rids = matched_group_rids
+            else:
+                all_rids = group_rids
+        else:
+            f = context.filters_for(chat_id)
+            rfilter = (f.get("route") or "").strip() if role is not Role.ADMIN else ""
+            allowed_rids = [t.strip() for t in rfilter.replace(",", " ").split() if t.strip()] if rfilter else None
+
+            all_rids = []
+            for p in all_profiles():
+                rid = str(p.get("routeVariantId") or "").strip()
+                if rid and (allowed_rids is None or rid in allowed_rids):
+                    all_rids.append(rid)
+
+            if target_route:
+                tr_lower = target_route.lower()
+                filtered = []
+                for rid in all_rids:
+                    p_match = False
+                    for p in all_profiles():
+                        if str(p.get("routeVariantId")) == rid:
+                            rname = str(p.get("routeName") or p.get("name") or rid).lower()
+                            if tr_lower in rid.lower() or tr_lower in rname:
+                                p_match = True
+                                break
+                    if p_match:
+                        filtered.append(rid)
+                if filtered:
+                    all_rids = filtered
 
         confirm_done = False
         for rid in all_rids:
@@ -2694,15 +2824,22 @@ def handle_message(chat_id: int, text: str) -> None:
             return
         g1, g2 = parts[1].strip(), parts[2].strip()
         target_date = date.today() + timedelta(days=1)
-        f = context.filters_for(chat_id)
-        rfilter = (f.get("route") or "").strip() if role is not Role.ADMIN else ""
-        allowed_rids = [t.strip() for t in rfilter.replace(",", " ").split() if t.strip()] if rfilter else None
+        if str(chat_id).startswith("-"):
+            group_rids = grafik_poll.routes_for_chat(chat_id)
+            if not group_rids:
+                reply(chat_id, "⚠️ Bu guruhga biriktirilgan yo'nalish topilmadi.")
+                return
+            all_rids = group_rids
+        else:
+            f = context.filters_for(chat_id)
+            rfilter = (f.get("route") or "").strip() if role is not Role.ADMIN else ""
+            allowed_rids = [t.strip() for t in rfilter.replace(",", " ").split() if t.strip()] if rfilter else None
 
-        all_rids = []
-        for p in all_profiles():
-            rid = str(p.get("routeVariantId") or "").strip()
-            if rid and (allowed_rids is None or rid in allowed_rids):
-                all_rids.append(rid)
+            all_rids = []
+            for p in all_profiles():
+                rid = str(p.get("routeVariantId") or "").strip()
+                if rid and (allowed_rids is None or rid in allowed_rids):
+                    all_rids.append(rid)
 
         swap_res = None
         for rid in all_rids:

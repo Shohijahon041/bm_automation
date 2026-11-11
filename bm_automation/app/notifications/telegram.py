@@ -304,6 +304,7 @@ def send_photo(
     caption: str = "",
     chat_id: str | None = None,
     reply_markup=None,
+    parse_mode: str | None = "HTML",
 ) -> bool:
     """Telegram'ga rasm (haydovchilar jadvali) yuboradi."""
     s = telegram_settings()
@@ -312,6 +313,8 @@ def send_photo(
     name = os.path.basename(file_path)
     payload = {"chat_id": chat_id or s["chat_id"],
                "caption": _with_filename(caption, name)}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     if reply_markup:
         payload["reply_markup"] = reply_markup
     with open(file_path, "rb") as fh:

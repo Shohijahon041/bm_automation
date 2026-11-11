@@ -523,6 +523,36 @@ async def api_grafik_poll_send(request: Request, scope: dict = Depends(Scope()))
     return {"ok": True, "date": d_str, "results": sent_list}
 
 
+@router.post("/api/grafik-poll/confirm")
+async def api_grafik_poll_confirm(request: Request, scope: dict = Depends(Scope())):
+    from datetime import timedelta
+    from ...notifications.ops import grafik_poll
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    d_str = str(payload.get("date") or "").strip()
+    if not d_str:
+        now = datetime.now()
+        target_d = (now.date() + timedelta(days=1)) if now.hour >= 17 else now.date()
+        d_str = target_d.isoformat()
+
+    rid = str(payload.get("routeVariantId") or payload.get("route_id") or "").strip()
+    graph = str(payload.get("graph") or "").strip()
+    if not rid or not graph:
+        raise HTTPException(status_code=400, detail="route_id va graph ko'rsatilishi shart")
+
+    scopes = scope_routes(scope)
+    if scopes is not None and rid not in scopes:
+        raise HTTPException(status_code=403, detail="Ruxsat berilmagan yo'nalish")
+
+    username = scope.get("username") or "Dispetcher"
+    ok = grafik_poll.confirm_by_admin(rid, d_str, graph, admin_name=username)
+    return {"ok": ok, "route_id": rid, "date": d_str, "graph": graph, "admin": username}
+
+
 @router.post("/api/grafik-poll/reset")
 async def api_grafik_poll_reset(request: Request, scope: dict = Depends(Scope())):
     from datetime import timedelta

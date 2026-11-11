@@ -410,9 +410,7 @@ def _handle_group_update(upd: dict, chat_id: int) -> None:
                     target_date = datetime.strptime(arg, "%Y-%m-%d").date()
                 except ValueError:
                     target_date = date.today() + timedelta(days=1)
-            routes_map = _route_chats()
-            cid_str = str(chat_id)
-            matched_rids = [rid for rid, chats in routes_map.items() if cid_str in chats]
+            matched_rids = grafik_poll.routes_for_chat(chat_id)
             if not matched_rids:
                 send_message("⚠️ Bu guruhga biriktirilgan yo'nalish topilmadi.\n/guruh &lt;firma&gt; orqali guruhni bog'lang.",
                              chat_id=chat_id, parse_mode="HTML")
@@ -452,9 +450,7 @@ def _handle_group_update(upd: dict, chat_id: int) -> None:
                     target_date = datetime.strptime(arg, "%Y-%m-%d").date()
                 except ValueError:
                     target_date = date.today() + timedelta(days=1)
-            routes_map = _route_chats()
-            cid_str = str(chat_id)
-            matched_rids = [rid for rid, chats in routes_map.items() if cid_str in chats]
+            matched_rids = grafik_poll.routes_for_chat(chat_id)
             if not matched_rids:
                 send_message("⚠️ Bu guruhga biriktirilgan yo'nalish topilmadi.\n/guruh &lt;firma&gt; orqali guruhni bog'lang.",
                              chat_id=chat_id, parse_mode="HTML")
@@ -488,9 +484,7 @@ def _handle_group_update(upd: dict, chat_id: int) -> None:
                     target_date = datetime.strptime(arg, "%Y-%m-%d").date()
                 except ValueError:
                     target_date = date.today() + timedelta(days=1)
-            routes_map = _route_chats()
-            cid_str = str(chat_id)
-            matched_rids = [rid for rid, chats in routes_map.items() if cid_str in chats]
+            matched_rids = grafik_poll.routes_for_chat(chat_id)
             if not matched_rids:
                 send_message("⚠️ Bu guruhga biriktirilgan yo'nalish topilmadi.\n/guruh &lt;firma&gt; orqali guruhni bog'lang.",
                              chat_id=chat_id, parse_mode="HTML")
@@ -535,16 +529,17 @@ def _handle_group_update(upd: dict, chat_id: int) -> None:
                     target_date = date.today() + timedelta(days=1)
             routes_map = _route_chats()
             cid_str = str(chat_id)
-            matched_rids = [rid for rid, chats in routes_map.items() if cid_str in chats]
+            matched_rids = [rid for rid, chats in routes_map.items() if cid_str in [str(c).strip() for c in chats]]
             if not matched_rids:
                 send_message("⚠️ Bu guruhga biriktirilgan yo'nalish topilmadi.\n/guruh &lt;firma&gt; orqali guruhni bog'lang.",
                              chat_id=chat_id, parse_mode="HTML")
                 return
+            sender_name = (sender or {}).get("name") or "Dispetcher"
             confirm_done = False
             for rid in matched_rids:
-                if grafik_poll.confirm_by_admin(rid, target_date.isoformat(), g_target, admin_name=sender):
+                if grafik_poll.confirm_by_admin(rid, target_date.isoformat(), g_target, admin_name=sender_name):
                     confirm_done = True
-                elif not arg and grafik_poll.confirm_by_admin(rid, date.today().isoformat(), g_target, admin_name=sender):
+                elif not arg and grafik_poll.confirm_by_admin(rid, date.today().isoformat(), g_target, admin_name=sender_name):
                     confirm_done = True
             if confirm_done:
                 send_message(f"✅ Grafik {escape(g_target)} dispetcher tomonidan tasdiqlandi.",
@@ -579,21 +574,20 @@ def _handle_group_update(upd: dict, chat_id: int) -> None:
                     target_date = datetime.strptime(arg, "%Y-%m-%d").date()
                 except ValueError:
                     target_date = date.today() + timedelta(days=1)
-            routes_map = _route_chats()
-            cid_str = str(chat_id)
-            matched_rids = [rid for rid, chats in routes_map.items() if cid_str in chats]
+            matched_rids = grafik_poll.routes_for_chat(chat_id)
             if not matched_rids:
                 send_message("⚠️ Bu guruhga biriktirilgan yo'nalish topilmadi.\n/guruh &lt;firma&gt; orqali guruhni bog'lang.",
                              chat_id=chat_id, parse_mode="HTML")
                 return
+            sender_name = (sender or {}).get("name") or "Dispetcher"
             swap_res = None
             for rid in matched_rids:
-                res = grafik_poll.swap_graphs(rid, target_date.isoformat(), g1, g2, admin_name=sender)
+                res = grafik_poll.swap_graphs(rid, target_date.isoformat(), g1, g2, admin_name=sender_name)
                 if res.get("ok"):
                     swap_res = res
                     break
                 elif not arg:
-                    res_today = grafik_poll.swap_graphs(rid, date.today().isoformat(), g1, g2, admin_name=sender)
+                    res_today = grafik_poll.swap_graphs(rid, date.today().isoformat(), g1, g2, admin_name=sender_name)
                     if res_today.get("ok"):
                         swap_res = res_today
                         break

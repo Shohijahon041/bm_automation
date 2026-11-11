@@ -3536,7 +3536,7 @@ async function loadGrafikPoll() {
       const allItems = [];
       polls.forEach(p => {
         (p.items || []).forEach(it => {
-          allItems.push(Object.assign({}, it, { route_name: p.route_name || p.route_id }));
+          allItems.push(Object.assign({}, it, { route_name: p.route_name || p.route_id, route_id: p.route_id || rid }));
         });
       });
 
@@ -3557,6 +3557,10 @@ async function loadGrafikPoll() {
           ? '<b class="mono" style="color:var(--c-green)">' + esc(it.confirmed_at) + '</b>'
           : '<span class="muted">—</span>';
 
+        const actBtn = isConf
+          ? '<button class="button ghost" style="padding:2px 8px;font-size:11px;color:var(--alert)" onclick="resetGrafikFromUI(\'' + escHtmlAttr(it.route_id || rid) + '\',\'' + escHtmlAttr(dStr) + '\',\'' + escHtmlAttr(it.graph) + '\')" title="Tasdiqlanishni bekor qilish">BEKOR QILISH</button>'
+          : '<button class="button ghost" style="padding:2px 8px;font-size:11px;color:var(--teal)" onclick="confirmGrafikFromUI(\'' + escHtmlAttr(it.route_id || rid) + '\',\'' + escHtmlAttr(dStr) + '\',\'' + escHtmlAttr(it.graph) + '\')" title="Dispetcher nomidan tasdiqlash">✓ TASDIQLASH</button>';
+
         return '<tr>' +
           '<td class="mono muted">' + (i + 1) + '</td>' +
           '<td><b>' + esc(it.route_name || "") + '</b></td>' +
@@ -3567,6 +3571,7 @@ async function loadGrafikPoll() {
           '<td>' + statusBadge + '</td>' +
           '<td>' + byTime + '</td>' +
           '<td>' + byWho + '</td>' +
+          '<td>' + actBtn + '</td>' +
         '</tr>';
       }).join("");
 
@@ -3583,6 +3588,7 @@ async function loadGrafikPoll() {
               '<th>Holat</th>' +
               '<th>Tasdiqlagan vaqt</th>' +
               '<th>Telegram tasdig\'i</th>' +
+              '<th>Amallar</th>' +
             '</tr>' +
           '</thead>' +
           '<tbody>' + rows + '</tbody>' +
@@ -3655,6 +3661,38 @@ async function swapGrafikFromUI() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Xatolik yuz berdi");
     alert("✅ Grafiklar muvaffaqiyatli almashtirildi!\n" + data.graph1 + ": " + data.driver1 + "\n" + data.graph2 + ": " + data.driver2 + "\n\nGuruhdagi so'rovnoma yangilandi.");
+    loadGrafikPoll();
+  } catch (err) {
+    alert("Xatolik: " + err.message);
+  }
+}
+
+async function confirmGrafikFromUI(rid, dStr, graph) {
+  if (!confirm("Grafik " + graph + " dispetcher tomonidan tasdiqlansinmi?")) return;
+  try {
+    const res = await fetch("/api/grafik-poll/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ routeVariantId: rid, date: dStr, graph: graph }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Xatolik yuz berdi");
+    loadGrafikPoll();
+  } catch (err) {
+    alert("Xatolik: " + err.message);
+  }
+}
+
+async function resetGrafikFromUI(rid, dStr, graph) {
+  if (!confirm("Grafik " + graph + " tasdig'i bekor qilinsinmi?")) return;
+  try {
+    const res = await fetch("/api/grafik-poll/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ routeVariantId: rid, date: dStr, graph: graph }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Xatolik yuz berdi");
     loadGrafikPoll();
   } catch (err) {
     alert("Xatolik: " + err.message);
