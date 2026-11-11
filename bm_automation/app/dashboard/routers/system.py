@@ -733,17 +733,23 @@ async def myai_task_cancel(request: Request, scope: dict = Depends(Scope())):
     tid = (payload.get("task_id") or "").strip()
     if not tid:
         raise HTTPException(400, "task_id kerak")
-    _myai_require_owned(tid, _myai_company(scope))
+    task = _myai_require_owned(tid, _myai_company(scope))
+    if (task.get("status") or "") in ("completed", "failed", "cancelled"):
+        return {"ok": False, "error": "Topshiriq allaqachon yakunlangan"}
     from ...myai.state import update_task
     from ...myai.events import emit_task
-    update_task(tid, status="cancelled", error="Foydalanuvchi tomonidan bekor qilindi")
-    emit_task("task.cancelled", task_id=tid, message="Bekor qilindi")
     try:
         from ...myai.orchestrator import get_orchestrator
-        get_orchestrator().cancel_task(tid)
-    except Exception:
-        pass
-    return {"ok": True}
+        signalled = get_orchestrator().cancel_task(tid)
+    except Exception as exc:
+        raise HTTPException(500, f"Bekor qilishda xato: {exc}") from None
+    # Holatni darhol yozamiz: orchestrator kutish nuqtalarida shu holatni
+    # ko'radi va yakunda "completed"/"failed" bilan ustidan yozmaydi.
+    # signalled=False — jarayon yo'q (masalan, qayta ishga tushgandan
+    # keyingi osilib qolgan task); uni ham to'xtatilgan deb belgilaymiz.
+    update_task(tid, status="cancelled", error="Foydalanuvchi tomonidan bekor qilindi")
+    emit_task("task.cancelled", task_id=tid, message="Bekor qilindi")
+    return {"ok": True, "action": "cancelled", "signalled": signalled}
 
 
 @router.post("/api/myai/task/pause")
@@ -792,9 +798,11 @@ def myai_status(request: Request, scope: dict = Depends(Scope())):
         stats = get_stats(company=_myai_company(scope))
         provider = get_provider()
         return {"ok": True, "provider": provider.name if provider else None, "stats": stats}
-    except Exception:
-        return {"ok": True, "provider": None,
-                "stats": {"total": 0, "active": 0, "completed": 0, "failed": 0}}
+    except Exception as exc:
+        from ...utils.logger import get_logger
+        get_logger("myai").exception("MyAI status xatosi")
+        return {"ok": False, "error": str(exc),
+                "provider": None, "stats": None}
 
 
 @router.get("/api/myai/registry")

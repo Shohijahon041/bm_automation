@@ -16,6 +16,7 @@ from ..deps import (
     PAGE_KEYS, Scope, audit_event, client_ip,
     create_session, drop_session, drop_user_sessions, effective_pages,
     hash_password, list_sessions, needs_rehash, optional_scope, password_error,
+    set_session_flag,
     user_tg,
     is_super_username, login_allowed, login_fail, login_success,
     refresh_session_cookie, resolve_scope, session_user, super_admin_names,
@@ -28,6 +29,21 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 router = APIRouter(tags=["auth"])
 _bearer = HTTPBearer(auto_error=False)
+
+
+def _mfa_policy_required() -> bool:
+    """Super-admin uchun MFA majburiymi (DASHBOARD_MFA_REQUIRED)."""
+    return os.environ.get("DASHBOARD_MFA_REQUIRED", "").strip().lower() in (
+        "1", "on", "true", "yes")
+
+
+def _needs_mfa_setup(username: str, role: str, user: dict) -> bool:
+    """MFA majburiy, lekin super-admin hali sozlamagan bo'lsa True."""
+    return bool(
+        _mfa_policy_required()
+        and str(role or "").upper() == "ADMIN"
+        and is_super_username(username)
+        and not str(user.get("totp_secret") or "").strip())
 
 
 _UNSET = object()
@@ -239,9 +255,13 @@ def login(body: LoginRequest, request: Request, response: Response):
         except Exception:  # noqa: BLE001
             pass
     token = create_session({"username": username, "id": user.get("id"),
-                            "role": role, "company": company}, request)
+                            "role": role, "company": company,
+                            "mfa_setup_required": _needs_mfa_setup(
+                                username, role, user)}, request)
     audit_event("login.success", request, user=username, target=company,
-                detail=role)
+                detail=role + (" mfa-setup-required"
+                               if _needs_mfa_setup(username, role, user)
+                               else ""))
 
     from fastapi.responses import JSONResponse as _JR
     result = _JR({"ok": True, "username": username, "role": role, "company": company})
@@ -338,6 +358,7 @@ def me(request: Request, response: Response,
                       or is_super_username(scope.get("username") or ""))
                   if is_admin else False,
         "login_type": "session",
+        "mfa_setup_required": bool(scope.get("mfa_setup_required")),
         "company": {
             "name": company_name,
             "routeName": str((profile or {}).get("routeName") or ""),
@@ -825,6 +846,9 @@ def mfa_enable(body: MfaCodeRequest, request: Request,
     if not get_storage().dashboard_user_update(int(user.get("id") or 0),
                                                totp_secret=secret):
         raise HTTPException(500, "Saqlab bo'lmadi")
+    # Majburiy rejimda sessiya darhol ochiladi (qayta login shart emas).
+    set_session_flag(_session_token_from_request(request, None),
+                     "mfa_setup_required", False)
     audit_event("mfa.enable", request, user=username)
     return {"ok": True, "enabled": True}
 

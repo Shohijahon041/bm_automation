@@ -758,6 +758,17 @@ def _process_route_run(route_tuple, client, d, profiles_map, chat_id,
         except Exception as exc:
             print(f"  [{label}] SMS xatolik: {exc}")
 
+    # BM saytida grafik e'lon qilindi — haydovchilar guruhiga kunlik
+    # tasdiqlash so'rovnomasi (poll) yuboriladi.
+    try:
+        from bm_automation.app.notifications.ops.grafik_poll import send_poll_for_duty
+        poll_res = send_poll_for_duty(rid, d, graphs=graphs, route_name=label)
+        if poll_res.get("sent", 0) > 0:
+            print(f"  [{label}] so'rovnoma guruhga yuborildi: sent={poll_res['sent']} "
+                  f"items={poll_res.get('items_count', 0)}")
+    except Exception as exc:
+        print(f"  [{label}] so'rovnoma xatolik: {exc}")
+
     excel_file = None
     try:
         prof = profiles_map.get(rid) or {}
@@ -899,6 +910,12 @@ def _process_route_resend(route_tuple, client, d, profiles_map, chat_id,
     prefix = "♻️ YANGILANGAN — " if changed else ""
     if changed:
         print(f"  [{label}] o'zgargan haydovchilar: {len(changed)}")
+
+    try:
+        from bm_automation.app.notifications.ops.grafik_poll import send_poll_for_duty
+        send_poll_for_duty(rid, d, graphs=duty.get("graphs") or [], route_name=label)
+    except Exception as exc:
+        print(f"  [{label}] so'rovnoma yangilash xatolik: {exc}")
 
     excel_ok = image_ok = False
     res = None

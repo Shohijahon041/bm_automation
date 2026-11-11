@@ -75,7 +75,7 @@ def cmd_demo_seed(args) -> int:
 def cmd_keepalive(args) -> int:
     """Tokenlarni tirik saqlash: refresh rotatsiyasi + tekshiruv so'rovi.
 
-    12 soatlik `bm-token-refresh` timer uchun. Xato bo'lsa adminlarga
+    2 soatlik `bm-token-refresh` timer uchun. Xato bo'lsa adminlarga
     Telegram ogohlantirish yuboriladi (qo'lda qayta login zarurligi
     haqida) va 1 qaytariladi.
     """
@@ -91,8 +91,50 @@ def cmd_keepalive(args) -> int:
         if result == "refreshed"
         else "to'liq qayta login bajarildi"
     )
-    print(f"OK: tokenlar tirik ({label})")
+    print(f"OK: asosiy token tirik ({label})")
+    company_errors = _keepalive_companies()
+    if company_errors:
+        _notify_keepalive_error(
+            RuntimeError("kompaniya tokenlari: " + "; ".join(company_errors)))
+        return 1
     return 0
+
+
+def _keepalive_companies() -> list[str]:
+    """Har bir kompaniyaning o'z tokenini yangilaydi.
+
+    Kompaniya tokenlari asosiy token bilan birga eskirib qolmasligi uchun
+    `bm-token-refresh` timer'i shu funksiyani ham chaqiradi. Refresh
+    ishlamasa `BMClient` password, keyin OneID (`login-via-oneid`) orqali
+    avtomatik qayta login qiladi — SMS talab qilinmaydi.
+    """
+    from ..app.core.companies import company_token_state, own_client
+    from ..app.core.profiles import profiles_with_credentials
+    from ..app.core import token_health
+
+    errors: list[str] = []
+    seen: set[str] = set()
+    for profile in profiles_with_credentials():
+        name = str(profile.get("name") or "").strip()
+        key = name.lower()
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        try:
+            result = own_client(profile).keepalive()
+            state = company_token_state({"name": name, "has_credentials": True})
+            if state.get("organization_matches") is False:
+                raise RuntimeError(
+                    "olingan token boshqa kompaniyaniki: "
+                    f"{state.get('organization') or '?'}")
+            token_health.record(name, result)
+            label = ("refresh" if result == "refreshed" else "qayta login")
+            print(f"  [{name}] OK ({label})")
+        except Exception as exc:  # noqa: BLE001 - boshqa kompaniyalar davom etadi
+            token_health.record(name, "error", str(exc))
+            errors.append(f"{name}: {exc}")
+            print(f"  [{name}] XATO: {exc}", file=sys.stderr)
+    return errors
 
 
 def _notify_keepalive_error(exc: Exception) -> None:
@@ -216,15 +258,14 @@ def cmd_duty(args) -> int:
 
 
 def cmd_drivers(args) -> int:
+    from ..app.core.companies import client_for_profile
     from ..app.services.driver_sheet_service import run as run_driver_sheet
     from ..app.services.driver_sheet_service import run_all as run_driver_sheet_all
 
-    client = BMClient()
-    client.login()
     date_str = args.date or (date.today() + timedelta(days=args.offset)).isoformat()
     if args.all:
         results = run_driver_sheet_all(
-            client,
+            None,
             date_str=date_str,
             out_dir=args.out,
             send=args.send,
@@ -245,8 +286,10 @@ def cmd_drivers(args) -> int:
             return 1
         if not route:
             route = str(profile.get("routeVariantId", ""))
-        if profile.get("profileId"):
-            client.login_for_profile(profile["profileId"], fallback_to_main=True)
+        client = client_for_profile(profile)
+    else:
+        client = BMClient()
+        client.login()
     rid = resolve_route_id(client, route)
     result = run_driver_sheet(
         client,
@@ -321,7 +364,8 @@ def cmd_daily(args) -> int:
     # `run_daily` xatolarni entry'lar ichida ushlab qoladi — systemd uchun
     # 0 qaytarsa buzilgan kun "muvaffaqiyatli" bo'lib yozilardi.
     failed = [str(r.get("profile") or "?")
-              for r in results if isinstance(r, dict) and r.get("error")]
+              for r in results if isinstance(r, dict)
+              and (r.get("error") or r.get("monthly_error"))]
     if failed:
         print("XATO (korxonalar): " + ", ".join(failed), file=sys.stderr)
         return 1

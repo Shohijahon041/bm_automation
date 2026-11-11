@@ -4,8 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BM Fleet Command Center — Jo'nash taxtasi</title>
-<link rel="icon" href="/favicon.ico?v=2" sizes="any">
-<link rel="apple-touch-icon" href="/favicon.ico?v=2">
+<link rel="icon" href="/favicon.ico?v=3" sizes="any">
+<link rel="icon" type="image/png" href="/logo-mark.png?v=3">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=3">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&family=Big+Shoulders+Display:wght@700;800;900&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
@@ -1101,6 +1102,10 @@ body.auth-checking .auth-card { display: none; }
 body.auth-checking .auth-spinner { display: block; }
 body.auth-locked .app, body.auth-checking .app { display: none !important; }
 @keyframes bm-authspin { to { transform: rotate(360deg); } }
+/* Majburiy MFA sozlash: login kartasi o'rniga alohida karta ko'rsatiladi. */
+body.mfa-forcing #login-auth-card { display: none !important; }
+body.mfa-forcing #mfa-force-card { display: block !important; }
+body.mfa-forcing .auth-spinner { display: none !important; }
 /* --- Kirish kartasi: "Yo'l varaqasi" (waybill) — Glassmorphism 2026 --- */
 .auth-card { width: min(420px, 100%); position: relative; overflow: hidden; background: var(--bg-glass); border: 1px solid var(--line-strong); border-radius: var(--radius-lg); text-align: left; box-shadow: var(--shadow-lg); padding-bottom: 18px; backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
 .auth-card::before { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; box-shadow: inset 0 1px 0 rgba(255,255,255,.08), inset 0 -1px 0 rgba(0,0,0,.1); }
@@ -1243,10 +1248,7 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
   .cb-toggle:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
 </style>
 <style id="bm-rail-2026-10">
-  /* ===== IKONKA RAIL (2026-10) =====
-     ≥621px: yupqa 76px rail; brend bosilsa to'liq menyu (body.rail-open).
-     ≤620px: 5 tabli pastki panel (4 sahifa + "Yana" → to'liq menyu/drawer).
-     "Sahifa izlash" filtri to'liq menyu ichida (rail-open yoki mobil drawer). */
+  /* Planshetda rail, katta ekranda nomlari ochiq menyu. */
   #rail-tip { position: fixed; z-index: 90; pointer-events: none; opacity: 0; transform: translateY(-50%);
     transition: opacity .12s ease; background: var(--bg-raised); border: 1px solid var(--line);
     color: var(--ink); font-size: 12px; padding: 7px 11px; border-radius: 9px;
@@ -1279,8 +1281,7 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
   /* filtr natijasi — barcha rejimlarda mos kelmaganlar yashiriladi */
   .nav-filtered-out { display: none !important; }
 
-  /* -- desktop/planshet (≥621px): yupqa ikonka rail -- */
-  @media(min-width:621px){
+  @media(min-width:621px) and (max-width:1100px){
     .app { grid-template-columns: 76px minmax(0,1fr); }
     .sidebar { padding: 14px 10px; overflow: hidden; }
     .side-brand { justify-content: center; gap: 0; padding: 2px 0 10px; cursor: pointer; }
@@ -1322,6 +1323,45 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
     body.rail-open .nav-badge { position: static; margin-left: auto; box-shadow: none; }
   }
 
+  @media(min-width:1101px){
+    .app { grid-template-columns: 244px minmax(0,1fr); }
+    .sidebar { padding: 20px 12px 12px; background-image: none; overflow: hidden; }
+    .side-brand { justify-content: flex-start; gap: 10px; padding: 0 8px 18px; cursor: pointer; }
+    .side-brand > div:last-child { display: block; }
+    .nav-filter { display: block; }
+    .nav-filter input { min-height: 44px; font-family: var(--font-ui); font-size: 13px; }
+    #main-nav.side-nav { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; gap: 8px; }
+    .nav-group { flex: 0 0 auto; }
+    .nav-group-head { display: flex; min-height: 44px; padding: 8px 12px; }
+    .nav-group-items { flex-direction: column; padding: 2px 0 6px; }
+    .nav-group:not(.open) > .nav-group-items { display: none !important; }
+    .nav-group.open > .nav-group-items { display: flex !important; }
+    .side-nav a { justify-content: flex-start; gap: 10px; min-height: 44px; padding: 10px 12px; font-family: var(--font-ui); font-size: 13px; }
+    .side-nav a span:not(.nav-dot) { display: inline; }
+    .side-nav a.active::after { display: none; }
+    .side-nav a.active { background: var(--accent-soft); box-shadow: inset 3px 0 var(--accent); }
+    .nav-badge { position: static; margin-left: auto; box-shadow: none; }
+    .live-box small { display: block; }
+  }
+  .billing-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .billing-actions .button, .billing-dialog .button { min-height: 44px; }
+  .billing-dialog { width: min(640px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 24px;
+    overflow-y: auto; overscroll-behavior: contain;
+    border: 1px solid var(--line-strong); border-radius: var(--radius-lg); background: var(--bg-panel); color: var(--ink); box-shadow: var(--shadow-lg); }
+  .billing-dialog::backdrop { background: var(--topbar-bg); }
+  .billing-dialog h2 { margin: 0 0 8px; }
+  .billing-dialog p { color: var(--muted); font-size: 13px; line-height: 1.6; }
+  .billing-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 20px 0; }
+  .billing-fields label { min-width: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+  .billing-fields .input, .billing-fields .select { width: 100%; min-width: 0; min-height: 44px; font-size: 14px; }
+  .billing-feedback { min-height: 24px; margin: 12px 0; color: var(--alert-text); font-size: 13px; }
+  #billing-message { padding: 0 18px 10px; color: var(--teal-text); }
+  #billing-body .tbl { min-width: 880px; }
+  @media(max-width:620px){
+    .billing-dialog { padding: 18px; }
+    .billing-fields { grid-template-columns: 1fr; gap: 12px; }
+    .billing-fields .input, .billing-fields .select { font-size: 16px; }
+  }
   /* -- mobil (≤620px): 5 tabli pastki panel -- */
   @media(max-width:620px){
     .nav-group { display: contents !important; }
@@ -1422,6 +1462,16 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
   .driver-modal-head .icon-button { flex-shrink: 0 !important; }
   .driver-modal-title { font-size: 20px !important; line-height: 1.2 !important; }
 }
+
+/* ---- Brend logotipi (2026-11): BM BRUTTO ----
+   Logotipning o'z to'q ko'k foni bor, shuning uchun badge fon va
+   gradient o'chiriladi; tilla rang kontur ikkala temada ham ajratib turadi. */
+.brand-mark.brand-logo { display: block; padding: 0; object-fit: cover; background: #0a2140; border-radius: 12px; box-shadow: 0 0 0 1px rgba(245,158,11,.4), 0 4px 12px rgba(0,0,0,.32); }
+.auth-mark.auth-logo { display: block; width: 84px; height: 84px; padding: 0; object-fit: cover; background: #0a2140; border-radius: 18px; box-shadow: 0 0 0 1px rgba(245,158,11,.4), 0 8px 20px rgba(0,0,0,.32); }
+.topbar-logo { display: none; width: 32px; height: 32px; flex-shrink: 0; object-fit: cover; border-radius: 9px; box-shadow: 0 0 0 1px rgba(245,158,11,.4); }
+@media (max-width: 620px) { .topbar-logo { display: block; } }
+@media (max-width: 620px) { .auth-mark.auth-logo { width: 72px; height: 72px; border-radius: 16px; } }
+@media (max-width: 420px) { .auth-mark.auth-logo { width: 64px; height: 64px; border-radius: 14px; } }
 </style>
 </head>
 <body class="auth-locked auth-checking"><a class="skip-link" href="#main-content">Asosiy kontentga o‘tish</a>
@@ -1429,7 +1479,7 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
 <div class="app">
   <div class="navbar-overlay" id="navbar-overlay"></div>
   <aside class="sidebar">
-    <div class="side-brand" id="side-brand" role="button" tabindex="0" title="To'liq menyuni ochish" aria-label="To'liq menyuni ochish" aria-expanded="false"><div class="brand-mark">BM</div><div><span class="brand-name">BM COMMAND</span><span class="brand-sub">FLEET OPERATIONS</span></div></div>
+    <div class="side-brand" id="side-brand" role="button" tabindex="0" title="To'liq menyuni ochish" aria-label="To'liq menyuni ochish" aria-expanded="false"><img class="brand-mark brand-logo" src="/logo-mark.png?v=3" alt="" width="42" height="42" decoding="async"><div><span class="brand-name">BM COMMAND</span><span class="brand-sub">FLEET OPERATIONS</span></div></div>
     <div class="orn-divider"><span class="orn"></span></div>
     <div class="nav-filter"><input id="nav-filter" type="text" placeholder="Sahifa izlash…" autocomplete="off" aria-label="Sahifa izlash"></div>
     <nav class="side-nav" id="main-nav">
@@ -1492,6 +1542,7 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
           <a href="#dusers" data-page="dusers"><i class="nav-ic" data-ic="user-check"></i><span>Panel foydalanuvchilari</span></a>
           <a href="#logs" data-page="logs"><i class="nav-ic" data-ic="terminal"></i><span>Loglar</span></a>
           <a href="#disk" data-page="disk"><i class="nav-ic" data-ic="database"></i><span>Disk</span></a>
+          <a href="#tokens" data-page="tokens"><i class="nav-ic" data-ic="refresh-cw"></i><span>Tokenlar</span></a>
           <a href="#knowledge" data-page="knowledge"><i class="nav-ic" data-ic="book"></i><span>Bilim bazasi</span></a>
           <a href="#settings" data-page="settings"><i class="nav-ic" data-ic="settings"></i><span>Sozlamalar</span></a>
         </div>
@@ -1504,6 +1555,7 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
   <div class="content">
     <header class="new-topbar">
       <button class="mobile-menu" id="mobile-menu" aria-label="Menu"><i class="ic" data-ic="menu"></i></button>
+      <img class="topbar-logo" src="/logo-mark.png?v=3" alt="" width="32" height="32" decoding="async">
       <div class="top-title"><h1 id="page-title">BM COMMAND</h1><p id="page-subtitle">Fleet Operations Center</p></div>
       <div class="page-breadcrumb" id="page-breadcrumb">OVERVIEW</div>
       <div class="header-live"><span class="live-dot"></span> LIVE</div>
@@ -1550,6 +1602,25 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
         <div class="page-hero"><div><div class="eyebrow">DISPATCH CENTER</div><h2>Reyslar oqimi</h2><p>Barcha reyslar statuslar bo'yicha: bajarilmoqda, qabul qilindi, kechikmoqda, bekor va nollik.</p></div><div class="page-kicker">LIVE BOARD</div></div>
         <div class="dispatch-summary" id="dispatch-summary"></div>
         <section class="panel full-page-panel"><div class="section-head"><div><div class="eyebrow">STATUS BOARD</div><h2>Dispetcher taxtasi <span class="hint" id="dispatch-hint"></span></h2></div></div><div class="dispatch-board" id="dispatch-board-body"></div></section>
+        <section class="panel full-page-panel" style="margin-top:14px;padding:16px 18px" id="poll-block">
+          <div class="section-head" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+            <div>
+              <div class="eyebrow">TELEGRAM SO'ROVNOMA</div>
+              <h2>📋 Kunlik grafik tasdiqlash <span class="hint" id="poll-hint"></span></h2>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <input type="date" id="poll-date" class="input" style="width:145px;padding:6px 10px;font-size:12px" onchange="loadGrafikPoll()">
+              <select id="poll-route" class="input" style="width:auto;padding:6px 10px;font-size:12px" onchange="loadGrafikPoll()">
+                <option value="">Barcha yo'nalishlar</option>
+              </select>
+              <button class="button ghost" style="padding:6px 12px;font-size:12px" onclick="loadGrafikPoll()"><i class="ic sm" data-ic="refresh-cw"></i> YANGILASH</button>
+              <button class="button ghost" style="padding:6px 12px;font-size:12px" onclick="swapGrafikFromUI()"><i class="ic sm" data-ic="repeat"></i> ALMASHTIRISH</button>
+              <button class="button" id="poll-send-btn" style="padding:6px 14px;font-size:12px" onclick="sendGrafikPollFromUI()"><i class="ic sm" data-ic="send"></i> GURUHGA YUBORISH</button>
+            </div>
+          </div>
+          <div id="poll-summary-cards" style="display:flex;gap:12px;flex-wrap:wrap;margin:12px 0"></div>
+          <div id="poll-table-wrap" class="new-table-wrap"></div>
+        </section>
       </section>
 
       <section class="page" id="page-routes" data-page-view="routes">
@@ -1574,6 +1645,10 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
       <section class="page" id="page-vehicles" data-page-view="vehicles">
         <div class="page-hero"><div><div class="eyebrow">FLEET CONTROL</div><h2>Avtobuslar</h2><p>Park holati, reyslar, muammolar va oxirgi faollik.</p></div></div>
         <section class="panel full-page-panel" id="vehicles-block"><div class="section-head"><div><h2>Avtobuslar reyestri <span class="hint" id="vehicles-hint"></span></h2></div><div style="display:flex;gap:8px;align-items:center"><select id="vehicles-route-filter" aria-label="Yo'nalish bo'yicha filtr" class="input" style="width:auto;padding:6px 10px;font-size:12px" onchange="filterVehicles()"><option value="">Barcha yo'nalishlar</option></select></div></div><div id="vehicles-tab"></div></section>
+        <section class="panel" id="vehicle-service-panel" style="margin-top:14px;padding:16px 18px;display:none">
+          <div class="section-head"><div><h2>Yaqin texnik xizmatlar <span class="hint" id="vehicle-service-hint"></span></h2></div></div>
+          <div id="vehicle-service-body"></div>
+        </section>
       </section>
 
       <section class="page" id="page-drivers" data-page-view="drivers">
@@ -1709,7 +1784,17 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
               <button class="button ghost" id="btn-rej-xls">XLS</button>
               <button class="button ghost" id="btn-rej-csv">CSV</button>
               <button class="button ghost" id="btn-rej-pdf">PDF</button>
-            </div><div id="rej-er"></div></section>
+            </div><div id="rej-er"></div>        </section>
+        <section class="panel">
+          <div class="section-head"><div><div class="eyebrow">REYS INTIZOMI</div><h2>Erta boshlangan reyslar <span class="hint" id="early-hint"></span></h2></div>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <input class="input" id="rej-early-date" aria-label="Tahlil sanasi" type="date" style="max-width:160px">
+              <button class="button ghost" id="btn-early-refresh">YANGILASH</button>
+            </div>
+          </div>
+          <div id="early-summary"></div>
+          <div style="overflow-x:auto" id="early-body"><div class="empty">Sana tanlanganda BM rejasi va waybill bo'yicha aniq tahlil yuklanadi.</div></div>
+        </section>
         <section class="panel">
           <div class="section-head"><div><h2>Haydovchilar bo'yicha jadval</h2></div></div>
           <div style="overflow-x:auto" id="rejects-body"></div>
@@ -2181,21 +2266,62 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
       <section class="page" id="page-users" data-page-view="users">
         <div class="page-hero"><div><div class="eyebrow">BOT USERS</div><h2>Telegram bot foydalanuvchilari</h2><p>Bot bilan muloqot qilgan barcha foydalanuvchilar, ularning rollari va faoliyati.</p></div><div class="page-kicker" id="users-kicker">0 foydalanuvchi</div></div>
         <div class="err" id="users-err" style="display:none"></div>
-        <section class="panel" style="margin-bottom:14px">
-          <div class="section-head"><div><div class="eyebrow">GROUP STATS</div><h2>Guruh xabarlari statistikasi</h2></div>
-            <span class="hint" id="group-stats-kicker"></span>
-            <button class="button ghost" style="font-size:12px" onclick="loadGroupStats()">YANGILASH</button>
-          </div>
-          <div id="group-stats-body" style="overflow-x:auto;padding:0 4px 4px"></div>
-        </section>
-        <section class="panel full-page-panel">
-          <div class="section-head"><div><h2>Foydalanuvchilar ro'yxati</h2></div>
-            <div style="display:flex;gap:8px;align-items:center">
-              <input type="text" id="users-search" aria-label="Bot foydalanuvchilaridan qidirish" class="input" style="width:200px;padding:6px 10px;font-size:12px" placeholder="Qidirish (nom, username, haydovchi, telefon)...">
-              <button class="button ghost" id="users-refresh-btn" style="font-size:12px" onclick="loadBotUsers()">YANGILASH</button>
+
+        <!-- Sub-tabs: Foydalanuvchilar / Jonli faoliyat -->
+        <div style="display:flex;gap:8px;margin-bottom:14px;border-bottom:1px solid var(--line);padding-bottom:10px">
+          <button id="btn-tab-users-list" class="button" style="font-size:12px;padding:6px 14px" onclick="setUsersSubTab('list')">&#x1f465; Foydalanuvchilar ro'yxati</button>
+          <button id="btn-tab-users-activity" class="button ghost" style="font-size:12px;padding:6px 14px" onclick="setUsersSubTab('activity')">&#x26a1; Jonli faoliyat tasmasi</button>
+        </div>
+
+        <div id="panel-users-list">
+          <section class="panel" id="group-stats-panel" style="margin-bottom:14px">
+            <div class="section-head"><div><div class="eyebrow">GROUP STATS</div><h2>Guruh xabarlari statistikasi</h2></div>
+              <span class="hint" id="group-stats-kicker"></span>
+              <button class="button ghost" style="font-size:12px" onclick="loadGroupStats()">YANGILASH</button>
+            </div>
+            <div id="group-stats-body" style="overflow-x:auto;padding:0 4px 4px"></div>
+          </section>
+          <section class="panel full-page-panel">
+            <div class="section-head"><div><h2>Foydalanuvchilar ro'yxati</h2></div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <input type="text" id="users-search" aria-label="Bot foydalanuvchilaridan qidirish" class="input" style="width:200px;padding:6px 10px;font-size:12px" placeholder="Qidirish (nom, username, haydovchi, telefon)...">
+                <button class="button ghost" id="users-refresh-btn" style="font-size:12px" onclick="loadBotUsers()">YANGILASH</button>
+              </div>
+            </div>
+            <div id="users-body" style="overflow-x:auto"></div>
+          </section>
+        </div>
+
+        <!-- Jonli faoliyat paneli -->
+        <section class="panel full-page-panel" id="panel-users-activity" style="display:none">
+          <div class="section-head">
+            <div>
+              <div class="eyebrow">AUDIT LOG</div>
+              <h2>Bot faoliyati va harakatlar tasmasi</h2>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <select id="users-activity-filter" aria-label="Harakat turi bo'yicha filter" class="input" style="padding:6px 10px;font-size:12px" onchange="loadBotActivities()">
+                <option value="">Barcha harakatlar</option>
+                <option value="grafik_confirm">Grafik tasdiqlash</option>
+                <option value="grafik_poll">Grafik so'rov</option>
+                <option value="command">Buyruqlar (/today, /grafik...)</option>
+                <option value="callback">Tugma bosish (callback)</option>
+                <option value="message">Matnli xabar</option>
+                <option value="link">Haydovchi bog'lash</option>
+                <option value="unlink">Bog'lanishni bekor qilish</option>
+                <option value="role_change">Rol o'zgarishi</option>
+              </select>
+              <input type="text" id="users-activity-search" aria-label="Faoliyat qidirish" class="input" style="width:220px;padding:6px 10px;font-size:12px" placeholder="Qidirish (matn, nom, id)..." onkeydown="if(event.key==='Enter')loadBotActivities()">
+              <select id="users-activity-limit" class="input" style="padding:6px 10px;font-size:12px" onchange="loadBotActivities()">
+                <option value="50">50 ta</option>
+                <option value="100" selected>100 ta</option>
+                <option value="200">200 ta</option>
+                <option value="500">500 ta</option>
+              </select>
+              <button class="button ghost" style="font-size:12px" onclick="loadBotActivities()">YANGILASH</button>
             </div>
           </div>
-          <div id="users-body" style="overflow-x:auto"></div>
+          <div id="users-activity-body" style="overflow-x:auto"></div>
         </section>
 
         <!-- User detail modal -->
@@ -2239,6 +2365,12 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
             <div><label style="display:block;font:10px 'IBM Plex Mono',monospace;color:var(--muted);margin-bottom:4px" for="s-api-pass">PASSWORD (bo'sh = o'zgarmagan)</label><input class="input" data-envkey="BM_PASSWORD" id="s-api-pass" type="password" placeholder="••••••"></div>
             <div><label style="display:block;font:10px 'IBM Plex Mono',monospace;color:var(--muted);margin-bottom:4px">ORGANIZATION</label><div class="input" id="s-api-org" style="cursor:default"></div></div>
           </div>
+        </section>
+        <!-- Kompaniya tokenlari -->
+        <section class="panel" style="margin-bottom:14px">
+          <div class="section-head"><div><div class="eyebrow">BM TOKENS</div><h2>Kompaniya tokenlari</h2></div><div style="display:flex;align-items:center;gap:8px"><span class="hint" id="company-tokens-status"></span><button class="button ghost" style="font-size:10px;padding:4px 10px" onclick="loadCompanyTokens()">YANGILASH</button></div></div>
+          <div style="padding:0 18px 4px"><p class="hint" style="margin:0">Har bir korxona faqat o'z tokeni bilan ishlaydi. Token har 2 soatda avtomatik yangilanadi; muddati tugasa login/parol orqali qayta olinadi.</p></div>
+          <div id="company-tokens-body" style="padding:8px 18px 18px"></div>
         </section>
         <!-- Telegram -->
         <section class="panel" style="margin-bottom:14px">
@@ -2355,6 +2487,21 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
               </label>
               <span class="hint" id="s-departure-offset-hint">Reys/obed vaqti kelganda yuboriladi.</span>
             </div>
+            <div style="grid-column:1/-1;display:flex;align-items:center;gap:10px;padding-top:6px;border-top:1px solid var(--line);flex-wrap:wrap">
+              <label class="check-field" style="font:600 13px 'Inter',sans-serif;cursor:pointer">
+                <input type="checkbox" id="s-early-start"> Erta qatnov ogohlantirishi
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;font:10px 'IBM Plex Mono',monospace;color:var(--muted)">ERTA
+                <input class="input" id="s-early-start-min" type="number" min="1" max="60" step="1" style="width:70px"> DAQ
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;font:10px 'IBM Plex Mono',monospace;color:var(--muted)">TEKSHIRUV
+                <input class="input" id="s-early-start-interval" type="number" min="5" max="600" step="1" style="width:76px"> SEK
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;font:10px 'IBM Plex Mono',monospace;color:var(--muted)">NATIJA
+                <input class="input" id="s-early-start-followup" type="number" min="0" max="120" step="1" style="width:70px"> DAQ
+              </label>
+              <span class="hint">Qatnov rejadan erta boshlansa korxona guruhiga, haydovchi telefoniga SMS va profiliga xabar darhol yuboriladi (guruh sozlamasidan qat'i nazar — favqulodda istisno). Qatnov tugagach NATIJA daqiqasida BM holati tekshiriladi: qabul qilinsa "Reys qabul qilindi", qilinmasa haydovchi aybi bilan eslatma yuboriladi (0 — tekshirilmaydi).</span>
+            </div>
           </div>
           <div id="global-audit" style="padding:0 18px 14px;font:10px 'IBM Plex Mono',monospace;color:var(--muted);line-height:1.6"></div>
           <div style="padding:0 18px 18px;display:flex;gap:10px;justify-content:flex-end">
@@ -2452,6 +2599,54 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
           <div id="companies-body" style="padding:0 18px 18px"></div>
         </section>
 
+        <!-- OYLIK TO'LOV — faqat super admin (data-super-only) -->
+        <section class="panel" id="billing-panel" data-super-only="1" style="margin-bottom:14px">
+          <div class="section-head"><div><div class="eyebrow">BILLING</div><h2>Oylik to'lov</h2></div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <span class="pill-status gray" id="billing-summary">—</span>
+              <button class="button ghost" style="font-size:11px;padding:5px 10px" onclick="loadBilling()" title="Ro'yxatni qayta yuklash">YANGILASH</button>
+            </div>
+          </div>
+          <div class="hint" style="padding:0 18px 10px">Har korxonaga oylik narx qo'lda belgilanadi. To'lov: naqd pul, karta yoki hisob raqami (shartnoma asosida). Davr to'liq to'langanda obuna shu oy oxirigacha uzaytiriladi; muddat tugagach 7 kun grace, keyin bloklanadi.</div>
+          <div id="billing-message" role="status"></div>
+          <div class="billing-actions" style="padding:0 18px 14px"><button class="button" onclick="fillBillingPayment()">Yangi to'lov</button></div>
+          <div id="billing-body" aria-live="polite" style="padding:0 18px 14px"></div>
+          <dialog class="billing-dialog" id="billing-payment-dialog" aria-labelledby="bl-title">
+            <form id="billing-payment-form" onsubmit="event.preventDefault();addBillingPayment()">
+              <h2 id="bl-title">Yangi to'lov</h2>
+              <p>To'lovni tuzatish yoki o'chirish obuna muddatini qisqartirmaydi. Muddatni «Obuna va holat» oynasida o'zgartiring.</p>
+              <div class="billing-fields">
+                <label>Korxona *<select class="select" id="bl-company" required><option value="">— tanlang —</option></select></label>
+                <label>To'lov davri *<input class="input" id="bl-period" type="month" required></label>
+                <label>Summa (so'm) *<input class="input" id="bl-amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label>
+                <label>To'lov usuli<select class="select" id="bl-method" onchange="syncBillingMethod()"><option value="cash">Naqd pul</option><option value="card">Karta</option><option value="bank">Hisob raqami</option></select></label>
+                <label id="bl-contract-wrap">Shartnoma №<input class="input" id="bl-contract" autocomplete="off"></label>
+                <label>Kvitansiya / chek №<input class="input" id="bl-receipt" autocomplete="off"></label>
+                <label>To'lov sanasi *<input class="input" id="bl-paid-on" type="date" required></label>
+                <label>Izoh<input class="input" id="bl-note" autocomplete="off"></label>
+              </div>
+              <p id="bl-hint"></p>
+              <div id="bl-result" class="billing-feedback" role="alert"></div>
+              <div class="billing-actions"><button class="button" id="bl-submit" type="submit">Saqlash</button><button class="button ghost" type="button" onclick="closeBillingDialog('billing-payment-dialog')">Bekor qilish</button></div>
+            </form>
+          </dialog>
+          <dialog class="billing-dialog" id="billing-company-dialog" aria-labelledby="bc-title">
+            <form id="billing-company-form" onsubmit="event.preventDefault();saveBillingCompany()">
+              <h2 id="bc-title">Obuna va holat</h2>
+              <p id="bc-name"></p>
+              <div class="billing-fields">
+                <label>Oylik narx (so'm) *<input class="input" id="bc-price" type="number" min="0" step="0.01" required></label>
+                <label>Har oyning to'lov kuni *<input class="input" id="bc-day" type="number" min="1" max="28" step="1" required></label>
+                <label>Obuna muddati<input class="input" id="bc-expire" type="date"></label>
+                <label>Korxona holati<select class="select" id="bc-status"><option value="active">Faol</option><option value="blocked">Bloklangan</option><option value="suspended">To'xtatilgan</option><option value="inactive">Nofaol</option><option value="expired">Muddati tugagan</option><option value="deleted">O'chirilgan</option></select></label>
+              </div>
+              <p>Faollashtirish muddatni avtomatik uzaytirmaydi. O'chirish ma'lumotlarni saqlaydi, lekin korxona kirishini yopadi. Bo'sh muddat — muddatsiz kirish.</p>
+              <div id="bc-result" class="billing-feedback" role="alert"></div>
+              <div class="billing-actions"><button class="button" type="submit">Saqlash</button><button class="button ghost" type="button" onclick="closeBillingDialog('billing-company-dialog')">Bekor qilish</button></div>
+            </form>
+          </dialog>
+        </section>
+
         <!-- KUNLIK KM QAYDI — faqat super admin (data-super-only) -->
         <section class="panel" id="km-panel" data-super-only="1" style="margin-bottom:14px">
           <div class="section-head"><div><div class="eyebrow">SUPER ADMIN</div><h2>Kunlik km qaydi</h2></div>
@@ -2475,6 +2670,21 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
             </div>
             <div id="km-body"></div>
           </div>
+        </section>
+      </section>
+
+      <!-- === KOMPANIYA TOKENLARI === -->
+      <section class="page" id="page-tokens" data-page-view="tokens">
+        <div class="page-hero"><div><div class="eyebrow">BM TOKENS</div><h2>Kompaniya tokenlari</h2><p>Har bir korxona faqat o'z tokeni bilan ishlaydi. Token har 2 soatda avtomatik yangilanadi; muddati tugasa korxonaning login/paroli bilan qayta olinadi. Bu sahifada oxirgi muvaffaqiyatli refresh va xatolar ko'rinadi.</p></div><span class="page-kicker" id="tokens-kicker">YUKLANMOQDA…</span></div>
+        <div class="err" id="tokens-err" role="alert" style="display:none"></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:14px" id="tokens-kpis"></div>
+        <section class="panel" style="margin-bottom:14px">
+          <div class="section-head"><div><div class="eyebrow">AVTOMATIK REFRESH</div><h2>Yangilash jadvali</h2></div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="hint" id="tokens-schedule"></span><button class="button" id="tokens-refresh-all" type="button" onclick="refreshAllCompanyTokens()">BARCHASINI YANGILASH</button></div></div>
+          <div style="padding:0 18px 18px"><p class="hint" style="margin:0">Har juft soatda <code>bm-token-refresh.timer</code> ishlaydi va har bir korxonaning tokenini o'z kredensiallari bilan yangilaydi. Qo'lda yangilash ham faqat o'sha korxonaning login/parolidan foydalanadi — boshqa kompaniya tokeni ishlatilmaydi. Qayta login kerak bo'lsa bir necha daqiqa vaqt olishi mumkin.</p></div>
+        </section>
+        <section class="panel">
+          <div class="section-head"><div><div class="eyebrow">HOLAT</div><h2>Korxonalar</h2></div><span class="hint" id="tokens-status" aria-live="polite"></span></div>
+          <div id="tokens-body" style="padding:8px 18px 18px"></div>
         </section>
       </section>
 
@@ -2654,9 +2864,9 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
 </dialog>
 
 <div class="auth-overlay" id="auth-overlay" role="dialog" aria-modal="true" aria-labelledby="auth-title">
-  <div class="auth-card">
+  <div class="auth-card" id="login-auth-card">
     <div class="wb-head">
-      <div class="auth-mark" aria-hidden="true">BM</div>
+      <img class="auth-mark auth-logo" src="/logo.png?v=3" alt="" width="84" height="84" decoding="async">
       <div class="wb-head-txt">
         <div class="auth-title" id="auth-title">Fleet Command Center</div>
         <p class="auth-sub">Hisobingiz bilan kiring</p>
@@ -2676,6 +2886,32 @@ body.auth-locked .app, body.auth-checking .app { display: none !important; }
       <div class="auth-err" id="login-err" role="alert"></div>
     </div>
     <div class="auth-foot" id="auth-foot">KO'P KORXONALI BOSHQARUV</div>
+  </div>
+  <div class="auth-card" id="mfa-force-card" style="display:none">
+    <div class="wb-head">
+      <img class="auth-mark auth-logo" src="/logo.png?v=3" alt="" width="84" height="84" decoding="async">
+      <div class="wb-head-txt">
+        <div class="auth-title">Ikki bosqichli himoya</div>
+        <p class="auth-sub">Super-admin uchun MFA sozlash majburiy</p>
+      </div>
+    </div>
+    <div class="wb-perf" aria-hidden="true"></div>
+    <div class="wb-body">
+      <p class="muted" style="font:12px 'IBM Plex Mono',monospace;margin:0 0 10px">Davom etish uchun parolingizni tasdiqlab, telefon ilovasidagi 6 xonali kod bilan TOTP ni yoqing.</p>
+      <label class="wb-lb" for="mfa-force-pass">JORIY PAROL</label>
+      <input type="password" id="mfa-force-pass" class="input" autocomplete="current-password">
+      <button class="button auth-btn" id="mfa-force-start">SOZLASHNI BOSHLASH</button>
+      <div id="mfa-force-setup" style="display:none;margin-top:12px">
+        <label class="wb-lb">SIR (ilovaga qo'shing)</label>
+        <div class="input" id="mfa-force-secret" style="font-family:'IBM Plex Mono',monospace;font-size:12px;word-break:break-all;cursor:text"></div>
+        <div style="margin:8px 0"><a href="#" id="mfa-force-link" style="font:11px 'IBM Plex Mono',monospace;color:#38bdf8" target="_blank" rel="noopener">otpauth havolasini ochish</a></div>
+        <label class="wb-lb" for="mfa-force-code">ILOVADAGI KOD</label>
+        <input type="text" id="mfa-force-code" class="input" inputmode="numeric" maxlength="6" autocomplete="one-time-code" spellcheck="false" placeholder="123456">
+        <button class="button auth-btn" id="mfa-force-enable">TASDIQLASH</button>
+      </div>
+      <div class="auth-err" id="mfa-force-msg" role="alert"></div>
+    </div>
+    <div class="auth-foot">XAVFSIZLIK TALABI</div>
   </div>
   <div class="auth-spinner" aria-hidden="true"></div>
 </div>
@@ -2850,8 +3086,8 @@ const PAGE_ROLES = {
   overview:1, dispatch:1, routes:1, vehicles:1, drivers:2, appeals:1,
   alerts:1, performance:1, 'top-performance':2, electricity:2, rejects:2,
   brutto:2, tariffs:2, insights:4, audit:3, myai:4, gps:1, video:1,
-  sms:3, admin:4, logs:4, disk:4, documents:3, users:4, settings:4,
-  dusers:2, knowledge:4
+  sms:3, admin:4, logs:4, disk:4, documents:3, users:1, settings:4,
+  dusers:2, knowledge:4, tokens:4
 };
 const ROLE_LABEL = {VIEWER:"Kuzatuvchi", DISPATCHER:"Dispetcher",
   MANAGER:"Menejer", DIRECTOR:"Rahbar", ADMIN:"Admin"};
@@ -2866,7 +3102,7 @@ const PAGE_LABEL = {
   video:"Video", sms:"SMS", admin:"Admin panel", logs:"Loglar",
   disk:"Disk", documents:"Hujjatlar", users:"Bot foydalanuvchilari",
   settings:"Sozlamalar", dusers:"Panel foydalanuvchilari",
-  knowledge:"Bilim bazasi"
+  knowledge:"Bilim bazasi", tokens:"Tokenlar"
 };
 /* Faqat tizim egasiga (super) ko'rinadigan bo'limlar — boshqa hech kim
    (ADMIN ham) ko'rmaydi; server ham `/api/knowledge` ni 403 bilan to'sadi. */
@@ -3223,6 +3459,202 @@ function renderBoard(d) {
   const mainBoard = document.getElementById("board-body");
   if(mainBoard) mainBoard.innerHTML = html;
   renderDispatchBoard(d);
+  loadGrafikPoll();
+}
+
+/* ------------------------------------------------ grafik poll */
+async function loadGrafikPoll() {
+  const dateInput = document.getElementById("poll-date");
+  if (!dateInput) return;
+  if (!dateInput.value) {
+    const now = new Date();
+    if (now.getHours() >= 17) now.setDate(now.getDate() + 1);
+    dateInput.value = now.toISOString().slice(0, 10);
+  }
+  const dStr = dateInput.value;
+  const routeSelect = document.getElementById("poll-route");
+  const rid = routeSelect ? routeSelect.value : "";
+
+  if (routeSelect && routeSelect.options.length <= 1 && state.lastData && state.lastData.routes) {
+    state.lastData.routes.forEach(r => {
+      const opt = document.createElement("option");
+      opt.value = r.route_id || r.id || "";
+      opt.textContent = r.name || r.route_name || opt.value;
+      routeSelect.appendChild(opt);
+    });
+  }
+
+  const wrap = document.getElementById("poll-table-wrap");
+  const summaryCards = document.getElementById("poll-summary-cards");
+  const hint = document.getElementById("poll-hint");
+  if (wrap && !wrap.dataset.loaded) {
+    wrap.innerHTML = '<div class="panel-loading"><div class="sk sk-row w100"></div><div class="sk sk-row w100"></div></div>';
+  }
+
+  try {
+    const qs = new URLSearchParams({ date: dStr });
+    if (rid) qs.set("routeVariantId", rid);
+    const res = await fetch("/api/grafik-poll?" + qs.toString());
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+
+    const polls = data.polls || (data.poll_id ? [data] : []);
+    let totalGraphs = 0, totalConfirmed = 0;
+
+    if (summaryCards) {
+      if (!polls.length) {
+        summaryCards.innerHTML = '<div class="empty" style="padding:10px">Ushbu kunga grafik so\'rovnomasi topilmadi.</div>';
+      } else {
+        summaryCards.innerHTML = polls.map(p => {
+          const tot = p.total || (p.items ? p.items.length : 0);
+          const conf = p.confirmed || (p.items ? p.items.filter(x => x.confirmed).length : 0);
+          const pct = tot > 0 ? Math.round(conf / tot * 100) : 0;
+          totalGraphs += tot;
+          totalConfirmed += conf;
+          const cls = pct === 100 ? "green" : (conf > 0 ? "blue" : "gray");
+          return `<div class="dispatch-stat ${cls}">
+            <span class="ds-ic" data-ic="check-circle"></span>
+            <div>
+              <b>${conf} / ${tot} ta (${pct}%)</b>
+              <small>${esc(p.route_name || p.route_id || "")}</small>
+            </div>
+          </div>`;
+        }).join("");
+        _initKpiIcons(summaryCards);
+      }
+    }
+
+    if (hint) {
+      hint.textContent = dStr + " · Jami: " + totalConfirmed + "/" + totalGraphs + " ta tasdiqlandi";
+    }
+
+    if (wrap) {
+      const allItems = [];
+      polls.forEach(p => {
+        (p.items || []).forEach(it => {
+          allItems.push(Object.assign({}, it, { route_name: p.route_name || p.route_id }));
+        });
+      });
+
+      if (!allItems.length) {
+        wrap.innerHTML = '<div class="empty">Grafiklar topilmadi. BM saytidan hali e\'lon qilinmagan bo\'lishi mumkin.</div>';
+        return;
+      }
+
+      const rows = allItems.map((it, i) => {
+        const isConf = Boolean(it.confirmed);
+        const statusBadge = isConf
+          ? '<span class="badge green" style="font-size:11px">🟢 Tasdiqlangan</span>'
+          : '<span class="badge gray" style="font-size:11px">⏳ Kutilmoqda</span>';
+        const byWho = isConf
+          ? (esc(it.confirmed_by_name || "Haydovchi") + (it.confirmed_by_user ? ' <small class="muted">(@' + esc(it.confirmed_by_user) + ')</small>' : ''))
+          : '<span class="muted">—</span>';
+        const byTime = isConf && it.confirmed_at
+          ? '<b class="mono" style="color:var(--c-green)">' + esc(it.confirmed_at) + '</b>'
+          : '<span class="muted">—</span>';
+
+        return '<tr>' +
+          '<td class="mono muted">' + (i + 1) + '</td>' +
+          '<td><b>' + esc(it.route_name || "") + '</b></td>' +
+          '<td><span class="mono" style="font-weight:700">Grafik ' + esc(it.graph || "-") + '</span></td>' +
+          '<td><code class="mono">' + esc(it.plate || "-") + '</code></td>' +
+          '<td class="mono">' + esc(it.start_time || "--:--") + '</td>' +
+          '<td>' + esc(it.driver_name || "Haydovchi") + '</td>' +
+          '<td>' + statusBadge + '</td>' +
+          '<td>' + byTime + '</td>' +
+          '<td>' + byWho + '</td>' +
+        '</tr>';
+      }).join("");
+
+      wrap.innerHTML = '<div style="overflow-x:auto">' +
+        '<table class="board">' +
+          '<thead>' +
+            '<tr>' +
+              '<th>#</th>' +
+              '<th>Yo\'nalish</th>' +
+              '<th>Grafik</th>' +
+              '<th>Avtobus</th>' +
+              '<th>Chiqish vaqti</th>' +
+              '<th>Haydovchi</th>' +
+              '<th>Holat</th>' +
+              '<th>Tasdiqlagan vaqt</th>' +
+              '<th>Telegram tasdig\'i</th>' +
+            '</tr>' +
+          '</thead>' +
+          '<tbody>' + rows + '</tbody>' +
+        '</table>' +
+      '</div>';
+      wrap.dataset.loaded = "1";
+    }
+  } catch (err) {
+    console.error("loadGrafikPoll error:", err);
+    if (wrap) wrap.innerHTML = '<div class="empty err">Xatolik yuz berdi: ' + esc(err.message) + '</div>';
+  }
+}
+
+async function sendGrafikPollFromUI() {
+  const dateInput = document.getElementById("poll-date");
+  const dStr = dateInput ? dateInput.value : "";
+  const routeSelect = document.getElementById("poll-route");
+  const rid = routeSelect ? routeSelect.value : "";
+
+  if (!confirm((dStr || "Tanlangan sana") + " uchun Telegram guruh(lar)ga so'rovnoma yuborilsinmi?")) {
+    return;
+  }
+
+  const btn = document.getElementById("poll-send-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "Yuborilmoqda..."; }
+
+  try {
+    const res = await fetch("/api/grafik-poll/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ date: dStr, routeVariantId: rid }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Xatolik yuz berdi");
+
+    const sentSum = (data.results || []).reduce((acc, x) => acc + (x.sent || 0), 0);
+    alert("✅ So'rovnoma guruh(lar)ga muvaffaqiyatli yuborildi!\nJami yuborilgan: " + sentSum + " ta guruh.");
+    loadGrafikPoll();
+  } catch (err) {
+    alert("Xatolik: " + err.message);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ic sm" data-ic="send"></i> GURUHGA YUBORISH';
+      _initKpiIcons(btn);
+    }
+  }
+}
+
+async function swapGrafikFromUI() {
+  const routeSelect = document.getElementById("poll-route");
+  const rid = routeSelect ? routeSelect.value : "";
+  if (!rid) {
+    alert("Iltimos, avval yo'nalishni tanlang!");
+    return;
+  }
+  const g1 = prompt("1-grafik raqamini kiriting (masalan: 1 yoki P1):");
+  if (!g1) return;
+  const g2 = prompt("2-grafik raqamini kiriting (masalan: 2 yoki P2):");
+  if (!g2) return;
+  const dateInput = document.getElementById("poll-date");
+  const dStr = dateInput ? dateInput.value : "";
+
+  try {
+    const res = await fetch("/api/grafik-poll/swap", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ routeVariantId: rid, date: dStr, graph1: g1, graph2: g2 }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Xatolik yuz berdi");
+    alert("✅ Grafiklar muvaffaqiyatli almashtirildi!\n" + data.graph1 + ": " + data.driver1 + "\n" + data.graph2 + ": " + data.driver2 + "\n\nGuruhdagi so'rovnoma yangilandi.");
+    loadGrafikPoll();
+  } catch (err) {
+    alert("Xatolik: " + err.message);
+  }
 }
 
 /* ------------------------------------------------ problems */
@@ -3391,6 +3823,8 @@ function renderVehicles(d) {
   state._vehiclesAll = d.vehicles || [];
   _populateVehicleRouteFilter(state._vehiclesAll);
   _renderVehicleTable(state._vehiclesAll);
+  const pv = document.getElementById("page-vehicles");
+  if (pv && pv.classList.contains("active-page")) loadVehicleService();
 }
 function _populateVehicleRouteFilter(vehicles) {
   const sel = document.getElementById("vehicles-route-filter");
@@ -3408,6 +3842,7 @@ function filterVehicles() {
   const rid = document.getElementById("vehicles-route-filter").value;
   const all = state._vehiclesAll || [];
   _renderVehicleTable(rid ? all.filter(v => v.route_id === rid) : all);
+  loadVehicleService();
 }
 function _renderVehicleTable(vehicles) {
   let h = '<div style="overflow-x:auto"><table class="registry"><thead><tr>';
@@ -3639,7 +4074,7 @@ function renderDriverDialog(data) {
       <div><div id="driver-dialog-title" class="driver-modal-title">${esc(d.name || did)}</div>
       <div class="driver-modal-meta">Haydovchi ID: ${esc(did)} · ${d.blacklisted ? '<i class="ic sm" style="margin:0 4px 0 0">' + featherIcon("slash") + '</i>Qora ro\'yxatda' : "● Faol profil"}</div></div></div>
       <div style="display:flex;align-items:center;gap:8px">
-        <button class="button ghost" id="driver-bm-sync" title="Jins, JSHSHR, telefon, guvohnoma va rasmni saytdan (BM) yangilash" style="font-size:11px;padding:6px 10px">BM'DAN TO'LDIRISH</button>
+        <button class="button ghost" id="driver-bm-sync" title="Jins, guvohnoma va rasmni BM'dan to'ldiradi. Telefon va JSHSHR qo'lda kiritilgan bo'lsa o'zgartirilmaydi." style="font-size:11px;padding:6px 10px">BM'DAN TO'LDIRISH</button>
         <button class="icon-button" id="driver-download" title="Shaxsiy kartani yuklab olish (XLSX)" aria-label="Kartani yuklab olish">${featherIcon("download")}</button>
         <button class="icon-button" id="driver-close" aria-label="Yopish">${featherIcon("x")}</button>
       </div></div>
@@ -3650,7 +4085,7 @@ function renderDriverDialog(data) {
         <div class="driver-months">${monthChips || '<span class="driver-sub">Hozircha ish qaydlari yo\'q.</span>'}</div>
       </section>
       <form id="driver-profile-form">
-        <section class="form-panel"><h3>Profil va ish sozlamalari</h3><div class="form-grid">
+        <section class="form-panel"><h3>Profil va ish sozlamalari <span class="hint">telefon va JSHSHR qo'lda kiritiladi — BM sinxroni ularni o'zgartirmaydi</span></h3><div class="form-grid">
           ${inputField("F.I.SH.", "full_name", d.name || "")}
           ${inputField("Telefon", "phone", profileValue(p, "phone"))}
           ${inputField("STIR", "tin", profileValue(p, "tin"))}
@@ -4156,13 +4591,86 @@ async function showVehicle(vehicleId) {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     if (!d.ok) throw new Error(d.error || 'Topilmadi');
-    renderVehicleDialog(d);
+    const svc = await _fetchVehicleService(vehicleId);
+    renderVehicleDialog(d, svc);
   } catch(e) {
     content.innerHTML = '<div style="padding:20px"><div class="err">' + esc(e.message) + '</div><div style="margin-top:12px;text-align:right"><button class="button ghost" onclick="document.getElementById(\'vehicle-dialog\').close()">Yopish</button></div></div>';
   }
 }
 
-function renderVehicleDialog(d) {
+async function _fetchVehicleService(vehicleId) {
+  try {
+    const r = await bmFetch('/api/vehicles/' + encodeURIComponent(vehicleId) + '/service', {headers: bmAuthHeaders()});
+    if (!r.ok) return null;
+    const d = await r.json();
+    return d && d.ok ? d : null;
+  } catch (e) { return null; }
+}
+
+function _serviceWhenText(it) {
+  const days = Number(it.days_left) || 0;
+  const km = Number(it.km_left) || 0;
+  const parts = [];
+  if (it.next_service_date) {
+    if (days < 0) parts.push(Math.abs(days) + " kun o'tdi");
+    else if (days === 0) parts.push("bugun");
+    else parts.push(days + " kun qoldi");
+  }
+  if (!it.next_service_date && km) parts.push(Math.abs(km) + " km " + (km < 0 ? "o'tdi" : "qoldi"));
+  return parts.join(" · ") || "—";
+}
+
+function _serviceStateTag(it) {
+  if (it.state === "overdue") return '<span class="tag alert">MUDDATI O\'TGAN</span>';
+  if (it.state === "due") return '<span class="tag amber">YAQIN</span>';
+  return '<span class="tag">OK</span>';
+}
+
+function _fmtDayUz(raw) {
+  if (!raw) return "—";
+  const m = String(raw).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? m[3] + "." + m[2] + "." + m[1] : String(raw);
+}
+
+async function loadVehicleService() {
+  const panel = document.getElementById("vehicle-service-panel");
+  const body = document.getElementById("vehicle-service-body");
+  if (!panel || !body) return;
+  if (myRank() < 2) { panel.style.display = "none"; return; }
+  try {
+    const r = await bmFetch("/api/service/upcoming", {headers: bmAuthHeaders()});
+    if (r.status === 401 || r.status === 403) { panel.style.display = "none"; return; }
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const d = await r.json();
+    const all = (d && d.items) || [];
+    const rid = (document.getElementById("vehicles-route-filter") || {}).value || "";
+    const items = rid ? all.filter(x => x.route_id === rid) : all;
+    panel.style.display = "";
+    const hint = document.getElementById("vehicle-service-hint");
+    if (hint) hint.textContent = items.length ? items.length + " ta avtobus" : "";
+    if (!items.length) {
+      body.innerHTML = '<div class="empty">Yaqin 30 kun / 500 km ichida rejalashtirilgan xizmat yo\'q.</div>';
+      return;
+    }
+    let h = '<div class="driver-history"><table><thead><tr><th>Avtobus</th><th>Yo\'nalish</th><th>Holat</th><th>Muddat</th><th>Tur</th><th></th></tr></thead><tbody>';
+    for (const it of items) {
+      h += '<tr><td><b>' + esc(it.plate_number) + '</b>' + (it.model ? '<div class="driver-sub">' + esc(it.model) + '</div>' : '') + '</td>';
+      h += '<td class="muted">' + esc(it.route_name || it.route_id || '—') + '</td>';
+      h += '<td>' + _serviceStateTag(it) + '</td>';
+      h += '<td class="muted" style="font-size:12px">' + esc(_serviceWhenText(it)) + '</td>';
+      h += '<td class="muted">' + esc(it.service_type || '—') + '</td>';
+      h += '<td><button class="button ghost" data-svc-open="' + esc(it.vehicle_id) + '" style="font-size:11px;padding:4px 8px">OCHISH</button></td></tr>';
+    }
+    h += '</tbody></table></div>';
+    body.innerHTML = h;
+    body.querySelectorAll("[data-svc-open]").forEach(b =>
+      b.addEventListener("click", () => showVehicle(b.dataset.svcOpen)));
+  } catch (e) {
+    panel.style.display = "none";
+  }
+}
+
+function renderVehicleDialog(d, svc) {
   const v = d.vehicle || {};
   const rd = d.route_daily || {};
   const tr = d.trips || {};
@@ -4212,6 +4720,44 @@ function renderVehicleDialog(d) {
     html += '<div style="height:100%;width:' + pct + '%;background:' + (cls === 'teal' ? 'var(--teal)' : (cls === 'amber' ? 'var(--amber)' : 'var(--alert)')) + ';border-radius:4px;transition:width .3s"></div>';
     html += '</div>';
     html += '</div>';
+  }
+
+  // Texnik xizmat jurnali (MANAGER+; ruxsat bo'lmasa svc=null)
+  if (svc) {
+    const logs = svc.logs || [];
+    const types = svc.types || [];
+    const latestOdo = parseInt(svc.odometer || 0, 10) || 0;
+    html += '<section class="form-panel"><h3>Texnik xizmat jurnali</h3>';
+    if (logs.length) {
+      html += '<div class="driver-history"><table><thead><tr><th>Sana</th><th>Tur</th><th>Odometr</th><th>Narx</th><th>Ustaxona</th><th>Keyingi</th><th>Izoh</th><th></th></tr></thead><tbody>';
+      for (const l of logs) {
+        const next = [l.next_service_date ? _fmtDayUz(l.next_service_date) : "", l.next_service_km ? num(l.next_service_km) + " km" : ""].filter(Boolean).join(" · ") || "—";
+        html += '<tr><td class="mono">' + esc(_fmtDayUz(l.service_date)) + '</td>';
+        html += '<td>' + esc(l.service_type || '—') + '</td>';
+        html += '<td class="mono">' + (l.odometer ? num(l.odometer) + ' km' : '—') + '</td>';
+        html += '<td class="mono">' + (l.cost ? num(l.cost) : '—') + '</td>';
+        html += '<td class="muted">' + esc(l.vendor || '—') + '</td>';
+        html += '<td class="muted" style="font-size:12px">' + esc(next) + '</td>';
+        html += '<td class="muted" style="font-size:12px;max-width:220px" title="' + escAttr(l.note || '') + '">' + esc(l.note || '—') + '</td>';
+        html += '<td><button class="button ghost" data-svc-del="' + esc(String(l.id)) + '" style="font-size:11px;padding:3px 8px;color:var(--alert)">O\'chirish</button></td></tr>';
+      }
+      html += '</tbody></table></div>';
+    } else {
+      html += '<div class="empty" style="margin-bottom:12px">Xizmat yozuvlari hali kiritilmagan.</div>';
+    }
+    html += '<div style="margin-top:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">';
+    html += '<div><label style="display:block;font:10px \'IBM Plex Mono\',monospace;color:var(--muted);margin-bottom:4px">SANA</label><input class="input" type="date" id="svc-date"></div>';
+    html += '<div><label style="display:block;font:10px \'IBM Plex Mono\',monospace;color:var(--muted);margin-bottom:4px">TUR</label><select class="input" id="svc-type">' + types.map(t => '<option value="' + escAttr(t) + '">' + esc(t) + '</option>').join('') + '</select></div>';
+    html += '<div><label style="display:block;font:10px \'IBM Plex Mono\',monospace;color:var(--muted);margin-bottom:4px">ODOMETR (KM)</label><input class="input" type="number" min="0" id="svc-odo" value="' + latestOdo + '"></div>';
+    html += '<div><label style="display:block;font:10px \'IBM Plex Mono\',monospace;color:var(--muted);margin-bottom:4px">NARX (SO\'M)</label><input class="input" type="number" min="0" step="0.01" id="svc-cost"></div>';
+    html += '<div><label style="display:block;font:10px \'IBM Plex Mono\',monospace;color:var(--muted);margin-bottom:4px">USTAXONA</label><input class="input" type="text" maxlength="160" id="svc-vendor"></div>';
+    html += '<div><label style="display:block;font:10px \'IBM Plex Mono\',monospace;color:var(--muted);margin-bottom:4px">KEYINGI SANA</label><input class="input" type="date" id="svc-next-date"></div>';
+    html += '<div><label style="display:block;font:10px \'IBM Plex Mono\',monospace;color:var(--muted);margin-bottom:4px">KEYINGI KM</label><input class="input" type="number" min="0" id="svc-next-km"></div>';
+    html += '<div style="grid-column:1/-1"><label style="display:block;font:10px \'IBM Plex Mono\',monospace;color:var(--muted);margin-bottom:4px">IZOH</label><input class="input" type="text" maxlength="1000" id="svc-note"></div>';
+    html += '</div>';
+    html += '<div id="svc-msg" class="hint" style="margin-top:8px"></div>';
+    html += '<div style="margin-top:10px;text-align:right"><button class="button" id="svc-save">XIZMATNI SAQLASH</button></div>';
+    html += '</section>';
   }
 
   // Bugungi jadval
@@ -4266,7 +4812,61 @@ function renderVehicleDialog(d) {
 
   content.innerHTML = html;
   document.getElementById('vehicle-close').addEventListener('click', () => dialog.close());
+  if (svc) {
+    const saveBtn = document.getElementById("svc-save");
+    if (saveBtn) saveBtn.addEventListener("click", () => saveVehicleService(v.vehicle_id || d.vehicle_id));
+    content.querySelectorAll("[data-svc-del]").forEach(b =>
+      b.addEventListener("click", () => deleteVehicleService(v.vehicle_id || d.vehicle_id, b.dataset.svcDel)));
+    const dateEl = document.getElementById("svc-date");
+    if (dateEl) dateEl.value = new Date().toISOString().slice(0, 10);
+  }
   if (!dialog.open) dialog.showModal();
+}
+
+async function saveVehicleService(vehicleId) {
+  if (!vehicleId) return;
+  const val = id => { const el = document.getElementById(id); return el ? String(el.value || "").trim() : ""; };
+  const msg = document.getElementById("svc-msg");
+  const say = t => { if (msg) { msg.textContent = t || ""; msg.style.color = t ? "var(--alert)" : ""; } };
+  const payload = {
+    service_date: val("svc-date"),
+    service_type: val("svc-type"),
+    odometer: parseInt(val("svc-odo") || "0", 10) || 0,
+    cost: parseFloat(String(val("svc-cost") || "0").replace(",", ".")) || 0,
+    vendor: val("svc-vendor"),
+    note: val("svc-note"),
+    next_service_date: val("svc-next-date"),
+    next_service_km: parseInt(val("svc-next-km") || "0", 10) || 0,
+  };
+  if (!payload.service_date) { say("Xizmat sanasini kiriting"); return; }
+  if (!payload.service_type) { say("Xizmat turini tanlang"); return; }
+  const btn = document.getElementById("svc-save");
+  if (btn) { btn.disabled = true; btn.textContent = "..."; }
+  try {
+    const d = await postJSON("/api/vehicles/" + encodeURIComponent(vehicleId) + "/service", payload);
+    if (!d || !d.ok) { say((d && (d.error || d.detail)) || "Saqlab bo'lmadi"); return; }
+    await showVehicle(vehicleId);
+    loadVehicleService();
+  } catch (e) {
+    say((e && e.message) || "Xatolik");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "XIZMATNI SAQLASH"; }
+  }
+}
+
+async function deleteVehicleService(vehicleId, rowId) {
+  if (!vehicleId || !rowId) return;
+  if (!confirm("Bu xizmat yozuvini o'chirasizmi? Amalni qaytarib bo'lmaydi.")) return;
+  try {
+    const r = await bmFetch("/api/vehicles/" + encodeURIComponent(vehicleId) + "/service/" + encodeURIComponent(rowId),
+      {method: "DELETE", headers: bmAuthHeaders()});
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.ok === false) { alert((d && (d.error || d.detail)) || "O'chirib bo'lmadi"); return; }
+    await showVehicle(vehicleId);
+    loadVehicleService();
+  } catch (e) {
+    alert("O'chirib bo'lmadi: " + (e.message || e));
+  }
 }
 
 /* ------------------------------------------------ trend */
@@ -4929,6 +5529,7 @@ const PAGE_META = {
   dusers:{title:'Dashboard foydalanuvchilari',subtitle:'Login+parol bilan kiradigan panel foydalanuvchilari — rol va korxona kesimida',crumb:'DASHBOARD USERS'},
   disk:{title:'Disk holati',subtitle:'Papkalar, baza hajmi va 30 kunlik o\'sish tendensiyasi',crumb:'DISK'},
   knowledge:{title:'Bilim bazasi',subtitle:'Qoidalar, sozlamalar, xato jurnali va hisobotlar — Obsidian vault bilan bitta papka',crumb:'KNOWLEDGE BASE'},
+  tokens:{title:'Kompaniya tokenlari',subtitle:'Har bir korxona tokenining holati, oxirgi muvaffaqiyatli refresh va avtomatik yangilanish jadvali',crumb:'BM TOKENS'},
   settings:{title:'Sozlamalar',subtitle:'Tizim konfiguratsiyasi va global sozlamalar',crumb:'SETTINGS'}
 };
 function showPage(name, updateHash=true){
@@ -4943,24 +5544,27 @@ function showPage(name, updateHash=true){
   document.getElementById('page-subtitle').textContent=m.subtitle;
   document.getElementById('page-breadcrumb').textContent=m.crumb;
   if(updateHash) history.replaceState(null,'','#'+(name==='gps'&&_gpsTab!=='gps'?'gps-'+_gpsTab:name));
-  /* GPS sahifasida GLOBAL CONTROL (filtr paneli) kerak emas — iframe butun oynani oladi */
+  /* GPS (iframe butun oynani oladi) va Tokenlar (filtr qo'llanmaydi) sahifalarida
+     GLOBAL CONTROL paneli kerak emas. */
   const cw = document.getElementById('cmd-wrap');
-  if (cw) cw.style.display = (name === 'gps') ? 'none' : '';
+  if (cw) cw.style.display = (name === 'gps' || name === 'tokens') ? 'none' : '';
   if(name==='performance') setTimeout(loadAttendance,40);
-  if(name==='dispatch') renderBoard(state.lastData || {today:{},trips:[]});
+  if(name==='vehicles') loadVehicleService();
+  if(name==='dispatch') { renderBoard(state.lastData || {today:{},trips:[]}); loadGrafikPoll(); }
   if(name==='alerts') renderProblems(state.lastData || {problems:{counts:{},items:{}}});
   if(name==='top-performance' && state.driverDirectory) renderSideDrivers(state.driverDirectory);
   if(name==='audit') document.getElementById('check-block').style.display='block';
   if(name==='insights') loadInsights();
   if(name==='logs') startLogPoll(); else stopLogPoll();
   if(name==='documents') { loadDocTemplates(); loadDocDrivers().then(renderDocDriversFilter); loadDocsList(); }
-  if(name==='users') { loadBotUsers(); loadGroupStats(); }
+  if(name==='users') { if (_currentUsersSubTab === 'activity') loadBotActivities(); else { loadBotUsers(); loadGroupStats(); } }
   if(name==='appeals') loadAppeals();
   if(name==='sms') startSmsPoll(); else stopSmsPoll();
   if(name==='admin') initAdmin();
-  if(name==='settings') { loadSettings(); loadCompanies(); loadEnvSettings(); loadKmPanel(); mfaRefresh(); loadSessions(); }
+  if(name==='settings') { loadSettings(); loadCompanies(); loadCompanyTokens(); loadBilling(); loadEnvSettings(); loadKmPanel(); mfaRefresh(); loadSessions(); }
   if(name==='dusers') loadDashboardUsers();
   if(name==='knowledge'){ loadVault(); vaultGrowStatus(); }
+  if(name==='tokens') loadTokensPage();
   if(name==='disk') loadDisk();
   if(name==='electricity') { bindElectricity(); loadElectricity(); }
   if(name==='rejects') { bindRejects(); loadRejects(); }
@@ -4978,6 +5582,11 @@ let _vaultCat = "";
 let _vaultCounts = {};
 let _vaultBase = "";
 let _vaultBound = false;
+let _vaultBusy = false, _vaultOpenId = 0, _vaultListId = 0;
+function _vaultSetBusy(busy) {
+  _vaultBusy = busy;
+  ['vault-title','vault-cat','vault-body','vault-save-btn','vault-del-btn'].forEach(id => { const el=document.getElementById(id); if(el) el.disabled=busy; });
+}
 function _vaultInfo(msg){ const el = document.getElementById("vault-info"); if (el) el.textContent = msg || ""; }
 function _vaultFmtBytes(b){
   b = Number(b) || 0;
@@ -4995,6 +5604,7 @@ function _vaultState(){
 function _vaultDirty(){ return _vaultState() !== _vaultBase; }
 function _vaultMarkClean(){ _vaultBase = _vaultState(); }
 function _vaultGuard(){
+  if (_vaultBusy) { _vaultInfo("Saqlash tugashini kuting."); return false; }
   if (!_vaultDirty()) return true;
   return confirm("Saqlanmagan o'zgarishlar bor. Ular yo'qoladi — davom etasizmi?");
 }
@@ -5103,6 +5713,7 @@ function _vaultSetEditor(title, cat, body, path){
 }
 function vaultNew(){
   if (!_vaultGuard()) return;
+  ++_vaultOpenId;
   _vaultSetEditor("", _vaultCat || "Hisobotlar", "", "");
   _vaultInfo("");
 }
@@ -5119,6 +5730,7 @@ function _vaultChips(){
   }).join("");
 }
 async function loadVault(cat){
+  const requestId = ++_vaultListId;
   if (cat !== undefined) _vaultCat = cat || "";
   // Grafik ko'rinishi ochiq bo'lsa — ro'yxat bilan birga yangilanadi,
   // aks holda faqat holat kartalari yangilanadi.
@@ -5135,10 +5747,13 @@ async function loadVault(cat){
       d = await api("/api/knowledge/search?q=" + encodeURIComponent(q));
     } else {
       d = await api("/api/knowledge/list" + (_vaultCat ? "?category=" + encodeURIComponent(_vaultCat) : ""));
-      _vaultCounts = d.counts || {};
-      _vaultChips();
+      if (requestId !== _vaultListId) return;
+      if (!_vaultCat) _vaultCounts = d.counts || {};
     }
-    const items = (q ? d.results : d.files) || [];
+    if (requestId !== _vaultListId) return;
+    if (!d.ok) throw new Error(d.error || "Qaydlar yuklanmadi");
+    _vaultChips();
+    const items = ((q ? d.results : d.files) || []).filter(it => !_vaultCat || it.category === _vaultCat);
     if (!items.length) {
       listEl.innerHTML = '<div class="hint">' + (q ? "Hech narsa topilmadi" : "Qaydlar yo'q") + '</div>';
     } else {
@@ -5156,10 +5771,10 @@ async function loadVault(cat){
       const total = (d.files || []).reduce((s, it) => s + (Number(it.size) || 0), 0);
       _vaultInfo(d.count + " ta qayd · " + _vaultFmtBytes(total));
     } else {
-      _vaultInfo(d.count + " ta natija: «" + q + "»");
+      _vaultInfo(items.length + " ta natija: «" + q + "»");
     }
   } catch (e) {
-    listEl.innerHTML = '<div style="color:var(--danger,#e5484d)">Xato: ' + esc(e.message) + '</div>';
+    if (requestId === _vaultListId) listEl.innerHTML = '<div role="alert">Xato: ' + esc(e.message) + '</div>';
   }
 }
 /* ---- Bilim bazasini avtomatik kengaytirish (knowledge_grow) ----
@@ -5212,8 +5827,10 @@ function vaultSearch(){
 }
 async function vaultOpen(path){
   if (!_vaultGuard()) return;
+  const requestId = ++_vaultOpenId, editorState = _vaultState();
   try {
     const d = await api("/api/knowledge/note?path=" + encodeURIComponent(path));
+    if (requestId !== _vaultOpenId || _vaultBusy || editorState !== _vaultState()) return;
     if (!d.ok) throw new Error(d.error || "Fayl o'qilmadi");
     _vaultSetEditor(d.title || "", d.category || "", d.text || "", d.path || path);
     _vaultInfo("Tahrirlash rejimi: " + (d.path || path));
@@ -5224,12 +5841,15 @@ async function vaultOpen(path){
   }
 }
 async function vaultSave(){
+  if (_vaultBusy) return;
   const title = (document.getElementById("vault-title")?.value || "").trim();
   const cat = (document.getElementById("vault-cat")?.value || "").trim();
   const body = (document.getElementById("vault-body")?.value || "");
   if (!title) { _vaultInfo("Sarlavha bo'sh"); return; }
   const btn = document.getElementById("vault-save-btn");
-  if (btn) { btn.disabled = true; btn.textContent = "SAQLANMOQDA..."; }
+  ++_vaultOpenId;
+  _vaultSetBusy(true);
+  if (btn) btn.textContent = "SAQLANMOQDA...";
   try {
     const d = await postJSON("/api/knowledge/note", {
       title: title, category: cat, content: body,
@@ -5246,14 +5866,17 @@ async function vaultSave(){
   } catch (e) {
     _vaultInfo("Xato: " + e.message);
   }
-  if (btn) { btn.disabled = false; btn.textContent = "SAQLASH"; }
+  _vaultSetBusy(false);
+  if (btn) btn.textContent = "SAQLASH";
 }
 async function vaultDelete(){
-  if (!_vaultPath) return;
+  if (_vaultBusy || !_vaultPath) return;
   const title = (document.getElementById("vault-title")?.value || _vaultPath).trim();
   if (!confirm("«" + title + "» qaydini butunlay o'chirasizmi? Bu amalni qaytarib bo'lmaydi.")) return;
   const btn = document.getElementById("vault-del-btn");
-  if (btn) { btn.disabled = true; btn.textContent = "O'CHIRILMOQDA..."; }
+  ++_vaultOpenId;
+  _vaultSetBusy(true);
+  if (btn) btn.textContent = "O'CHIRILMOQDA...";
   try {
     const d = await postJSON("/api/knowledge/delete", { path: _vaultPath });
     if (!d.ok) throw new Error(d.error || "O'chirilmadi");
@@ -5263,7 +5886,8 @@ async function vaultDelete(){
   } catch (e) {
     _vaultInfo("Xato: " + e.message);
   }
-  if (btn) { btn.disabled = false; btn.textContent = "O'CHIRISH"; }
+  _vaultSetBusy(false);
+  if (btn) btn.textContent = "O'CHIRISH";
 }
 /* ---- Grafik holati (tugun/havola/yetim/uzilgan) ----
    Server `/api/knowledge/graph` javobidagi `status` dan qisqa ko'rsatkichlar;
@@ -6260,6 +6884,255 @@ async function loadSessions() {
   _sessionsBusy = false;
   if (btn) { btn.disabled = false; btn.textContent = "YANGILASH"; }
 }
+function _tokenStatusMeta(status) {
+  const m = {
+    ok: ["OK", "#34d399", "rgba(52,211,153,.12)", "rgba(52,211,153,.25)"],
+    soon: ["TEZ TUGAYDI", "#f59e0b", "rgba(245,158,11,.1)", "rgba(245,158,11,.25)"],
+    expired: ["MUDDATI TUGAN", "#ef4444", "rgba(239,68,68,.1)", "rgba(239,68,68,.25)"],
+    missing: ["TOKEN YO'Q", "#ef4444", "rgba(239,68,68,.1)", "rgba(239,68,68,.25)"],
+    wrong_company: ["BOSHQA KOMPANIYA", "#ef4444", "rgba(239,68,68,.1)", "rgba(239,68,68,.25)"],
+    no_credentials: ["KREDENSIAL YO'Q", "#94a3b8", "rgba(148,163,184,.1)", "rgba(148,163,184,.25)"]
+  };
+  return m[status] || m.missing;
+}
+function _remainingText(sec) {
+  const n = Math.max(0, parseInt(sec, 10) || 0);
+  if (!n) return "—";
+  const h = Math.floor(n / 3600), m = Math.floor((n % 3600) / 60);
+  return h + " soat " + m + " daq";
+}
+async function loadCompanyTokens() {
+  const body = document.getElementById("company-tokens-body");
+  if (!body) return;
+  const st = document.getElementById("company-tokens-status");
+  try {
+    const d = await api("/api/settings/company-tokens");
+    if (!d.ok) throw new Error(d.error || "Xatolik");
+    const rows = d.companies || [];
+    if (!rows.length) {
+      body.innerHTML = '<div class="empty" style="padding:14px;text-align:center;color:var(--muted)">Kompaniyalar topilmadi</div>';
+      if (st) st.textContent = "";
+      return;
+    }
+    let okCount = 0;
+    let h = '<div style="display:grid;gap:10px">';
+    for (const c of rows) {
+      const meta = _tokenStatusMeta(c.status);
+      if (c.status === "ok") okCount++;
+      const badge = '<span style="display:inline-block;padding:2px 8px;border-radius:6px;font:600 10px \'IBM Plex Mono\',monospace;background:' + meta[2] + ';color:' + meta[1] + ';border:1px solid ' + meta[3] + '">' + meta[0] + '</span>';
+      const pids = (c.profile_ids || []).length ? c.profile_ids.map(x => '<code style="font:10px \'IBM Plex Mono\',monospace;color:var(--muted)">' + esc(x) + '</code>').join(' ') : '<span class="hint">profileId yo\'q</span>';
+      h += '<div style="display:flex;align-items:flex-start;gap:12px;padding:11px 13px;border:1px solid var(--line);border-radius:12px;background:var(--bg-deep)">'
+        + '<div style="flex:1;min-width:0">'
+        + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap"><b style="font:700 14px \'Big Shoulders Display\',sans-serif;color:var(--ink)">' + esc(c.name) + '</b>' + badge
+        + '<span style="display:inline-block;padding:2px 8px;border-radius:6px;font:600 10px \'IBM Plex Mono\',monospace;background:rgba(96,165,250,.1);color:#60a5fa;border:1px solid rgba(96,165,250,.25)">' + (parseInt(c.route_count, 10) || 0) + ' YO\'NALISH</span></div>'
+        + '<div style="font:11px \'IBM Plex Mono\',monospace;color:var(--muted)">' + (c.username ? esc(c.username) : 'BM login yo\'q') + (c.organization ? ' &middot; ' + esc(c.organization) : '') + '</div>'
+        + '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:7px;font:11px \'IBM Plex Mono\',monospace">'
+        + '<span style="color:var(--muted)">OXIRGI REFRESH: <b style="color:var(--ink)">' + _fmtTsShort(c.last_refresh_ts) + '</b></span>'
+        + '<span style="color:var(--muted)">MUDDAT: <b style="color:var(--ink)">' + _fmtTsShort(c.expires_ts) + '</b></span>'
+        + '<span style="color:var(--muted)">QOLDI: <b style="color:' + meta[1] + '">' + _remainingText(c.remaining_s) + '</b></span>'
+        + '</div>'
+        + '<div style="margin-top:7px;display:flex;gap:8px;flex-wrap:wrap">' + pids + '</div>'
+        + '</div></div>';
+    }
+    h += '</div>';
+    body.innerHTML = h;
+    if (st) st.textContent = okCount + '/' + rows.length + ' TAYYOR';
+  } catch (e) {
+    body.innerHTML = '<div class="err" style="display:block;padding:12px">' + esc(e.message) + '</div>';
+  }
+}
+/* ---- Kompaniya tokenlari sahifasi ----
+   Har bir korxona tokenining holati, oxirgi muvaffaqiyatli refresh va
+   qo'lda yangilash. Yangilash faqat korxonaning O'Z kredensiallari bilan
+   bajariladi (server tomonda fail-closed) — token qiymati ko'rsatilmaydi. */
+let _tokensBusy = false;
+let _tokensLast = null;
+const _TOKEN_SEVERITY = {wrong_company:0, expired:1, missing:2, no_credentials:3, soon:4, ok:5};
+
+function _tokenBadge(status) {
+  const meta = _tokenStatusMeta(status);
+  return '<span style="display:inline-block;padding:2px 8px;border-radius:6px;font:600 10px \'IBM Plex Mono\',monospace;background:' + meta[2] + ';color:' + meta[1] + ';border:1px solid ' + meta[3] + '">' + meta[0] + '</span>';
+}
+function _tokenKpiCards(rows, d) {
+  const total = rows.length;
+  const ready = rows.filter(function (r) { return r.status === "ok"; }).length;
+  const soon = rows.filter(function (r) { return r.status === "soon"; }).length;
+  const issue = total - ready;
+  const interval = parseInt(d.refresh_interval_hours, 10) || 2;
+  const nextTs = Number(d.next_run_ts || 0);
+  const now = Math.floor(Date.now() / 1000);
+  const nextFoot = nextTs ? (_remainingText(nextTs - now) + " qoldi") : "jadval noma'lum";
+  const card = function (cls, icon, label, value, vstyle, foot) {
+    return '<div class="kpi ' + cls + '"><div class="kpi-ic" data-ic="' + icon + '"></div>'
+      + '<div class="label">' + label + '</div>'
+      + '<div class="num"' + (vstyle ? ' style="' + vstyle + '"' : '') + '>' + value + '</div>'
+      + '<div class="foot">' + foot + '</div></div>';
+  };
+  return card(issue ? "alert" : "teal", "shield", "TAYYOR",
+              ready + "/" + total, "",
+              issue ? issue + " ta e'tibor talab qiladi" : "barchasi me'yorda")
+    + card(soon ? "amber" : "teal", "clock", "TEZ TUGAYDI", String(soon), "",
+           soon ? "10 daqiqadan kam qoldi" : "muddatli muammo yo'q")
+    + card("", "refresh-cw", "ORALIQ", interval + " soat", "",
+           "avtomatik yangilanish")
+    + card("", "calendar", "KEYINGI",
+           nextTs ? _fmtTsShort(nextTs) : "—", "font-size:17px", nextFoot);
+}
+function _tokenCard(c) {
+  const meta = _tokenStatusMeta(c.status);
+  const lastOkTs = Number(c.last_ok_ts || 0);
+  const attemptTs = Number(c.last_attempt_ts || 0);
+  const errs = parseInt(c.consecutive_errors, 10) || 0;
+  const okRes = c.last_ok_result === "refreshed" ? " · token yangilandi"
+    : c.last_ok_result === "relogin" ? " · qayta login"
+    : c.last_ok_result === "ok" ? " · tekshirildi" : "";
+  const attemptText = attemptTs
+    ? _fmtTsShort(attemptTs) + (c.last_result === "error" ? " · XATO"
+        : (c.last_result === "ok" ? " · muvaffaqiyatli" : ""))
+    : "—";
+  const errBlock = errs > 0 && c.last_error
+    ? '<div style="margin-top:7px;padding:7px 9px;border:1px solid rgba(244,63,94,.3);border-radius:8px;background:rgba(244,63,94,.08);font:11px \'IBM Plex Mono\',monospace;color:var(--alert);word-break:break-word">'
+      + esc(c.last_error) + (errs > 1 ? " (ketma-ket " + errs + " xato)" : "") + '</div>'
+    : "";
+  const pids = (c.profile_ids || []).length
+    ? c.profile_ids.map(function (x) {
+        return '<code style="font:10px \'IBM Plex Mono\',monospace;color:var(--muted)">' + esc(x) + '</code>';
+      }).join(" ")
+    : '<span class="hint">profileId yo\'q</span>';
+  const canRefresh = c.status !== "no_credentials";
+  const orgWarn = c.organization_matches === false
+    ? '<div style="margin-top:5px;font:11px \'IBM Plex Mono\',monospace;color:var(--alert)">Token boshqa kompaniya nomiga olingan: '
+      + esc(c.organization || "noma'lum") + '</div>'
+    : "";
+  return '<div style="display:flex;align-items:flex-start;gap:12px;padding:12px 13px;border:1px solid var(--line);border-radius:12px;background:var(--bg-deep);flex-wrap:wrap">'
+    + '<div style="flex:1;min-width:220px">'
+    + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap"><b style="font:700 15px \'Big Shoulders Display\',sans-serif;color:var(--ink)">' + esc(c.name) + '</b>' + _tokenBadge(c.status)
+    + '<span style="display:inline-block;padding:2px 8px;border-radius:6px;font:600 10px \'IBM Plex Mono\',monospace;background:rgba(96,165,250,.1);color:#60a5fa;border:1px solid rgba(96,165,250,.25)">' + (parseInt(c.route_count, 10) || 0) + ' YO\'NALISH</span></div>'
+    + '<div style="font:11px \'IBM Plex Mono\',monospace;color:var(--muted)">' + (c.username ? esc(c.username) : 'BM login yo\'q') + (c.organization ? ' &middot; ' + esc(c.organization) : '') + '</div>'
+    + orgWarn
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:6px 16px;margin-top:8px;font:11px \'IBM Plex Mono\',monospace">'
+    + '<span style="color:var(--muted)">OXIRGI MUVAFFAQIYATLI: <b style="color:var(--ink)">' + (lastOkTs ? _fmtTsShort(lastOkTs) : "hech qachon") + '</b><span style="color:var(--muted)">' + (lastOkTs ? " · " + _ago(lastOkTs) + okRes : "") + '</span></span>'
+    + '<span style="color:var(--muted)">OXIRGI URINISH: <b style="color:var(--ink)">' + attemptText + '</b></span>'
+    + '<span style="color:var(--muted)">TOKEN MUDDATI: <b style="color:var(--ink)">' + _fmtTsShort(c.expires_ts) + '</b></span>'
+    + '<span style="color:var(--muted)">QOLDI: <b style="color:' + meta[1] + '">' + _remainingText(c.remaining_s) + '</b></span>'
+    + '</div>'
+    + '<div style="margin-top:7px;display:flex;gap:8px;flex-wrap:wrap">' + pids + '</div>'
+    + errBlock
+    + '</div>'
+    + '<div style="display:flex;flex-direction:column;gap:6px;align-items:stretch">'
+    + '<button class="button ghost" type="button" data-token-refresh="' + esc(c.name) + '" data-no-cred="' + (canRefresh ? "0" : "1") + '"' + (canRefresh ? "" : " disabled") + ' onclick="refreshCompanyToken(this.dataset.tokenRefresh)">YANGILASH</button>'
+    + '</div></div>';
+}
+function _renderTokensPage(d) {
+  _tokensLast = d;
+  const rows = (d.companies || []).slice().sort(function (a, b) {
+    const sa = _TOKEN_SEVERITY[a.status] === undefined ? 9 : _TOKEN_SEVERITY[a.status];
+    const sb = _TOKEN_SEVERITY[b.status] === undefined ? 9 : _TOKEN_SEVERITY[b.status];
+    if (sa !== sb) return sa - sb;
+    return String(a.name || "").localeCompare(String(b.name || ""));
+  });
+  const kpis = document.getElementById("tokens-kpis");
+  if (kpis) { kpis.innerHTML = _tokenKpiCards(rows, d); _initKpiIcons(kpis); }
+  const body = document.getElementById("tokens-body");
+  if (body) {
+    body.innerHTML = rows.length
+      ? '<div style="display:grid;gap:10px">' + rows.map(_tokenCard).join("") + '</div>'
+      : '<div class="empty" style="padding:14px;text-align:center;color:var(--muted)">Kompaniyalar topilmadi</div>';
+  }
+  const ready = rows.filter(function (r) { return r.status === "ok"; }).length;
+  const issue = rows.length - ready;
+  const kicker = document.getElementById("tokens-kicker");
+  if (kicker) kicker.textContent = ready + "/" + rows.length + " TAYYOR";
+  const st = document.getElementById("tokens-status");
+  if (st) {
+    st.textContent = issue ? issue + " ta kompaniyada muammo" : "Barchasi me'yorda";
+    st.style.color = issue ? "var(--alert)" : "var(--teal)";
+  }
+  const sched = document.getElementById("tokens-schedule");
+  if (sched) {
+    const interval = parseInt(d.refresh_interval_hours, 10) || 2;
+    const nextTs = Number(d.next_run_ts || 0);
+    sched.textContent = "har " + interval + " soatda" + (nextTs ? " · keyingi: " + _fmtTsShort(nextTs) : "");
+  }
+  _setTokensBusy(_tokensBusy);
+}
+function _setTokensBusy(busy) {
+  _tokensBusy = !!busy;
+  const all = document.getElementById("tokens-refresh-all");
+  if (all) {
+    all.disabled = !!busy;
+    all.textContent = busy ? "YANGILANMOQDA…" : "BARCHASINI YANGILASH";
+  }
+  document.querySelectorAll("[data-token-refresh]").forEach(function (b) {
+    b.disabled = !!busy || b.dataset.noCred === "1";
+  });
+}
+async function loadTokensPage() {
+  const body = document.getElementById("tokens-body");
+  const errEl = document.getElementById("tokens-err");
+  if (!body) return;
+  if (errEl) errEl.style.display = "none";
+  body.innerHTML = '<div class="hint" style="padding:10px">Yuklanmoqda…</div>';
+  try {
+    const d = await api("/api/settings/company-tokens");
+    if (!d.ok) throw new Error(d.error || "Xatolik");
+    _renderTokensPage(d);
+  } catch (e) {
+    body.innerHTML = "";
+    if (errEl) { errEl.textContent = e.message; errEl.style.display = "block"; }
+  }
+}
+async function refreshCompanyToken(name) {
+  if (_tokensBusy || !name) return;
+  const errEl = document.getElementById("tokens-err");
+  if (errEl) errEl.style.display = "none";
+  _setTokensBusy(true);
+  try {
+    const d = await postJSON("/api/settings/company-tokens/refresh", {company: name});
+    if (!d.ok) throw new Error(d.error || "Yangilash amalga oshmadi");
+    const res = (d.results || [])[0];
+    if (res && !res.ok) throw new Error(res.error || "Yangilash xatosi");
+    _renderTokensPage(d);
+    const st = document.getElementById("tokens-status");
+    if (st) { st.textContent = name + ": token yangilandi"; st.style.color = "var(--teal)"; }
+  } catch (e) {
+    if (errEl) { errEl.textContent = name + ": " + e.message; errEl.style.display = "block"; }
+    if (_tokensLast) _renderTokensPage(_tokensLast);
+  } finally {
+    _setTokensBusy(false);
+  }
+}
+async function refreshAllCompanyTokens() {
+  if (_tokensBusy) return;
+  const errEl = document.getElementById("tokens-err");
+  if (errEl) errEl.style.display = "none";
+  _setTokensBusy(true);
+  try {
+    const d = await postJSON("/api/settings/company-tokens/refresh", {});
+    if (!d.ok) throw new Error(d.error || "Yangilash amalga oshmadi");
+    const results = d.results || [];
+    const bad = results.filter(function (r) { return !r.ok; });
+    _renderTokensPage(d);
+    const st = document.getElementById("tokens-status");
+    if (bad.length) {
+      if (errEl) {
+        errEl.textContent = bad.length + " kompaniyada xato: " + bad.map(function (r) {
+          return r.name + " (" + (r.error || "xato") + ")";
+        }).join("; ");
+        errEl.style.display = "block";
+      }
+      if (st) { st.textContent = (results.length - bad.length) + "/" + results.length + " yangilandi"; st.style.color = "var(--amber)"; }
+    } else if (st) {
+      st.textContent = "Barcha " + results.length + " kompaniya tokeni yangilandi";
+      st.style.color = "var(--teal)";
+    }
+  } catch (e) {
+    if (errEl) { errEl.textContent = e.message; errEl.style.display = "block"; }
+    if (_tokensLast) _renderTokensPage(_tokensLast);
+  } finally {
+    _setTokensBusy(false);
+  }
+}
 async function loadSettings() {
   const errEl = document.getElementById("settings-err");
   if (errEl) errEl.style.display = "none";
@@ -6296,6 +7169,14 @@ async function loadSettings() {
     if (depModeEl) depModeEl.value = _depOffsetMode(depOff);
     if (depMinEl) depMinEl.value = Math.abs(depOff);
     departureOffsetModeUI();
+    const earlyOn = document.getElementById("s-early-start");
+    if (earlyOn) earlyOn.checked = s.global.early_start_notify !== false;
+    const earlyMin = document.getElementById("s-early-start-min");
+    if (earlyMin) earlyMin.value = s.global.early_start_threshold_min != null ? s.global.early_start_threshold_min : 1;
+    const earlyIv = document.getElementById("s-early-start-interval");
+    if (earlyIv) earlyIv.value = s.global.early_start_interval_s != null ? s.global.early_start_interval_s : 5;
+    const earlyFp = document.getElementById("s-early-start-followup");
+    if (earlyFp) earlyFp.value = s.global.early_start_followup_min != null ? s.global.early_start_followup_min : 10;
     const auditEl = document.getElementById("global-audit");
     if (auditEl) {
       const rows = (s.global.audit || []).slice(0, 6);
@@ -6327,7 +7208,11 @@ async function saveSettings() {
       show_driver_salary: document.getElementById("s-show-salary").checked,
       auto_sync: document.getElementById("s-auto-sync").checked,
       auto_sync_interval_min: parseInt(document.getElementById("s-auto-sync-interval").value, 10),
-      departure_offset_min: departureOffsetValue()
+      departure_offset_min: departureOffsetValue(),
+      early_start_notify: document.getElementById("s-early-start").checked,
+      early_start_threshold_min: parseInt(document.getElementById("s-early-start-min").value, 10) || 1,
+      early_start_interval_s: parseInt(document.getElementById("s-early-start-interval").value, 10) || 5,
+      early_start_followup_min: parseInt(document.getElementById("s-early-start-followup").value, 10)
     };
     const d = await postJSON("/api/settings", body);
     if (!d.ok) throw new Error(d.error || "Xatolik");
@@ -6354,11 +7239,34 @@ async function loadCompanies() {
     if (!d.ok) throw new Error(d.error || "Xatolik");
     const companies = d.companies || [];
     window._companiesCache = companies;
+    // Operatsion profil (profiles.json) va DB registri farq qilishi mumkin:
+    // bazada bor, lekin profil yo'q korxona grafik/token olmaydi. Faqat
+    // nom va obuna holatini ko'rsatamiz — credentiallar ochilmaydi.
+    let registryOnly = [];
+    if (me && me.super) {
+      try {
+        const b = await api("/api/admin/billing");
+        if (b && b.ok) {
+          const names = new Set(companies.map(c => String(c.name || "")));
+          registryOnly = (b.companies || []).filter(c =>
+            Number(c.id) > 0 && c.state !== "deleted" && !names.has(String(c.name || "")));
+        }
+      } catch (e) { registryOnly = []; }
+    }
+    const notice = registryOnly.length
+      ? '<div style="padding:12px 14px;border:1px solid rgba(245,158,11,.35);border-radius:12px;background:rgba(245,158,11,.08);margin-bottom:12px">'
+        + '<b style="font:700 13px \'Inter\',sans-serif;color:#f59e0b">Bazada bor, lekin operatsion profilda yo\'q</b>'
+        + '<div style="font:11px \'IBM Plex Mono\',monospace;color:var(--muted);margin-top:4px">'
+        + registryOnly.map(c => esc(c.name)).join(', ')
+        + ' — bu korxonalar uchun grafik yuborish va BM tokenlari ishlamaydi. Obuna va to\'lovlar «Oylik to\'lov» bo\'limida boshqariladi.</div>'
+        + '<button class="button ghost" style="font-size:10px;padding:4px 10px;margin-top:8px" onclick="jumpToBilling()">OYLIK TO\'LOVGA O\'TISH</button>'
+        + '</div>'
+      : '';
     if (!companies.length) {
-      body.innerHTML = '<div class="empty" style="padding:20px;text-align:center;color:var(--muted)">Kompaniyalar topilmadi</div>';
+      body.innerHTML = notice + '<div class="empty" style="padding:20px;text-align:center;color:var(--muted)">Operatsion profil topilmadi</div>';
       return;
     }
-    let h = '<div style="display:grid;gap:12px">';
+    let h = notice + '<div style="display:grid;gap:12px">';
     for (const c of companies) {
       const cid = companyDomId(c.name);
       const routes = Array.isArray(c.routes) && c.routes.length ? c.routes : [c];
@@ -6440,6 +7348,167 @@ async function saveCompanyGroups(name, value) {
 function clearCompanyGroups(name) {
   if (!confirm("Guruh biriktirishlari o'chirilsinmi?")) return;
   saveCompanyGroups(name, "");
+}
+
+function jumpToBilling() {
+  const panel = document.getElementById('billing-panel');
+  if (panel) panel.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+// --- Oylik to'lov (billing) — faqat super admin ---
+let billingPaymentId = 0;
+let billingCompanyId = 0;
+let billingLoadId = 0;
+const BILLING_BADGE = {active:'teal', due:'amber', grace:'amber', blocked:'red', deleted:'gray', none:'gray'};
+function billingBadge(c) {
+  return '<span class="pill-status ' + (BILLING_BADGE[c.state] || 'gray') + '">' + esc(c.state_label || c.state) + '</span>';
+}
+function billingMoney(v) {
+  return new Intl.NumberFormat('uz-UZ', {maximumFractionDigits:2}).format(Number(v || 0)) + " so'm";
+}
+function syncBillingMethod() {
+  const bank = document.getElementById('bl-method').value === 'bank';
+  document.getElementById('bl-contract').required = bank;
+  document.getElementById('bl-hint').textContent = bank ? 'Hisob raqami uchun shartnoma raqami shart.' : 'Naqd/karta: shartnoma ixtiyoriy.';
+}
+async function loadBilling() {
+  const body = document.getElementById('billing-body');
+  if (!body || !me?.super) return;
+  const requestId = ++billingLoadId;
+  body.setAttribute('aria-busy', 'true');
+  try {
+    const d = await api('/api/admin/billing');
+    if (requestId !== billingLoadId) return;
+    if (!d.ok) throw new Error(d.error || "Ro'yxat yuklanmadi");
+    renderBilling(d);
+  } catch(e) {
+    if (requestId === billingLoadId) body.innerHTML = '<div class="err">' + esc(e.message) + '<br><button class="button ghost" onclick="loadBilling()">Qayta urinish</button></div>';
+  } finally {
+    if (requestId === billingLoadId) body.setAttribute('aria-busy', 'false');
+  }
+}
+function renderBilling(d) {
+  window.__billing = d;
+  const list = d.companies || [], pays = d.payments || [], sum = d.summary || {};
+  document.getElementById('billing-summary').textContent = list.length + ' korxona · ' + billingMoney(sum.monthly_total) + '/oy · qarz ' + billingMoney(sum.debt_total);
+  const rows = list.map((c, i) => [
+    i + 1, '<b>' + esc(c.name) + '</b>',
+    billingMoney(c.billing_amount) + '<div class="hint">Har oyning ' + Number(c.billing_day || 5) + '-kuni</div>',
+    billingMoney(c.paid), '<span style="color:var(--alert-text)">' + billingMoney(c.debt) + '</span>',
+    esc(c.subscription_expire_date || 'Muddatsiz'), billingBadge(c),
+    '<div class="billing-actions"><button class="button ghost" onclick="openBillingCompany(' + Number(c.id) + ')">Obuna va holat</button>' +
+    (c.status === 'deleted' ? '' : '<button class="button ghost" onclick="fillBillingPayment(' + Number(c.id) + ')">To\'lov</button>') + '</div>'
+  ]);
+  const payRows = pays.map(p => [
+    esc(p.paid_on), esc(p.company), esc(p.period), billingMoney(p.amount),
+    esc({cash:'Naqd',card:'Karta',bank:'Hisob raqami'}[p.method] || p.method),
+    esc(p.contract_no || p.receipt_no || '—'), esc(p.note || '—'),
+    '<div class="billing-actions"><button class="button ghost" onclick="editBillingPayment(' + Number(p.id) + ')">Tahrirlash</button><button class="button danger" data-pay-id="' + Number(p.id) + '" onclick="deleteBillingPayment(this)">O\'chirish</button></div>'
+  ]);
+  document.getElementById('billing-body').innerHTML = (list.length ? tableHTML(['№','Korxona',"Oylik narx / to'lov kuni","To'landi",'Qarz','Obuna muddati','Holat','Amallar'], rows) : '<div class="empty">Korxonalar topilmadi.</div>') +
+    '<div class="section-head"><h2>Oxirgi to\'lovlar</h2><span class="hint">' + pays.length + ' yozuv</span></div>' +
+    (pays.length ? tableHTML(['Sana','Korxona','Davr','Summa','Usul','Shartnoma / chek','Izoh','Amallar'], payRows) : '<div class="empty">Hali to\'lov kiritilmagan. «Yangi to\'lov» tugmasini bosing.</div>');
+}
+function closeBillingDialog(id) {
+  const dialog = document.getElementById(id);
+  if (dialog.dataset.busy !== '1') dialog.close();
+}
+function billingBusy(dialog, busy) {
+  dialog.dataset.busy = busy ? '1' : '';
+  dialog.setAttribute('aria-busy', String(busy));
+  dialog.querySelectorAll('button').forEach(b => b.disabled = busy);
+}
+['billing-payment-dialog', 'billing-company-dialog'].forEach(id => {
+  document.getElementById(id).addEventListener('cancel', e => {
+    if (e.currentTarget.dataset.busy === '1') e.preventDefault();
+  });
+});
+function openBillingPayment(payment, companyId) {
+  if (!me?.super) return;
+  const dialog = document.getElementById('billing-payment-dialog');
+  if (dialog.open) return;
+  document.getElementById('billing-payment-form').reset();
+  billingPaymentId = Number(payment?.id || 0);
+  const companies = (window.__billing?.companies || []).filter(c => c.status !== 'deleted' || Number(c.id) === Number(payment?.company_id));
+  const select = document.getElementById('bl-company');
+  select.innerHTML = '<option value="">— tanlang —</option>' + companies.map(c => '<option value="' + Number(c.id) + '">' + esc(c.name) + '</option>').join('');
+  select.value = String(payment?.company_id || companyId || '');
+  select.disabled = !!payment;
+  const c = companies.find(c => Number(c.id) === Number(companyId));
+  const today = new Date().toLocaleDateString('sv-SE');
+  const values = {period:payment?.period || today.slice(0,7), amount:payment?.amount ?? c?.price ?? '', method:payment?.method || 'cash', contract:payment?.contract_no || '', receipt:payment?.receipt_no || '', 'paid-on':payment?.paid_on || today, note:payment?.note || ''};
+  Object.entries(values).forEach(([key, value]) => document.getElementById('bl-' + key).value = value);
+  document.getElementById('bl-title').textContent = payment ? "To'lovni tahrirlash" : "Yangi to'lov";
+  document.getElementById('bl-result').textContent = '';
+  syncBillingMethod();
+  dialog.showModal();
+}
+function fillBillingPayment(id) { openBillingPayment(null, id); }
+function editBillingPayment(id) {
+  const payment = window.__billing?.payments?.find(p => Number(p.id) === Number(id));
+  if (payment) openBillingPayment(payment);
+}
+async function addBillingPayment() {
+  const dialog = document.getElementById('billing-payment-dialog');
+  const form = document.getElementById('billing-payment-form');
+  if (dialog.dataset.busy === '1' || !form.reportValidity()) return;
+  const value = id => document.getElementById(id).value.trim();
+  const payload = {period:value('bl-period'), amount:Number(value('bl-amount')), method:value('bl-method'), contract_no:value('bl-contract'), receipt_no:value('bl-receipt'), paid_on:value('bl-paid-on'), note:value('bl-note')};
+  if (billingPaymentId) payload.id = billingPaymentId;
+  else payload.company_id = Number(value('bl-company'));
+  billingBusy(dialog, true);
+  document.getElementById('bl-result').textContent = 'Saqlanmoqda…';
+  try {
+    const d = await postJSON('/api/admin/billing/payments' + (billingPaymentId ? '/update' : ''), payload);
+    if (!d.ok) throw new Error(d.error || 'Saqlanmadi');
+    dialog.close();
+    document.getElementById('billing-message').textContent = d.message || "To'lov saqlandi";
+    await loadBilling();
+  } catch(e) { document.getElementById('bl-result').textContent = e.message; }
+  finally { billingBusy(dialog, false); }
+}
+function openBillingCompany(id) {
+  const c = window.__billing?.companies?.find(c => Number(c.id) === Number(id));
+  const dialog = document.getElementById('billing-company-dialog');
+  if (!c || !me?.super || dialog.open) return;
+  billingCompanyId = Number(id);
+  document.getElementById('bc-name').textContent = c.name;
+  document.getElementById('bc-price').value = c.billing_amount || 0;
+  document.getElementById('bc-day').value = c.billing_day || 5;
+  document.getElementById('bc-expire').value = c.subscription_expire_date || '';
+  document.getElementById('bc-status').value = c.status || 'active';
+  document.getElementById('bc-result').textContent = '';
+  dialog.showModal();
+}
+async function saveBillingCompany() {
+  const dialog = document.getElementById('billing-company-dialog');
+  if (dialog.dataset.busy === '1' || !document.getElementById('billing-company-form').reportValidity()) return;
+  const c = window.__billing?.companies?.find(c => Number(c.id) === billingCompanyId);
+  const status = document.getElementById('bc-status').value;
+  const expire = document.getElementById('bc-expire').value;
+  if ((status !== c.status || expire !== (c.subscription_expire_date || '')) && !confirm('Korxona holati yoki obuna muddati o\'zgarsinmi? Kirish huquqiga darhol ta\'sir qiladi.')) return;
+  billingBusy(dialog, true);
+  document.getElementById('bc-result').textContent = 'Saqlanmoqda…';
+  try {
+    const r = await bmFetch('/api/admin/companies/' + billingCompanyId, {method:'PUT', headers:bmAuthHeaders({'Content-Type':'application/json'}), body:JSON.stringify({billing_amount:Number(document.getElementById('bc-price').value), billing_day:Number(document.getElementById('bc-day').value), subscription_expire_date:expire, status})});
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || 'Saqlanmadi');
+    dialog.close();
+    document.getElementById('billing-message').textContent = 'Obuna va holat saqlandi. Ishchi profil sozlamalari o\'zgartirilmadi.';
+    await loadBilling();
+  } catch(e) { document.getElementById('bc-result').textContent = e.message; }
+  finally { billingBusy(dialog, false); }
+}
+async function deleteBillingPayment(btn) {
+  const id = Number(btn.dataset.payId);
+  if (btn.disabled || !confirm("Bu to'lov yozuvi o'chirilsinmi? Obuna muddati qisqarmaydi.")) return;
+  btn.disabled = true;
+  try {
+    const d = await postJSON('/api/admin/billing/payments/delete', {id});
+    if (!d.ok) throw new Error(d.error || "O'chirilmadi");
+    document.getElementById('billing-message').textContent = d.message;
+    await loadBilling();
+  } catch(e) { alert('Xato: ' + e.message); }
+  finally { btn.disabled = false; }
 }
 function toggleCompanyForm() {
   const f = document.getElementById("company-add-form");
@@ -7407,6 +8476,17 @@ function bindRejects() {
       b.dataset.bound = "1";
     }
   });
+  const earlyDate = document.getElementById("rej-early-date");
+  if (earlyDate && earlyDate.dataset.bound !== "1") {
+    if (!earlyDate.value) earlyDate.value = tashkentNow().toISOString().slice(0, 10);
+    earlyDate.addEventListener("change", () => loadEarlyStarts(true));
+    earlyDate.dataset.bound = "1";
+  }
+  const earlyRefresh = document.getElementById("btn-early-refresh");
+  if (earlyRefresh && earlyRefresh.dataset.bound !== "1") {
+    earlyRefresh.addEventListener("click", () => loadEarlyStarts(true));
+    earlyRefresh.dataset.bound = "1";
+  }
   const sv = document.getElementById("btn-save-rej-tariff");
   if (sv && sv.dataset.bound !== "1") {
     sv.addEventListener("click", saveRejectsTariff);
@@ -7455,6 +8535,7 @@ async function loadRejects() {
   } catch (e) {
     if (errEl) { errEl.style.display = "block"; errEl.textContent = "Yuklanmadi: " + e.message; }
   }
+  loadEarlyStarts();
 }
 function renderRejects(d) {
   const hint = document.getElementById("rej-hint");
@@ -7517,6 +8598,130 @@ function renderRejects(d) {
       "Qabul qilinmagan so'm (QQS bilan)"], rows)
       : '<div class="empty">Bu oy / yo’nalish uchun qabul qilinmagan reys topilmadi.</div>') +
     detailsHTML;
+}
+
+/* ------------------------------------------------ REYS INTIZOMI (erta/kech) */
+function earlyStatusPill(s) {
+  const map = {
+    ACCEPTED: ["done", "QABUL"],
+    APPROVED: ["done", "TASDIQLANDI"],
+    NOT_ACCEPTED: ["late", "QABUL QILINMAGAN"],
+    PENDING_ACCESS: ["run", "KUTILMOQDA"],
+    REJECTED: ["late", "BEKOR"],
+    ZERO_MILEAGE: ["gray", "NOLLIK"]
+  };
+  const [cls, label] = map[s] || ["gray", s || "—"];
+  return '<span class="pill-status ' + cls + '">' + label + '</span>';
+}
+async function loadEarlyStarts(force) {
+  const body = document.getElementById("early-body");
+  if (!body) return;
+  const hint = document.getElementById("early-hint");
+  const dateEl = document.getElementById("rej-early-date");
+  const ds = (dateEl && dateEl.value) || tashkentNow().toISOString().slice(0, 10);
+  body.innerHTML = '<div class="empty">BM rejasi va waybill yuklanmoqda…</div>';
+  try {
+    const p = new URLSearchParams();
+    p.set("date", ds);
+    if (force) p.set("refresh", "1");
+    const rid = currentRoute();
+    if (rid) p.set("route", rid);
+    const d = await api("/api/early-start", p);
+    if (!d || !d.ok) throw new Error((d && d.error) || "Xatolik");
+    renderEarlyStarts(d);
+  } catch (e) {
+    if (hint) hint.textContent = "";
+    body.innerHTML = '<div class="empty">Yuklanmadi: ' + esc(e.message) + '</div>';
+  }
+}
+function renderEarlyStarts(d) {
+  const t = d.totals || {};
+  const hint = document.getElementById("early-hint");
+  if (hint) hint.textContent = (d.date || "") + " · chegara " + (d.threshold_min || 1) +
+    " daq · " + (d.source || "");
+  const sum = document.getElementById("early-summary");
+  if (sum) {
+    const box = (label, value) => '<div class="metric-box"><span>' + label +
+      '</span><b>' + value + '</b></div>';
+    sum.innerHTML = '<section class="performance-summary">' +
+      box("JAMI REYS", t.total || 0) +
+      box("ERTA BOSHLANGAN", t.early || 0) +
+      box("BM BAYROG'I", t.bm_early || 0) +
+      box("ERTA + QABUL QILINGAN", t.early_accepted || 0) +
+      box("ENG KATTA ERTA", (t.max_early_min ? t.max_early_min + " daq" : "—")) +
+      box("VAQTIDA", t.ontime || 0) +
+      box("KECHIKKAN", t.late || 0) +
+      box("QABUL QILINMAGAN", t.not_accepted || 0) +
+      box("ERTA + QABUL QILINMAGAN", t.early_not_accepted || 0) +
+      box("REJA TOPILMADI", t.no_plan || 0) +
+      box("O\u2019RTACHA ERTA", (t.avg_early_min ? t.avg_early_min + " daq" : "—")) +
+      '</section>' +
+      '<div class="hint" style="padding:0 18px 12px">Qabul qilingan: <b>' + (t.accepted || 0) +
+      '</b> · Bekor: <b>' + (t.rejected || 0) + '</b> · Nollik: <b>' + (t.zero_mileage || 0) +
+      '</b> · Boshlanmagan: <b>' + (t.not_started || 0) + '</b><br>' +
+      'Qabul qilinmagan = NOT_ACCEPTED + PENDING_ACCESS · Manba: BM «erta boshlangan» bahosi (SUITABLE_PLAN_TIME_QUALITY) · Reja oraliqi: shifts/graph/times (START/BETWEEN/LUNCH) · Haqiqiy: waybill startTm<br>' +
+      '«BM» — BM bayrog‘i bor, waybill vaqti reja oralig‘iga mos (erta ham, kech ham emas). «+N kech» — BM bayrog‘i bor, lekin qatnov reja ketish vaqtidan N daqiqa kech boshlangan.</div>';
+  }
+  const body = document.getElementById("early-body");
+  if (!body) return;
+  let html = "";
+  if (d.partial) {
+    const errs = (d.fetch_errors || []).map(e =>
+      esc((e.profile || "?") + ": " + (e.error || ""))).join("<br>");
+    html += '<div class="err" style="display:block;margin:0 18px 12px">Diqqat: ba’zi kompaniyalar ma’lumoti yuklanmadi — raqamlar to‘liq emas.' +
+      (errs ? "<br>" + errs : "") + '</div>';
+  }
+  if (d.note) html += '<div class="empty">' + esc(d.note) + '</div>';
+  const early = d.rows || [];
+  const planText = x => {
+    if (!x || !x.planned) return "-";
+    const end = x.planned_end && x.planned_end !== x.planned ? "–" + x.planned_end : "";
+    return esc(x.planned + end);
+  };
+  const srcText = x => (x && x.bm) ? "BM" : (x && x.source === "plan" ? "reja" : "-");
+  const earlyMinText = x => {
+    const m = Number((x && x.early_min) || 0);
+    if (m >= 1) return m;
+    if (!(x && x.bm)) return 0;
+    const d = Number((x && x.delta_min) || 0);
+    return d >= 1 ? "+" + d + " kech" : "BM";
+  };
+  if (early.length) {
+    const rows = early.map((x, i) => [
+      i + 1, esc(x.date || ""), esc(x.route || "-"), esc(x.driver || "-"),
+      esc(x.vehicle || "-"), x.trip_num || "-", planText(x),
+      esc(x.actual || "-"), '<b>' + earlyMinText(x) + '</b>', srcText(x),
+      earlyStatusPill(x.status)
+    ]);
+    html += '<div class="section-head" style="margin-top:18px"><div><div class="eyebrow">ERTA</div>' +
+      '<h2>Rejadan erta boshlangan reyslar <span class="hint">' + early.length + ' ta</span></h2></div></div>' +
+      tableHTML(["№", "Sana", "Yo'nalish", "Haydovchi", "Avtobus", "Reys №", "Reja (oraliq)", "Haqiqiy", "Erta / farq (daq)", "Manba", "Holat"], rows);
+  } else if (!d.note) {
+    html += '<div class="empty">Bu sanada erta boshlangan reys yo‘q.</div>';
+  }
+  const na = d.not_accepted_rows || [];
+  if (na.length) {
+    const rows = na.map((x, i) => [
+      i + 1, esc(x.date || ""), esc(x.route || "-"), esc(x.driver || "-"),
+      esc(x.vehicle || "-"), x.trip_num || "-", planText(x),
+      esc(x.actual || "-"), (x.delta_min > 0 ? "+" : "") + (x.delta_min || 0),
+      earlyStatusPill(x.status)
+    ]);
+    html += '<div class="section-head" style="margin-top:22px"><div><div class="eyebrow">QABUL QILINMAGAN</div>' +
+      '<h2>Qabul qilinmagan reyslar <span class="hint">' + na.length + ' ta</span></h2></div></div>' +
+      tableHTML(["№", "Sana", "Yo'nalish", "Haydovchi", "Avtobus", "Reys №", "Reja (oraliq)", "Haqiqiy", "Farq (daq)", "Holat"], rows);
+  }
+  const drv = d.drivers || [];
+  if (drv.length) {    const rows = drv.map((x, i) => [
+      i + 1, esc(x.name || "-"), esc(x.route || "-"), x.trips || 0,
+      '<b>' + (x.early || 0) + '</b>', (x.avg_early_min ? x.avg_early_min + " daq" : "—"),
+      x.late || 0, '<b>' + (x.not_accepted || 0) + '</b>'
+    ]);
+    html += '<div class="section-head" style="margin-top:22px"><div><div class="eyebrow">HAYDOVCHILAR</div>' +
+      '<h2>Intizom kesimi <span class="hint">erta yoki qabul qilinmagan reysi borlar</span></h2></div></div>' +
+      tableHTML(["№", "Haydovchi", "Yo'nalish", "Reyslar", "Erta", "O\u2019rtacha erta", "Kech", "Qabul qilinmagan"], rows);
+  }
+  body.innerHTML = html || '<div class="empty">Ma’lumot yo‘q.</div>';
 }
 
 /* ------------------------------------------------ BRUTTO (116-son qaror) */
@@ -8116,6 +9321,104 @@ document.addEventListener('DOMContentLoaded', () => {
   if (us) us.addEventListener('input', renderBotUsers);
 });
 
+let _currentUsersSubTab = 'list';
+function setUsersSubTab(tab) {
+  _currentUsersSubTab = tab;
+  const btnList = document.getElementById('btn-tab-users-list');
+  const btnAct = document.getElementById('btn-tab-users-activity');
+  const pList = document.getElementById('panel-users-list');
+  const pAct = document.getElementById('panel-users-activity');
+  if (tab === 'activity') {
+    if (btnList) { btnList.className = 'button ghost'; }
+    if (btnAct) { btnAct.className = 'button'; }
+    if (pList) pList.style.display = 'none';
+    if (pAct) pAct.style.display = 'block';
+    loadBotActivities();
+  } else {
+    if (btnList) { btnList.className = 'button'; }
+    if (btnAct) { btnAct.className = 'button ghost'; }
+    if (pList) pList.style.display = 'block';
+    if (pAct) pAct.style.display = 'none';
+    loadBotUsers();
+  }
+}
+
+function actBadge(action) {
+  const a = (action || '').toLowerCase();
+  if (a.includes('grafik_confirm') || a.includes('confirm')) return '<span style="color:var(--teal-text);font-weight:700">&#x2705; TASDIQLASH</span>';
+  if (a.includes('grafik_poll') || a.includes('poll')) return '<span style="color:var(--accent-text);font-weight:700">&#x1f4ca; SO\'ROV</span>';
+  if (a.includes('command')) return '<span style="color:var(--indigo-text, #6366f1);font-weight:700">&#x2328; BUYRUQ</span>';
+  if (a.includes('callback')) return '<span style="color:var(--amber);font-weight:700">&#x1f518; TUGMA</span>';
+  if (a.includes('link')) return '<span style="color:var(--teal);font-weight:700">&#x1f517; BOG\'LASH</span>';
+  if (a.includes('unlink')) return '<span style="color:var(--alert-text);font-weight:700">&#x274c; UZILISH</span>';
+  if (a.includes('role')) return '<span style="color:var(--warn);font-weight:700">&#x1f6e1; ROL</span>';
+  if (a.includes('message')) return '<span style="color:var(--muted);font-weight:700">&#x1f4ac; XABAR</span>';
+  return '<span style="color:var(--muted);font-weight:600">' + esc(action || '—') + '</span>';
+}
+
+let _botActivities = [];
+
+async function loadBotActivities() {
+  const body = document.getElementById('users-activity-body');
+  if (!body) return;
+  body.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted)">Yuklanmoqda...</div>';
+  const filter = document.getElementById('users-activity-filter')?.value || '';
+  const search = document.getElementById('users-activity-search')?.value || '';
+  const limit = document.getElementById('users-activity-limit')?.value || '100';
+  try {
+    const params = new URLSearchParams({limit: String(limit)});
+    if (filter) params.set('action', filter);
+    if (search) params.set('q', search);
+    const r = await bmFetch('/api/users/activities?' + params.toString());
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || 'API xatosi');
+    _botActivities = d.activities || [];
+    renderBotActivities(_botActivities);
+  } catch(e) {
+    body.innerHTML = '<div class="empty" style="padding:24px;text-align:center;color:var(--alert-text)">Xatolik: ' + esc(e.message) + '</div>';
+  }
+}
+
+function renderBotActivities(list) {
+  const body = document.getElementById('users-activity-body');
+  if (!body) return;
+  if (!list || !list.length) {
+    body.innerHTML = '<div class="empty" style="padding:32px;text-align:center;color:var(--muted)">Harakatlar topilmadi</div>';
+    return;
+  }
+  let h = '<table class="board"><thead><tr>'
+    + '<th style="width:130px">Vaqt</th>'
+    + '<th>Foydalanuvchi</th>'
+    + '<th>Rol</th>'
+    + '<th>Kimligi (haydovchi)</th>'
+    + '<th>Harakat turi</th>'
+    + '<th>Tafsilot</th>'
+    + '<th style="text-align:center;width:80px">Profil</th>'
+    + '</tr></thead><tbody>';
+  for (const a of list) {
+    const chatId = a.chat_id || '';
+    const userDisplay = esc(a.user_name || 'Noma\'lum')
+      + (a.username ? ' <span style="color:var(--muted);font-size:11px">@' + esc(a.username) + '</span>' : '')
+      + '<div class="mono" style="font-size:10px;color:var(--muted)">ID: ' + esc(String(chatId)) + '</div>';
+    const driverDisplay = a.driver_name
+      ? '<span style="color:var(--teal-text);font-weight:600"><i class="ic sm">' + featherIcon("truck") + '</i>' + esc(a.driver_name) + '</span>'
+      : '<span style="color:var(--muted-3)">—</span>';
+    h += '<tr>'
+      + '<td class="mono" style="font-size:11px;color:var(--muted);white-space:nowrap">' + esc(a.at || '—') + '</td>'
+      + '<td>' + userDisplay + '</td>'
+      + '<td>' + roleColor(a.role) + '</td>'
+      + '<td style="font-size:11px">' + driverDisplay + '</td>'
+      + '<td>' + actBadge(a.action) + '</td>'
+      + '<td style="font-size:12px;color:var(--ink);max-width:350px;word-break:break-word">' + esc(a.detail || a.action || '—') + '</td>'
+      + '<td style="text-align:center">'
+      + '<button class="button ghost" style="font-size:11px;padding:3px 8px" onclick="openUserDetail(' + chatId + ')">Ko\'rish</button>'
+      + '</td>'
+      + '</tr>';
+  }
+  h += '</tbody></table>';
+  body.innerHTML = h;
+}
+
 let _botUsers = [];
 
 async function loadBotUsers() {
@@ -8135,6 +9438,8 @@ async function loadBotUsers() {
 }
 
 async function loadGroupStats() {
+  // Guruh statistikasi korxonalararo — faqat ADMIN ko'radi.
+  if (myRank() < 4) return;
   const body = document.getElementById('group-stats-body');
   const kicker = document.getElementById('group-stats-kicker');
   if (!body) return;
@@ -8175,6 +9480,7 @@ async function loadGroupStats() {
 function renderBotUsers() {
   const body = document.getElementById('users-body');
   if (!body) return;
+  const canAdmin = myRank() >= 4;
   const q = (document.getElementById('users-search')?.value || '').toLowerCase();
   let users = _botUsers;
   if (q) users = users.filter(u =>
@@ -8191,6 +9497,7 @@ function renderBotUsers() {
   }
   let h = '<table class="board"><thead><tr>'
     + '<th style="width:40px"></th><th>Chat ID</th><th>Ism</th><th>Username</th><th>Rol</th><th>Kimligi (haydovchi)</th>'
+    + '<th>Oxirgi harakat</th>'
     + '<th>Birinchi marta</th><th>Oxirgi marta</th><th style="text-align:center">Xabarlar</th>'
     + '<th style="text-align:center">Amallar</th>'
     + '</tr></thead><tbody>';
@@ -8200,25 +9507,42 @@ function renderBotUsers() {
     const photoSrc = '/api/users/' + chatId + '/photo';
     const avatar = '<img src="' + photoSrc + '" alt="" style="width:32px;height:32px;border-radius:50%;object-fit:cover;border:1px solid var(--line);background:var(--bg-deep)" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'" />'
       + '<div style="width:32px;height:32px;border-radius:50%;background:var(--bg-deep);display:none;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:var(--accent);position:absolute;top:0;left:0">' + esc((u.first_name||'?')[0]) + '</div>';
+
+    let actChip = '<span style="color:var(--muted-3)">—</span>';
+    if (u.activity && u.activity.length) {
+      const lastAct = u.activity[u.activity.length - 1];
+      actChip = '<div style="font-size:11px;max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + escAttr(lastAct.detail || lastAct.action) + ' (' + escAttr(lastAct.at || '') + ')">'
+        + actBadge(lastAct.action) + ' '
+        + '<span style="color:var(--ink)">' + esc(lastAct.detail || lastAct.action) + '</span>'
+        + '</div>';
+    }
+
+    const driverCell = u.linked
+      ? ('<span style="color:var(--teal-text);font-weight:600"><i class="ic sm">' + featherIcon("truck") + '</i>' + esc(u.driver_name || '—') + '</span>'
+         + (u.driver_phone ? '<span class="driver-sub"><i class="ic sm">' + featherIcon("phone") + '</i>' + esc(u.driver_phone) + '</span>' : ''))
+      : ('<button class="button ghost" style="font-size:11px;padding:2px 8px;color:var(--teal-text);border-color:var(--teal)" onclick="openUserDetail(' + u.chat_id + ')">+ Haydovchi biriktirish</button>');
+
+    const actionsCell = '<button class="button ghost" style="font-size:11px;padding:4px 8px;margin:0 2px" onclick="openUserDetail(' + u.chat_id + ')">Batafsil</button>'
+      + (!u.linked
+          ? ('<button class="button" style="font-size:11px;padding:4px 8px;margin:0 2px;background:var(--teal);color:#fff" onclick="openUserDetail(' + u.chat_id + ')">Biriktirish</button>')
+          : '')
+      + (canAdmin
+          ? ('<button class="button ghost" style="font-size:11px;padding:4px 8px;margin:0 2px;color:var(--red)" onclick="deleteBotUser(' + u.chat_id + ',\'' + escAttr(u.first_name||'') + '\')">O\'chirish</button>')
+          : '');
+
     h += '<tr>'
       + '<td style="position:relative">' + avatar + '</td>'
       + '<td class="mono" style="font-size:12px">' + esc(String(u.chat_id || '')) + '</td>'
       + '<td><b>' + esc(u.first_name || '—') + '</b></td>'
       + '<td style="color:var(--muted)">' + (u.username ? '@' + esc(u.username) : '<span style="color:var(--muted-3)">yo\'q</span>') + '</td>'
       + '<td>' + roleBadge + buPagesBadge(u) + '</td>'
-      + '<td style="font-size:11px">'
-      + (u.linked
-          ? '<span style="color:var(--teal-text);font-weight:600"><i class="ic sm">' + featherIcon("truck") + '</i>' + esc(u.driver_name || '—') + '</span>'
-            + (u.driver_phone ? '<span class="driver-sub"><i class="ic sm">' + featherIcon("phone") + '</i>' + esc(u.driver_phone) + '</span>' : '')
-          : '<span style="color:var(--muted-3)">bog\'lanmagan</span>')
-      + '</td>'
+      + '<td style="font-size:11px">' + driverCell + '</td>'
+      + '<td>' + actChip + '</td>'
       + '<td style="font-size:11px;color:var(--muted)">' + esc(u.first_seen || '') + '</td>'
       + '<td style="font-size:11px;color:var(--muted)">' + esc(u.last_seen || '') + '</td>'
       + '<td class="mono" style="text-align:center">' + (u.message_count || 0) + '</td>'
-      + '<td style="text-align:center;white-space:nowrap">'
-      + '<button class="button ghost" style="font-size:11px;padding:4px 8px;margin:0 2px" onclick="openUserDetail(' + u.chat_id + ')">Batafsil</button>'
-      + '<button class="button ghost" style="font-size:11px;padding:4px 8px;margin:0 2px;color:var(--red)" onclick="deleteBotUser(' + u.chat_id + ',\'' + escAttr(u.first_name||'') + '\')">O\'chirish</button>'
-      + '</td></tr>';
+      + '<td style="text-align:center;white-space:nowrap">' + actionsCell + '</td>'
+      + '</tr>';
   }
   h += '</tbody></table>';
   body.innerHTML = h;
@@ -8896,6 +10220,8 @@ async function openUserDetail(chatId) {
     const activity = Array.isArray(u.activity) ? u.activity : [];
 
     const dashboardUser = d.dashboard_user || null;
+    // Rol/bo'lim/o'chirish — faqat ADMIN. Dispetcher haydovchi bog'lash bilan ishlaydi.
+    const canAdmin = myRank() >= 4;
 
     // Haydovchi bog'langanligini tekshirish
     let driverInfo = null;
@@ -8930,12 +10256,15 @@ async function openUserDetail(chatId) {
     html += '<div style="margin-bottom:16px;padding:12px;background:var(--bg-deep);border-radius:8px;border:1px solid var(--line)">';
     html += '<div style="font-size:12px;font-weight:700;margin-bottom:8px;color:var(--muted-2)"><i class="ic sm">' + featherIcon("user-check") + '</i>HAYDOVCHI BOG\'LASH</div>';
     html += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">';
+    html += '<input id="link-driver-search" class="input" type="search" autocomplete="off" aria-label="Haydovchi qidirish" placeholder="Haydovchi: ism, telefon yoki ID" style="flex:1 1 100%;padding:6px 10px;font-size:12px">';
     html += '<select id="link-driver-select" aria-label="Haydovchini tanlash" class="input" style="flex:1;min-width:200px;padding:6px 10px;font-size:12px"><option value="">— Haydovchini tanlang —</option></select>';
     html += '<button class="button" style="font-size:11px;padding:6px 12px" onclick="linkUserDriver(' + chatId + ')">BOG\'LASH</button>';
     if (driverInfo) {
       html += '<button class="button ghost" style="font-size:11px;padding:6px 12px;color:var(--red)" onclick="unlinkUserDriver(' + chatId + ')">BOG\'LANISHNI O\'CHIRISH</button>';
     }
-    html += '</div></div>';
+    html += '</div>';
+    html += '<div class="hint" id="link-driver-hint" style="margin-top:6px"></div>';
+    html += '</div>';
 
     // Times
     html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">';
@@ -8944,6 +10273,7 @@ async function openUserDetail(chatId) {
     html += '</div>';
 
     // Bo'limlar (per-user ruxsat): bot buyruqlari shu ro'yxat bilan yopiladi
+    if (canAdmin) {
     html += '<div style="margin-bottom:16px;padding:12px;background:var(--bg-deep);border-radius:8px;border:1px solid var(--line)">';
     html += '<div style="font-size:12px;font-weight:700;margin-bottom:8px;color:var(--muted-2)">BO\'LIMLAR (BOT RUXSATI)</div>';
     if (d.dashboard_user && d.dashboard_user.username) {
@@ -8961,8 +10291,10 @@ async function openUserDetail(chatId) {
     html += '<div class="hint" style="margin-top:6px">Ro\'yxat faqat toraytiradi — rol imkoniyatlari saqlanadi (moliyaviy buyruqlar baribir MANAGER+ uchun).</div>';
     html += '<div class="hint" id="bu-pages-status" style="margin-top:6px"></div>';
     html += '</div>';
+    }
 
     // Role buttons
+    if (canAdmin) {
     html += '<div style="margin-bottom:16px">';
     html += '<div style="font-size:12px;font-weight:700;margin-bottom:8px;color:var(--muted-2)">ROL BOSHQARISH</div>';
     html += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
@@ -8975,9 +10307,10 @@ async function openUserDetail(chatId) {
       html += '<button class="' + cls + '" style="font-size:11px;padding:5px 10px" onclick="changeUserRole(' + u.chat_id + ',\'' + rr + '\')">' + rr + '</button>';
     }
     html += '</div></div>';
+    }
 
     // Dispetcherga yo'nalish biriktirish (faqat DISPATCHER/ADMIN/MANAGER uchun)
-    var isDispatchRole = ['DISPATCHER', 'ADMIN', 'MANAGER'].some(function(rx){ return curRole.indexOf(rx) !== -1; });
+    var isDispatchRole = canAdmin && ['DISPATCHER', 'ADMIN', 'MANAGER'].some(function(rx){ return curRole.indexOf(rx) !== -1; });
     if (isDispatchRole) {
       html += '<div style="margin-bottom:16px;padding:12px;background:var(--bg-deep);border-radius:8px;border:1px solid var(--line)">';
       html += '<div style="font-size:12px;font-weight:700;margin-bottom:8px;color:var(--muted-2)"><i class="ic sm">' + featherIcon("route") + '</i>YO\'NALISH BIRIKTIRISH</div>';
@@ -8996,9 +10329,9 @@ async function openUserDetail(chatId) {
       html += '<div style="max-height:280px;overflow-y:auto;border:1px solid var(--line);border-radius:8px">';
       for (var ai = activity.length - 1; ai >= 0; ai--) {
         var a = activity[ai];
-        var icon = a.action === 'callback' ? '&#x1f518;' : a.action === 'document' ? '&#x1f4c4;' : '&#x1f4ac;';
+        var badge = actBadge(a.action);
         html += '<div style="padding:6px 12px;border-bottom:1px solid var(--line);font-size:12px;display:flex;gap:8px;align-items:center">';
-        html += '<span>' + icon + '</span>';
+        html += '<div>' + badge + '</div>';
         html += '<span style="flex:1;color:var(--ink);word-break:break-all">' + esc(a.detail || a.action) + '</span>';
         html += '<span style="color:var(--muted);font-size:10px;white-space:nowrap">' + esc(a.at || '') + '</span>';
         html += '</div>';
@@ -9015,16 +10348,22 @@ async function openUserDetail(chatId) {
 
     content.innerHTML = html;
 
-    // Bo'limlar checklist'i (bot ruxsati)
-    renderBuPages(dashboardUser && Array.isArray(dashboardUser.pages)
-      ? dashboardUser.pages : (Array.isArray(u.pages) ? u.pages : null),
-      u.chat_id);
+    // Bo'limlar checklist'i (bot ruxsati) — faqat ADMIN
+    if (canAdmin) {
+      renderBuPages(dashboardUser && Array.isArray(dashboardUser.pages)
+        ? dashboardUser.pages : (Array.isArray(u.pages) ? u.pages : null),
+        u.chat_id);
+    }
 
     // Haydovchilar ro'yxatini yuklash
     populateDriverSelect(driverInfo ? driverInfo.driver_id : '');
+    setTimeout(function() {
+      var s = document.getElementById('link-driver-search');
+      if (s) s.focus();
+    }, 200);
 
-    // Dispetcher yo'nalishlarini yuklash
-    var isDispatchRole2 = ['DISPATCHER', 'ADMIN', 'MANAGER'].some(function(rx){ return curRole.indexOf(rx) !== -1; });
+    // Dispetcher yo'nalishlarini yuklash (yo'nalish sozlashingiz faqat ADMIN)
+    var isDispatchRole2 = canAdmin && ['DISPATCHER', 'ADMIN', 'MANAGER'].some(function(rx){ return curRole.indexOf(rx) !== -1; });
     if (isDispatchRole2) {
       _pendingDispRoutes = [];
       loadDispatcherRoutes(u.chat_id);
@@ -9034,22 +10373,69 @@ async function openUserDetail(chatId) {
   }
 }
 
+var _linkDriverOptions = [];
+
 async function populateDriverSelect(currentDriverId) {
   const sel = document.getElementById('link-driver-select');
+  const search = document.getElementById('link-driver-search');
+  const hint = document.getElementById('link-driver-hint');
   if (!sel) return;
   try {
     const r = await bmFetch('/api/drivers/list');
     const d = await r.json();
-    if (!d.ok) return;
-    const drivers = d.drivers || [];
-    let opts = '<option value="">— Haydovchini tanlang —</option>';
-    for (const dr of drivers) {
-      const linked = dr.telegram_chat_id ? ' [TG bog\'langan]' : '';
-      const sel2 = dr.driver_id === currentDriverId ? ' selected' : '';
-      opts += '<option value="' + esc(dr.driver_id) + '"' + sel2 + '>' + esc(dr.name || dr.driver_id) + ' (' + esc(dr.driver_id) + ')' + linked + '</option>';
+    if (!d.ok) {
+      if (hint) hint.textContent = d.error || 'Haydovchilar yuklanmadi';
+      return;
     }
-    sel.innerHTML = opts;
-  } catch(ex) {}
+    _linkDriverOptions = (d.drivers || []).map(function(dr) {
+      return {
+        id: dr.driver_id || '',
+        name: dr.name || dr.driver_id || '',
+        phone: dr.phone || '',
+        linked: !!dr.telegram_chat_id,
+        linkedTo: dr.telegram_chat_id || ''
+      };
+    });
+    renderDriverOptions('', currentDriverId);
+    if (search) search.addEventListener('input', function() {
+      renderDriverOptions(this.value, '');
+    });
+  } catch(ex) {
+    if (hint) hint.textContent = 'Haydovchilar yuklanmadi: ' + ex.message;
+  }
+}
+
+function renderDriverOptions(filter, keepId) {
+  const sel = document.getElementById('link-driver-select');
+  const hint = document.getElementById('link-driver-hint');
+  if (!sel) return;
+  const f = (filter || '').trim().toLowerCase();
+  const phoneQ = f.replace(/\D+/g, '');
+  const rows = _linkDriverOptions.filter(function(o) {
+    if (!f) return true;
+    if ((o.name || '').toLowerCase().indexOf(f) !== -1) return true;
+    if ((o.id || '').toLowerCase().indexOf(f) !== -1) return true;
+    if (phoneQ && (o.phone || '').replace(/\D+/g, '').indexOf(phoneQ) !== -1) return true;
+    return false;
+  });
+  const shown = rows.slice(0, 50);
+  let opts = '<option value="">— Haydovchini tanlang —</option>';
+  for (const dr of shown) {
+    const linked = dr.linked ? ' [TG bog\'langan]' : '';
+    const sel2 = dr.id === keepId ? ' selected' : '';
+    opts += '<option value="' + esc(dr.id) + '"' + sel2 + '>' + esc(dr.name) + (dr.phone ? ' · ' + esc(dr.phone) : '') + linked + '</option>';
+  }
+  sel.innerHTML = opts;
+  // Bitta natija qolsa — avtomatik tanlanadi, BOG'LASH darhol ishlaydi.
+  if (shown.length === 1 && !keepId) sel.value = shown[0].id;
+  if (!hint) return;
+  if (!f) {
+    hint.textContent = 'Jami ' + _linkDriverOptions.length + ' haydovchi. Qidirish uchun ism, telefon yoki ID yozing.';
+  } else if (!rows.length) {
+    hint.textContent = 'Topilmadi — boshqa so\'z bilan urinib ko\'ring.';
+  } else {
+    hint.textContent = rows.length + ' ta topildi' + (rows.length > shown.length ? ' (birinchi ' + shown.length + ' tasi)' : '') + '.';
+  }
 }
 
 // ------- Dispetcherga yo'nalish biriktirish -------
@@ -9146,6 +10532,11 @@ async function removeDispatcherRoute(chatId, routeId) {
 async function linkUserDriver(chatId) {
   const sel = document.getElementById('link-driver-select');
   if (!sel || !sel.value) { alert('Haydovchini tanlang'); return; }
+  const dr = _linkDriverOptions.find(function(o) { return String(o.id) === String(sel.value); });
+  if (dr && dr.linked && String(dr.linkedTo) !== String(chatId)) {
+    if (!confirm('«' + dr.name + '» boshqa Telegram foydalanuvchiga bog\'langan.\n\n' +
+                 'Bog\'lasangiz, eski bog\'lanish olib tashlanadi. Davom etilsinmi?')) return;
+  }
   try {
     const r = await bmFetch('/api/users/' + chatId + '/link-driver', {
       method: 'POST',
@@ -9206,12 +10597,13 @@ document.querySelectorAll('#main-nav a[data-page]').forEach(a=>a.addEventListene
 /* ---- nav akkordeon: bo'limga bosilsa ochiladi/yopiladi, holat saqlanadi ---- */
 function _navGroupState(){ try{ return JSON.parse(localStorage.getItem('bm-nav-groups')||'{}'); }catch(e){ return {}; } }
 function _saveNavGroup(key,open){ try{ var st=_navGroupState(); st[key]=open; localStorage.setItem('bm-nav-groups',JSON.stringify(st)); }catch(e){} }
-function restoreNavGroups(){ var st=_navGroupState(); document.querySelectorAll('#main-nav .nav-group').forEach(function(g){ if(st[g.dataset.group]) g.classList.add('open'); }); }
+function restoreNavGroups(){ const st=_navGroupState(); document.querySelectorAll('#main-nav .nav-group').forEach(g => { const open=st[g.dataset.group] !== false; g.classList.toggle('open',open); g.querySelector('.nav-group-head')?.setAttribute('aria-expanded',String(open)); }); }
 function openActiveNavGroup(){ var a=document.querySelector('#main-nav a.active'); if(a){ var g=a.closest('.nav-group'); if(g) g.classList.add('open'); } }
 document.querySelectorAll('#main-nav .nav-group-head').forEach(function(h){
   h.addEventListener('click',function(){
     var g=h.closest('.nav-group'); if(!g) return;
     var open=g.classList.toggle('open');
+    h.setAttribute('aria-expanded', String(open));
     _saveNavGroup(g.dataset.group,open);
   });
 });
@@ -9238,7 +10630,7 @@ function _applyNavFilter(q) {
     try { openActiveNavGroup(); } catch (e) {}
   }
 }
-const _railMQ = window.matchMedia('(min-width:621px)');
+const _railMQ = window.matchMedia('(min-width:621px) and (max-width:1100px)');
 let _railTipEl = null;
 function _railTip() {
   if (!_railTipEl) {
@@ -9269,6 +10661,7 @@ function _railTipHide() { if (_railTipEl) _railTipEl.classList.remove('on'); }
   if (!nav) return;
   const brand = document.getElementById('side-brand');
   function toggleRailMenu(force) {
+    if (window.innerWidth > 1100 && force !== false) { document.getElementById('nav-filter')?.focus(); return; }
     const open = (force !== undefined) ? force : !document.body.classList.contains('rail-open');
     document.body.classList.toggle('rail-open', open);
     if (brand) brand.setAttribute('aria-expanded', open ? 'true' : 'false');
@@ -9606,6 +10999,8 @@ function applyAccessUI() {
   document.querySelectorAll(".fin-block").forEach(el => {
     el.classList.toggle("nav-hidden", myRank() < 2);
   });
+  const gsPanel = document.getElementById("group-stats-panel");
+  if (gsPanel) gsPanel.style.display = myRank() >= 4 ? "" : "none";
   // Faqat tizim egasi (super) uchun bloklar — ADMIN ham ko'rmaydi.
   document.querySelectorAll("[data-super-only]").forEach(el => {
     el.style.display = (me && me.super) ? "" : "none";
@@ -9620,6 +11015,85 @@ function applyAccessUI() {
     if (sel) sel.value = route;
   }
 }
+function _mfaForceSay(t) {
+  const el = document.getElementById("mfa-force-msg");
+  if (el) { el.textContent = t || ""; el.style.color = t ? "var(--alert)" : ""; }
+}
+function showMfaForce() {
+  const card = document.getElementById("mfa-force-card");
+  if (!card) return;
+  document.body.classList.add("auth-locked", "mfa-forcing");
+  document.body.classList.remove("auth-checking");
+  const pass = document.getElementById("mfa-force-pass");
+  if (pass) pass.focus();
+}
+function hideMfaForce() {
+  document.body.classList.remove("mfa-forcing");
+  const card = document.getElementById("mfa-force-card");
+  if (card) card.style.display = "none";
+  const loginCard = document.getElementById("login-auth-card");
+  if (loginCard) loginCard.style.display = "";
+  const pass = document.getElementById("mfa-force-pass");
+  const code = document.getElementById("mfa-force-code");
+  if (pass) pass.value = "";
+  if (code) code.value = "";
+  _mfaForceSay("");
+}
+async function mfaForceStart() {
+  const passEl = document.getElementById("mfa-force-pass");
+  const pw = (passEl && passEl.value) || "";
+  _mfaForceSay("");
+  if (!pw) { _mfaForceSay("Joriy parolni kiriting"); if (passEl) passEl.focus(); return; }
+  try {
+    const d = await postJSON("/api/mfa/setup", { password: pw });
+    if (!d || !d.ok) { _mfaForceSay((d && (d.error || d.detail)) || "Xatolik"); return; }
+    const sec = document.getElementById("mfa-force-secret");
+    if (sec) sec.textContent = d.secret || "";
+    const link = document.getElementById("mfa-force-link");
+    if (link && d.otpauth) link.href = d.otpauth;
+    const setup = document.getElementById("mfa-force-setup");
+    if (setup) setup.style.display = "";
+    if (passEl) passEl.value = "";
+    const codeEl = document.getElementById("mfa-force-code");
+    if (codeEl) { codeEl.focus(); }
+    _mfaForceSay("Sirni ilovaga qo'shing va 6 xonali kodni kiriting");
+  } catch (e) {
+    _mfaForceSay((e && e.message) || "Xatolik");
+  }
+}
+async function mfaForceEnable() {
+  const codeEl = document.getElementById("mfa-force-code");
+  const code = ((codeEl && codeEl.value) || "").trim();
+  _mfaForceSay("");
+  if (!/^\d{6}$/.test(code)) { _mfaForceSay("6 xonali kodni kiriting"); return; }
+  try {
+    const d = await postJSON("/api/mfa/enable", { code: code });
+    if (!d || !d.ok) { _mfaForceSay((d && (d.error || d.detail)) || "Xatolik"); return; }
+    await refreshMe();
+    hideMfaForce();
+    applyAccessUI();
+    document.body.classList.remove("auth-locked");
+    startDashboard();
+    applyHashPage();
+  } catch (e) {
+    _mfaForceSay((e && e.message) || "Xatolik");
+  }
+}
+function initMfaForceCard() {
+  const start = document.getElementById("mfa-force-start");
+  if (start) start.addEventListener("click", () => void mfaForceStart());
+  const enable = document.getElementById("mfa-force-enable");
+  if (enable) enable.addEventListener("click", () => void mfaForceEnable());
+  ["mfa-force-pass", "mfa-force-code"].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener("keydown", e => {
+      if (e.key !== "Enter") return;
+      if (id === "mfa-force-pass") void mfaForceStart(); else void mfaForceEnable();
+    });
+  });
+}
+
 async function tryLogin() {
   const userEl = document.getElementById("login-user");
   const passEl = document.getElementById("login-pass");
@@ -9641,6 +11115,7 @@ async function tryLogin() {
       if (codeEl) codeEl.value = "";
       if (codeWrap) codeWrap.style.display = "none";
       await refreshMe();
+      if (me && me.mfa_setup_required) { showMfaForce(); return; }
       applyAccessUI();
       document.body.classList.remove("auth-locked");
       startDashboard();
@@ -9672,6 +11147,7 @@ function initAuth() {
     bmFetch("/api/logout", {method: "POST"}).catch(() => {}).finally(() => {
       me = null;
       stopDashboard();
+      hideMfaForce();
       document.body.classList.add("auth-locked");
       if (user) user.value = "";
       if (pass) pass.value = "";
@@ -9683,12 +11159,16 @@ function initAuth() {
     });
   });
   (async () => {
+    initMfaForceCard();
     if (await refreshMe()) {
-      applyAccessUI();
-      document.body.classList.remove("auth-locked");
-      /* Rol endi ma'lum — hash'dagi sahifa (deep link / F5) tiklanadi. */
-      startDashboard();
-      applyHashPage();
+      if (me && me.mfa_setup_required) { showMfaForce(); }
+      else {
+        applyAccessUI();
+        document.body.classList.remove("auth-locked");
+        /* Rol endi ma'lum — hash'dagi sahifa (deep link / F5) tiklanadi. */
+        startDashboard();
+        applyHashPage();
+      }
     } else {
       document.body.classList.add("auth-locked");
     }
@@ -10059,14 +11539,14 @@ function _pollStart(taskId) {
   _occPoll = setInterval(async () => {
     try {
       const d = await api('/api/myai/task/' + taskId);
-      if (!d.ok || !d.task) return;
+      if (_occTaskId !== taskId || !d.ok || !d.task) return;
       const t = d.task;
       if (t.status === 'completed') {
         const result = t.result || {};
         const response = result.response || JSON.stringify(result, null, 2);
         chatShowResult(response, taskId);
-      } else if (t.status === 'failed') {
-        chatShowError(t.error || 'Noma\'lum xatolik');
+      } else if (t.status === 'failed' || t.status === 'cancelled') {
+        chatShowError(t.status === 'cancelled' ? 'Bekor qilindi' : (t.error || 'Xatolik yuz berdi'));
       }
     } catch(e) {}
   }, 2000);
@@ -10112,6 +11592,7 @@ function handleAgentEvent(ev) {
   const action = ev.action || ev.message || '';
   const progress = ev.progress || 0;
   const taskId = ev.task_id || '';
+  if (_occTaskId && taskId && taskId !== _occTaskId) return;
 
   if (evt === 'agent.status' && agentId) {
     updateAgentState(agentId, status, action, progress, taskId);
@@ -10282,7 +11763,8 @@ async function loadOccHistory(reset) {
           <div class="occ-feed-time">${dateStr}</div>
           ${running ? `<div class="occ-progress"><div class="occ-progress-fill" style="width:${t.progress || 0}%;background:${color}"></div></div>` : ''}
         </div>
-        <button class="occ-rerun" title="Qayta ishga tushirish" onclick="event.stopPropagation();quickOccText(${JSON.stringify(escHtmlAttr(t.user_request))})">${featherIcon("refresh-cw")}</button>`;
+        <button class="occ-rerun" title="Qayta ishga tushirish" aria-label="Qayta ishga tushirish">${featherIcon("refresh-cw")}</button>`;
+      el.querySelector(".occ-rerun").addEventListener("click", e => { e.stopPropagation(); quickOccText(t.user_request || ""); });
       el.onclick = () => openOccHistoryTask(t.task_id);
       list.appendChild(el);
     }
@@ -10561,7 +12043,8 @@ async function cancelMyAITask() {
   if (!_occTaskId) return;
   if (!confirm('Vazifani bekor qilishni xohlaysizmi?')) return;
   try {
-    await postJSON('/api/myai/task/cancel', {task_id: _occTaskId});
+    const d = await postJSON('/api/myai/task/cancel', {task_id: _occTaskId});
+    if (!d.ok) throw new Error(d.error || 'Bekor qilish bajarilmadi');
     _occPaused = false;
     for (const id of Object.keys(AGENT_STATE)) {
       updateAgentState(id, 'idle', '', 0);
@@ -10569,7 +12052,9 @@ async function cancelMyAITask() {
     document.getElementById('occ-controls').style.display = 'none';
     chatShowError('Bekor qilindi');
     addFeedItem('system', 'error', 'Task cancelled by user');
-  } catch(e) {}
+  } catch(e) {
+    chatShowError(e.message || 'Bekor qilish bajarilmadi');
+  }
 }
 
 /* ── Page init ────────────────────────────────────────────────────── */

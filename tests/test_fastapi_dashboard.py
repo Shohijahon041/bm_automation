@@ -119,6 +119,7 @@ def test_core_routes_registered(client):
     for p in (
         "/api/login", "/api/logout", "/api/me", "/api/summary", "/api/routes",
         "/api/month", "/api/attendance", "/api/brutto", "/api/drivers",
+        "/api/early-start",
         "/api/settings", "/api/health", "/api/myai/status",
     ):
         assert p in paths, f"yo'qolgan yo'l: {p}"
@@ -173,6 +174,22 @@ def test_spa_served_at_root(client):
 # ---------------------------------------------------------------------------
 # Autentifikatsiya / scope (endpoint darajasi)
 # ---------------------------------------------------------------------------
+
+def test_early_start_endpoint(client, monkeypatch):
+    from bm_automation.app.notifications.ops import early_start
+
+    seen = {}
+
+    def fake_report(date_str="", route_ids=None, force=False):
+        seen.update(date=date_str, routes=route_ids, force=force)
+        return {"ok": True, "date": date_str, "totals": {"total": 0}}
+
+    monkeypatch.setattr(early_start, "early_start_report", fake_report)
+    r = client.get("/api/early-start?date=2026-08-10&route=r1")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert seen == {"date": "2026-08-10", "routes": ["r1"], "force": False}
+
 
 def test_me_is_admin_under_test_mode(client):
     r = client.get("/api/me")
@@ -432,6 +449,19 @@ def test_fine_save_and_telegram_unlink(client, seeded_storage,
 
     r = client.post("/api/users/555/link-driver", json={"driver_id": ""})
     assert r.status_code == 200 and r.json()["ok"] is True
+
+
+def test_driver_profile_phone_and_tin_edit(client, seeded_storage,
+                                           no_post_rate_limit):
+    """Operator telefon va JSHSHRni kartada qo'lda o'zgartira oladi."""
+    r = client.post("/api/drivers/d1/profile",
+                    json={"full_name": "Aliyev Aliy",
+                          "phone": "+998901234567",
+                          "tin": "31704661370099"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    profile = seeded_storage.find("driver_profiles", driver_id="d1")
+    assert profile["phone"] == "+998901234567"
+    assert seeded_storage.find("drivers", external_id="d1")["tin"] == "31704661370099"
 
 
 # ---------------------------------------------------------------------------

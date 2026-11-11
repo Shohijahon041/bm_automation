@@ -308,6 +308,34 @@ def _handle_group_update(upd: dict, chat_id: int) -> None:
       • `/guruh [nom|off]` — shu guruhni firmaga bog'laydi/uzadi (ADMIN).
       • Qolgan buyruqlar guruhda ishlamaydi (jim).
     """
+    # Guruhda so'rovnoma (grafik_poll) callback bosilganda — haydovchilar ham
+    # tasdiqlashi uchun umumiy tekshiruvlardan oldin qayta ishlanadi.
+    cq = upd.get("callback_query")
+    if cq:
+        data = str(cq.get("data") or "")
+        if data.startswith(("gck:", "gme:", "grf:", "ginfo:")):
+            try:
+                from . import grafik_poll
+                from_user = cq.get("from") or {}
+                f_uid = from_user.get("id")
+                if f_uid:
+                    fname = f"{from_user.get('first_name', '')} {from_user.get('last_name', '')}".strip()
+                    uname = str(from_user.get("username") or "")
+                    record_user(f_uid, first_name=fname, username=uname)
+                    if data.startswith("gme:"):
+                        act_detail = "⚡️ O'z grafikini tasdiqlash bosildi"
+                    elif data.startswith("gck:"):
+                        act_detail = f"Grafik tasdiqlash bosildi ({data})"
+                    elif data.startswith("grf:"):
+                        act_detail = "🔄 So'rovnomani yangilash bosildi"
+                    else:
+                        act_detail = f"So'rovnoma: {data}"
+                    record_activity(f_uid, "poll_click", act_detail)
+                grafik_poll.handle_group_callback(chat_id, cq, data)
+            except Exception as exc:  # noqa: BLE001
+                print(f"Guruh grafik_poll callback xatosi: {exc}")
+            return
+
     msg = upd.get("message") or upd.get("edited_message") or \
         (upd.get("callback_query") or {}).get("message") or {}
     text = str(msg.get("text") or "").strip()
@@ -322,6 +350,15 @@ def _handle_group_update(upd: dict, chat_id: int) -> None:
                              is_command, detail=text[:200])
     except Exception as exc:  # noqa: BLE001
         print(f"Guruh statistika xatosi: {exc}")
+
+    sender_id = (sender or {}).get("id")
+    if is_command and sender_id:
+        try:
+            fname = (sender or {}).get("name") or ""
+            record_user(sender_id, first_name=fname)
+            record_activity(sender_id, "group_command", f"{get_group_title}: {text}" if get_group_title else text)
+        except Exception:
+            pass
 
     if not (is_command or _bot_mentioned(upd)):
         return  # guruhda jim turamiz
@@ -354,6 +391,226 @@ def _handle_group_update(upd: dict, chat_id: int) -> None:
                      "Shaxsiy chatda /grafik yoki dashboard'dan "
                      "yoqishingiz mumkin.",
                      chat_id=chat_id, parse_mode="HTML")
+        return
+
+    if cmd in ("sorov", "sorovnoma", "poll"):
+        try:
+            from datetime import date, datetime, timedelta
+            from . import grafik_poll
+            from .group_departures import _route_chats
+            from ...core.profiles import all_profiles
+            rest = text.split()
+            arg = rest[1].lower() if len(rest) > 1 else ""
+            if arg == "bugun":
+                target_date = date.today()
+            elif arg in ("", "ertaga"):
+                target_date = date.today() + timedelta(days=1)
+            else:
+                try:
+                    target_date = datetime.strptime(arg, "%Y-%m-%d").date()
+                except ValueError:
+                    target_date = date.today() + timedelta(days=1)
+            routes_map = _route_chats()
+            cid_str = str(chat_id)
+            matched_rids = [rid for rid, chats in routes_map.items() if cid_str in chats]
+            if not matched_rids:
+                send_message("⚠️ Bu guruhga biriktirilgan yo'nalish topilmadi.\n/guruh &lt;firma&gt; orqali guruhni bog'lang.",
+                             chat_id=chat_id, parse_mode="HTML")
+                return
+            sent_any = False
+            for rid in matched_rids:
+                r_name = rid[:8]
+                for p in all_profiles():
+                    if str(p.get("routeVariantId")) == rid:
+                        r_name = str(p.get("routeName") or p.get("name") or rid[:8])
+                        break
+                res = grafik_poll.send_poll_to_groups(
+                    rid, target_date, route_name=r_name, force=True, specific_chat_id=chat_id
+                )
+                if res.get("sent", 0) > 0:
+                    sent_any = True
+            if not sent_any:
+                send_message(f"⏳ {target_date:%d.%m.%Y} kun uchun grafik hali e'lon qilinmagan.",
+                             chat_id=chat_id, parse_mode="HTML")
+        except Exception as exc:  # noqa: BLE001
+            print(f"Guruh /sorov xatosi: {exc}")
+        return
+
+    if cmd in ("sorov_status", "poll_status"):
+        try:
+            from datetime import date, datetime, timedelta
+            from . import grafik_poll
+            from .group_departures import _route_chats
+            rest = text.split()
+            arg = rest[1].lower() if len(rest) > 1 else ""
+            if arg == "bugun":
+                target_date = date.today()
+            elif arg in ("", "ertaga"):
+                target_date = date.today() + timedelta(days=1)
+            else:
+                try:
+                    target_date = datetime.strptime(arg, "%Y-%m-%d").date()
+                except ValueError:
+                    target_date = date.today() + timedelta(days=1)
+            routes_map = _route_chats()
+            cid_str = str(chat_id)
+            matched_rids = [rid for rid, chats in routes_map.items() if cid_str in chats]
+            if not matched_rids:
+                send_message("⚠️ Bu guruhga biriktirilgan yo'nalish topilmadi.\n/guruh &lt;firma&gt; orqali guruhni bog'lang.",
+                             chat_id=chat_id, parse_mode="HTML")
+                return
+            for rid in matched_rids:
+                st_text = grafik_poll.get_poll_status_text(rid, target_date.isoformat())
+                send_message(st_text, chat_id=chat_id, parse_mode="HTML")
+        except Exception as exc:  # noqa: BLE001
+            print(f"Guruh /sorov_status xatosi: {exc}")
+        return
+
+    if cmd in ("sorov_bekor", "sorov_reset"):
+        try:
+            from datetime import date, datetime, timedelta
+            from html import escape
+            from . import grafik_poll
+            from .group_departures import _route_chats
+            rest = text.split()
+            if len(rest) < 2:
+                send_message("ℹ️ Foydalanish: <code>/sorov_bekor &lt;grafik_raqami&gt;</code>\nMasalan: <code>/sorov_bekor 2</code>",
+                             chat_id=chat_id, parse_mode="HTML")
+                return
+            g_target = rest[1].strip()
+            arg = rest[2].lower() if len(rest) > 2 else ""
+            if arg == "bugun":
+                target_date = date.today()
+            elif arg in ("", "ertaga"):
+                target_date = date.today() + timedelta(days=1)
+            else:
+                try:
+                    target_date = datetime.strptime(arg, "%Y-%m-%d").date()
+                except ValueError:
+                    target_date = date.today() + timedelta(days=1)
+            routes_map = _route_chats()
+            cid_str = str(chat_id)
+            matched_rids = [rid for rid, chats in routes_map.items() if cid_str in chats]
+            if not matched_rids:
+                send_message("⚠️ Bu guruhga biriktirilgan yo'nalish topilmadi.\n/guruh &lt;firma&gt; orqali guruhni bog'lang.",
+                             chat_id=chat_id, parse_mode="HTML")
+                return
+            reset_done = False
+            for rid in matched_rids:
+                if grafik_poll.reset_confirmation(rid, target_date.isoformat(), g_target):
+                    reset_done = True
+                elif not arg and grafik_poll.reset_confirmation(rid, date.today().isoformat(), g_target):
+                    reset_done = True
+            if reset_done:
+                send_message(f"✅ Grafik {escape(g_target)} tasdiqlanishi bekor qilindi.",
+                             chat_id=chat_id, parse_mode="HTML")
+            else:
+                send_message(f"⚠️ Grafik {escape(g_target)} topilmadi yoki tasdiqlanmagan.",
+                             chat_id=chat_id, parse_mode="HTML")
+        except Exception as exc:  # noqa: BLE001
+            print(f"Guruh /sorov_bekor xatosi: {exc}")
+        return
+
+    if cmd in ("sorov_tasdiq", "poll_confirm"):
+        try:
+            from datetime import date, datetime, timedelta
+            from html import escape
+            from . import grafik_poll
+            from .group_departures import _route_chats
+            rest = text.split()
+            if len(rest) < 2:
+                send_message("ℹ️ Foydalanish: <code>/sorov_tasdiq &lt;grafik_raqami&gt;</code>\nMasalan: <code>/sorov_tasdiq 2</code>",
+                             chat_id=chat_id, parse_mode="HTML")
+                return
+            g_target = rest[1].strip()
+            arg = rest[2].lower() if len(rest) > 2 else ""
+            if arg == "bugun":
+                target_date = date.today()
+            elif arg in ("", "ertaga"):
+                target_date = date.today() + timedelta(days=1)
+            else:
+                try:
+                    target_date = datetime.strptime(arg, "%Y-%m-%d").date()
+                except ValueError:
+                    target_date = date.today() + timedelta(days=1)
+            routes_map = _route_chats()
+            cid_str = str(chat_id)
+            matched_rids = [rid for rid, chats in routes_map.items() if cid_str in chats]
+            if not matched_rids:
+                send_message("⚠️ Bu guruhga biriktirilgan yo'nalish topilmadi.\n/guruh &lt;firma&gt; orqali guruhni bog'lang.",
+                             chat_id=chat_id, parse_mode="HTML")
+                return
+            confirm_done = False
+            for rid in matched_rids:
+                if grafik_poll.confirm_by_admin(rid, target_date.isoformat(), g_target, admin_name=sender):
+                    confirm_done = True
+                elif not arg and grafik_poll.confirm_by_admin(rid, date.today().isoformat(), g_target, admin_name=sender):
+                    confirm_done = True
+            if confirm_done:
+                send_message(f"✅ Grafik {escape(g_target)} dispetcher tomonidan tasdiqlandi.",
+                             chat_id=chat_id, parse_mode="HTML")
+            else:
+                send_message(f"⚠️ Grafik {escape(g_target)} topilmadi yoki allaqachon tasdiqlangan.",
+                             chat_id=chat_id, parse_mode="HTML")
+        except Exception as exc:  # noqa: BLE001
+            print(f"Guruh /sorov_tasdiq xatosi: {exc}")
+        return
+
+    if cmd in ("sorov_almash", "grafik_almash", "poll_swap"):
+        try:
+            from datetime import date, datetime, timedelta
+            from html import escape
+            from . import grafik_poll
+            from .group_departures import _route_chats
+            rest = text.split()
+            if len(rest) < 3:
+                send_message("ℹ️ Foydalanish: <code>/sorov_almash &lt;grafik1&gt; &lt;grafik2&gt; [sana]</code>\n"
+                             "Masalan: <code>/sorov_almash 1 4</code> yoki <code>/sorov_almash P1 P4 bugun</code>",
+                             chat_id=chat_id, parse_mode="HTML")
+                return
+            g1, g2 = rest[1].strip(), rest[2].strip()
+            arg = rest[3].lower() if len(rest) > 3 else ""
+            if arg == "bugun":
+                target_date = date.today()
+            elif arg in ("", "ertaga"):
+                target_date = date.today() + timedelta(days=1)
+            else:
+                try:
+                    target_date = datetime.strptime(arg, "%Y-%m-%d").date()
+                except ValueError:
+                    target_date = date.today() + timedelta(days=1)
+            routes_map = _route_chats()
+            cid_str = str(chat_id)
+            matched_rids = [rid for rid, chats in routes_map.items() if cid_str in chats]
+            if not matched_rids:
+                send_message("⚠️ Bu guruhga biriktirilgan yo'nalish topilmadi.\n/guruh &lt;firma&gt; orqali guruhni bog'lang.",
+                             chat_id=chat_id, parse_mode="HTML")
+                return
+            swap_res = None
+            for rid in matched_rids:
+                res = grafik_poll.swap_graphs(rid, target_date.isoformat(), g1, g2, admin_name=sender)
+                if res.get("ok"):
+                    swap_res = res
+                    break
+                elif not arg:
+                    res_today = grafik_poll.swap_graphs(rid, date.today().isoformat(), g1, g2, admin_name=sender)
+                    if res_today.get("ok"):
+                        swap_res = res_today
+                        break
+            if swap_res and swap_res.get("ok"):
+                send_message(
+                    f"🔄 <b>GRAFIK ALMASHISHI:</b>\n\n"
+                    f"• <b>Grafik {escape(str(swap_res['graph1']))}:</b> {escape(str(swap_res['driver1']))}\n"
+                    f"• <b>Grafik {escape(str(swap_res['graph2']))}:</b> {escape(str(swap_res['driver2']))}\n\n"
+                    f"<i>Har ikki grafik tasdiqlash uchun qayta ochildi va so'rovnoma xabari yangilandi.</i>",
+                    chat_id=chat_id,
+                    parse_mode="HTML",
+                )
+            else:
+                err = (swap_res or {}).get("error") or "Grafiklar topilmadi"
+                send_message(f"⚠️ Almashtirilmadi: {escape(err)}", chat_id=chat_id, parse_mode="HTML")
+        except Exception as exc:  # noqa: BLE001
+            print(f"Guruh /sorov_almash xatosi: {exc}")
         return
 
     if cmd in ("chiqish_on", "chiqish_off", "chiqish"):
@@ -568,6 +825,11 @@ def poll_forever() -> None:
             except Exception as exc:
                 print(f"Hujjat muddati xatosi: {exc}")
             try:
+                from . import billing_reminders
+                billing_reminders.check_and_send()
+            except Exception as exc:
+                print(f"To'lov eslatmasi xatosi: {exc}")
+            try:
                 from . import monthly_results
                 monthly_results.check_and_send()
             except Exception as exc:
@@ -607,6 +869,29 @@ def poll_forever() -> None:
             group_departures.check_and_send()
         except Exception as exc:
             print(f"Chiqish vaqti eslatmasi xatosi: {exc}")
+        # Erta qatnov (favqulodda) — AI_AUTO_AGENTS'ga bog'liq emas va
+        # guruh sozlamasidan qat'i nazar ishlaydi: rejadan erta boshlangan
+        # qatnov haqida guruh + SMS + profil DM ga tezkor xabar.
+        try:
+            from . import early_start
+            early_start.check_and_send()
+        except Exception as exc:
+            print(f"Erta qatnov ogohlantirishi xatosi: {exc}")
+        # Operatsion monitoring (disk/DB/backup) AI_AUTO_AGENTS'ga bog'liq
+        # emas — xavfsizlik uchun doim ishlaydi, o'z 10 daqiqalik intervali
+        # va alerts throttle bilan.
+        try:
+            from ...dashboard import monitor
+            monitor.check_and_send()
+        except Exception as exc:
+            print(f"Monitoring xatosi: {exc}")
+        # Texnik xizmat muddati eslatmasi (kunlik, dedupe bilan) —
+        # AI_AUTO_AGENTS'ga bog'liq emas.
+        try:
+            from . import vehicle_service
+            vehicle_service.check_and_send()
+        except Exception as exc:
+            print(f"Xizmat eslatmasi xatosi: {exc}")
         # Avtomatik sinxronlash — AI_AUTO_AGENTS'ga bog'liq emas,
         # o'z sozlamasi bilan boshqariladi (bot_settings.auto_sync, std: on;
         # har auto_sync_interval_min daqiqada, fon oqimida ishlaydi).
@@ -701,6 +986,13 @@ def main(argv: list | None = None) -> int:
                 _handle_update(upd)
             print(f"{len(updates)} update ko'rib chiqildi.")
             return 0
+        # Erta qatnov tekshiruvi alohida oqimda — Telegram long-poll (50s)
+        # cadence'iga bog'lanmasdan, sozlamadagi interval bilan ishlaydi.
+        try:
+            from . import early_start
+            early_start.start_worker()
+        except Exception as exc:
+            print(f"Erta qatnov oqimi ishga tushmadi: {exc}")
         if args.watchdog:
             poll_forever_reliable()
         else:

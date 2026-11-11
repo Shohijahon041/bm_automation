@@ -499,6 +499,131 @@ def set_departure_offset_min(value) -> int:
     return v
 
 
+# ---------------------------------------- erta qatnov ogohlantirishi
+
+# Rejadan shuncha daqiqa erta boshlangan qatnov "favqulodda" hisoblanadi.
+EARLY_START_THRESHOLD_MIN = 1
+EARLY_START_THRESHOLD_MAX = 60
+
+# Tekshiruv oralig'i (soniya): qanchalik kichik bo'lsa, xabar shunchalik
+# tez boradi, lekin BM API'ga so'rovlar ko'payadi. 5 s — 7 profil uchun
+# daqiqasiga ~84 so'rov; BM buni ko'taradi, aniqlash esa ~4 s bo'ladi.
+EARLY_START_INTERVAL_S_MIN = 5
+EARLY_START_INTERVAL_S_MAX = 600
+EARLY_START_INTERVAL_S_DEFAULT = 5
+
+
+def early_start_notify() -> bool:
+    """Qatnov rejadan erta boshlanganda favqulodda ogohlantirish (std: on)."""
+    try:
+        val = _load().get("early_start_notify")
+    except Exception:
+        val = None
+    return True if val is None else bool(val)
+
+
+def set_early_start_notify(value: bool | None, by: str = "") -> bool:
+    with _LOCK:
+        _load()
+        old = early_start_notify()
+        on = bool(value)
+        _CACHE["early_start_notify"] = on
+        _audit("early_start_notify", old, on, by=by)
+        _save()
+    return on
+
+
+def early_start_threshold_min() -> int:
+    """Erta boshlanish chegarasi, daqiqada (1..60, standart 1)."""
+    try:
+        v = int(_load().get("early_start_threshold_min",
+                            EARLY_START_THRESHOLD_MIN))
+    except (TypeError, ValueError, OverflowError):
+        return EARLY_START_THRESHOLD_MIN
+    return max(1, min(EARLY_START_THRESHOLD_MAX, v))
+
+
+def set_early_start_threshold_min(value) -> int:
+    with _LOCK:
+        _load()
+        old = early_start_threshold_min()
+        try:
+            f = float(value)
+            if not math.isfinite(f):
+                f = EARLY_START_THRESHOLD_MIN
+            v = int(f)
+        except (TypeError, ValueError, OverflowError):
+            v = EARLY_START_THRESHOLD_MIN
+        v = max(1, min(EARLY_START_THRESHOLD_MAX, v))
+        _CACHE["early_start_threshold_min"] = v
+        _audit("early_start_threshold_min", old, v)
+        _save()
+    return v
+
+
+def early_start_interval_s() -> int:
+    """Tekshiruv oralig'i, soniyada (5..600, standart 5)."""
+    try:
+        v = int(_load().get("early_start_interval_s",
+                            EARLY_START_INTERVAL_S_DEFAULT))
+    except (TypeError, ValueError, OverflowError):
+        return EARLY_START_INTERVAL_S_DEFAULT
+    return max(EARLY_START_INTERVAL_S_MIN, min(EARLY_START_INTERVAL_S_MAX, v))
+
+
+def set_early_start_interval_s(value) -> int:
+    with _LOCK:
+        _load()
+        old = early_start_interval_s()
+        try:
+            v = int(float(value))
+        except (TypeError, ValueError, OverflowError):
+            v = EARLY_START_INTERVAL_S_DEFAULT
+        v = max(EARLY_START_INTERVAL_S_MIN, min(EARLY_START_INTERVAL_S_MAX, v))
+        _CACHE["early_start_interval_s"] = v
+        _audit("early_start_interval_s", old, v)
+        _save()
+    return v
+
+
+# Erta qatnov alertidan keyin reys BM'da qabul qilindimi — shu qatnov
+# tugaganidan keyin shuncha daqiqa o'tib tekshiriladi (qabul qilinmasa
+# haydovchiga eslatma ketadi). 0 — natija kuzatilmaydi.
+EARLY_START_FOLLOWUP_MIN_DEFAULT = 10
+EARLY_START_FOLLOWUP_MIN_MIN = 0
+EARLY_START_FOLLOWUP_MIN_MAX = 120
+
+
+def early_start_followup_min() -> int:
+    """Erta qatnov natijasini tekshirish kechikishi (daqiqa, 0..120)."""
+    try:
+        v = int(_load().get("early_start_followup_min",
+                            EARLY_START_FOLLOWUP_MIN_DEFAULT))
+    except (TypeError, ValueError, OverflowError):
+        return EARLY_START_FOLLOWUP_MIN_DEFAULT
+    return max(EARLY_START_FOLLOWUP_MIN_MIN,
+               min(EARLY_START_FOLLOWUP_MIN_MAX, v))
+
+
+def set_early_start_followup_min(value) -> int:
+    with _LOCK:
+        _load()
+        old = early_start_followup_min()
+        try:
+            f = float(value)
+            if not math.isfinite(f):
+                f = EARLY_START_FOLLOWUP_MIN_DEFAULT
+            v = int(f)
+        except (TypeError, ValueError, OverflowError):
+            v = EARLY_START_FOLLOWUP_MIN_DEFAULT
+        v = max(EARLY_START_FOLLOWUP_MIN_MIN,
+                min(EARLY_START_FOLLOWUP_MIN_MAX, v))
+        _CACHE["early_start_followup_min"] = v
+        _audit("early_start_followup_min", old, v)
+        _save()
+    return v
+
+
 # ------------------------------------------------------------------- til
 
 def lang(chat_id: int) -> str:

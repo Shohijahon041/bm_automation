@@ -43,6 +43,24 @@ _RAW_TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("contact_telegram", "TEXT NOT NULL DEFAULT ''"),
         ("contact_phone", "TEXT NOT NULL DEFAULT ''"),
         ("notes", "TEXT NOT NULL DEFAULT ''"),
+        # Oylik to'lov: summa qo'lda belgilanadi (korxona bo'yicha har xil).
+        ("billing_amount", "REAL NOT NULL DEFAULT 0"),
+        ("billing_day", "INTEGER NOT NULL DEFAULT 5"),
+    ],
+    # Oylik to'lovlar jurnali: naqd / karta / hisob raqami (shartnoma).
+    # `period` — qaysi oy uchun to'lov (YYYY-MM); bitta oyga bir nechta
+    # qism to'lov bo'lishi mumkin, shuning uchun UNIQUE kalit yo'q.
+    "company_payments": [
+        ("company_id", "BIGINT NOT NULL DEFAULT 0"),
+        ("company", "TEXT NOT NULL DEFAULT ''"),
+        ("period", "TEXT NOT NULL DEFAULT ''"),
+        ("amount", "REAL NOT NULL DEFAULT 0"),
+        ("method", "TEXT NOT NULL DEFAULT 'cash'"),
+        ("contract_no", "TEXT NOT NULL DEFAULT ''"),
+        ("receipt_no", "TEXT NOT NULL DEFAULT ''"),
+        ("paid_on", "TEXT NOT NULL DEFAULT ''"),
+        ("note", "TEXT NOT NULL DEFAULT ''"),
+        ("created_by", "TEXT NOT NULL DEFAULT ''"),
     ],
     "profiles": [
         ("external_id", "TEXT NOT NULL DEFAULT ''"),
@@ -76,6 +94,21 @@ _RAW_TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("tin", "TEXT NOT NULL DEFAULT ''"),
         ("route_id", "TEXT NOT NULL DEFAULT ''"),
         ("data", "TEXT NOT NULL DEFAULT '{}'"),
+    ],
+    # Avtobuslar texnik xizmat jurnali. Har bir yozuv — bajarilgan ish;
+    # keyingi xizmat sanasi/kilometri eslatma agenti uchun saqlanadi.
+    "vehicle_service_logs": [
+        ("vehicle_id", "TEXT NOT NULL"),
+        # Tenant izolyatsiyasi uchun avtobusdan ko'chiriladi (vehicle -> route).
+        ("route_id", "TEXT NOT NULL DEFAULT ''"),
+        ("service_date", "TEXT NOT NULL DEFAULT ''"),
+        ("service_type", "TEXT NOT NULL DEFAULT ''"),
+        ("odometer", "INTEGER NOT NULL DEFAULT 0"),
+        ("cost", "REAL NOT NULL DEFAULT 0"),
+        ("vendor", "TEXT NOT NULL DEFAULT ''"),
+        ("note", "TEXT NOT NULL DEFAULT ''"),
+        ("next_service_date", "TEXT NOT NULL DEFAULT ''"),
+        ("next_service_km", "INTEGER NOT NULL DEFAULT 0"),
     ],
     # Driver-specific personnel data is intentionally kept apart from the
     # upstream ``drivers`` table. BM sync may refresh that table at any time;
@@ -368,6 +401,7 @@ _RAW_TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
 # `errors`, `notifications`, `automation_runs`, `report_runs` (jurnallar).
 TENANT_TABLES: tuple[str, ...] = (
     "profiles", "routes", "vehicles", "drivers", "driver_profiles",
+    "vehicle_service_logs",
     "driver_work_logs", "driver_fines", "driver_appeals", "duties",
     "schedules", "waybills", "route_daily", "trips", "reports",
     "dispatcher_routes", "documents", "sms_log", "sms_route_flags",
@@ -427,6 +461,7 @@ EXTRA_INDEXES: dict[str, list[list[str]]] = {
     "errors": [["occurred_at"]],
     "notifications": [["sent_at"]],
     "schedules": [["vehicle_id", "date"]],
+    "vehicle_service_logs": [["vehicle_id", "service_date"], ["route_id", "service_date"]],
     "driver_profiles": [["driver_id"]],
     "dispatcher_routes": [["dispatcher_chat_id", "route_id"]],
     "sms_log": [["send_at"], ["status"]],
@@ -435,6 +470,8 @@ EXTRA_INDEXES: dict[str, list[list[str]]] = {
     "driver_appeals": [["driver_id"], ["status"]],
     # Panel foydalanuvchilari korxona bo'yicha filtrlanadi (tenant scope).
     "dashboard_users": [["company"]],
+    # To'lovlar korxona + davr bo'yicha yig'iladi.
+    "company_payments": [["company_id", "period"], ["paid_on"]],
 }
 
 # Tenant filtri uchun indekslar: har bir biznes jadvalda `company_id`
@@ -542,6 +579,11 @@ _MIGRATIONS: list[str] = [
     "contact_phone TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE companies ADD COLUMN IF NOT EXISTS "
     "notes TEXT NOT NULL DEFAULT ''",
+    # Oylik to'lov: narx va to'lov kuni (eski bazalarda yo'q).
+    "ALTER TABLE companies ADD COLUMN IF NOT EXISTS "
+    "billing_amount REAL NOT NULL DEFAULT 0",
+    "ALTER TABLE companies ADD COLUMN IF NOT EXISTS "
+    "billing_day INTEGER NOT NULL DEFAULT 5",
     # Ikki bosqichli kirish (TOTP) — eski bazalarga ustun qo'shiladi.
     "ALTER TABLE dashboard_users ADD COLUMN IF NOT EXISTS "
     "totp_secret TEXT NOT NULL DEFAULT ''",

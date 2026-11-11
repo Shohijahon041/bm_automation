@@ -728,6 +728,63 @@ def test_dispatch_admin_sync_confirm(admin):
     assert rows[0][0]["callback_data"] == "sync:confirm"
 
 
+def test_search_bot_users_matches_name_username_chat(monkeypatch):
+    """Foydalanuvchi qidiruvi ism, @username va chat ID bo'yicha ishlaydi."""
+    from bm_automation.app.core import bot_users
+    users = [
+        {"chat_id": 501, "first_name": "Ali Valiyev", "username": "ali_v",
+         "role": "VIEWER", "last_seen": "2026-11-01 10:00:00"},
+        {"chat_id": 502, "first_name": "Bekzod", "username": "bz",
+         "role": "DRIVER", "last_seen": "2026-11-02 10:00:00"},
+    ]
+    monkeypatch.setattr(bot_users, "get_users", lambda: list(users))
+    assert [u["chat_id"] for u in dispatch._search_bot_users("ali")] == [501]
+    assert [u["chat_id"] for u in dispatch._search_bot_users("@ali_v")] == [501]
+    assert [u["chat_id"] for u in dispatch._search_bot_users("502")] == [502]
+    # Bo'sh so'rov — oxirgi faollik bo'yicha (eng yangi birinchi)
+    assert [u["chat_id"] for u in dispatch._search_bot_users("")] == [502, 501]
+    assert dispatch._search_bot_users("topilmadi") == []
+
+
+def test_admin_link_flow_search_and_move(admin, monkeypatch, tmp_path):
+    """Admin haydovchi → foydalanuvchi qidiruvi → bog'lash; eski chat bo'shaydi."""
+    from bm_automation.app.core import bot_settings, bot_users
+    from bm_automation.app.notifications.ops.roles import _DRIVER_CHAT_CACHE
+    _DRIVER_CHAT_CACHE.clear()
+    st = _seed(storage_for(SQLiteDatabase(str(tmp_path / "alink.db"))))
+    st.save_driver_profile("d2", notification_target="901234567")
+    assert st.link_driver_telegram("d1", 999)
+    monkeypatch.setattr(dispatch, "get_storage", lambda: st)
+    monkeypatch.setattr("bm_automation.app.db.get_storage", lambda: st)
+    monkeypatch.setattr("bm_automation.app.db.storage.get_storage", lambda: st)
+    monkeypatch.setattr(roles, "promote_driver_role", lambda cid: None)
+    monkeypatch.setattr(bot_users, "get_users", lambda: [
+        {"chat_id": 999, "first_name": "Ali Valiyev", "username": "ali_v",
+         "role": "VIEWER", "last_seen": "2026-11-01 10:00:00"},
+        {"chat_id": 1000, "first_name": "Bekzod", "username": "bz",
+         "role": "VIEWER", "last_seen": "2026-11-02 10:00:00"},
+    ])
+    bot_settings.clear_pending(111)
+
+    dispatch.handle_callback(111, {"id": "q"}, "linkpick:d2")
+    assert bot_settings.pending(111) == "link_user:d2"
+    rows = admin[-1]["reply_markup"]["inline_keyboard"]
+    assert rows[0][0]["callback_data"] == "linkuser:1000"
+
+    dispatch.handle_message(111, "ali")
+    assert "TOPILDI: 1" in admin[-1]["text"]
+    rows = admin[-1]["reply_markup"]["inline_keyboard"]
+    assert rows[0][0]["callback_data"] == "linkuser:999"
+
+    dispatch.handle_callback(111, {"id": "q"}, "linkuser:999")
+    assert (st.find("driver_profiles", driver_id="d2") or {}).get(
+        "telegram_chat_id") == "999"
+    assert (st.find("driver_profiles", driver_id="d1") or {}).get(
+        "telegram_chat_id") == ""
+    assert any("olib tashlandi" in m["text"] for m in admin)
+    assert bot_settings.pending(111) in (None, "")
+
+
 def test_dispatch_export_viewer_denied(viewer):
     dispatch.handle_message(999, "/export csv routes")
     assert viewer[-1]["text"] == DENIED_TEXT

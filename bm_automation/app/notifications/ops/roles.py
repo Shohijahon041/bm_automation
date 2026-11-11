@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from enum import Enum
 
 from ...config.settings import telegram_settings
@@ -44,18 +45,40 @@ class Role(str, Enum):
 
 _RANK = {Role.ADMIN: 4, Role.DISPATCHER: 3, Role.MANAGER: 2, Role.DRIVER: 1, Role.VIEWER: 0}
 
-# Haydovchi chat_id → driver_id keshi (DB dan aniqlanganlar) — thread-safe
-_DRIVER_CHAT_CACHE: dict[int, str] = {}
+# Haydovchi chat_id → (yozilgan vaqt, driver_id). Dashboard boshqa jarayonda
+# bog'lanishni o'zgartirsa, bot buni faqat TTL tugagach ko'radi — shuning
+# uchun kesh muddati qisqa (2 daqiqa), aks holda bekor qilingan haydovchi
+# botda uzoq vaqt haydovchi bo'lib qoladi.
+_DRIVER_CHAT_TTL = 120.0
+_DRIVER_CHAT_CACHE: dict[int, tuple[float, str]] = {}
 _DRIVER_CHAT_LOCK = threading.Lock()
+
+
+def remember_driver_chat(chat_id: int, driver_id: str) -> None:
+    """Bog'lanishni keshga yozadi (chat → haydovchi)."""
+    if not chat_id or not driver_id:
+        return
+    with _DRIVER_CHAT_LOCK:
+        _DRIVER_CHAT_CACHE[int(chat_id)] = (time.monotonic(), str(driver_id))
+
+
+def forget_driver_chat(chat_id: int) -> None:
+    """Keshdan chiqaradi (bog'lanish o'zgartirilganda)."""
+    with _DRIVER_CHAT_LOCK:
+        _DRIVER_CHAT_CACHE.pop(int(chat_id), None)
 
 
 def driver_id_for_chat(chat_id: int) -> str | None:
     """chat_id haydovchiga tegishlimi? driver_id qaytaradi, yo'qsa None."""
     if not chat_id:
         return None
+    now = time.monotonic()
     with _DRIVER_CHAT_LOCK:
-        if chat_id in _DRIVER_CHAT_CACHE:
-            return _DRIVER_CHAT_CACHE[chat_id]
+        hit = _DRIVER_CHAT_CACHE.get(chat_id)
+        if hit and (now - hit[0]) < _DRIVER_CHAT_TTL:
+            return hit[1]
+        if hit:
+            _DRIVER_CHAT_CACHE.pop(chat_id, None)
     try:
         from ...db import get_storage
         st = get_storage()
@@ -63,12 +86,32 @@ def driver_id_for_chat(chat_id: int) -> str | None:
         if row:
             did = str(row.get("driver_id") or "")
             if did:
-                with _DRIVER_CHAT_LOCK:
-                    _DRIVER_CHAT_CACHE[chat_id] = did
+                remember_driver_chat(chat_id, did)
                 return did
     except Exception:  # noqa: BLE001
         pass
     return None
+
+
+def promote_driver_role(chat_id: int) -> None:
+    """Bog'langan chatga DRIVER roli beriladi.
+
+    Yuqori rol (ADMIN/DISPATCHER/MANAGER) pasaytirilmaydi — dispetcher ham
+    haydovchi bo'lishi mumkin, lekin uning boshqaruv huquqi yo'qolmaydi.
+    """
+    try:
+        from ...core.bot_users import get_user, set_role
+    except Exception:  # noqa: BLE001
+        return
+    current = _parse_role((get_user(chat_id) or {}).get("role"))
+    if current in (Role.ADMIN, Role.DISPATCHER, Role.MANAGER):
+        return
+    if current is Role.DRIVER:
+        return
+    try:
+        set_role(chat_id, "DRIVER")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _resolve_driver_role(chat_id: int) -> Role | None:

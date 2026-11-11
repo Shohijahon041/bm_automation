@@ -268,6 +268,104 @@ def test_dtransport_guard():
     assert DTransportTool._scope_denial({"route_id": "r2"}) is None
 
 
+# --------------------------------------------------------- bilim bazasi
+
+@pytest.fixture()
+def global_vault(monkeypatch, tmp_path):
+    from bm_automation.app.core import knowledge
+    from bm_automation.app.myai import knowledge_context
+
+    monkeypatch.setenv("KNOWLEDGE_VAULT_DIR", str(tmp_path / "vault"))
+    monkeypatch.setenv("MYAI_KNOWLEDGE", "on")
+    base = knowledge.vault_dir()
+    (base / "Qoidalar/Asosiy-invariantlar.md").write_text(
+        "# Asosiy invariantlar\n\nmaxfiy boshqa korxona hisoboti\n", encoding="utf-8")
+    (base / "Xatolar/Xato-jurnali.md").write_text(
+        "# Xato jurnali\n\nmaxfiy dtransport xato\n", encoding="utf-8")
+    knowledge_context.clear_cache()
+    yield base
+    knowledge_context.clear_cache()
+
+
+@pytest.mark.parametrize("scope", [{}, {"company": "A"},
+                                  {"company": "A", "routes": ["r1"]},
+                                  {"routes": ["r1"]}, {"deny": True}])
+def test_tenant_knowledge_context_blocks_global_cache(global_vault, scope, monkeypatch):
+    from bm_automation.app.myai import knowledge_context as kc
+    from bm_automation.app.myai.orchestrator import Orchestrator
+
+    assert kc.relevant_notes("maxfiy")
+    scope_mod.set_scope(scope)
+    assert kc._index() == {}
+
+    def forbidden_index():
+        pytest.fail("Korxona vazifasi umumiy indeksni o'qimasligi kerak")
+
+    monkeypatch.setattr(kc, "_index", forbidden_index)
+    assert kc.relevant_notes("maxfiy") == []
+    assert kc.relevant_notes("mos kelmagan so'rov") == []
+    assert kc.brief("maxfiy") == ""
+    assert kc.lesson_hint("dtransport", "xato") == ""
+    assert Orchestrator._knowledge_brief("maxfiy") == ""
+
+
+@pytest.mark.parametrize("action", ["list", "search", "read", "index", "write"])
+@pytest.mark.parametrize("scope", [{}, {"company": "A", "routes": ["r1"]}])
+def test_tenant_vault_tool_denies_global_actions(global_vault, scope, action, monkeypatch):
+    from bm_automation.app.core import knowledge
+    from bm_automation.app.myai.tools.vault import VaultTool
+
+    tool = VaultTool(base_dir=global_vault)
+    scope_mod.set_scope(scope)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Korxona vazifasi umumiy vaultga murojaat qilmasligi kerak")
+
+    monkeypatch.setattr(tool, "_walk", forbidden)
+    monkeypatch.setattr(knowledge, "read_note", forbidden)
+    monkeypatch.setattr(knowledge, "write_note", forbidden)
+    result = asyncio.run(tool.execute(action, keyword="maxfiy",
+                                     path="Qoidalar/Asosiy-invariantlar.md",
+                                     title="Yangi", content="matn"))
+    assert result["scope_denied"] is True
+    assert result["found"] is False and result["count"] == 0
+    assert "maxfiy" not in str(result)
+
+
+@pytest.mark.parametrize("scope", [None, {"is_admin": True}])
+def test_unrestricted_tasks_keep_global_knowledge_access(global_vault, scope):
+    from bm_automation.app.myai import knowledge_context as kc
+    from bm_automation.app.myai.tools.vault import VaultTool
+
+    scope_mod.set_scope(scope)
+    assert "maxfiy" in kc.brief("maxfiy")
+    assert "maxfiy" in kc.lesson_hint("dtransport", "xato")
+    result = asyncio.run(VaultTool().execute(
+        "read", path="Qoidalar/Asosiy-invariantlar.md"))
+    assert result["found"] is True and "maxfiy" in result["text"]
+
+
+def test_knowledge_cache_tracks_configured_vault(global_vault, tmp_path, monkeypatch):
+    from bm_automation.app.myai import knowledge_context as kc
+
+    assert "maxfiy" in kc.brief("maxfiy")
+    monkeypatch.setenv("KNOWLEDGE_VAULT_DIR", str(tmp_path / "another-vault"))
+    assert kc.relevant_notes("maxfiy") == []
+    monkeypatch.setenv("KNOWLEDGE_VAULT_DIR", str(global_vault))
+    assert kc.relevant_notes("maxfiy")
+
+
+def test_knowledge_index_preserves_duplicate_titles(global_vault):
+    from bm_automation.app.myai import knowledge_context as kc
+
+    for category in ("Qoidalar", "Xatolar"):
+        (global_vault / category / "Takror.md").write_text(
+            f"# Takror\n\nbirxil {category}\n", encoding="utf-8")
+    notes = kc.relevant_notes("birxil", limit=10)
+    assert {note["path"] for note in notes} == {
+        "Qoidalar/Takror.md", "Xatolar/Takror.md"}
+
+
 # ------------------------------------------------------------- event bus
 
 def test_event_bus_allow_filter():

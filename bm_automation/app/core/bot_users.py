@@ -29,7 +29,7 @@ _LOADED = False
 _LAST_MTIME: float | None = None
 _LAST_SIZE: int | None = None
 
-_MAX_ACTIVITY = 50
+_MAX_ACTIVITY = 200
 
 
 def _load() -> dict:
@@ -265,3 +265,67 @@ def user_count() -> int:
     with _LOCK:
         _reload_if_changed()
         return len([k for k in _CACHE if isinstance(_CACHE[k], dict)])
+
+
+def get_all_activities(
+    limit: int = 100,
+    action_filter: str = "",
+    chat_id: int | None = None,
+    search: str = "",
+) -> list[dict]:
+    """Barcha foydalanuvchilar harakatlarini yagona xronologik lentada qaytaradi."""
+    with _LOCK:
+        _reload_if_changed()
+        all_acts = []
+        action_filter_lower = action_filter.lower().strip()
+        search_lower = search.lower().strip()
+
+        for key, u in _CACHE.items():
+            if not isinstance(u, dict):
+                continue
+            try:
+                u_cid = int(u.get("chat_id") or key)
+            except (ValueError, TypeError):
+                u_cid = u.get("chat_id")
+
+            if chat_id is not None and u_cid != chat_id:
+                continue
+
+            u_name = u.get("first_name") or ""
+            u_user = u.get("username") or ""
+            u_role = u.get("role") or ""
+            u_dname = u.get("driver_name") or ""
+            u_dphone = u.get("driver_phone") or ""
+
+            for idx, act in enumerate(u.get("activity", [])):
+                act_action = act.get("action", "")
+                act_detail = act.get("detail", "")
+                act_at = act.get("at", "")
+
+                if action_filter_lower and action_filter_lower not in act_action.lower():
+                    continue
+
+                if search_lower:
+                    match_str = f"{u_name} {u_user} {u_cid} {u_role} {u_dname} {u_dphone} {act_action} {act_detail}".lower()
+                    if search_lower not in match_str:
+                        continue
+
+                all_acts.append({
+                    "chat_id": u_cid,
+                    "user_name": u_name,
+                    "first_name": u_name,
+                    "username": u_user,
+                    "role": u_role,
+                    "driver_name": u_dname,
+                    "driver_phone": u_dphone,
+                    "action": act_action,
+                    "detail": act_detail,
+                    "at": act_at,
+                    "_idx": idx,
+                })
+
+        all_acts.sort(key=lambda x: (str(x.get("at") or ""), x.get("_idx", 0)), reverse=True)
+        for a in all_acts:
+            a.pop("_idx", None)
+        return all_acts[:limit]
+

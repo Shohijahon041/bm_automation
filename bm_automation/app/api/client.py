@@ -282,9 +282,12 @@ class BMClient:
         # Token AYNAN shu clientning fayliga yoziladi: kompaniya clienti
         # brauzer orqali login qilsa, asosiy `tokens.json` (boshqa
         # kompaniyaning tokeni) ustidan yozilmaydi.
+        # `discover=False` — avtomatik tokenni yangilash `profiles.json`ni
+        # yozmasligi shart: topilgan profillar ro'yxati to'liq bo'lmasa,
+        # mavjud kompaniyalar/yo'nalishlar o'chib ketishi mumkin edi.
         browser_login(username=username, password=password,
                       organization=str(getattr(self.config, "organization", "") or ""),
-                      headless=True, timeout=300,
+                      headless=True, timeout=300, discover=False,
                       token_path=str(self.token_path) if self.token_path else None)
 
     @staticmethod
@@ -384,7 +387,7 @@ class BMClient:
         return self.request("GET", f"{USER_MGMT}/user-profile/account-authorities", timeout=60)
 
     def keepalive(self) -> str:
-        """Tokenlarni tirik saqlaydi (12 soatlik keep-alive buyrug'i uchun).
+        """Tokenlarni tirik saqlaydi (2 soatlik keep-alive buyrug'i uchun).
 
         Refresh tokenni rotatsiya qiladi — bu BM'ga so'rov yuboradi va
         refresh tokenning harakatsizlik muddatini yangilaydi (uzoq sukunatdan

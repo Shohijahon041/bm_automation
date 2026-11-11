@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import Response as FastResponse
 
-from ..deps import Scope, force_route, scope_routes
+from ..deps import Scope, audit_event, force_route, scope_routes
 from ...utils.logger import get_logger
 
 log = get_logger("bm_automation.dashboard.admin")
@@ -188,6 +188,10 @@ def get_settings(request: Request, scope: dict = Depends(Scope())):
             "offline_notify": bot_settings.offline_notify(),
             "problem_alerts_notify": bot_settings.problem_alerts_notify(),
             "departure_offset_min": bot_settings.departure_offset_min(),
+            "early_start_notify": bot_settings.early_start_notify(),
+            "early_start_threshold_min": bot_settings.early_start_threshold_min(),
+            "early_start_interval_s": bot_settings.early_start_interval_s(),
+            "early_start_followup_min": bot_settings.early_start_followup_min(),
             "audit": bot_settings.audit_log(10),
         },
     }
@@ -269,6 +273,37 @@ async def update_settings(request: Request, scope: dict = Depends(Scope())):
             pan = str(pan).strip().lower() in ("1", "true", "yes", "on", "ha")
         bot_settings.set_problem_alerts_notify(bool(pan))
         changed.append("problem_alerts_notify")
+
+    esn = payload.get("early_start_notify")
+    if esn is not None:
+        if isinstance(esn, str):
+            esn = str(esn).strip().lower() in ("1", "true", "yes", "on", "ha")
+        bot_settings.set_early_start_notify(bool(esn))
+        changed.append("early_start_notify")
+
+    est = payload.get("early_start_threshold_min")
+    if est is not None:
+        try:
+            bot_settings.set_early_start_threshold_min(float(est))
+            changed.append("early_start_threshold_min")
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "early_start_threshold_min noto'g'ri qiymat"}
+
+    esi = payload.get("early_start_interval_s")
+    if esi is not None:
+        try:
+            bot_settings.set_early_start_interval_s(float(esi))
+            changed.append("early_start_interval_s")
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "early_start_interval_s noto'g'ri qiymat"}
+
+    esf = payload.get("early_start_followup_min")
+    if esf is not None:
+        try:
+            bot_settings.set_early_start_followup_min(float(esf))
+            changed.append("early_start_followup_min")
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "early_start_followup_min noto'g'ri qiymat"}
 
     rskm = payload.get("route_skm")
     if isinstance(rskm, dict):
@@ -378,6 +413,97 @@ def get_companies(request: Request, scope: dict = Depends(Scope())):
         c["groupChatIds"] = company_group_ids(c.get("name"))
         out.append(c)
     return {"ok": True, "companies": out}
+
+
+TOKEN_REFRESH_HOURS = 2
+
+
+def _next_token_refresh_ts() -> int:
+    """Keyingi avto-refresh vaqti (systemd timer: har juft soatda)."""
+    now = datetime.now()
+    nxt = now.replace(minute=0, second=0, microsecond=0) + timedelta(
+        hours=(TOKEN_REFRESH_HOURS - now.hour % TOKEN_REFRESH_HOURS)
+        or TOKEN_REFRESH_HOURS)
+    return int(nxt.timestamp())
+
+
+@router.get("/api/settings/company-tokens")
+def get_company_tokens(request: Request, scope: dict = Depends(Scope())):
+    """Kompaniya tokenlari holati (token qiymati qaytarilmaydi)."""
+    from ...core.companies import company_token_state
+    from ...core.profiles import grouped_profiles
+    out = []
+    for c in grouped_profiles():
+        name = str(c.get("name") or "")
+        if not _company_in_scope(scope, name):
+            continue
+        out.append(company_token_state(c))
+    return {"ok": True, "companies": out,
+            "refresh_interval_hours": TOKEN_REFRESH_HOURS,
+            "next_run_ts": _next_token_refresh_ts()}
+
+
+@router.post("/api/settings/company-tokens/refresh")
+def refresh_company_tokens(request: Request,
+                           payload: dict | None = Body(default=None),
+                           scope: dict = Depends(Scope())):
+    """Tokenni qo'lda yangilash — kompaniyaning O'Z kredensiallari bilan.
+
+    `company` berilmasa — ruxsat doirasidagi barcha kompaniyalar ketma-ket
+    yangilanadi. Admin tokeniga jimgina o'tilmaydi (fail-closed): xato
+    bo'lsa natijada sabab qaytadi. Token qiymati hech qachon qaytarilmaydi.
+    """
+    from ...core import token_health
+    from ...core.companies import company_token_state, own_client
+    from ...core.profiles import grouped_profiles, profiles_with_credentials
+
+    requested = str((payload or {}).get("company") or "").strip()
+    if requested and not _company_in_scope(scope, requested):
+        _deny_company(scope, requested, "token-refresh")
+
+    results: list[dict] = []
+    seen: set[str] = set()
+    for profile in profiles_with_credentials():
+        name = str(profile.get("name") or "").strip()
+        key = name.lower()
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        if requested and key != requested.lower():
+            continue
+        if not _company_in_scope(scope, name):
+            continue
+        try:
+            result = own_client(profile).keepalive()
+            state = company_token_state({"name": name,
+                                         "has_credentials": True})
+            if state.get("organization_matches") is False:
+                raise RuntimeError(
+                    "olingan token boshqa kompaniyaniki: "
+                    f"{state.get('organization') or '?'}")
+            token_health.record(name, result)
+            results.append({"name": name, "ok": True,
+                            "result": result, "error": ""})
+        except Exception as exc:  # noqa: BLE001 - qolgan kompaniyalar davom etadi
+            token_health.record(name, "error", str(exc))
+            results.append({"name": name, "ok": False,
+                            "result": "error", "error": str(exc)})
+
+    if requested and not results:
+        return {"ok": False,
+                "error": "Kompaniya topilmadi yoki kredensiali yo'q"}
+
+    audit_event("token.refresh", request,
+                user=str(scope.get("username") or ""),
+                target=requested or "all",
+                ok=all(r["ok"] for r in results),
+                detail=", ".join(r["name"] for r in results))
+
+    states = [company_token_state(c) for c in grouped_profiles()
+              if _company_in_scope(scope, str(c.get("name") or ""))]
+    return {"ok": True, "results": results, "companies": states,
+            "refresh_interval_hours": TOKEN_REFRESH_HOURS,
+            "next_run_ts": _next_token_refresh_ts()}
 
 
 @router.post("/api/settings/companies")
@@ -1225,12 +1351,15 @@ def get_company(company_id: int, request: Request, scope: dict = Depends(Scope()
 
 
 @router.put("/api/admin/companies/{company_id}")
-async def update_company(company_id: int, request: Request, scope: dict = Depends(Scope())):
+async def update_company(company_id: str, request: Request, scope: dict = Depends(Scope())):
     """Kompaniya ma'lumotlarini yangilash (Super Admin)."""
     _require_super_admin(scope)
+    import math
+    from ...core.tenant import _INACTIVE_STATUSES
     from ...db.storage import get_storage
     from ...db.models import now_utc
-    payload = await request.json()
+    from ..billing import _norm_date, _positive_id
+    payload = await _billing_payload(request)
     st = get_storage()
     if not st.enabled:
         return {"ok": False, "error": "DB mavjud emas"}
@@ -1238,11 +1367,42 @@ async def update_company(company_id: int, request: Request, scope: dict = Depend
         "name", "slug", "logo", "phone", "email", "address",
         "subscription_plan", "subscription_expire_date", "status",
         "max_users", "max_drivers", "max_routes", "features",
-        "contact_telegram", "contact_phone", "notes"
+        "contact_telegram", "contact_phone", "notes",
+        "billing_amount", "billing_day",
     }
     updates = {k: v for k, v in payload.items() if k in allowed}
     if not updates:
         return {"ok": False, "error": "O'zgartirish yo'q"}
+    try:
+        company_id = _positive_id(company_id, "Korxona")
+        if "billing_amount" in updates:
+            raw = updates["billing_amount"]
+            try:
+                amount = float(raw) if not isinstance(raw, bool) else float("nan")
+            except (TypeError, ValueError, OverflowError):
+                amount = float("nan")
+            if not math.isfinite(amount) or amount < 0:
+                raise ValueError("Oylik summa chekli, 0 yoki undan katta raqam bo'lishi kerak")
+            updates["billing_amount"] = amount
+        if "billing_day" in updates:
+            raw = updates["billing_day"]
+            try:
+                day = int(raw) if isinstance(raw, (int, str)) and not isinstance(raw, bool) else 0
+            except (TypeError, ValueError):
+                day = 0
+            if not 1 <= day <= 28:
+                raise ValueError("To'lov kuni 1 dan 28 gacha butun son bo'lishi kerak")
+            updates["billing_day"] = day
+        if "status" in updates:
+            status = str(updates["status"]).strip().lower()
+            if status not in {"active"} | _INACTIVE_STATUSES:
+                raise ValueError("Korxona holati noto'g'ri")
+            updates["status"] = status
+        if "subscription_expire_date" in updates:
+            updates["subscription_expire_date"] = _norm_date(
+                updates["subscription_expire_date"], allow_empty=True)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
     ph = st.db.ph
     cur = st.query(f"SELECT name FROM companies WHERE id = {ph}",
                    (company_id,), limit=1)
@@ -1363,6 +1523,80 @@ async def activate_company(company_id: int, request: Request, scope: dict = Depe
     from ...core import tenant
     tenant.reset()
     return {"ok": True, "message": f"Faollashtirildi ({days} kun)", "expire_date": expire}
+
+
+# ---------------------------------------------------------------------------
+# SaaS: Oylik to'lov (Super Admin only)
+# ---------------------------------------------------------------------------
+
+async def _billing_payload(request: Request) -> dict:
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(400, "So'rov JSON obyekt bo'lishi kerak") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "So'rov JSON obyekt bo'lishi kerak")
+    return payload
+
+
+@router.get("/api/admin/billing")
+def billing_overview(request: Request, scope: dict = Depends(Scope())):
+    """Korxonalar bo'yicha oylik to'lov holati + oxirgi to'lovlar."""
+    _require_super_admin(scope)
+    from ...db.storage import get_storage
+    from ..billing import list_billing
+    return list_billing(get_storage())
+
+
+@router.post("/api/admin/billing/payments")
+async def billing_add_payment(request: Request, scope: dict = Depends(Scope())):
+    """To'lov kiritish: naqd, karta yoki hisob raqami (shartnoma)."""
+    _require_super_admin(scope)
+    from ...db.storage import get_storage
+    from ..billing import record_payment
+    payload = await _billing_payload(request)
+    return record_payment(
+        payload.get("company_id"),
+        payload.get("period", ""),
+        payload.get("amount"),
+        storage=get_storage(),
+        method=payload.get("method", "cash"),
+        contract_no=payload.get("contract_no", ""),
+        receipt_no=payload.get("receipt_no", ""),
+        paid_on=payload.get("paid_on", ""),
+        note=payload.get("note", ""),
+        created_by=scope.get("username") or "",
+    )
+
+
+@router.post("/api/admin/billing/payments/update")
+async def billing_update_payment(request: Request, scope: dict = Depends(Scope())):
+    """To'lovni tuzatish; korxona va yaratilish ma'lumotlari o'zgarmaydi."""
+    _require_super_admin(scope)
+    from ...db.storage import get_storage
+    from ..billing import update_payment
+    payload = await _billing_payload(request)
+    return update_payment(
+        payload.get("id"),
+        payload.get("period", ""),
+        payload.get("amount"),
+        storage=get_storage(),
+        method=payload.get("method", "cash"),
+        contract_no=payload.get("contract_no", ""),
+        receipt_no=payload.get("receipt_no", ""),
+        paid_on=payload.get("paid_on", ""),
+        note=payload.get("note", ""),
+    )
+
+
+@router.post("/api/admin/billing/payments/delete")
+async def billing_delete_payment(request: Request, scope: dict = Depends(Scope())):
+    """Xato kiritilgan to'lovni o'chirish (obuna muddati qisqarmaydi)."""
+    _require_super_admin(scope)
+    from ...db.storage import get_storage
+    from ..billing import delete_payment
+    payload = await _billing_payload(request)
+    return delete_payment(payload.get("id"), storage=get_storage())
 
 
 # ---------------------------------------------------------------------------
@@ -1522,10 +1756,127 @@ def _driver_names(st, driver_ids: list) -> dict:
     return names
 
 
+def _is_admin_scope(scope: dict | None) -> bool:
+    """So'rov egasi ADMIN (yoki super) mi."""
+    if not scope:
+        return False
+    if scope.get("is_admin"):
+        return True
+    from ..deps import _ROLE_RANK
+    return _ROLE_RANK.get(str(scope.get("role") or "").upper(), 0) >= 4
+
+
+def _require_admin(scope: dict | None) -> None:
+    if not _is_admin_scope(scope):
+        raise HTTPException(403, "Bu amal faqat administrator uchun")
+
+
+def _driver_routes(st, driver_ids: list[str]) -> dict[str, str]:
+    """driver_id -> route_id xaritasi (korxona doirasini aniqlash uchun)."""
+    if not driver_ids:
+        return {}
+    ph = st.db.ph
+    out: dict[str, str] = {}
+    for i in range(0, len(driver_ids), 200):
+        chunk = driver_ids[i:i + 200]
+        rows = st.query(
+            "SELECT external_id, route_id FROM drivers WHERE external_id IN ("
+            + ",".join([ph] * len(chunk)) + ")", tuple(chunk))
+        for r in rows or []:
+            out[str(r.get("external_id") or "")] = str(r.get("route_id") or "")
+    return out
+
+
+def _scope_user_chats(st, users: list, scope: dict,
+                      profiles: dict | None = None) -> set[str]:
+    """Dispetcher/menejer ko'radigan chat_id'lar (korxona doirasi).
+
+    ADMIN cheklanmaydi. Qolganlar uchun: o'z yo'nalishidagi haydovchilar,
+    o'z yo'nalishiga biriktirilgan dispetcherlar, o'z korxonasidagi panel
+    akkauntlari va hali hech kimga bog'lanmagan yangi kontaktlar ko'rinadi.
+    Boshqa korxona yozuvlari qaytarilmaydi.
+    """
+    routes = {str(x).strip() for x in (scope.get("routes") or [])
+              if str(x).strip()}
+    company = str(scope.get("company") or "").strip()
+    by_cid: dict[str, dict] = {}
+    for u in users:
+        try:
+            by_cid[str(int(u.get("chat_id")))] = u
+        except (TypeError, ValueError):
+            continue
+    if not by_cid or not st or not st.enabled:
+        return set()
+    profiles = profiles if profiles is not None else _bot_user_drivers(st, users)
+    driver_ids = {str(p.get("driver_id") or "") for p in profiles.values()}
+    driver_ids.discard("")
+    route_by_driver = _driver_routes(st, sorted(driver_ids))
+
+    visible: set[str] = set()
+    for cid, prof in profiles.items():
+        rid = route_by_driver.get(str(prof.get("driver_id") or ""), "")
+        # Yo'nalish ro'yxati bo'sh bo'lsa — fail-closed (hech kim ko'rinmaydi).
+        if rid and rid in routes:
+            visible.add(str(cid))
+
+    dispatcher_chats: set[str] = set()
+    rows = st.query(
+        "SELECT dispatcher_chat_id, route_id FROM dispatcher_routes") or []
+    for row in rows:
+        cid = str(row.get("dispatcher_chat_id") or "")
+        if not cid:
+            continue
+        dispatcher_chats.add(cid)
+        if str(row.get("route_id") or "") in routes:
+            visible.add(cid)
+
+    panel_chats: set[str] = set()
+    for row in st.dashboard_users_list() or []:
+        try:
+            data = json.loads(str(row.get("data") or "{}"))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        cid = str(data.get("telegram_chat_id") or "").strip()
+        if not cid:
+            continue
+        panel_chats.add(cid)
+        if company and str(row.get("company") or "") == company:
+            visible.add(cid)
+
+    from ...notifications.ops.roles import configured_roles
+    env_roles = configured_roles()
+    privileged = {"ADMIN", "DISPATCHER", "MANAGER"}
+    for cid, u in by_cid.items():
+        if cid in profiles or cid in dispatcher_chats or cid in panel_chats:
+            continue
+        if str(u.get("role") or "").strip().upper() in privileged:
+            continue
+        try:
+            env_role = env_roles.get(int(cid))
+        except (TypeError, ValueError):
+            env_role = None
+        if env_role is not None and env_role.name in privileged:
+            continue
+        visible.add(cid)
+    return visible
+
+
+def _user_visible(st, uid: int, scope: dict) -> bool:
+    if _is_admin_scope(scope):
+        return True
+    from ...core.bot_users import get_user
+    user = get_user(uid)
+    if not user:
+        return False
+    return str(int(uid)) in _scope_user_chats(st, [user], scope)
+
+
 @router.get("/api/users")
 def get_users(request: Request, scope: dict = Depends(Scope())):
     from ...core.bot_users import (get_pages as _get_pages,
-                                   get_users as _get_users, user_count)
+                                   get_users as _get_users)
     users = _get_users()
     try:
         from ...db.storage import get_storage
@@ -1533,6 +1884,10 @@ def get_users(request: Request, scope: dict = Depends(Scope())):
         st = get_storage()
         if st.enabled:
             drivers = _bot_user_drivers(st, users)
+            if not _is_admin_scope(scope):
+                visible = _scope_user_chats(st, users, scope, drivers)
+                users = [u for u in users
+                         if str(u.get("chat_id") or "") in visible]
             names = _driver_names(st, sorted({
                 str(p.get("driver_id") or "") for p in drivers.values()} - {""}))
             for u in users:
@@ -1561,7 +1916,7 @@ def get_users(request: Request, scope: dict = Depends(Scope())):
                     pass
     except Exception:
         pass
-    return {"ok": True, "count": user_count(), "users": users}
+    return {"ok": True, "count": len(users), "users": users}
 
 
 def _dashboard_link(chat_id: int) -> tuple[str, list | None]:
@@ -1588,11 +1943,41 @@ def _dashboard_link(chat_id: int) -> tuple[str, list | None]:
     return "", None
 
 
+@router.get("/api/users/activities")
+def api_users_activities(request: Request, scope: dict = Depends(Scope())):
+    """Barcha bot foydalanuvchilarining harakatlar lentasini qaytaradi."""
+    from ...core.bot_users import get_all_activities
+    from ...db.storage import get_storage
+
+    params = _parse_qs(request)
+    try:
+        limit = int(params.get("limit") or 100)
+    except (ValueError, TypeError):
+        limit = 100
+    limit = min(max(limit, 10), 500)
+    action = str(params.get("action") or "").strip()
+    search = str(params.get("q") or "").strip()
+    cid_raw = params.get("chat_id")
+    chat_id = int(cid_raw) if cid_raw and str(cid_raw).isdigit() else None
+
+    st = get_storage()
+    acts = get_all_activities(limit=limit, action_filter=action, chat_id=chat_id, search=search)
+
+    if not _is_admin_scope(scope) and st.enabled:
+        from ...core.bot_users import get_users as _get_users
+        drivers = _bot_user_drivers(st, _get_users())
+        visible = _scope_user_chats(st, _get_users(), scope, drivers)
+        acts = [a for a in acts if str(a.get("chat_id") or "") in visible]
+
+    return {"ok": True, "count": len(acts), "activities": acts}
+
+
 @router.get("/api/users/{uid}")
 def get_user_detail(uid: int, request: Request, scope: dict = Depends(Scope())):
     from ...core.bot_users import get_user
+    from ...db.storage import get_storage
     user = get_user(uid)
-    if not user:
+    if not user or not _user_visible(get_storage(), uid, scope):
         raise HTTPException(404, "Foydalanuvchi topilmadi")
     out = {"ok": True, "user": user}
     # Panel akkaunti bog'langan bo'lsa — uning bo'limlari botda ham amal
@@ -1614,6 +1999,9 @@ _PHOTO_CACHE: dict[int, tuple[float, str | None]] = {}
 @router.get("/api/users/{uid}/photo")
 def get_user_photo(uid: int, request: Request, scope: dict = Depends(Scope())):
     import time
+    from ...db.storage import get_storage
+    if not _user_visible(get_storage(), uid, scope):
+        raise HTTPException(404, "Rasm topilmadi")
     now = time.monotonic()
     hit = _PHOTO_CACHE.get(uid)
     ttl = _PHOTO_TTL if (hit and hit[1]) else _PHOTO_NEG_TTL
@@ -1638,6 +2026,8 @@ def get_user_driver_info(uid: int, request: Request, scope: dict = Depends(Scope
     user = get_user(uid) or {}
     chat_id = user.get("chat_id", uid)
     storage = get_storage()
+    if not _user_visible(storage, uid, scope):
+        raise HTTPException(404, "Foydalanuvchi topilmadi")
     dp = storage.find_driver_by_telegram(chat_id) if storage.enabled else None
     driver_info = None
     if dp:
@@ -1652,12 +2042,18 @@ def get_user_driver_info(uid: int, request: Request, scope: dict = Depends(Scope
             "rating": dp.get("rating", 5),
             "notification_enabled": dp.get("notification_enabled", 0),
         }
+        # Moliyaviy ko'rsatkichlar faqat ADMIN'ga (panelda dispetcherga
+        # haydovchilar bo'limi yopiq — bir xil siyosat).
+        if not _is_admin_scope(scope):
+            driver_info.pop("km_rate", None)
+            driver_info.pop("rating", None)
     return {"ok": True, "driver": driver_info}
 
 
 @router.post("/api/users/{uid}/role")
 async def set_user_role(uid: int, request: Request, scope: dict = Depends(Scope())):
     from ...core.bot_users import set_role
+    _require_admin(scope)
     payload = await request.json()
     role = (payload.get("role") or "").strip()
     if not role:
@@ -1674,6 +2070,7 @@ async def set_user_pages(uid: int, request: Request, scope: dict = Depends(Scope
     """
     from ...core.bot_users import set_pages
     from ...core.sections import clean_sections
+    _require_admin(scope)
     payload = await request.json()
     if "pages" not in payload:
         return {"ok": False, "error": "pages maydoni kerak"}
@@ -1692,6 +2089,7 @@ async def set_user_pages(uid: int, request: Request, scope: dict = Depends(Scope
 @router.post("/api/users/{uid}/delete")
 async def delete_user(uid: int, request: Request, scope: dict = Depends(Scope())):
     from ...core.bot_users import remove_user
+    _require_admin(scope)
     result = remove_user(uid)
     return {"ok": result, "message": "Foydalanuvchi faol edilmagan (o'chirildi)" if result else "Foydalanuvchi topilmadi"}
 
@@ -1699,16 +2097,36 @@ async def delete_user(uid: int, request: Request, scope: dict = Depends(Scope())
 @router.post("/api/users/{uid}/link-driver")
 async def link_driver(uid: int, request: Request, scope: dict = Depends(Scope())):
     from ...db.storage import get_storage
+    from ...notifications.ops.roles import promote_driver_role
     payload = await request.json()
     driver_id = str(payload.get("driver_id") or "").strip()
     storage = get_storage()
     if not storage.enabled:
         return {"ok": False, "error": "DB rejimi o'chirilgan"}
-    if driver_id:
-        storage.link_driver_telegram(driver_id, uid)
-        return {"ok": True, "message": f"Haydovchi {driver_id} Telegram {uid} ga bog'landi"}
-    storage.unlink_driver_telegram(uid)
-    return {"ok": True, "message": "Bog'lanish olib tashlandi"}
+    if not _user_visible(storage, uid, scope):
+        return {"ok": False, "error": "Foydalanuvchi topilmadi"}
+    if not driver_id:
+        if not storage.unlink_driver_telegram(uid):
+            return {"ok": False, "error": "Bog'lanishni o'chirishda xatolik"}
+        return {"ok": True, "message": "Bog'lanish olib tashlandi"}
+    drow = storage.find("drivers", external_id=driver_id)
+    if not drow:
+        return {"ok": False, "error": "Haydovchi topilmadi"}
+    scopes = scope_routes(scope)
+    if scopes is not None and str(drow.get("route_id") or "") not in scopes:
+        return {"ok": False, "error": "Haydovchi topilmadi"}
+    prev = storage.find_driver_by_telegram(uid)
+    if not storage.link_driver_telegram(driver_id, uid):
+        return {"ok": False, "error": "Bog'lash saqlanmadi"}
+    # Botda rol darhol yangilansin: chat_id → DRIVER (yuqori rol pasaymaydi).
+    promote_driver_role(uid)
+    name = str(drow.get("full_name") or driver_id)
+    note = ""
+    if prev and str(prev.get("driver_id") or "") != driver_id:
+        note = " Avvalgi bog'lanish olib tashlandi."
+    return {"ok": True, "message": f"{name} bog'landi.{note}",
+            "driver_id": driver_id,
+            "previous_driver_id": str((prev or {}).get("driver_id") or "")}
 
 
 @router.get("/api/dispatchers")

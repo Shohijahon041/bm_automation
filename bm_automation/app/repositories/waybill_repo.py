@@ -45,12 +45,14 @@ class WaybillRepository:
         if (t - f).days + 1 > MAX_RANGE_DAYS:
             raise ValueError(f"Oraliq {MAX_RANGE_DAYS} kundan oshmasligi kerak")
 
-    def report(self, route_id: str, from_date: str, to_date: str) -> list:
+    def report(self, route_id: str, from_date: str, to_date: str,
+               timeout: float | None = None) -> list:
         """Waybill hisobotini JSON ko'rinishida qaytaradi."""
         self.validate_range(from_date, to_date)
         return self.client.post(
             WAYBILL,
             json={"routeVariantId": route_id, "from": from_date, "to": to_date},
+            timeout=timeout,
         )
 
     def download(self, route_id: str, from_date: str, to_date: str,

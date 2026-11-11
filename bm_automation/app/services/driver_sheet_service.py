@@ -441,6 +441,7 @@ def run_all(
 
     Har profil uchun zarur bo'lsa get-token-by-profile orqali token almashtiriladi.
     """
+    from ..core.companies import client_for_profile
     from ..core.profiles import all_profiles
 
     date_str = date_str or date.today().isoformat()
@@ -452,17 +453,14 @@ def run_all(
 
     results = []
     for p in profiles:
-        pid = str(p.get("profileId", "") or "").strip()
         route_id = str(p.get("routeVariantId", "") or "").strip()
         if not route_id:
             print(f"  [{p.get('name')}] routeVariantId ko'rsatilmagan, o'tkazib yuborildi.")
             continue
         try:
-            if pid:
-                # 401/403 bo'lsa login_for_profile asosiy tokenga qaytadi.
-                client.login_for_profile(pid, fallback_to_main=True)
+            company_client = client_for_profile(p)
             res = run(
-                client,
+                company_client,
                 route_id,
                 date_str=date_str,
                 out_dir=str(Path(out_dir) / safe_name(p.get("name", "profile"))),

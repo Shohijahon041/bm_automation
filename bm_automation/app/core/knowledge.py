@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -33,21 +34,23 @@ def vault_dir() -> Path:
     base.mkdir(parents=True, exist_ok=True)
     for cat in CATEGORIES:
         (base / cat).mkdir(exist_ok=True)
-    return base
+    return base.resolve()
 
 
-def _resolve(rel: str) -> Path:
+def _resolve(rel: str, base: Path | None = None) -> Path:
     """Vault ichidagi yo'lni ochish (tashqariga chiqishdan himoya).
 
     Tekshiruv prefiks bo'yicha EMAS: `../vault2/x.md` kabi qo'shni papka
     `/vault` prefiksi bilan boshlanib ketardi. Shuning uchun haqiqiy
     ota-papkalar zanjiri tekshiriladi.
     """
-    base = vault_dir().resolve()
-    rel = (rel or "").strip().strip("/\\").replace("\\", "/")
+    base = (base or vault_dir()).resolve()
+    rel = (rel or "").strip().replace("\\", "/")
+    if rel.startswith("/") or Path(rel).drive:
+        raise ValueError("Vault uchun nisbiy yo'l talab qilinadi")
     p = (base / rel).resolve()
-    if p != base and base not in p.parents:
-        raise ValueError(f"Vault tashqarisiga chiqish mumkin emas: {rel}")
+    if not p.is_relative_to(base):
+        raise ValueError("Vault tashqarisiga chiqish mumkin emas")
     return p
 
 
@@ -72,14 +75,22 @@ def _meta(p: Path, base: Path) -> dict:
 
 def _walk(base: Path | None = None) -> list[Path]:
     base = base or vault_dir()
-    return sorted(
-        p for p in base.rglob("*.md")
-        if p.is_file() and not any(
-            part.startswith(".") for part in p.relative_to(base).parts)
-    )
+    root = base.resolve()
+    files = []
+    for p in base.rglob("*.md"):
+        if any(part.startswith(".") for part in p.relative_to(base).parts):
+            continue
+        try:
+            resolved = p.resolve()
+            if (resolved.is_relative_to(root) and resolved.suffix.lower() == ".md"
+                    and p.is_file()):
+                files.append(p)
+        except (OSError, RuntimeError):
+            continue
+    return sorted(files)
 
 
-def _find_by_stem(name: str) -> Path | None:
+def _find_by_stem(name: str, base: Path | None = None) -> Path | None:
     """Obsidian uslubi: `[[Qayd-nomi]]` havolasini papka ichidan topadi.
 
     Faqat yagona moslik bo'lsa qaytaradi — ikki xil papkada bir xil nom
@@ -88,7 +99,7 @@ def _find_by_stem(name: str) -> Path | None:
     stem = str(name or "").strip()
     if stem.lower().endswith(".md"):
         stem = stem[:-3]
-    matches = [p for p in _walk() if p.stem.lower() == stem.lower()]
+    matches = [p for p in _walk(base) if p.stem.lower() == stem.lower()]
     return matches[0] if len(matches) == 1 else None
 
 
@@ -134,33 +145,37 @@ def search_notes(keyword: str = "", limit: int = 20) -> dict:
     return {"ok": True, "keyword": kw, "count": len(results), "results": results}
 
 
-def read_note(path: str) -> dict:
-    """Bitta qaydni o'qish."""
+def read_note(path: str, *, base: Path | None = None) -> dict:
+    """Bitta qaydni o'qish (`base` — maxsus vault, masalan testlarda)."""
     if not str(path or "").strip():
         return {"ok": False, "error": "path talab qilinadi"}
-    p = _resolve(str(path))
+    base = (base or vault_dir()).resolve()
+    p = _resolve(str(path), base)
     if not p.exists() and "/" not in str(path) and "\\" not in str(path):
-        alt = _find_by_stem(str(path))
+        alt = _find_by_stem(str(path), base)
         if alt is not None:
-            p = alt
+            p = _resolve(str(alt.relative_to(base)), base)
     if p.is_dir():
-        return {"ok": True, "path": str(p.name), "text": "",
-                "files": sorted(x.name for x in p.glob("*.md")), "dir": True}
+        return {"ok": True, "path": p.relative_to(base).as_posix(), "text": "",
+                "files": sorted(x.name for x in _walk(base) if x.parent == p),
+                "dir": True}
     if not p.exists():
         return {"ok": False, "error": f"Fayl topilmadi: {path}"}
     if p.suffix.lower() != ".md":
         return {"ok": False, "error": "faqat .md fayllar"}
     try:
         text = p.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        return {"ok": False, "error": str(exc)}
-    meta = _meta(p, vault_dir())
+    except OSError:
+        log.exception("Bilim bazasi: qayd o'qilmadi")
+        return {"ok": False, "error": "Qaydni o'qib bo'lmadi"}
+    meta = _meta(p, base)
     meta.update({"ok": True, "text": text})
     return meta
 
 
 def write_note(title: str, category: str = "", content: str = "",
-               overwrite: bool = False, path: str = "") -> dict:
+               overwrite: bool = False, path: str = "", *,
+               base: Path | None = None) -> dict:
     """Yangi qayd yozadi (yoki `overwrite` bilan mavjudini almashtiradi).
 
     `path` berilsa — aynan shu fayl yoziladi (mavjudini tahrirlash uchun).
@@ -176,24 +191,37 @@ def write_note(title: str, category: str = "", content: str = "",
     body = str(content or "")
     if len(body.encode("utf-8")) > MAX_NOTE_BYTES:
         return {"ok": False, "error": "Matn juda katta (400 KB dan oshdi)"}
-    rel = str(path or "").strip().strip("/\\").replace("\\", "/")
+    base = (base or vault_dir()).resolve()
+    rel = str(path or "").strip().replace("\\", "/")
     if rel:
-        if not rel.lower().endswith(".md"):
+        if not Path(rel).suffix:
             rel += ".md"
+        elif Path(rel).suffix.lower() != ".md":
+            return {"ok": False, "error": "faqat .md fayllar"}
     else:
         rel = f"{cat}/{slugify(title)}.md" if cat else f"{slugify(title)}.md"
-    p = _resolve(rel)
-    if p.exists() and not overwrite:
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        rel = rel[:-3] + f"-{stamp}.md"
-        p = _resolve(rel)
+    p = _resolve(rel, base)
+    if p.suffix.lower() != ".md":
+        return {"ok": False, "error": "faqat .md fayllar"}
     p.parent.mkdir(parents=True, exist_ok=True)
     text = body if body.lstrip().startswith("#") else f"# {title}\n\n{body.strip()}\n"
-    p.write_text(text, encoding="utf-8")
-    log.info("Bilim bazasi: yozildi %s", rel)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    collision = 0
+    while True:
+        if p.suffix.lower() != ".md":
+            return {"ok": False, "error": "faqat .md fayllar"}
+        try:
+            with p.open("w" if overwrite else "x", encoding="utf-8") as stream:
+                stream.write(text)
+            break
+        except FileExistsError:
+            collision += 1
+            suffix = f"-{stamp}" + (f"-{collision}" if collision > 1 else "")
+            p = _resolve(rel[:-3] + suffix + ".md", base)
+    log.info("Bilim bazasi: yozildi %s", p.relative_to(base))
     from .vault_links import autolink_written
-    autolink_written(p)
-    meta = _meta(p, vault_dir())
+    autolink_written(p, base=base)
+    meta = _meta(p, base)
     meta.update({"ok": True})
     return meta
 
@@ -210,8 +238,9 @@ def delete_note(path: str) -> dict:
         return {"ok": False, "error": "faqat .md fayllarni o'chirish mumkin"}
     try:
         p.unlink()
-    except OSError as exc:
-        return {"ok": False, "error": str(exc)}
+    except OSError:
+        log.exception("Bilim bazasi: qayd o'chirilmadi")
+        return {"ok": False, "error": "Qaydni o'chirib bo'lmadi"}
     rel_path = str(p.relative_to(vault_dir())).replace("\\", "/")
     log.info("Bilim bazasi: o'chirildi %s", rel_path)
     return {"ok": True, "path": rel_path}
@@ -220,16 +249,21 @@ def delete_note(path: str) -> dict:
 def append_note(path: str, text: str, title: str = "") -> dict:
     """Mavjud qaydga matn qo'shadi (yo'q bo'lsa yaratadi)."""
     p = _resolve(str(path or ""))
+    if p.is_dir() or p.suffix.lower() != ".md":
+        return {"ok": False, "error": "faqat .md fayllar"}
     body = str(text or "").strip()
     if not body:
         return {"ok": False, "error": "Qo'shiladigan matn bo'sh"}
     if p.exists():
         old = p.read_text(encoding="utf-8", errors="replace").rstrip() + "\n\n"
-        p.write_text(old + body + "\n", encoding="utf-8")
+        content = old + body + "\n"
     else:
-        p.parent.mkdir(parents=True, exist_ok=True)
         head = title or p.stem
-        p.write_text(f"# {head}\n\n{body}\n", encoding="utf-8")
+        content = f"# {head}\n\n{body}\n"
+    if len(content.encode("utf-8")) > MAX_NOTE_BYTES:
+        return {"ok": False, "error": "Matn juda katta (400 KB dan oshdi)"}
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
     from .vault_links import autolink_written
     autolink_written(p)
     meta = _meta(p, vault_dir())
@@ -290,23 +324,27 @@ def graph() -> dict:
 
     Havola nishoni avval to'liq yo'l, keyin yagona fayl nomi sifatida
     aniqlanadi. Yechilmagan havolalar qirra bo'lmaydi — `unresolved`da
-    qaytadi (uzilgan grafik ko'rinmasligi uchun).
+    qaytadi (uzilgan grafik ko'rinmasligi uchun). Takror nomli qaydlar
+    yo'l bilan ajratiladi, yagona nomlar uchun eski ID saqlanadi.
     """
     base = vault_dir()
     notes: dict[str, dict] = {}
     by_path: dict[str, str] = {}
     by_stem: dict[str, list[str]] = {}
-    for p in _walk(base):
+    files = _walk(base)
+    stem_counts = Counter(p.stem.lower() for p in files)
+    for p in files:
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         rel = str(p.relative_to(base)).replace("\\", "/")
-        notes[p.stem] = {**_meta(p, base), "id": p.stem,
-                         "links": 0, "backlinks": 0}
-        by_path[rel.lower()] = p.stem
-        by_stem.setdefault(p.stem.lower(), []).append(p.stem)
-        notes[p.stem]["_targets"] = _wikilinks(text)
+        note_id = rel[:-3] if stem_counts[p.stem.lower()] > 1 else p.stem
+        notes[note_id] = {**_meta(p, base), "id": note_id,
+                          "links": 0, "backlinks": 0}
+        by_path[rel.lower()] = note_id
+        by_stem.setdefault(p.stem.lower(), []).append(note_id)
+        notes[note_id]["_targets"] = _wikilinks(text)
 
     edges: list[dict] = []
     seen: set[tuple[str, str]] = set()
@@ -355,6 +393,8 @@ def graph_status(g: dict | None = None, exclude: set[str] | None = None,
 
     skip = {str(x) for x in (exclude or ())}
     data = g if isinstance(g, dict) else graph()
+    skip.update(n["id"] for n in (data.get("nodes") or [])
+                if n.get("title") in skip or n.get("path") in skip)
     nodes = [n for n in (data.get("nodes") or []) if n.get("id") not in skip]
     full_edges = [e for e in (data.get("edges") or [])
                   if e.get("source") not in skip
@@ -371,17 +411,19 @@ def graph_status(g: dict | None = None, exclude: set[str] | None = None,
     body_out: dict[str, list[str]] = {}
     stems: dict[str, list[str]] = {}
     paths: dict[str, str] = {}
+    ids = {n["path"]: n["id"] for n in nodes}
     for p in _walk(base):
-        if p.stem in skip:
+        rel = p.relative_to(base).as_posix()
+        note_id = ids.get(rel)
+        if note_id is None:
             continue
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        rel = str(p.relative_to(base)).replace("\\", "/")
-        body_out[p.stem] = _wikilinks(_BLOCK_RE.sub(" ", text))
-        stems.setdefault(p.stem.lower(), []).append(p.stem)
-        paths[rel.lower()] = p.stem
+        body_out[note_id] = _wikilinks(_BLOCK_RE.sub(" ", text))
+        stems.setdefault(p.stem.lower(), []).append(note_id)
+        paths[rel.lower()] = note_id
     body_in = {stem: 0 for stem in body_out}
     body_degree = {stem: 0 for stem in body_out}
     body_pairs: set[tuple[str, str]] = set()
@@ -392,7 +434,7 @@ def graph_status(g: dict | None = None, exclude: set[str] | None = None,
             if not other:
                 hits = stems.get(key, [])
                 other = hits[0] if len(hits) == 1 else ""
-            if not other or other == stem:
+            if not other or other == stem or (stem, other) in body_pairs:
                 continue
             body_pairs.add((stem, other))
             body_in[other] += 1
@@ -475,8 +517,9 @@ def index_note() -> str:
     lines = ["# Bilim bazasi", "",
              "BM Automation loyihasining bilim bazasi: qoidalar, sozlamalar, "
              "xato jurnali va hisobotlar.", ""]
+    files = _walk(base)
     for cat in CATEGORIES:
-        items = sorted((base / cat).glob("*.md")) if (base / cat).is_dir() else []
+        items = [p for p in files if p.parent == base / cat]
         lines.append(f"## {cat}")
         if not items:
             lines.append("_hali bo'sh_")

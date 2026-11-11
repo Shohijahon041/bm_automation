@@ -2951,7 +2951,11 @@ def attendance_calendar(params: dict | None = None) -> dict:
     month = params.get("month") or ""
     if not month:
         month = date.today().strftime("%Y-%m")
-    route_filter = params.get("route", "")
+    # `force_route` non-admin uchun bir nechta yo'nalishni vergul bilan
+    # beradi (AND ECO kabi 4 yo'nalishli kompaniya) — ro'yxat sifatida olinadi.
+    route_ids = [t.strip() for t in
+                 str(params.get("route", "") or "").replace(",", " ").split()
+                 if t.strip()]
     from_date = month + "-01"
     parts = month.split("-")
     y, mo = int(parts[0]), int(parts[1])
@@ -2970,9 +2974,10 @@ def attendance_calendar(params: dict | None = None) -> dict:
         f"WHERE t.date >= {ph} AND t.date < {ph} "
         "  AND t.status IN ('ACCEPTED','APPROVED') ")
     args: list = [from_date, to_date]
-    if route_filter:
-        query += f" AND d.route_id = {ph} "
-        args.append(route_filter)
+    if route_ids:
+        marks = ",".join([ph] * len(route_ids))
+        query += f" AND d.route_id IN ({marks}) "
+        args.extend(route_ids)
     query += (" GROUP BY d.external_id, d.full_name, d.route_id, t.date"
               " ORDER BY d.full_name, t.date")
     try:
@@ -2997,9 +3002,10 @@ def attendance_calendar(params: dict | None = None) -> dict:
             f"  AND w.date >= {ph} AND w.date < {ph}"
             f"  AND COALESCE(w.working_day, 0) > 0 ")
         avto_args: list = ["AVTO", from_date, to_date]
-        if route_filter:
-            avto_query += f" AND d.route_id = {ph} "
-            avto_args.append(route_filter)
+        if route_ids:
+            marks = ",".join([ph] * len(route_ids))
+            avto_query += f" AND d.route_id IN ({marks}) "
+            avto_args.extend(route_ids)
         for r in storage.db.query(avto_query, avto_args) or []:
             did = r["driver_id"]
             drivers_map.setdefault(did, _new(did, r))

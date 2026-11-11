@@ -93,6 +93,13 @@ GPS_CAMERA_FRESH_S = int(os.environ.get("GPS_CAMERA_FRESH_S", "900"))
 JT_CAMERA_CHANNELS = max(1, min(16, int(os.environ.get(
     "JT_CAMERA_CHANNELS", "8"))))
 
+# ---- Odam sanagich (counter) avtomatik qabuli ----
+# Teltonika AVL IO element ID'lari: qurilma IO'da shu ID'larni yuborsa,
+# kirish/chiqish soni gps_devices.count_in/count_out ga avtomatik yoziladi.
+# 0 = o'chirilgan (qurilma protokoli aniq bo'lgach .env orqali yoqiladi).
+GPS_COUNTER_IN_IO = int(os.environ.get("GPS_COUNTER_IN_IO", "0"))
+GPS_COUNTER_OUT_IO = int(os.environ.get("GPS_COUNTER_OUT_IO", "0"))
+
 
 # ---- JT1078 xom oqim diagnostikasi ----
 # 0 (standart) = serverga video SAQLANMAYDI (faqat vaqtinchalik HLS segmentlar).

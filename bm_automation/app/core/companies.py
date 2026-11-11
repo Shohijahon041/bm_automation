@@ -13,17 +13,21 @@ nuqtasi. Har doim YANGI client qaytaradi — chaqiruvchi uni o'zi boshqaradi.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import time
+from datetime import datetime
 from typing import Optional
 
 from ..config.settings import Config, get_config
-from .tokens import company_tokens_path, load_tokens
+from . import token_health
+from .tokens import _jwt_exp, company_tokens_path, load_tokens
 from .profiles import get_profile
 
 log = logging.getLogger("bm_automation.companies")
 
 __all__ = ["client_for_profile", "client_for_name", "company_token_path",
-           "own_client", "route_accessible"]
+           "company_token_state", "own_client", "route_accessible"]
 
 
 def company_token_path(name: str):
@@ -77,12 +81,24 @@ def _admin_client(profile: dict, auto_relogin: bool = True) -> "object":
     return client
 
 
+def _allow_admin_fallback() -> bool:
+    """Kompaniya tokeni olinmasa admin tokeniga o'tishga ruxsat bormi.
+
+    Standart holat — YO'Q: aks holda boshqa kompaniya ma'lumoti
+    ko'rinishi mumkin. Faqat vaqtinchalik tiklash uchun
+    `BM_ALLOW_COMPANY_ADMIN_FALLBACK=1` qo'lda yoqiladi.
+    """
+    return str(os.getenv("BM_ALLOW_COMPANY_ADMIN_FALLBACK", "")).strip().lower() \
+        in {"1", "true", "yes", "on"}
+
+
 def client_for_profile(profile: dict, auto_relogin: bool = True):
     """Profil (kompaniya) uchun authenticated client qaytaradi.
 
-    Kompaniyaning o'z kredensiallari bo'lsa, avval o'z clienti + tokeni
-    sinab ko'riladi (brauzer orqali oldindan login qilingan bo'lsa);
-    ishlamasa admin tokeni (profileId bo'lsa shu profil bilan).
+    Kompaniyaning o'z kredensiallari bo'lsa faqat o'z tokeni ishlatiladi.
+    Token olinmasa xato ko'tariladi — boshqa kompaniya tokeniga jimgina
+    o'tilmaydi. Istisno: `BM_ALLOW_COMPANY_ADMIN_FALLBACK=1` (vaqtinchalik).
+    Kredensiali yo'q eski profillar uchun admin tokeni ishlatiladi.
     `auto_relogin=False` — OneID brauzer loginiga tushmaslik uchun
     (fon/onboarding vazifalarida).
     """
@@ -95,13 +111,112 @@ def client_for_profile(profile: dict, auto_relogin: bool = True):
         if own:
             try:
                 return _own_client(profile, auto_relogin=auto_relogin)
-            except Exception as exc:  # noqa: BLE001 - admin tokeniga zaxira
+            except Exception as exc:  # noqa: BLE001 - sababni aniq ko'rsatamiz
+                if not _allow_admin_fallback():
+                    raise RuntimeError(
+                        f"kompaniya tokeni olinmadi: {exc}. Boshqa kompaniya "
+                        "tokeniga o'tilmadi; login/parolni tekshiring"
+                    ) from exc
                 client = _admin_client(profile, auto_relogin=auto_relogin)
                 _warn_foreign_token(name, client, str(exc))
                 return client
-        return _admin_client(profile, auto_relogin=auto_relogin)
+        client = _admin_client(profile, auto_relogin=auto_relogin)
+        _warn_foreign_token(name, client, "kredensial yo'q")
+        return client
     except Exception as exc:
         raise type(exc)(f"[{name}] client qurish xatosi: {exc}") from exc
+
+
+def _iso_ts(value: str) -> int:
+    """ISO vaqtni epoch sekundga aylantiradi; xato bo'lsa 0."""
+    try:
+        return int(datetime.fromisoformat(str(value)).timestamp())
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def company_token_state(company: dict) -> dict:
+    """Dashboard uchun kompaniya tokenining holati.
+
+    `company` — `grouped_profiles()` elementi: name, routes, has_credentials.
+    Tokenning o'zi qaytarilmaydi — faqat holat, muddat va vaqtlar.
+    """
+    name = str(company.get("name") or "").strip()
+    path = company_token_path(name)
+    data = load_tokens(path=path) or {}
+    access = str(data.get("access_token") or "")
+    organization = str(data.get("organization") or "").strip()
+    route_list = list(company.get("routes") or [])
+    route_count = int(company.get("routeCount") or len(route_list) or 0)
+    profile_ids = sorted({str(r.get("profileId") or "").strip()
+                          for r in route_list if str(r.get("profileId") or "").strip()})
+
+    now = time.time()
+    exp = _jwt_exp(access)
+    expires_ts = int(exp or _iso_ts(data.get("expires_at") or ""))
+    remaining_s = max(0, int(expires_ts - now)) if expires_ts else 0
+    last_refresh_at = str(data.get("last_refresh_at") or data.get("obtained_at") or "")
+    last_refresh_ts = _iso_ts(last_refresh_at)
+    if not last_refresh_ts and path.exists():
+        last_refresh_ts = int(path.stat().st_mtime)
+
+    has_credentials = bool(company.get("has_credentials"))
+    # Token haqiqatan shu kompaniyaniki ekanini tekshirish: refresh tarixi
+    # bo'lmasa ham token faylidagi organization firma nomiga mos bo'lishi kerak.
+    org_matches: bool | None = None
+    if access and organization and name:
+        org_matches = _same_company(name, organization)
+
+    if not has_credentials:
+        status = "no_credentials"
+    elif not access:
+        status = "missing"
+    elif remaining_s <= 0:
+        status = "expired"
+    elif org_matches is False:
+        status = "wrong_company"
+    elif remaining_s < 600:
+        status = "soon"
+    else:
+        status = "ok"
+
+    # Oxirgi muvaffaqiyatli refresh: timer/panel yozgan tarix bo'lsa o'sha,
+    # aks holda token faylining o'z vaqti (tarix hali bo'sh bo'lsa ham panel
+    # to'ldirilgan ko'rinadi).
+    health = token_health.get(name)
+    last_ok_at = health["last_ok_at"] or last_refresh_at
+    last_ok_ts = _iso_ts(last_ok_at) or last_refresh_ts
+
+    return {
+        "name": name,
+        "status": status,
+        "valid": bool(access) and remaining_s > 0,
+        "has_token": bool(access),
+        "has_credentials": has_credentials,
+        "username": str(company.get("username") or ""),
+        "organization": organization,
+        "organization_matches": org_matches,
+        "last_refresh_at": last_refresh_at,
+        "last_refresh_ts": last_refresh_ts,
+        "last_ok_at": last_ok_at,
+        "last_ok_ts": last_ok_ts,
+        "last_ok_result": health["last_ok_result"],
+        "last_attempt_at": health["last_attempt_at"],
+        "last_attempt_ts": _iso_ts(health["last_attempt_at"]),
+        "last_result": health["last_result"],
+        "last_error": health["last_error"],
+        "consecutive_errors": health["consecutive_errors"],
+        "expires_at": str(data.get("expires_at") or ""),
+        "expires_ts": expires_ts,
+        "remaining_s": remaining_s,
+        "route_count": route_count,
+        "profile_ids": profile_ids,
+    }
+
+
+def _same_company(left: str, right: str) -> bool:
+    a, b = _norm(left), _norm(right)
+    return bool(a and b and (a == b or a in b or b in a))
 
 
 def _warn_foreign_token(name: str, client, error: str = "") -> None:
@@ -117,10 +232,7 @@ def _warn_foreign_token(name: str, client, error: str = "") -> None:
         org = str(data.get("organization") or "").strip()
     except Exception:  # noqa: BLE001
         org = ""
-    me = _norm(name)
-    other = _norm(org)
-    same = bool(other) and (me == other or me in other or other in me)
-    if same:
+    if _same_company(name, org):
         return
     log.warning(
         "[%s] kompaniya tokeni yo'q (sabab: %s); hozir %s tokeni "

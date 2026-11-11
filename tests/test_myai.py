@@ -378,6 +378,11 @@ def _install_fakes(monkeypatch, store, script=None, on_execute=None):
     monkeypatch.setattr(state_mod, "add_log", store.add_log)
     monkeypatch.setattr(state_mod, "add_task_step", store.add_task_step)
     monkeypatch.setattr(state_mod, "update_task_step", store.update_task_step)
+    monkeypatch.setattr(state_mod, "reconcile_stale_tasks", lambda: None)
+    monkeypatch.setattr(orch_mod.Orchestrator, "_knowledge_notes",
+                        staticmethod(lambda query: []))
+    monkeypatch.setattr(orch_mod, "_knowledge_record_task", lambda *a, **kw: None)
+    monkeypatch.setattr(orch_mod, "_knowledge_learn_failure", lambda *a: None)
     monkeypatch.setattr(
         orch_mod, "get_tool_registry",
         lambda: FakeRegistry(on_execute or (lambda **kw: {"rows": [1]})),
@@ -454,6 +459,23 @@ class TestIntegration:
         assert res.get("ok") is False
         assert res.get("error") == "cancelled"
         assert store.tasks["t_cancel"]["status"] == "cancelled"
+        assert store.steps[0]["status"] == "cancelled"
+
+    def test_already_cancelled_task_does_not_start(self, monkeypatch):
+        """Bekor qilingan task qayta ishga tushsa — bajarilmaydi."""
+        import asyncio
+        from bm_automation.app.myai.orchestrator import Orchestrator
+
+        store = FakeState()
+        store.tasks["t_done"] = {"user_request": "x", "result": {},
+                                 "status": "cancelled"}
+        fake = _install_fakes(monkeypatch, store, [])
+        orch = Orchestrator(llm=fake)
+        res = asyncio.run(orch.run_task("t_done"))
+
+        assert res == {"ok": False, "task_id": "t_done", "error": "cancelled"}
+        assert store.tasks["t_done"]["status"] == "cancelled"
+        assert store.logs == []
 
     def test_external_cancel_marks_task_failed(self, monkeypatch):
         """Bridge timeout coroutine'ni bekor qilsa — status failed bo'lsin."""
@@ -531,6 +553,335 @@ class TestIntegration:
         res = box.get("r", {})
         assert res.get("ok") is True
         assert store.tasks["t_p"]["status"] == "completed"
+
+
+@pytest.fixture(params=["orchestrator", "master"])
+def pipeline(request, monkeypatch):
+    """Ikkala bajarish yo'li uchun tashqi xizmatlarsiz ikki qadamli reja."""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+    from bm_automation.app.myai import orchestrator as orch_mod
+    from bm_automation.app.myai.master import MasterAgent
+    from bm_automation.app.myai.models import (
+        AgentContext, AgentResult, AgentType, Plan, PlanStep, ReviewResult,
+    )
+
+    store = FakeState()
+    store.tasks["t_pipeline"] = {"user_request": "Sinov", "result": {}}
+    fake = _install_fakes(monkeypatch, store)
+    plan = Plan(steps=[
+        PlanStep(agent=AgentType.BROWSER, action="get_routes"),
+        PlanStep(agent=AgentType.TRANSPORT, action="normalize", depends_on=[0]),
+    ])
+    first = SimpleNamespace(run=AsyncMock(return_value=AgentResult()))
+    second = SimpleNamespace(run=AsyncMock(return_value=AgentResult()))
+    master = MasterAgent(fake)
+    master._classify_intent = AsyncMock(return_value={"intent": "general"})
+    master._build_response = AsyncMock(return_value="Natija tayyor")
+    master._planner = SimpleNamespace(create_plan=AsyncMock(return_value=plan))
+    master._reviewer = SimpleNamespace(
+        verify=AsyncMock(return_value=ReviewResult(approved=True)))
+    master._agents = {AgentType.BROWSER: first, AgentType.TRANSPORT: second}
+    orch = orch_mod.Orchestrator(llm=fake)
+    orch._initialized = True
+    orch._master = master
+    orch._planner = master._planner
+    orch._reviewer = master._reviewer
+    orch._agents = master._agents
+    task_events = Mock()
+    monkeypatch.setattr(orch_mod, "emit_task", task_events)
+    is_orchestrator = request.param == "orchestrator"
+
+    def run():
+        if is_orchestrator:
+            return asyncio.run(orch.run_task("t_pipeline"))
+        result = asyncio.run(master.run(AgentContext(
+            task_id="t_pipeline", user_request="Sinov")))
+        return {"ok": result.success, "error": result.error, "result": result.data}
+
+    def status():
+        if is_orchestrator:
+            return store.tasks["t_pipeline"]["status"]
+        return master.status.status.value
+
+    return SimpleNamespace(
+        run=run, status=status, store=store, plan=plan, first=first, second=second,
+        master=master, orch=orch, is_orchestrator=is_orchestrator,
+        task_events=task_events,
+    )
+
+
+class TestPipelineFailures:
+    @staticmethod
+    def _assert_failed(pipeline, result, error, step_failed=False):
+        assert result["ok"] is False
+        assert error in result["error"]
+        assert pipeline.status() == "failed"
+        pipeline.master._build_response.assert_not_awaited()
+        if pipeline.is_orchestrator:
+            assert pipeline.store.tasks["t_pipeline"]["error"] == result["error"]
+            assert [c.args[0] for c in pipeline.task_events.call_args_list] == [
+                "task.started", "task.failed",
+            ]
+            if step_failed:
+                assert len(pipeline.store.steps) == 1
+                assert pipeline.store.steps[0]["status"] == "failed"
+                assert pipeline.store.steps[0]["error"] == result["error"]
+
+    @pytest.mark.parametrize("failure", ["result", "exception", "no_error"])
+    def test_failed_agent_stops_dependent_step(self, pipeline, failure):
+        from bm_automation.app.myai.models import AgentResult
+
+        error = "Manba ishlamadi"
+        if failure == "exception":
+            pipeline.first.run.side_effect = RuntimeError(error)
+        else:
+            pipeline.first.run.return_value = AgentResult(
+                success=False, data={"rows": [1]},
+                error=error if failure == "result" else "",
+            )
+            if failure == "no_error":
+                error = "Agent bajarilmadi: browser"
+
+        result = pipeline.run()
+
+        self._assert_failed(pipeline, result, error, step_failed=True)
+        pipeline.first.run.assert_awaited_once()
+        pipeline.second.run.assert_not_awaited()
+        pipeline.master._reviewer.verify.assert_not_awaited()
+
+    def test_reviewer_rejection_fails_task(self, pipeline):
+        from bm_automation.app.myai.models import ReviewResult
+
+        pipeline.master._reviewer.verify.return_value = ReviewResult(
+            approved=False, errors=["Natija mos emas"])
+
+        result = pipeline.run()
+
+        self._assert_failed(pipeline, result, "Natija mos emas")
+        pipeline.first.run.assert_awaited_once()
+        pipeline.second.run.assert_awaited_once()
+        pipeline.master._reviewer.verify.assert_awaited_once()
+        if pipeline.is_orchestrator:
+            assert [s["status"] for s in pipeline.store.steps] == [
+                "completed", "completed",
+            ]
+
+    def test_missing_agent_fails_task(self, pipeline):
+        from bm_automation.app.myai.models import AgentType
+
+        del pipeline.master._agents[AgentType.BROWSER]
+
+        result = pipeline.run()
+
+        self._assert_failed(pipeline, result, "Agent topilmadi: browser",
+                            step_failed=True)
+        pipeline.first.run.assert_not_awaited()
+        pipeline.second.run.assert_not_awaited()
+        pipeline.master._reviewer.verify.assert_not_awaited()
+
+    def test_empty_plan_fails_task(self, pipeline):
+        pipeline.plan.steps.clear()
+
+        result = pipeline.run()
+
+        self._assert_failed(pipeline, result, "Reja bo'sh")
+        pipeline.first.run.assert_not_awaited()
+        pipeline.second.run.assert_not_awaited()
+        pipeline.master._reviewer.verify.assert_not_awaited()
+        assert pipeline.store.steps == []
+
+    def test_missing_planner_fails_task(self, pipeline):
+        pipeline.orch._planner = pipeline.master._planner = None
+
+        result = pipeline.run()
+
+        self._assert_failed(pipeline, result, "Planner Agent o'rnatilmagan")
+        pipeline.first.run.assert_not_awaited()
+        pipeline.second.run.assert_not_awaited()
+        assert pipeline.store.steps == []
+
+    def test_successful_empty_data_completes_task(self, pipeline):
+        result = pipeline.run()
+
+        assert result["ok"] is True
+        assert pipeline.status() == "completed"
+        assert result["result"]["steps_results"] == {"browser": {}, "transport": {}}
+        assert result["result"]["review_approved"] is True
+        pipeline.first.run.assert_awaited_once()
+        pipeline.second.run.assert_awaited_once()
+        assert pipeline.second.run.call_args.args[0].previous_results["browser"] == {}
+        pipeline.master._reviewer.verify.assert_awaited_once()
+        pipeline.master._build_response.assert_awaited_once()
+        if pipeline.is_orchestrator:
+            assert [s["status"] for s in pipeline.store.steps] == [
+                "completed", "completed",
+            ]
+            assert [c.args[0] for c in pipeline.task_events.call_args_list] == [
+                "task.started", "task.completed",
+            ]
+
+
+class TestCancellationLifecycle:
+    """Bekor qilish signali istalgan bosqichda yetib borishi kerak."""
+
+    @staticmethod
+    def _run_in_thread(pipeline):
+        import threading
+
+        box = {}
+
+        def runner():
+            box["r"] = pipeline.run()
+
+        th = threading.Thread(target=runner, daemon=True)
+        th.start()
+        return th, box
+
+    def test_cancel_during_planning(self, pipeline):
+        """Rejalashtirish paytida bekor qilish — token boshidan mavjud."""
+        import asyncio
+        import threading
+
+        if not pipeline.is_orchestrator:
+            pytest.skip("faqat orchestrator")
+        started = threading.Event()
+        release = threading.Event()
+
+        async def blocking_plan(**kwargs):
+            started.set()
+            await asyncio.to_thread(release.wait, 5)
+            return pipeline.plan
+
+        pipeline.master._planner.create_plan = blocking_plan
+        th, box = self._run_in_thread(pipeline)
+        assert started.wait(3)
+        assert pipeline.orch.cancel_task("t_pipeline") is True
+        release.set()
+        th.join(10)
+
+        assert box["r"]["error"] == "cancelled"
+        assert pipeline.store.tasks["t_pipeline"]["status"] == "cancelled"
+        pipeline.first.run.assert_not_awaited()
+        pipeline.master._reviewer.verify.assert_not_awaited()
+
+    def test_cancel_during_reviewer_keeps_token(self, pipeline):
+        """Token reviewer/final bosqichigacha saqlanadi va completed yozilmaydi."""
+        import asyncio
+        import threading
+        from bm_automation.app.myai.models import ReviewResult
+
+        if not pipeline.is_orchestrator:
+            pytest.skip("faqat orchestrator")
+        started = threading.Event()
+        release = threading.Event()
+
+        async def blocking_verify(**kwargs):
+            started.set()
+            await asyncio.to_thread(release.wait, 5)
+            return ReviewResult(approved=True)
+
+        pipeline.master._reviewer.verify = blocking_verify
+        th, box = self._run_in_thread(pipeline)
+        assert started.wait(3)
+        assert pipeline.orch.cancel_task("t_pipeline") is True
+        release.set()
+        th.join(10)
+
+        assert box["r"]["error"] == "cancelled"
+        assert pipeline.store.tasks["t_pipeline"]["status"] == "cancelled"
+        pipeline.master._build_response.assert_not_awaited()
+        assert [s["status"] for s in pipeline.store.steps] == [
+            "completed", "completed",
+        ]
+
+    def test_cancelled_task_not_overwritten_by_failure(self, pipeline):
+        """Bekor qilingan task keyingi xato bilan failed bo'lib qolmaydi."""
+        import asyncio
+        import threading
+        from bm_automation.app.myai.models import AgentResult
+
+        if not pipeline.is_orchestrator:
+            pytest.skip("faqat orchestrator")
+        started = threading.Event()
+        release = threading.Event()
+
+        async def failing_after_gate(context):
+            started.set()
+            await asyncio.to_thread(release.wait, 5)
+            return AgentResult(success=False, error="Manba ishlamadi")
+
+        pipeline.first.run = failing_after_gate
+        th, box = self._run_in_thread(pipeline)
+        assert started.wait(3)
+        assert pipeline.orch.cancel_task("t_pipeline") is True
+        release.set()
+        th.join(10)
+
+        assert box["r"]["error"] == "cancelled"
+        assert pipeline.store.tasks["t_pipeline"]["status"] == "cancelled"
+        pipeline.second.run.assert_not_awaited()
+
+
+class TestMyAICancelAPI:
+    """POST /api/myai/task/cancel — halol javob qaytarishi."""
+
+    @staticmethod
+    def _call(monkeypatch, task):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+
+        from bm_automation.app.dashboard.routers import system as sys_mod
+        from bm_automation.app.myai import events as events_mod
+        from bm_automation.app.myai import orchestrator as orch_mod
+        from bm_automation.app.myai import state as state_mod
+
+        store = FakeState()
+        store.tasks["t_api"] = task
+        monkeypatch.setattr(state_mod, "get_task", store.get_task)
+        monkeypatch.setattr(state_mod, "update_task", store.update_task)
+        monkeypatch.setattr(sys_mod, "_myai_company", lambda scope: "")
+        events = Mock()
+        monkeypatch.setattr(events_mod, "emit_task", events)
+
+        def fake_orchestrator():
+            return SimpleNamespace(cancel_task=lambda tid: task.get("status") == "running")
+
+        monkeypatch.setattr(orch_mod, "get_orchestrator", fake_orchestrator)
+
+        class Req:
+            async def json(self):
+                return {"task_id": "t_api"}
+
+        result = asyncio.run(sys_mod.myai_task_cancel(Req(), scope={}))
+        return result, store, events
+
+    def test_terminal_task_not_rewritten(self, monkeypatch):
+        result, store, events = self._call(
+            monkeypatch, {"status": "completed", "result": {}})
+
+        assert result["ok"] is False
+        assert "yakunlangan" in result["error"]
+        assert store.tasks["t_api"]["status"] == "completed"
+        events.assert_not_called()
+
+    def test_running_task_signalled(self, monkeypatch):
+        result, store, events = self._call(
+            monkeypatch, {"status": "running", "result": {}})
+
+        assert result == {"ok": True, "action": "cancelled", "signalled": True}
+        assert store.tasks["t_api"]["status"] == "cancelled"
+        events.assert_called_once()
+
+    def test_orphan_task_cancelled_without_signal(self, monkeypatch):
+        result, store, events = self._call(
+            monkeypatch, {"status": "pending", "result": {}})
+
+        assert result["ok"] is True
+        assert result["signalled"] is False
+        assert store.tasks["t_api"]["status"] == "cancelled"
 
 
 class TestLLMTimeout:

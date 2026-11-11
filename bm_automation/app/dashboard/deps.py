@@ -81,10 +81,14 @@ PAGE_KEYS: tuple[str, ...] = SECTION_KEYS
 # `/api/vehicles`, `/api/attendance`) bir nechta sahifaga xizmat qiladi,
 # ularni sahifa bo'yicha to'sish noto'g'ri bo'lardi.
 PAGE_API_PREFIXES: dict[str, str] = {
+    # Haydovchi ro'yxati bot foydalanuvchisini haydovchiga bog'lash uchun
+    # kerak — "users" sahifasiga tegishli (eng uzun prefiks ustun).
+    "/api/drivers/list": "users",
     "/api/drivers": "drivers",
     "/api/appeals": "appeals",
     "/api/electricity": "electricity",
     "/api/rejects": "rejects",
+    "/api/early-start": "rejects",
     "/api/brutto": "brutto",
     "/api/route-skm": "tariffs",
     "/api/kmrate": "tariffs",
@@ -96,6 +100,7 @@ PAGE_API_PREFIXES: dict[str, str] = {
     "/api/disk": "disk",
     "/api/documents": "documents",
     "/api/users": "users",
+    "/api/grafik-poll": "dispatch",
     "/api/settings": "settings",
     "/api/dashboard-users": "dusers",
     "/api/video": "video",
@@ -103,15 +108,21 @@ PAGE_API_PREFIXES: dict[str, str] = {
 }
 
 _GET_ROLE_MIN: dict[str, int] = {
-    "/api/users": 4, "/api/users/": 4, "/api/group-stats": 4,
+    # Bot foydalanuvchilari: dispetcher ham haydovchi bog'lashi uchun ko'radi.
+    # Rol/bo'lim/o'chirish amallari handler ichida ADMIN-only qoladi, ro'yxat
+    # esa dispetcherga faqat o'z korxonasi doirasida qaytariladi (admin.py).
+    "/api/users": 1, "/api/users/": 1, "/api/group-stats": 4,
     "/api/dispatchers": 4, "/api/disk": 4, "/api/backup": 4,
     "/api/logs": 4, "/api/settings/env": 4, "/api/settings/companies": 4,
     "/api/settings": 4, "/api/dashboard-users": 2, "/api/myai": 4,
     "/api/insights": 4, "/api/admin": 4, "/api/brutto": 2,
-    "/api/rejects/tariff": 2, "/api/rejects": 2, "/api/kmrate": 2,
+    "/api/rejects/tariff": 2, "/api/rejects": 2, "/api/early-start": 2,
+    "/api/kmrate": 2,
     "/api/route-skm": 2, "/api/electricity/price": 2, "/api/electricity": 2,
-    "/api/drivers": 2, "/api/salary": 2, "/api/check": 3, "/api/sms": 3,
+    # Haydovchi ro'yxati (bog'lash pickeri) — dispetcherga ham ochiq.
+    "/api/drivers/list": 1, "/api/drivers": 2, "/api/salary": 2, "/api/check": 3, "/api/sms": 3,
     "/api/documents": 3, "/api/me": 0,
+    "/api/grafik-poll": 1,
     "/api/knowledge": 4,
     "/api/sync/status": 2, "/api/sync/monthly/status": 2,
     "/api/video": 1, "/api/video/cameras": 1, "/api/video/relay": 1,
@@ -129,7 +140,8 @@ _POST_ROLE_MIN: dict[str, int] = {
     "/api/sms": 3, "/api/documents": 3, "/api/rejects/tariff": 2,
     "/api/kmrate": 2, "/api/route-skm": 2, "/api/sync": 2,
     "/api/drivers": 2,
-    "/api/electricity/price": 4, "/api/users": 4, "/api/dispatchers": 4,
+    "/api/grafik-poll": 1,
+    "/api/electricity/price": 4, "/api/users": 1, "/api/dispatchers": 4,
     "/api/video/cameras": 4, "/api/video/relay": 4, "/api/video/archive": 4,
     "/api/video/export": 4,
     "/api/knowledge": 4,
@@ -142,6 +154,7 @@ _ROUTE_SCOPED_PREFIXES = (
     "/api/route-skm", "/api/month", "/api/attendance", "/api/drivers",
     "/api/electricity", "/api/salary", "/api/export", "/api/check",
     "/api/appeals", "/api/kmrate", "/api/rejects/tariff",
+    "/api/early-start",
     "/api/sms", "/api/documents", "/api/vehicles",
 )
 
@@ -291,9 +304,25 @@ def create_session(user: dict, request: Request | None = None) -> str:
             "ip": ip,
             "user_agent": ua,
             "device": _device_info(ua) if ua else {},
+            # Super-admin MFA majburiy rejimi: qurilma hali sozlanmagan
+            # bo'lsa sessiya faqat MFA sozlash API'lariga kira oladi.
+            "mfa_setup_required": bool(user.get("mfa_setup_required")),
         }
         _save_sessions()
     return token
+
+
+def set_session_flag(token: str, key: str, value) -> None:
+    """Joriy sessiya bayrog'ini yangilaydi (masalan MFA sozlandi)."""
+    if not token or not key:
+        return
+    with _SESSION_LOCK:
+        _load_sessions()
+        s = _sessions.get(token)
+        if not s:
+            return
+        s[key] = value
+        _save_sessions()
 
 
 def _session_backfill(token: str, request: Request) -> None:
@@ -449,6 +478,7 @@ def session_user(token: str) -> dict | None:
             "is_super": bool(is_admin and is_super_username(
                 s.get("username") or "")),
             "routes": None if is_admin else _company_routes(company),
+            "mfa_setup_required": bool(s.get("mfa_setup_required")),
         }
 
 
@@ -997,6 +1027,9 @@ async def resolve_scope(
 class Scope:
     """Autentifikatsiya + rol tekshiruvi dependency'si."""
 
+    # MFA sozlash majburiy bo'lganda ochiq qoladigan yo'llar.
+    _MFA_SETUP_PATHS = ("/api/mfa/", "/api/me", "/api/logout", "/api/login")
+
     def __init__(self, min_role: int | None = None):
         self._min_role = min_role
 
@@ -1009,6 +1042,10 @@ class Scope:
         if not scope:
             raise HTTPException(401, "Kirish talab qilinadi")
         path = request.url.path
+        if scope.get("mfa_setup_required") and not any(
+                path.startswith(p) for p in self._MFA_SETUP_PATHS):
+            raise HTTPException(
+                403, "Avval ikki bosqichli himoyani (MFA) sozlang")
         min_needed = self._min_role
         if min_needed is None:
             order = _GET_ROLE_ORDER if request.method == "GET" else _POST_ROLE_ORDER

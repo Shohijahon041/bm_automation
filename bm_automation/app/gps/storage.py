@@ -297,21 +297,43 @@ def device_known(imei: str) -> bool:
     return bool(rows)
 
 
-def register_device(imei: str, kind: str = "teltonika") -> None:
+def register_device(imei: str, kind: str = "teltonika",
+                    force_kind: bool = False) -> None:
     """Yangi IMEI'ni avtomatik ro'yxatga oladi (AUTO_REGISTER=1 bo'lsa).
 
     kind: 'teltonika' (xarita GPS), 'camera' (JT808/JT1078 — xaritada
     ko'rsatilmaydi, faqat video) yoki 'counter' (odam sanagich — xaritada
     ko'rsatilmaydi, kirish/chiqish hisobi).
+
+    force_kind=True — operator turini ataylab tanlagan (admin POST): mavjud
+    qurilma turi ham yangilanadi. Avtomatik ro'yxatga olishda esa mavjud
+    tur (mas. kamera) teltonika bilan ustidan yozilmaydi.
     """
     st = _st()
     if not st.enabled:
         return
+    ph = st.db.ph
     st.db.execute(
-        "INSERT INTO gps_devices (imei, kind) VALUES (%s,%s) "
+        f"INSERT INTO gps_devices (imei, kind) VALUES ({ph},{ph}) "
         "ON CONFLICT DO NOTHING",
         (imei, str(kind or "teltonika")),
     )
+    if force_kind:
+        st.db.execute(
+            f"UPDATE gps_devices SET kind = {ph} WHERE imei = {ph}",
+            (str(kind or "teltonika"), imei),
+        )
+
+
+def vehicle_exists(vehicle_id: str) -> bool:
+    """`vehicles` jadvalida shu external_id bormi (bog'lashdan oldin)."""
+    st = _st()
+    if not st.enabled or not vehicle_id:
+        return False
+    rows = st.db.query(
+        f"SELECT 1 FROM vehicles WHERE external_id = {st.db.ph}",
+        (vehicle_id,), limit=1)
+    return bool(rows)
 
 
 def device_allowed(imei: str) -> bool:
@@ -473,6 +495,35 @@ def bind_camera(imei: str, vehicle_id: str, name: str = "") -> bool:
     return bind_device(imei, vehicle_id, name)
 
 
+def _last_seen_ts(dev: dict) -> float:
+    raw = str(dev.get("last_seen_s") or "")
+    if not raw:
+        return 0.0
+    try:
+        ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.timestamp()
+
+
+def _pick_gps(items: list):
+    """Bir avtobusda bir nechta Teltonika bo'lsa eng ishonchlisini tanlaydi.
+
+    Dublikat ro'yxatga olishda IMEI tartibidagi birinchi qator olinib,
+    hech qachon ulanmagan hayoliy qurilma tanlanardi — avtobus xaritada
+    oflayn ko'rinardi. Endi: onlayn > oxirgi ko'rinish vaqti > IMEI.
+    """
+    tel = [d for d in items if str(d.get("kind")) == "teltonika"]
+    if not tel:
+        return None
+    tel.sort(key=lambda d: str(d.get("imei")))
+    tel.sort(key=lambda d: (bool(d.get("online")), _last_seen_ts(d)),
+             reverse=True)
+    return tel[0]
+
+
 def list_vehicles() -> list:
     """Mavjud avtobuslar + bog'langan qurilmalar (bitta qator = bitta avtobus).
 
@@ -500,11 +551,15 @@ def list_vehicles() -> list:
     for v in vrows:
         vid = str(v.get("external_id") or "")
         items = by_vid.get(vid, [])
-        gps = next((d for d in items
-                    if str(d.get("kind")) == "teltonika"), None)
+        gps = _pick_gps(items)
         cams = [d for d in items if str(d.get("kind")) == "camera"]
         cnt = next((d for d in items
                     if str(d.get("kind")) == "counter"), None)
+        if not cnt:
+            # Sanagich hisobni o'zi yuborishi mumkin (Teltonika IO yoki tashqi
+            # server): qurilma GPS bo'lib qoladi, lekin count_* to'lgan bo'ladi.
+            cnt = next((d for d in items
+                        if str(d.get("count_updated_s") or "")), None)
         out.append({
             "external_id": vid,
             "plate_number": str(v.get("plate_number") or ""),
@@ -707,6 +762,17 @@ def bind_device(imei: str, vehicle_id: str, name: str = "") -> bool:
         "NULLIF(%s, ''), name) WHERE imei = %s",
         (vehicle_id, name, imei),
     )
+    return True
+
+
+def rename_device(imei: str, name: str) -> bool:
+    """Faqat nomni yangilaydi — avtobusga bog'lanishga tegmaydi."""
+    st = _st()
+    if not st.enabled:
+        return False
+    ph = st.db.ph
+    st.db.execute(
+        f"UPDATE gps_devices SET name = {ph} WHERE imei = {ph}", (name, imei))
     return True
 
 

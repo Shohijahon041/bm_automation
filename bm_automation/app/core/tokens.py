@@ -62,8 +62,9 @@ def save_tokens(access_token: str, refresh_token: str | None = None, base_url: s
     target = _tokens_path(path)
     data = load_tokens(path=path) or {}
     exp = _jwt_exp(access_token)
+    now = datetime.now()
     expires_at = (datetime.fromtimestamp(exp) if exp
-                  else datetime.now() + timedelta(hours=TOKEN_TTL_HOURS))
+                  else now + timedelta(hours=TOKEN_TTL_HOURS))
     data.update(
         {
             "base_url": base_url or data.get("base_url", ""),
@@ -71,7 +72,8 @@ def save_tokens(access_token: str, refresh_token: str | None = None, base_url: s
             "refresh_token": refresh_token if refresh_token else data.get("refresh_token"),
             "organization": organization or data.get("organization", ""),
             "expires_at": expires_at.isoformat(),
-            "obtained_at": datetime.now().isoformat(),
+            "obtained_at": data.get("obtained_at") or now.isoformat(),
+            "last_refresh_at": now.isoformat(),
         }
     )
     target.parent.mkdir(parents=True, exist_ok=True)

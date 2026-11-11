@@ -14,6 +14,7 @@ bo'lib, automation normal ishlashda davom etadi.
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Any
 
@@ -61,6 +62,10 @@ class Storage:
         self._forced_enabled = enabled  # None = auto (init_db + o'z-o'zini tiklash)
         self._schema_ready = False
         self._tenancy_ready = False  # kompaniyalar reyestri + company_id backfill
+        try:
+            self._slow_query_ms = float(os.getenv("BM_SLOW_QUERY_MS", "") or 0)
+        except ValueError:
+            self._slow_query_ms = 0.0
         if not self.enabled:
             log.info("DB rejimi o'chirilgan вЂ” barcha DB yozuvlar o'tkazib yuboriladi.")
 
@@ -110,11 +115,14 @@ class Storage:
     # ------------------------------------------------------------ low level
 
     def _exec(self, sql: str, params: tuple) -> int:
+        started = time.perf_counter()
         try:
             return self.db.execute(sql, params)
         except DatabaseError as exc:
             self._warn(exc)
             return 0
+        finally:
+            self._timed(" ".join(sql.split()), started)
 
     def _warn(self, exc: Exception) -> None:
         self._warn_count = getattr(self, "_warn_count", 0) + 1
@@ -124,6 +132,19 @@ class Storage:
             self._warned = True
             log.warning("DB yozuv xatosi (jami %d, o'tkazib yuborildi): %s",
                         self._warn_count, exc)
+
+    def _timed(self, sql: str, started: float) -> None:
+        """`BM_SLOW_QUERY_MS` dan sekin so'rovni ogohlantirish bilan yozadi.
+
+        Faqat SQL matni loglanadi — parametrlar (token, JSHSHR) hech qachon.
+        """
+        limit = self._slow_query_ms
+        if limit <= 0:
+            return
+        elapsed = (time.perf_counter() - started) * 1000.0
+        if elapsed >= limit:
+            log.warning("Sekin so'rov %.0f ms (chegara %.0f): %s",
+                        elapsed, limit, sql[:300])
 
     def _tenant_fill(self, table: str, values: dict) -> dict:
         """Tenant jadvali yozuviga company_id ni avtomatik qo'shadi.
@@ -270,11 +291,14 @@ class Storage:
     def query(self, sql: str, params: tuple = (), limit: int | None = None) -> list:
         if not self.enabled:
             return []
+        started = time.perf_counter()
         try:
             return self.db.query(sql, params, limit=limit)
         except DatabaseError as exc:
             self._warn(exc)
             return []
+        finally:
+            self._timed(" ".join(sql.split()), started)
 
     # ------------------------------------------------------------ sync tables
 
@@ -541,13 +565,19 @@ class Storage:
         return self.upsert("driver_profiles", ["driver_id"], values)
 
     def find_driver_by_telegram(self, chat_id: int) -> dict | None:
-        """Telegram chat_id bo'yicha haydovchi profilini qaytaradi."""
+        """Telegram chat_id bo'yicha haydovchi profilini qaytaradi.
+
+        Bitta chat eski xato yozuvlar tufayli bir nechta profilga bog'langan
+        bo'lsa, eng oxirgi bog'lanish ustun turadi. Tartib deterministik
+        bo'lmasa haydovchi karti va roli har safar boshqacha aniqlanadi.
+        """
         if not self.enabled:
             return None
         try:
             rows = self.query(
                 "SELECT * FROM driver_profiles WHERE telegram_chat_id = "
-                f"{self.db.ph}", (str(chat_id),), limit=1)
+                f"{self.db.ph} ORDER BY updated_at DESC, id DESC",
+                (str(chat_id),), limit=1)
             return rows[0] if rows else None
         except Exception:  # noqa: BLE001
             pass
@@ -727,32 +757,50 @@ class Storage:
                     "source": "telefon", **row}
         return None
 
-    def link_driver_telegram(self, driver_id: str, chat_id: int) -> None:
-        """Haydovchiga Telegram chat_id bog'laydi + bildirishnomani yoqadi."""
-        if not self.enabled:
-            return
-        try:
-            self._exec(
-                "UPDATE driver_profiles SET telegram_chat_id = "
-                f"{self.db.ph}, notification_enabled = 1 "
-                "WHERE driver_id = " f"{self.db.ph}",
-                (str(chat_id), driver_id),
-            )
-        except Exception:  # noqa: BLE001
-            pass
+    def link_driver_telegram(self, driver_id: str, chat_id: int) -> bool:
+        """Haydovchiga Telegram chat_id bog'laydi + bildirishnomani yoqadi.
 
-    def unlink_driver_telegram(self, chat_id: int) -> None:
+        Invariant: bitta Telegram chat faqat BITTA haydovchiga bog'lanadi.
+        Chat boshqa profilda turgan bo'lsa u avval bo'shatiladi — aks holda
+        rol/karta qaysi profilda "qolib ketgan"iga qarab almashib turadi.
+        Profil qatori yo'q bo'lsa yaratiladi (eski UPDATE jim o'tkazib
+        yuborardi va bog'lanish ko'rinmay qolardi).
+        """
+        if not self.enabled:
+            return False
+        did = str(driver_id or "").strip()
+        if not did:
+            return False
+        # Avval maqsad profil yoziladi, keyin chat eski profillardan
+        # tozalanadi — tozalashda xato bo'lsa ham yangi bog'lanish saqlanadi.
+        try:
+            self.save_driver_profile(
+                did, telegram_chat_id=str(chat_id), notification_enabled=True)
+            self._exec(
+                "UPDATE driver_profiles SET telegram_chat_id = '', "
+                "notification_enabled = 0 WHERE telegram_chat_id = "
+                f"{self.db.ph} AND driver_id <> {self.db.ph}",
+                (str(chat_id), did),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._warn(exc)
+            return False
+        row = self.find("driver_profiles", driver_id=did) or {}
+        return str(row.get("telegram_chat_id") or "") == str(chat_id)
+
+    def unlink_driver_telegram(self, chat_id: int) -> bool:
         """Telegram bog'lanishini olib tashlaydi (chat_id bo'yicha)."""
         if not self.enabled:
-            return
+            return False
         try:
             self._exec(
-                "UPDATE driver_profiles SET telegram_chat_id = '' "
-                f"WHERE telegram_chat_id = {self.db.ph}",
+                "UPDATE driver_profiles SET telegram_chat_id = '', "
+                f"notification_enabled = 0 WHERE telegram_chat_id = {self.db.ph}",
                 (str(chat_id),),
             )
         except Exception:  # noqa: BLE001
-            pass
+            return False
+        return not bool(self.find_driver_by_telegram(chat_id))
 
     # ------------------------------------------------- dispatcher routes
 
@@ -1383,6 +1431,55 @@ class Storage:
         return self._exec(
             f"DELETE FROM driver_fines WHERE id = {self.db.ph}", (int(row_id),)
         ) == 1
+
+    # ------------------------------------------- texnik xizmat jurnali
+
+    def vehicle_service_logs(self, vehicle_id: str,
+                             limit: int = 100) -> list:
+        if not self.enabled:
+            return []
+        return self.query(
+            "SELECT * FROM vehicle_service_logs WHERE vehicle_id = "
+            + self.db.ph
+            + " ORDER BY service_date DESC, odometer DESC, id DESC",
+            (str(vehicle_id),), limit=max(1, min(int(limit), 500)))
+
+    def add_vehicle_service_log(self, values: dict) -> bool:
+        return self.insert("vehicle_service_logs", values)
+
+    def delete_vehicle_service_log(self, row_id: int,
+                                   vehicle_id: str = "") -> bool:
+        if not self.enabled:
+            return False
+        sql = f"DELETE FROM vehicle_service_logs WHERE id = {self.db.ph}"
+        params = [int(row_id)]
+        if vehicle_id:
+            sql += f" AND vehicle_id = {self.db.ph}"
+            params.append(str(vehicle_id))
+        return self._exec(sql, tuple(params)) == 1
+
+    def latest_vehicle_service_logs(self, route_ids: list[str] | None = None,
+                                    limit: int = 5000) -> list:
+        """Har bir avtobus uchun eng so'nggi xizmat yozuvi."""
+        if not self.enabled:
+            return []
+        sql = "SELECT * FROM vehicle_service_logs"
+        params: list = []
+        if route_ids is not None:
+            ids = sorted(str(x) for x in route_ids if str(x))
+            if not ids:
+                return []
+            sql += (" WHERE route_id IN ("
+                    + ", ".join([self.db.ph] * len(ids)) + ")")
+            params.extend(ids)
+        sql += " ORDER BY service_date DESC, odometer DESC, id DESC"
+        rows = self.query(sql, tuple(params), limit=max(1, int(limit)))
+        latest: dict[str, dict] = {}
+        for row in rows:
+            vid = str(row.get("vehicle_id") or "")
+            if vid and vid not in latest:
+                latest[vid] = row
+        return list(latest.values())
 
     # --------------------------------------------------------- staff (xodimlar)
 

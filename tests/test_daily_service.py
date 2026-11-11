@@ -226,6 +226,17 @@ def test_cmd_daily_exit_code_reflects_errors(monkeypatch, capsys):
                         lambda **kw: [{"image": "x.png", "sent": True}])
     assert commands.cmd_daily(args) == 0
 
+    # 404 — "ma'lumot yo'q", kunlik ishni yiqitmaydi.
+    monkeypatch.setattr("bm_automation.app.services.daily_service.run_daily",
+                        lambda **kw: [{"profile": "AND ECO", "sheet_empty": True,
+                                       "monthly_empty": True}])
+    assert commands.cmd_daily(args) == 0
+
+    # Oylik yig'madagi haqiqiy xato esa systemd'ga ko'rinadi.
+    monkeypatch.setattr("bm_automation.app.services.daily_service.run_daily",
+                        lambda **kw: [{"profile": "AND ECO", "monthly_error": "HTTP 500"}])
+    assert commands.cmd_daily(args) == 1
+
 
 def test_auth_error_detection():
     assert _auth_error([{"error": "avtorizatsiya talab qilinadi"}]) is True
@@ -334,7 +345,13 @@ def _daily_env(monkeypatch, calls, profile, raise_token=False):
         calls.append(("run_sheet",))
         return {"image": "sheet.png", "sent": True}
 
-    monkeypatch.setattr(ds, "BMClient", _FakeClient)
+    def _client_for_profile(prof, auto_relogin=True):
+        calls.append(("client_for_profile", prof.get("profileId"), auto_relogin))
+        if raise_token:
+            raise RuntimeError("boshqa xato")
+        return _FakeClient()
+
+    monkeypatch.setattr(ds, "client_for_profile", _client_for_profile)
     monkeypatch.setattr(ds, "all_profiles", lambda: [profile])
     monkeypatch.setattr(ds, "run_sheet", _fake_sheet)
     monkeypatch.setattr(ds, "run_summary",
@@ -343,9 +360,8 @@ def _daily_env(monkeypatch, calls, profile, raise_token=False):
     return ds
 
 
-def test_run_daily_once_uses_login_for_profile(monkeypatch):
-    """Profil tokeni login_for_profile orqali olinadi (401/403 fallback) —
-    kompaniya butunlay o'tkazib yuborilmaydi (AND ECO 401 holati)."""
+def test_run_daily_once_uses_company_client(monkeypatch):
+    """Har kompaniya o'z tokeni bilan client oladi (fallback emas)."""
     calls = []
     profile = {"name": "AND ECO TRANSPORT MCHJ", "profileId": "p-1",
                "routeVariantId": "r-1"}
@@ -353,7 +369,7 @@ def test_run_daily_once_uses_login_for_profile(monkeypatch):
 
     results = ds.run_daily_once(send=False)
 
-    assert ("login_for_profile", "p-1", True) in calls
+    assert ("client_for_profile", "p-1", True) in calls
     assert not any(c[0] == "login_by_profile" for c in calls)
     assert ("run_sheet",) in calls
     assert results[0]["profile"] == "AND ECO TRANSPORT MCHJ"
@@ -374,8 +390,9 @@ def test_run_daily_once_token_error_skips_profile(monkeypatch):
     assert results[0]["error"].startswith("kompaniya tokeni olinmadi")
 
 
-def test_run_all_uses_login_for_profile(monkeypatch, tmp_path):
-    """'Grafik' oqimi (run_all) ham 401/403 da asosiy tokenga qaytadi."""
+def test_run_all_uses_company_client(monkeypatch, tmp_path):
+    """'Grafik' oqimi (run_all) har kompaniya uchun o'z clientini oladi."""
+    from bm_automation.app.core import companies as companies_mod
     from bm_automation.app.core import profiles as profiles_mod
     from bm_automation.app.services import driver_sheet_service as dss
 
@@ -384,24 +401,22 @@ def test_run_all_uses_login_for_profile(monkeypatch, tmp_path):
                "routeVariantId": "r-9"}
     monkeypatch.setattr(profiles_mod, "all_profiles", lambda: [profile])
 
-    class _FakeClient:
-        def login_for_profile(self, pid, fallback_to_main=True):
-            calls.append(("login_for_profile", pid, fallback_to_main))
-
-        def login_by_profile(self, pid):
-            calls.append(("login_by_profile", pid))
+    sentinel = object()
+    monkeypatch.setattr(companies_mod, "client_for_profile",
+                        lambda p, auto_relogin=True: calls.append(
+                            ("client_for_profile", p.get("profileId"))) or sentinel)
 
     def _fake_run(client, route_id, **_kw):
-        calls.append(("run", route_id))
+        calls.append(("run", route_id, client))
         return {"image": "x.png", "profile": profile["name"]}
 
     monkeypatch.setattr(dss, "run", _fake_run)
 
-    results = dss.run_all(_FakeClient(), date_str="2026-10-09",
+    results = dss.run_all(None, date_str="2026-10-09",
                           out_dir=str(tmp_path), send=False)
 
-    assert ("login_for_profile", "p-9", True) in calls
-    assert not any(c[0] == "login_by_profile" for c in calls)
+    assert ("client_for_profile", "p-9") in calls
+    assert ("run", "r-9", sentinel) in calls
     assert results[0]["profile"] == "AND ECO TRANSPORT MCHJ"
     assert results[0]["image"] == "x.png"
 
@@ -434,7 +449,8 @@ def _monthly_env(monkeypatch, tmp_path, calls):
 
     profile = {"name": "AND ECO TRANSPORT MCHJ", "profileId": "p-1",
                "routeVariantId": "r-1"}
-    monkeypatch.setattr(ds, "BMClient", _FakeClient)
+    monkeypatch.setattr(ds, "client_for_profile",
+                        lambda p, auto_relogin=True: _FakeClient())
     monkeypatch.setattr(ds, "all_profiles", lambda: [profile])
     monkeypatch.setattr(ds, "run_sheet",
                         lambda *_a, **_k: {"image": "sheet.png", "sent": True,
@@ -522,3 +538,33 @@ def test_run_daily_once_monthly_error_allows_retry(monkeypatch, tmp_path):
     r2 = ds.run_daily_once(send=True)
     assert r2[0]["monthly_sent"] is True
     assert len(sent_docs) == 1
+
+
+def test_has_failures_no_data_is_not_failure():
+    """BM 404 — ma'lumot yo'q; bu retry talab qiladigan xato emas."""
+    assert _has_failures([{"profile": "AND ECO", "sheet_empty": True,
+                           "monthly_empty": True}]) is False
+
+
+def test_run_daily_once_404_is_empty_not_error(monkeypatch):
+    """duty/oylik 404 butun kunlik vazifani ERRORga aylantirmasin."""
+    from bm_automation.app.api.client import BMApiError
+
+    calls = []
+    profile = {"name": "AND ECO TRANSPORT MCHJ", "profileId": "p-1",
+               "routeVariantId": "r-1"}
+    ds = _daily_env(monkeypatch, calls, profile)
+
+    def _raise_404(*_a, **_k):
+        raise BMApiError(404, code="DUTY_NOT_FOUND")
+
+    monkeypatch.setattr(ds, "run_sheet", _raise_404)
+    monkeypatch.setattr(ds, "run_summary", _raise_404)
+
+    results = ds.run_daily_once(send=False)
+
+    assert results[0].get("sheet_empty") is True
+    assert results[0].get("monthly_empty") is True
+    assert results[0].get("error") is None
+    assert results[0].get("monthly_error") is None
+    assert _has_failures(results) is False

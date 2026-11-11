@@ -24,7 +24,7 @@ repodan fayl ko'chirish bilan yangilanadi.
 | `bm-dashboard.service` | uvicorn `127.0.0.1:8080` + GPS threadlari |
 | `bm-daily.timer` | 20:00 — kunlik jadval |
 | `bm-schedule.timer` | 22:00 — kunlik hisobot + DB sync |
-| `bm-token-refresh.timer` | 06:30/18:30 — BM keep-alive |
+| `bm-token-refresh.timer` | har 2 soatda — asosiy va kompaniya tokenlari keep-alive |
 
 ## Deploy tartibi
 

@@ -148,9 +148,11 @@ def test_backup_alert_once_per_window():
     assert "zaxira nusxa" in got[0]
 
 
-def test_login_endpoint_triggers_alert(senv):  # noqa: F811
+def test_login_endpoint_triggers_alert(senv, monkeypatch):  # noqa: F811
     got, send = _collector()
     alerts.set_sender(send)
+    # TestClient IP'si "testclient" — haqiqiy tahdid emas. Tashqi IP beramiz.
+    monkeypatch.setattr(deps, "client_ip", lambda request: "8.8.8.8")
     client = _client()
     for _ in range(alerts.LOGIN_ALERT_THRESHOLD):
         assert client.post("/api/login",
@@ -158,6 +160,20 @@ def test_login_endpoint_triggers_alert(senv):  # noqa: F811
                            ).status_code == 401
     assert _wait(lambda: len(got) == 1)
     assert "ghost" in got[0]
+
+
+def test_testclient_origin_never_alerts(senv):  # noqa: F811
+    """In-process TestClient (testlar/lokal tekshiruv) adminlarni bezovta qilmaydi."""
+    got, send = _collector()
+    alerts.set_sender(send)
+    client = _client()
+    for _ in range(alerts.LOGIN_ALERT_THRESHOLD + 2):
+        assert client.post("/api/login",
+                           json={"username": "ghost", "password": "wrongpass1"}
+                           ).status_code == 401
+    time.sleep(0.15)
+    assert got == []
+    assert alerts.notify_login_failure("ghost", "testclient", "bad-password") is False
 
 
 # ------------------------------------------------------------------ MFA API

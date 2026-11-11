@@ -785,3 +785,15 @@ def test_browser_relogin_without_credentials_raises(client, monkeypatch):
         client._browser_relogin()
     assert "login-browser" in str(ei.value)
     assert not launches
+
+
+def test_browser_relogin_never_discovers_profiles(client, monkeypatch):
+    """Avtomatik relogin `profiles.json`ni yozmasligi kerak (discover=False)."""
+    launches = []
+    _patch_browser_login(monkeypatch, launches)
+    monkeypatch.setenv("BM_BROWSER_LOGIN", "on")
+    client.config.username = "bm_user"
+    client.config.password = "bm_secret"
+    client.config.organization = "ORG"
+    client._browser_relogin()
+    assert launches and launches[-1].get("discover") is False

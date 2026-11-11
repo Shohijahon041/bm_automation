@@ -20,7 +20,7 @@ SECTION_KEYS: tuple[str, ...] = (
     "alerts", "performance", "top-performance", "electricity", "rejects",
     "brutto", "tariffs", "insights", "audit", "myai", "gps", "video",
     "sms", "admin", "logs", "disk", "documents", "users", "settings",
-    "dusers", "knowledge",
+    "dusers", "knowledge", "tokens",
 )
 
 SECTION_LABELS: dict[str, str] = {
@@ -51,6 +51,7 @@ SECTION_LABELS: dict[str, str] = {
     "settings": "Sozlamalar",
     "dusers": "Foydalanuvchilar",
     "knowledge": "Bilim bazasi",
+    "tokens": "Tokenlar",
 }
 
 # Bot buyruq/nav nomi → bo'lim kaliti. Ro'yxatda yo'q buyruqlar (help,

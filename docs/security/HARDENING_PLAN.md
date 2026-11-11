@@ -42,6 +42,13 @@ Holat: **lokal kod tuzatishlari bajarildi; productionga hech narsa chiqarilmagan
 | SEC-10 | `bm_automation/app/dashboard/fastapi_app.py` | CSP: `base-uri`, `form-action`, `object-src`, `frame-ancestors` qo'shildi; `'unsafe-inline'` sababi kod izohida | `bm-dashboard` restart |
 | MFA | `app/dashboard/totp.py` (yangi), `routers/auth.py`, `db/schema.py`, `db/storage.py`, `db/backup.py`, `web/index.html` | Ixtiyoriy TOTP (har bir foydalanuvchi o'zi yoqadi, ADMIN birinchi navbatda): `dashboard_users.totp_secret`, `/api/mfa/setup|enable|disable`, login'da kod bosqichi, Settings paneli, admin `mfa_reset` (telefon yo'qolganda) | `bm-dashboard` + `bm-bot` restart (migratsiya `init_db()`) |
 | — | `tests/test_security_hardening.py` | 10 yangi regressiya testi (jami 30) | repo |
+
+> **SEC-05 operational talabi (2026-11-09):** `bm-gps.service` `.env`ni o'qishi
+> shart — `/etc/systemd/system/bm-gps.service.d/env.conf`:
+> `EnvironmentFile=-/opt/bm/.env`. Unit'da bu bo'lmasa `GPS_API_TOKEN` bo'sh
+> qoladi va "loopback-only" rejimi nginx proxy orqali tashqi dunyoga ochilib
+> ketadi (`/api/gps/vehicles`, `/api/video/jt-streams` tokensiz 200 edi).
+> Drop-in qo'shilgach: tokensiz 401, `bm_session` cookie yoki Bearer bilan 200.
 | — | `tests/test_mfa_and_alerts.py` | 16 yangi test (TOTP vektorlar, alertlar, MFA API, CSP) | repo |
 
 Eslatma: `web/index.html` statik fayl — server restart talab qilmaydi, lekin

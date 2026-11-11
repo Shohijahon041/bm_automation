@@ -388,7 +388,9 @@ class GpsHandler(BaseHTTPRequestHandler):
         for cam in storage.list_cameras():
             if str(cam.get("id") or "") == str(cam_id):
                 vid = str(cam.get("vehicle_id") or "").strip()
-                return not vid or vid in allowed
+                # Bog'lanmagan kamera kompaniyaga tegishli emas — non-admin
+                # uchun yopiq (admin yuqorida True oladi).
+                return bool(vid) and vid in allowed
         return False
 
     def _phone_allowed(self, phone: str) -> bool:
@@ -401,11 +403,16 @@ class GpsHandler(BaseHTTPRequestHandler):
             dev_imei = str(device.get("imei") or "").lstrip("0")
             if dev_imei == phone_norm:
                 vid = str(device.get("vehicle_id") or "").strip()
-                return not vid or vid in allowed
-        connected = [p.lstrip("0") for p in jt808.connected_phones()]
-        if phone_norm in connected:
-            return True
+                return bool(vid) and vid in allowed
+        # Ro'yxatda yo'q yoki bog'lanmagan qurilma — faqat admin ochadi.
+        # Ilgari `connected_phones()` zaxirasi har qanday ulangan telefonni
+        # non-admin uchun ochib qo'yardi (boshqa korxona video oqimi riski).
         return False
+
+    @staticmethod
+    def _valid_count(value: int) -> bool:
+        """Sanagich soni: 0..1 000 000 (manfiy va absurd qiymat rad etiladi)."""
+        return 0 <= int(value) <= 1_000_000
 
     @staticmethod
     def _valid_phone(phone: str) -> bool:
@@ -1005,14 +1012,22 @@ class GpsHandler(BaseHTTPRequestHandler):
                          "error": "kind noto'g'ri "
                                   "(teltonika/camera/counter)"}, 400)
                     return
+                vid = str(payload.get("vehicle_id") or "").strip()
+                if vid and not storage.vehicle_exists(vid):
+                    self._json({"ok": False,
+                                "error": "avtobus topilmadi"}, 400)
+                    return
                 try:
-                    storage.register_device(imei, kind=kind)
+                    # Admin ataylab tur tanladi — mavjud qurilma turi ham
+                    # yangilanadi (aks holda UI "kind" javobi yolg'on bo'lardi).
+                    storage.register_device(imei, kind=kind, force_kind=True)
                 except TypeError:
-                    storage.register_device(imei)
+                    try:
+                        storage.register_device(imei, kind=kind)
+                    except TypeError:
+                        storage.register_device(imei)
                 storage.bind_device(
-                    imei,
-                    str(payload.get("vehicle_id") or "").strip(),
-                    str(payload.get("name") or "").strip(),
+                    imei, vid, str(payload.get("name") or "").strip(),
                 )
                 self._json({"ok": True, "imei": imei, "kind": kind})
             elif path == "/api/gps/counters":
@@ -1029,7 +1044,17 @@ class GpsHandler(BaseHTTPRequestHandler):
                          "error": "in_count/out_count son bo'lishi kerak"},
                         400)
                     return
+                if not self._valid_count(in_c) or not self._valid_count(out_c):
+                    self._json(
+                        {"ok": False,
+                         "error": "in_count/out_count 0..1 000 000 bo'lishi kerak"},
+                        400)
+                    return
                 vid = str(payload.get("vehicle_id") or "").strip()
+                if vid and not storage.vehicle_exists(vid):
+                    self._json({"ok": False,
+                                "error": "avtobus topilmadi"}, 400)
+                    return
                 if vid:
                     storage.register_device(imei, kind="counter")
                     storage.bind_device(
@@ -1404,12 +1429,21 @@ class GpsHandler(BaseHTTPRequestHandler):
             if len(parts) == 4 and parts[:3] == ["api", "gps", "devices"]:
                 if "enabled" in payload:
                     storage.set_device_enabled(parts[3], bool(payload["enabled"]))
-                if "vehicle_id" in payload or "name" in payload:
+                if "vehicle_id" in payload:
+                    vid = str(payload.get("vehicle_id") or "").strip()
+                    if vid and not storage.vehicle_exists(vid):
+                        self._json({"ok": False,
+                                    "error": "avtobus topilmadi"}, 400)
+                        return
                     storage.bind_device(
-                        parts[3],
-                        str(payload.get("vehicle_id") or "").strip(),
+                        parts[3], vid,
                         str(payload.get("name") or "").strip(),
                     )
+                elif "name" in payload:
+                    # Faqat nom tahrirlansa bog'lanish o'chib ketmasligi kerak
+                    # (avval bind_device("") chaqirilib, qurilma uzilardi).
+                    storage.rename_device(
+                        parts[3], str(payload.get("name") or "").strip())
                 if payload.get("kind"):
                     k = _device_kind(payload, parts[3])
                     if not k:

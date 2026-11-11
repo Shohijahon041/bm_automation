@@ -26,10 +26,10 @@ import time
 from datetime import date, timedelta
 from pathlib import Path
 
-from ..api.client import BMClient
+from ..core.companies import client_for_profile
 from ..core.profiles import all_profiles
 from ..core.state import record_run
-from ..db.sync import AutomationLogger
+from ..db.sync import AutomationLogger, _not_found
 from ..notifications.telegram import (resend_keyboard, send_document,
                                       send_message)
 from ..services.driver_sheet_service import run as run_sheet
@@ -287,16 +287,6 @@ def run_daily_once(send: bool = True, chat_id: str | None = None, month_offset: 
     bajariladi (masalan dispetcherga biriktirilgan yo'nalishlar bo'yicha).
     Berilmasa barcha profillar bajariladi.
     """
-    client = BMClient()
-    client.login()
-    main_access = client.access_token
-    main_refresh = client.refresh_token
-
-    def use_main():
-        client.access_token = main_access
-        client.refresh_token = main_refresh
-        client.session.headers["Authorization"] = f"Bearer {main_access}"
-
     today = date.today()
     sheet_date = today + timedelta(days=sheet_offset)
     month_start = _month_start(month_offset)
@@ -314,7 +304,6 @@ def run_daily_once(send: bool = True, chat_id: str | None = None, month_offset: 
             p_rids = [t.strip() for t in route.replace(",", " ").split() if t.strip()]
             if not any(r in routes for r in p_rids):
                 continue
-        pid = str(p.get("profileId", "") or "").strip()
         entry = {"profile": name}
         base = str(Path("reports") / safe_name(name))
         if not route:
@@ -323,14 +312,9 @@ def run_daily_once(send: bool = True, chat_id: str | None = None, month_offset: 
             results.append(entry)
             continue
 
-        # Profil tokeni (kompaniya). FERGANATEX'da profileId bo'sh -> asosiy token.
-        # login_for_profile: profil tokeni 401/403 bo'lsa asosiy tokenga qaytadi —
-        # kompaniya butunlay o'tkazib yuborilmaydi, jadval/oylik davom etadi.
+        # Har bir kompaniya faqat o'z tokeni bilan ishlaydi.
         try:
-            if pid:
-                client.login_for_profile(pid, fallback_to_main=True)
-            else:
-                use_main()
+            client = client_for_profile(p)
         except Exception as exc:
             entry["error"] = f"kompaniya tokeni olinmadi: {exc}"
             print(f"  XATO [{name}] token: {exc}")
@@ -353,13 +337,19 @@ def run_daily_once(send: bool = True, chat_id: str | None = None, month_offset: 
             else:
                 print(f"  OK [{name}]: jadval {sheet['image']}")
         except Exception as exc:
-            entry["error"] = str(exc)
-            print(f"  XATO [{name}] jadval: {exc}")
+            if _not_found(exc):
+                # BM API 404 — bu kun uchun jadval hali shakllanmagan.
+                # Xato emas: retry qilinmaydi, oylik yig'ma davom etadi.
+                entry["sheet_empty"] = True
+                print(f"  [{name}] jadval: ma'lumot topilmadi (404)")
+            else:
+                entry["error"] = str(exc)
+                print(f"  XATO [{name}] jadval: {exc}")
 
         # Ertangi grafik tayyor bo'lgach, shaxsiy Telegram chat ID kiritilgan
         # haydovchilarga o'z smenasi yuboriladi. DB jurnalidagi tekshiruv
         # daily task qayta uringanda bir xil xabarni qayta yubormaydi.
-        if send and not entry.get("error"):
+        if send and not entry.get("error") and not entry.get("sheet_empty"):
             try:
                 from ..db.storage import get_storage
                 from ..db.sync import sync_duties
@@ -381,7 +371,7 @@ def run_daily_once(send: bool = True, chat_id: str | None = None, month_offset: 
         # Ertangi grafik tayyor bo'lgach, telefon raqami yozilgan
         # haydovchilarga SMS xabarnoma yuboriladi (Android SMS Gateway).
         # Xato bo'lsa jarayon to'xtamaydi — faqat yozuv qayd etiladi.
-        if send and not entry.get("error"):
+        if send and not entry.get("error") and not entry.get("sheet_empty"):
             try:
                 from ..notifications.sms_notify import send_driver_schedule_sms
                 sms = send_driver_schedule_sms(
@@ -435,8 +425,13 @@ def run_daily_once(send: bool = True, chat_id: str | None = None, month_offset: 
                               f"takrorlanmaydi: {sm['excel_file']}")
                 print(f"  OK [{name}]: oylik {sm['excel_file']}")
         except Exception as exc:
-            entry["monthly_error"] = str(exc)
-            print(f"  XATO [{name}] oylik: {exc}")
+            if _not_found(exc):
+                # Oylik davr uchun ma'lumot hali yo'q — bu xato emas.
+                entry["monthly_empty"] = True
+                print(f"  [{name}] oylik: ma'lumot topilmadi (404)")
+            else:
+                entry["monthly_error"] = str(exc)
+                print(f"  XATO [{name}] oylik: {exc}")
 
         results.append(entry)
     return results

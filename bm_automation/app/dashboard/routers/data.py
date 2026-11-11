@@ -132,6 +132,20 @@ def api_rejects(request: Request, scope: dict = Depends(Scope())):
     return rep
 
 
+@router.get("/api/early-start")
+def api_early_start(request: Request, scope: dict = Depends(Scope())):
+    """Bir kunlik aniq erta boshlanish tahlili (reja vs haqiqiy startTm)."""
+    from ...notifications.ops import early_start
+    params = _parse_qs(request)
+    params = force_route(scope, "/api/early-start", params)
+    route_ids = [r.strip() for r in str(params.get("route") or "").split(",")
+                 if r.strip()]
+    return early_start.early_start_report(
+        str(params.get("date") or ""), route_ids,
+        force=str(params.get("refresh") or "") in ("1", "true"),
+    )
+
+
 @router.get("/api/rejects/tariff")
 def api_rejects_tariff(request: Request, scope: dict = Depends(Scope())):
     from ...core.bot_settings import route_tariff
@@ -399,3 +413,173 @@ def _driver_in_scope(storage, driver_id: str, scopes: set) -> bool:
         return False
     row = storage.find("drivers", external_id=driver_id)
     return bool(row and str(row.get("route_id") or "") in scopes)
+
+
+@router.get("/api/grafik-poll")
+def api_grafik_poll(request: Request, scope: dict = Depends(Scope())):
+    from datetime import timedelta
+    from ...notifications.ops import grafik_poll
+    from ...core.profiles import all_profiles
+
+    params = _parse_qs(request)
+    params = force_route(scope, "/api/grafik-poll", params)
+
+    d_str = (params.get("date") or "").strip()
+    if not d_str:
+        now = datetime.now()
+        target_d = (now.date() + timedelta(days=1)) if now.hour >= 17 else now.date()
+        d_str = target_d.isoformat()
+
+    rid = (params.get("routeVariantId") or params.get("route_id") or params.get("route") or "").strip()
+    scopes = scope_routes(scope)
+
+    if rid:
+        if scopes is not None and rid not in scopes:
+            raise HTTPException(status_code=403, detail="Ruxsat berilmagan yo'nalish")
+        r_name = rid[:8]
+        for p in all_profiles():
+            if str(p.get("routeVariantId")) == rid:
+                r_name = str(p.get("routeName") or p.get("name") or rid[:8])
+                break
+        poll = grafik_poll.get_poll(grafik_poll.poll_id_for(rid, d_str))
+        if not poll:
+            poll = grafik_poll.build_poll_data(rid, d_str, route_name=r_name)
+        return poll or {"poll_id": "", "items": []}
+
+    results = []
+    for p in all_profiles():
+        r = str(p.get("routeVariantId") or "").strip()
+        if not r:
+            continue
+        if scopes is not None and r not in scopes:
+            continue
+        r_name = str(p.get("routeName") or p.get("name") or r[:8])
+        pid = grafik_poll.poll_id_for(r, d_str)
+        poll = grafik_poll.get_poll(pid)
+        if not poll:
+            poll = grafik_poll.build_poll_data(r, d_str, route_name=r_name)
+        if poll:
+            items = poll.get("items", [])
+            total = len(items)
+            confirmed = sum(1 for it in items if it.get("confirmed"))
+            results.append({
+                "poll_id": poll.get("poll_id"),
+                "route_id": r,
+                "route_name": r_name,
+                "date": d_str,
+                "weekday": poll.get("weekday"),
+                "total": total,
+                "confirmed": confirmed,
+                "pending": total - confirmed,
+                "percent": int(confirmed / total * 100) if total > 0 else 0,
+                "items": items,
+            })
+    return {"date": d_str, "polls": results}
+
+
+@router.post("/api/grafik-poll/send")
+async def api_grafik_poll_send(request: Request, scope: dict = Depends(Scope())):
+    from datetime import timedelta
+    from ...notifications.ops import grafik_poll
+    from ...core.profiles import all_profiles
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    d_str = str(payload.get("date") or "").strip()
+    if not d_str:
+        now = datetime.now()
+        target_d = (now.date() + timedelta(days=1)) if now.hour >= 17 else now.date()
+        d_str = target_d.isoformat()
+
+    rid = str(payload.get("routeVariantId") or payload.get("route_id") or "").strip()
+    scopes = scope_routes(scope)
+
+    if rid and scopes is not None and rid not in scopes:
+        raise HTTPException(status_code=403, detail="Ruxsat berilmagan yo'nalish")
+
+    targets = [rid] if rid else [
+        str(p.get("routeVariantId")) for p in all_profiles()
+        if p.get("routeVariantId") and (scopes is None or str(p.get("routeVariantId")) in scopes)
+    ]
+
+    sent_list = []
+    for r in targets:
+        r_name = r[:8]
+        for p in all_profiles():
+            if str(p.get("routeVariantId")) == r:
+                r_name = str(p.get("routeName") or p.get("name") or r[:8])
+                break
+        res = grafik_poll.send_poll_to_groups(r, d_str, route_name=r_name, force=True)
+        sent_list.append({
+            "route_id": r,
+            "route_name": r_name,
+            "sent": res.get("sent", 0),
+            "items": res.get("items_count", 0),
+            "error": res.get("error"),
+        })
+    return {"ok": True, "date": d_str, "results": sent_list}
+
+
+@router.post("/api/grafik-poll/reset")
+async def api_grafik_poll_reset(request: Request, scope: dict = Depends(Scope())):
+    from datetime import timedelta
+    from ...notifications.ops import grafik_poll
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    d_str = str(payload.get("date") or "").strip()
+    if not d_str:
+        now = datetime.now()
+        target_d = (now.date() + timedelta(days=1)) if now.hour >= 17 else now.date()
+        d_str = target_d.isoformat()
+
+    rid = str(payload.get("routeVariantId") or payload.get("route_id") or "").strip()
+    graph = str(payload.get("graph") or "").strip()
+    if not rid or not graph:
+        raise HTTPException(status_code=400, detail="route_id va graph ko'rsatilishi shart")
+
+    scopes = scope_routes(scope)
+    if scopes is not None and rid not in scopes:
+        raise HTTPException(status_code=403, detail="Ruxsat berilmagan yo'nalish")
+
+    ok = grafik_poll.reset_confirmation(rid, d_str, graph)
+    return {"ok": ok, "route_id": rid, "date": d_str, "graph": graph}
+
+
+@router.post("/api/grafik-poll/swap")
+async def api_grafik_poll_swap(request: Request, scope: dict = Depends(Scope())):
+    from datetime import timedelta
+    from ...notifications.ops import grafik_poll
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    d_str = str(payload.get("date") or "").strip()
+    if not d_str:
+        now = datetime.now()
+        target_d = (now.date() + timedelta(days=1)) if now.hour >= 17 else now.date()
+        d_str = target_d.isoformat()
+
+    rid = str(payload.get("routeVariantId") or payload.get("route_id") or "").strip()
+    g1 = str(payload.get("graph1") or "").strip()
+    g2 = str(payload.get("graph2") or "").strip()
+    if not rid or not g1 or not g2:
+        raise HTTPException(status_code=400, detail="route_id, graph1 va graph2 ko'rsatilishi shart")
+
+    scopes = scope_routes(scope)
+    if scopes is not None and rid not in scopes:
+        raise HTTPException(status_code=403, detail="Ruxsat berilmagan yo'nalish")
+
+    username = scope.get("username") or "Dispetcher"
+    res = grafik_poll.swap_graphs(rid, d_str, g1, g2, admin_name=username)
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("error", "Almashtirishda xatolik"))
+    return res

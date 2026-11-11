@@ -191,3 +191,29 @@ def test_impl_skips_signin_when_ip_blocked(monkeypatch, tmp_path):
         bl._browser_login_impl()
     assert "bloklangan" in str(ei.value)
     assert used["n"] == 0
+
+
+def test_cli_company_uses_profile_credentials(monkeypatch, tmp_path):
+    """`--company` admin `.env` akkaunti emas, kompaniya kredensialini ishlatadi."""
+    tok_mod = importlib.import_module("bm_automation.app.core.tokens")
+    called = {}
+
+    monkeypatch.setattr(prof_mod, "get_profile", lambda name: {
+        "name": name, "username": "company-user", "password": "company-pass",
+    })
+    monkeypatch.setattr(tok_mod, "company_tokens_path",
+                        lambda name: tmp_path / f"{name}.json")
+    monkeypatch.setattr(bl, "browser_login",
+                        lambda **kw: called.update(kw) or {"access_token": "A"})
+
+    assert bl.run(["--company", "ACME"]) == 0
+    assert called["username"] == "company-user"
+    assert called["password"] == "company-pass"
+    assert called["organization"] == "ACME"
+    assert called["token_path"].endswith("ACME.json")
+
+
+def test_cli_company_missing_profile_fails(monkeypatch, capsys):
+    monkeypatch.setattr(prof_mod, "get_profile", lambda name: None)
+    assert bl.run(["--company", "NOPE"]) == 1
+    assert "Kompaniya topilmadi" in capsys.readouterr().err

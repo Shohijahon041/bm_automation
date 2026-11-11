@@ -298,8 +298,11 @@ def test_session_wins_over_master_token(env, monkeypatch):
     # Route'lar ham faqat o'z korxonasi.
     status, data, _ = _request(env, "/api/routes", headers=hdr)
     assert [r.get("id") for r in data["routes"]] == ["r1"]
+    # Bot foydalanuvchilari endi dispetcherga ham ochiq (o'z korxonasi doirasida).
+    status, data, _ = _request(env, "/api/users", headers=hdr)
+    assert status == 200 and data.get("ok") is True
     # ADMIN-only endpoint hali ham 403.
-    status, _, _ = _request(env, "/api/users", headers=hdr)
+    status, _, _ = _request(env, "/api/logs", headers=hdr)
     assert status == 403
     # Master token sessiyasiz bo'lsa ADMIN bo'lib qoladi.
     status, data, _ = _request(
@@ -358,14 +361,16 @@ def test_admin_sees_all_routes(env):
 
 
 def test_dispatcher_blocked_from_admin_endpoints(env):
-    """DISPATCHER /api/users (ADMIN-only) dan 403 oladi."""
+    """DISPATCHER ADMIN-only endpointlardan 403 oladi, bot userlarini ko'radi."""
     st = env
     st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
-    status, _, _ = _request(env, "/api/users", headers=hdr)
+    status, _, _ = _request(env, "/api/logs", headers=hdr)
     assert status == 403
+    status, data, _ = _request(env, "/api/users", headers=hdr)
+    assert status == 200 and data.get("ok") is True
 
 
 def test_director_blocked_from_myai(env):
@@ -406,6 +411,17 @@ def test_dispatcher_blocked_from_rejects_report(env):
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
     status, _, _ = _request(env, "/api/rejects", headers=hdr)
     assert status == 200
+
+
+def test_dispatcher_blocked_from_early_start_report(env):
+    """Erta qatnov tahlili (reys intizomi) DISPATCHER uchun 403."""
+    st = env
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
+                          role="DISPATCHER", company="XTEST")
+    _, _, cookies = _login(env, "disp", "to'g'ri")
+    hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
+    status, _, _ = _request(env, "/api/early-start?date=2026-08-10", headers=hdr)
+    assert status == 403
 
 
 def test_routes_finance_fields_stripped_for_dispatcher(env):
@@ -1234,17 +1250,18 @@ def test_driver_detail_scoped_to_route(env, monkeypatch):
 
 
 def test_drivers_list_scoped(env):
-    """/api/drivers/list faqat o'z route'i haydovchilarini qaytaradi (MANAGER)."""
+    """/api/drivers/list faqat o'z route'i haydovchilarini qaytaradi."""
     st = env
     st.save_driver("d1", full_name="AAA", route_id="r1")
     st.save_driver("d2", full_name="BBB", route_id="r2")
-    # DISPATCHER moliyaviy bo'limga kira olmaydi.
+    # DISPATCHER bog'lash pickeri uchun ro'yxatni oladi — faqat o'z route'i.
     st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
                           role="DISPATCHER", company="XTEST")
     _, _, cookies = _login(env, "disp", "to'g'ri")
     hdr = {"Cookie": f"bm_session={cookies['bm_session']}"}
-    status, _, _ = _request(env, "/api/drivers/list", headers=hdr)
-    assert status == 403
+    status, data, _ = _request(env, "/api/drivers/list", headers=hdr)
+    assert status == 200 and data["ok"] is True
+    assert [d["driver_id"] for d in data["drivers"]] == ["d1"]
     # MANAGER o'z route'i ro'yxatini oladi.
     st.dashboard_user_add("mgr", *deps.hash_password("to'g'ri"),
                           role="MANAGER", company="XTEST")
@@ -2356,6 +2373,92 @@ def test_bot_user_pages_requires_admin(env, monkeypatch, tmp_path):
     status, _, _ = _request(
         env, "/api/users/557/pages", method="POST",
         headers={**hdr, "Content-Length": str(len(body))}, body=body)
+    assert status == 403
+
+
+def _seed_tenant_bot_users(env, monkeypatch, tmp_path):
+    """701 — r1 haydovchisi, 702 — r2 (boshqa korxona), 703 — bog'lanmagan."""
+    from bm_automation.app.core import bot_users
+    monkeypatch.setattr(bot_users, "STATE_FILE", tmp_path / "bot_users.json")
+    with bot_users._LOCK:
+        bot_users._CACHE = {}
+        bot_users._LOADED = False
+    for cid in (701, 702, 703):
+        bot_users.record_user(cid, first_name=f"User{cid}")
+    env.save_driver(external_id="d1", full_name="Ali XTEST", route_id="r1")
+    env.save_driver(external_id="d2", full_name="Vali YTEST", route_id="r2")
+    env.link_driver_telegram("d1", 701)
+    env.link_driver_telegram("d2", 702)
+    return bot_users
+
+
+def test_dispatcher_sees_only_own_company_bot_users(env, monkeypatch, tmp_path):
+    """Dispetcher ro'yxatda o'z korxonasi + bog'lanmaganlarni ko'radi."""
+    _seed_tenant_bot_users(env, monkeypatch, tmp_path)
+    st = env
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
+                          role="DISPATCHER", company="XTEST")
+    hdr = _login_hdr(env, "disp")
+    status, data, _ = _request(env, "/api/users", headers=hdr)
+    assert status == 200 and data.get("ok") is True
+    ids = {int(u["chat_id"]) for u in data["users"]}
+    assert 701 in ids      # o'z yo'nalishidagi haydovchi
+    assert 703 in ids      # hali bog'lanmagan yangi kontakt
+    assert 702 not in ids  # boshqa korxona haydovchisi
+    # Tafsilot: begona foydalanuvchi 404, o'ziniki 200.
+    status, _, _ = _request(env, "/api/users/702", headers=hdr)
+    assert status == 404
+    status, data, _ = _request(env, "/api/users/701", headers=hdr)
+    assert status == 200 and int(data["user"]["chat_id"]) == 701
+    # ADMIN hammasini ko'radi.
+    st.dashboard_user_add("root", *deps.hash_password("to'g'ri"), role="ADMIN")
+    status, data, _ = _request(env, "/api/users",
+                               headers=_login_hdr(env, "root"))
+    assert {701, 702, 703} <= {int(u["chat_id"]) for u in data["users"]}
+
+
+def test_dispatcher_links_only_own_route_drivers(env, monkeypatch, tmp_path):
+    """Bog'lash o'z route'i bilan cheklanadi; rol o'zgartirish ADMIN-only."""
+    _seed_tenant_bot_users(env, monkeypatch, tmp_path)
+    st = env
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
+                          role="DISPATCHER", company="XTEST")
+    hdr = _json_hdr(env, "disp")
+    body = json.dumps({"driver_id": "d2"}).encode()
+    status, data, _ = _request(
+        env, "/api/users/703/link-driver", method="POST",
+        headers={**hdr, "Content-Length": str(len(body))}, body=body)
+    assert status == 200 and data.get("ok") is False
+
+    body = json.dumps({"driver_id": "d1"}).encode()
+    status, data, _ = _request(
+        env, "/api/users/703/link-driver", method="POST",
+        headers={**hdr, "Content-Length": str(len(body))}, body=body)
+    assert status == 200 and data.get("ok") is True
+
+    body = json.dumps({"role": "ADMIN"}).encode()
+    status, _, _ = _request(
+        env, "/api/users/701/role", method="POST",
+        headers={**hdr, "Content-Length": str(len(body))}, body=body)
+    assert status == 403
+
+
+def test_dispatcher_driver_picker_scoped_and_page_allowed(env, monkeypatch,
+                                                          tmp_path):
+    """Bog'lash pickeri users sahifasiga tegishli va route bilan cheklangan."""
+    _seed_tenant_bot_users(env, monkeypatch, tmp_path)
+    st = env
+    st.dashboard_user_add("disp", *deps.hash_password("to'g'ri"),
+                          role="DISPATCHER", company="XTEST",
+                          data=json.dumps({"pages": ["users"]}))
+    hdr = _login_hdr(env, "disp")
+    status, data, _ = _request(env, "/api/drivers/list", headers=hdr)
+    assert status == 200 and data.get("ok") is True
+    assert {d["driver_id"] for d in data["drivers"]} == {"d1"}
+    status, _, _ = _request(env, "/api/users", headers=hdr)
+    assert status == 200
+    # Haydovchilar bo'limi (to'liq ro'yxat) esa yopiq qoladi.
+    status, _, _ = _request(env, "/api/drivers", headers=hdr)
     assert status == 403
 
 

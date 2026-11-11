@@ -8,7 +8,9 @@ sozlamalar va xato jurnalini o'z ichiga oladi.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from json import JSONDecodeError
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..deps import Scope
 from ...core import knowledge as vault
@@ -23,8 +25,31 @@ router = APIRouter(tags=["knowledge"])
 def _require_super(scope: dict) -> None:
     """Bilim bazasi faqat tizim egasi (super-admin) uchun."""
     if not scope.get("is_super"):
-        from fastapi import HTTPException
         raise HTTPException(403, "Bilim bazasi faqat tizim egasiga ko'rinadi")
+
+
+async def _note_payload(request: Request) -> dict:
+    """JSON obyekt va qayd maydonlarining turini tekshiradi."""
+    try:
+        payload = await request.json()
+    except (JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(400, "JSON noto'g'ri") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(422, "JSON obyekt talab qilinadi")
+    for field in ("title", "category", "content", "path"):
+        if field in payload and not isinstance(payload[field], str):
+            raise HTTPException(422, f"{field} matn bo'lishi kerak")
+    if "overwrite" in payload and not isinstance(payload["overwrite"], bool):
+        raise HTTPException(422, "overwrite true yoki false bo'lishi kerak")
+    return payload
+
+
+def _note_error(exc: Exception) -> dict:
+    """Ichki fayl yo'llari va tizim xatolarini javobga chiqarmaydi."""
+    if isinstance(exc, ValueError):
+        return {"ok": False, "error": "Qayd yo'li noto'g'ri"}
+    log.exception("Panel: bilim bazasi amali bajarilmadi")
+    return {"ok": False, "error": "Bilim bazasi amali bajarilmadi"}
 
 
 @router.get("/api/knowledge/stats")
@@ -92,8 +117,8 @@ def api_knowledge_note(request: Request, scope: dict = Depends(Scope())):
     path = (request.query_params.get("path") or "").strip()
     try:
         return vault.read_note(path)
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 - ichki xato mijozga chiqmasin
+        return _note_error(exc)
 
 
 @router.post("/api/knowledge/note")
@@ -104,18 +129,18 @@ async def api_knowledge_save(request: Request, scope: dict = Depends(Scope())):
     `path` berilsa va `overwrite` bo'lsa — o'sha fayl yangilanadi.
     """
     _require_super(scope)
-    payload = await request.json()
+    payload = await _note_payload(request)
     title = str(payload.get("title") or "").strip()
     category = str(payload.get("category") or "").strip()
     content = str(payload.get("content") or "")
-    overwrite = bool(payload.get("overwrite"))
+    overwrite = payload.get("overwrite", False)
     path = str(payload.get("path") or "").strip()
 
     try:
         res = vault.write_note(title=title, category=category, content=content,
                                overwrite=overwrite, path=path if overwrite else "")
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 - ichki xato mijozga chiqmasin
+        return _note_error(exc)
     if res.get("ok"):
         log.info("Panel: bilim bazasiga qayd yozildi (%s)", res.get("path"))
     return res
@@ -125,12 +150,12 @@ async def api_knowledge_save(request: Request, scope: dict = Depends(Scope())):
 async def api_knowledge_delete(request: Request, scope: dict = Depends(Scope())):
     """Qaydni o'chiradi. Payload: `{path}` (faqat `.md`, vault ichida)."""
     _require_super(scope)
-    payload = await request.json()
+    payload = await _note_payload(request)
     path = str(payload.get("path") or "").strip()
     try:
         res = vault.delete_note(path)
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 - ichki xato mijozga chiqmasin
+        return _note_error(exc)
     if res.get("ok"):
         log.info("Panel: bilim bazasidan qayd o'chirildi (%s)", res.get("path"))
     return res

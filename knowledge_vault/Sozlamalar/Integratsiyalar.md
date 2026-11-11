@@ -6,17 +6,19 @@
 |---|---|
 | Sayt | `bm.dtransport.uz` |
 | API | `bmapi.dtransport.uz` |
-| Login | **OneID brauzer** (parol login ishlamaydi) |
-| Token fayli | `/opt/bm/bm_automation/tokens.json` |
-| Yangilash | `bm-token-refresh.timer` — 06:30 / 18:30 |
+| Login | **OneID** (login/parol; SMS talab qilinmaydi) |
+| Token fayli | `/opt/bm/bm_automation/tokens.json` va `tokens/<kompaniya>.json` |
+| Yangilash | `bm-token-refresh.timer` — har 2 soatda |
 
 **Qoidalar:**
 
 - VPS 24 soatdan ortiq BM'ga murojaat qilmasa, refresh token eskiradi.
-- Shuning uchun har 12 soatda keep-alive: refresh rotatsiyasi +
+- Access token ~3 soat amal qiladi; shuning uchun har 2 soatda keep-alive:
+  asosiy va har bir kompaniya tokeni uchun refresh rotatsiyasi +
   `account-authorities`.
-- BM **VDS IP'sini bloklaydi**: OneID brauzer login faqat lokal kompyuterdan
-  bajariladi, `tokens.json` serverga fayl bilan ko'chiriladi.
+- Refresh ishlamasa `BMClient` login/parol orqali OneID'ga qayta kiradi;
+  serverda `/sign-in` bloklangan bo'lsa ham to'g'ridan-to'g'ri SSO oqimi
+  ishlatiladi.
 - Profil bo'yicha token olish (`get-token-by-profile`) ba'zi akkauntlarda
   `401` beradi — bu BM tomonidagi cheklov; kod asosiy tokenga qaytadi
   ([[and-eco-token]]).

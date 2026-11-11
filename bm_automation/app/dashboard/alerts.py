@@ -17,7 +17,8 @@ from ..utils.logger import get_logger
 log = get_logger("bm_automation.dashboard.alerts")
 
 # Tur bo'yicha jimjitlik oynasi (soniya).
-_THROTTLE_S = {"login": 10 * 60, "backup": 30 * 60}
+_THROTTLE_S = {"login": 10 * 60, "backup": 30 * 60,
+               "disk": 6 * 3600, "db": 30 * 60, "backup_stale": 6 * 3600}
 
 # Login xatolari oynasi: `LOGIN_ALERT_THRESHOLD` marta `LOGIN_ALERT_WINDOW_S`
 # ichida bo'lsa bitta ogohlantirish yuboriladi.
@@ -29,6 +30,15 @@ _last_sent: dict[str, float] = {}
 _fail_times: list[float] = []
 # Testlarda almashtiriladi (haqiqiy Telegram o'rniga).
 _sender: Callable[[str], bool] | None = None
+
+# FastAPI `TestClient` so'rovlarining client host'i — haqiqiy foydalanuvchi
+# emas. Bunday urinishlar hisoblanmaydi: aks holda testlar/lokal tekshiruv
+# ADMIN'larga "login xatolari" ogohlantirishini yuborib yuboradi.
+_TEST_CLIENT_HOSTS = frozenset({"testclient", "testserver"})
+
+
+def _is_test_origin(ip: str) -> bool:
+    return str(ip or "").strip().lower() in _TEST_CLIENT_HOSTS
 
 
 def admin_targets() -> list[str]:
@@ -57,6 +67,11 @@ def _telegram_send(text: str) -> bool:
     return sent
 
 
+def send_admin_text(text: str) -> bool:
+    """Admin'larga tayyor matnni yuboradi (eslatma agentlari uchun)."""
+    return _telegram_send(text)
+
+
 def _dispatch(kind: str, text: str) -> bool:
     """Throttle tekshiruvi + fon oqimida yuborish."""
     now = time.monotonic()
@@ -83,6 +98,9 @@ def _dispatch(kind: str, text: str) -> bool:
 
 def notify_login_failure(username: str, ip: str, detail: str) -> bool:
     """Ketma-ket login xatolari chegaradan oshsa ADMIN'larga xabar beradi."""
+    if _is_test_origin(ip):
+        # In-process TestClient (testlar, lokal tekshiruv) — real tahdid emas.
+        return False
     now = time.monotonic()
     with _LOCK:
         _fail_times[:] = [t for t in _fail_times if now - t < LOGIN_ALERT_WINDOW_S]
@@ -108,6 +126,38 @@ def notify_backup_failure(status: str, error: str) -> bool:
         "Ma'lumotlar bazasi/disk holatini tekshiring."
     )
     return _dispatch("backup", text)
+
+
+def notify_disk_low(percent: float, path: str, free_gb: float) -> bool:
+    """Disk to'lib borayotganda ADMIN'larga xabar beradi."""
+    text = (
+        "BM OGOHLANTIRISH: disk joyi\n"
+        f"Bo'lim: {path or '?'} — {percent:.0f}% band, "
+        f"bo'sh {free_gb:.1f} GB.\n"
+        "Eski log/backup/segment fayllarni tozalang yoki diskni kengaytiring."
+    )
+    return _dispatch("disk", text)
+
+
+def notify_db_down(error: str) -> bool:
+    """Ma'lumotlar bazasiga ulanish uzilganda xabar beradi."""
+    text = (
+        "BM OGOHLANTIRISH: ma'lumotlar bazasi\n"
+        f"Ulanish xatosi: {(error or 'noma lum')[:300]}\n"
+        "Dashboard PostgreSQL holatini tekshiring (systemctl status postgresql)."
+    )
+    return _dispatch("db", text)
+
+
+def notify_backup_stale(age_hours: float, last_run: str) -> bool:
+    """Backup uzoq vaqt muvaffaqiyatli bajarilmaganda xabar beradi."""
+    text = (
+        "BM OGOHLANTIRISH: zaxira eskirgan\n"
+        f"Oxirgi muvaffaqiyatli nusxa: {last_run or '?'} "
+        f"({age_hours:.1f} soat oldin).\n"
+        "Backup jadvali (timer/interval) va rezerva bazani tekshiring."
+    )
+    return _dispatch("backup_stale", text)
 
 
 def reset_state() -> None:

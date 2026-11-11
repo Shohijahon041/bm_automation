@@ -9,7 +9,7 @@ production (VDS) taymerlaridan olingan.
 |---|---|---|
 | 20:00 | `bm-daily.timer` → `bm-daily.service` | Ertangi kun haydovchi jadvallarini tayyorlab Telegramga yuboradi (`daily --trigger scheduled`) |
 | 22:00 | `bm-schedule.timer` → `bm-schedule.service` | Kunlik hisobot + DB sinxronlash (`schedule ... --notify`) |
-| 06:30 va 18:30 | `bm-token-refresh.timer` | BM token keep-alive (refresh rotatsiyasi) |
+| har 2 soatda | `bm-token-refresh.timer` | Asosiy va kompaniya tokenlari keep-alive (refresh rotatsiyasi) |
 | doimiy | `bm-bot.service` | Telegram long-polling: buyruqlar va avtomatik agentlar |
 | doimiy | `bm-dashboard.service` | Panel API + GPS threadlari |
 

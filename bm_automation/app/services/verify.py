@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from ..api.client import BMClient
+from ..core.companies import client_for_profile
 from ..core.profiles import all_profiles
 from ..db.storage import get_storage
 from ..repositories.gross_repo import GrossRepository
@@ -168,30 +168,16 @@ def verify_month(month: str | None = None, filters: dict | None = None) -> dict:
     if not routes:
         return {**base, "ok": False, "error": "Kompaniya (profil) topilmadi"}
 
-    client = BMClient()
-    client.login()
-    main_access = client.access_token
-    main_refresh = client.refresh_token
-
     profiles = {str(p.get("routeVariantId") or "").strip(): p
                 for p in all_profiles()
                 if str(p.get("routeVariantId") or "").strip()}
-
-    def use_main() -> None:
-        client.access_token = main_access
-        client.refresh_token = main_refresh
-        client.session.headers["Authorization"] = f"Bearer {main_access}"
 
     results = []
     for rid in routes:
         prof = profiles.get(rid, {})
         name = str(prof.get("name") or rid)
-        pid = str(prof.get("profileId") or "").strip()
         try:
-            if pid:
-                client.login_for_profile(pid, fallback_to_main=True)
-            else:
-                use_main()
+            client = client_for_profile(prof)
         except Exception as exc:  # noqa: BLE001 - token xatosi bir firmada
             results.append(_row(rid, name, frm, to, None, None,
                                 error=f"token: {exc}"))

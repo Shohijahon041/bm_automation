@@ -103,16 +103,15 @@ class MasterAgent(BaseAgent):
 
             # 2. Planner dan plan olish
             if self._planner is None:
-                return AgentResult(
-                    success=False,
-                    error="Planner Agent o'rnatilmagan",
-                )
+                raise RuntimeError("Planner Agent o'rnatilmagan")
 
             plan = await self._planner.create_plan(
                 user_request=context.user_request,
                 intent=intent,
                 params=context.params,
             )
+            if not plan.steps:
+                raise RuntimeError("Reja bo'sh: bajariladigan qadam yo'q")
             log.info("Plan yaratildi: %d qadam", len(plan.steps))
 
             # 3. Har bir step ni bajarish
@@ -120,8 +119,7 @@ class MasterAgent(BaseAgent):
             for i, step in enumerate(plan.steps):
                 agent = self._get_agent(step.agent)
                 if agent is None:
-                    log.warning("Agent topilmadi: %s", step.agent)
-                    continue
+                    raise RuntimeError(f"Agent topilmadi: {step.agent.value}")
 
                 step_context = AgentContext(
                     task_id=context.task_id,
@@ -135,13 +133,16 @@ class MasterAgent(BaseAgent):
 
                 try:
                     result = await agent.run(step_context)
+                    if not result.success:
+                        raise RuntimeError(
+                            result.error or f"Agent bajarilmadi: {step.agent.value}")
                     results[step.agent.value] = result.data
                     log.info("Step %d/%d tugadi: %s",
                              i + 1, len(plan.steps), step.agent.value)
                 except Exception as exc:  # noqa: BLE001
                     log.error("Step %d/%d xatosi: %s — %s",
                               i + 1, len(plan.steps), step.agent.value, exc)
-                    results[step.agent.value] = {"error": str(exc)}
+                    raise
 
             # 4. Reviewer dan tasdiq
             review_approved = True
@@ -158,6 +159,7 @@ class MasterAgent(BaseAgent):
                 review_approved = review.approved
                 if not review_approved:
                     log.warning("Reviewer rad etdi: %s", review.errors)
+                    raise RuntimeError(f"Reviewer rad etdi: {review.errors}")
 
             # 5. Yakuniy javob
             final_response = await self._build_response(context, results)

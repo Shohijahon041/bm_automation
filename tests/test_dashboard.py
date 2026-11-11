@@ -1289,6 +1289,32 @@ def test_attendance_excludes_manual_km_work_logs(seeded_storage, monkeypatch):
     assert "d1" not in {x["driver_id"] for x in d3["drivers"]}
 
 
+def test_attendance_multi_route_scope(seeded_storage, monkeypatch):
+    """`force_route` bir nechta yo'nalishni vergul bilan beradi (AND ECO).
+
+    Ilgari `d.route_id = 'r1,r2'` deb solishtirilardi va jadval bo'sh
+    chiqardi; endi ro'yxat IN (...) sifatida qo'llanadi.
+    """
+    import bm_automation.app.db.storage as dbs
+    seeded_storage.save_driver(external_id="d1", full_name="Aliyev Aliy",
+                               route_id="r1")
+    seeded_storage.save_driver(external_id="d2", full_name="Karimov Karim",
+                               route_id="r2")
+    seeded_storage.save_trip(TripRecord(
+        date="2026-08-12", route_id="r2", vehicle_id="v2", driver_id="d2",
+        planned_time="08:00", actual_time="", status=TripStatus.ACCEPTED.value,
+        source=SyncSource.DUTY.value))
+    seeded_storage.save_driver_work_log("2026-08-13", "d2", "v2", 50.0, 2,
+                                        note="AVTO", working_day=1)
+    monkeypatch.setattr(dbs, "get_storage", lambda: seeded_storage)
+    d = _get("/api/attendance?month=2026-08&route=r1,r2")
+    by_id = {x["driver_id"]: x for x in d["drivers"]}
+    assert set(by_id) == {"d1", "d2"}
+    assert "2026-08-13" in by_id["d2"]["work_days"]
+    one = _get("/api/attendance?month=2026-08&route=r1")
+    assert {x["driver_id"] for x in one["drivers"]} == {"d1"}
+
+
 def test_tabel_data_includes_manual_work_log_days(seeded_storage, monkeypatch):
     """Oylik tabel eksportida qo'lda ish kunlari hisobga olinadi; Ish kuni
     soni ham shu kunlarni qo'shib, mavjudlik bo'yicha sanaladi."""

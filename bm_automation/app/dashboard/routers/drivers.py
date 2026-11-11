@@ -108,12 +108,13 @@ def api_drivers_list(request: Request, scope: dict = Depends(Scope())):
         return {"ok": False, "error": "DB rejimi o'chirilgan"}
     rows = storage.query(
         "SELECT d.external_id, d.full_name, d.route_id, "
-        "dp.telegram_chat_id FROM drivers d "
+        "dp.telegram_chat_id, dp.phone FROM drivers d "
         "LEFT JOIN driver_profiles dp ON dp.driver_id = d.external_id "
         "ORDER BY d.full_name")
     drivers = [{"driver_id": r.get("external_id", ""),
                 "name": r.get("full_name", ""),
                 "route_id": r.get("route_id", ""),
+                "phone": r.get("phone", "") or "",
                 "telegram_chat_id": r.get("telegram_chat_id", "")} for r in rows]
     scopes = scope_routes(scope)
     if scopes is not None:

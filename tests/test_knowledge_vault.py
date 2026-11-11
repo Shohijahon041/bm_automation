@@ -10,6 +10,10 @@ Qamrov:
 
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime
+from pathlib import Path
+
 import pytest
 
 from bm_automation.app.core import knowledge as K
@@ -69,11 +73,29 @@ def test_write_without_category_goes_to_root(vault_dir):
     assert res["category"] == ""
 
 
-def test_write_duplicate_gets_timestamp(vault_dir):
-    a = K.write_note("Takror", "Qoidalar", "birinchi")
-    b = K.write_note("Takror", "Qoidalar", "ikkinchi")
-    assert a["path"] != b["path"]
-    assert K.list_notes("Qoidalar")["count"] == 2
+@pytest.mark.parametrize("use_tool", [False, True])
+def test_write_duplicates_in_same_second_preserve_content(vault_dir, monkeypatch,
+                                                         use_tool):
+    from bm_automation.app.myai.tools.vault import VaultTool
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls):
+            return cls(2026, 11, 10, 12, 0, 0)
+
+    monkeypatch.setattr(K, "datetime", FrozenDateTime)
+    tool = VaultTool()
+    results = []
+    for body in ("birinchi", "ikkinchi", "uchinchi", "tortinchi"):
+        result = (asyncio.run(tool.execute("write", title="Takror",
+                                          category="Qoidalar", content=body))
+                  if use_tool else K.write_note("Takror", "Qoidalar", body))
+        assert result["ok"] is True
+        results.append((result["path"], body))
+    assert len({path for path, _ in results}) == 4
+    assert K.list_notes("Qoidalar")["count"] == 4
+    for path, body in results:
+        assert f"\n\n{body}\n" in K.read_note(path)["text"]
 
 
 def test_overwrite_same_path(vault_dir):
@@ -177,6 +199,132 @@ def test_index_note_lists_categories(vault_dir):
     assert "[[Qoidalar/bir]]" in text
 
 
+def test_vault_tool_uses_configured_path_and_explicit_override(vault_dir, tmp_path):
+    from bm_automation.app.myai.tools.vault import VaultTool
+
+    tool = VaultTool()
+    assert tool.base == vault_dir.resolve()
+    created = asyncio.run(tool.execute("write", title="Sozlangan", content="matn"))
+    assert K.read_note(created["path"])["ok"] is True
+
+    other = tmp_path / "explicit"
+    explicit = VaultTool(base_dir=other)
+    created = asyncio.run(explicit.execute("write", title="Maxsus", content="matn"))
+    assert (other / created["path"]).is_file()
+    assert asyncio.run(explicit.execute("read", path=created["path"]))["found"]
+    assert asyncio.run(explicit.execute("list"))["count"] == 1
+    assert K.list_notes()["count"] == 1
+    assert K.read_note(created["path"])["ok"] is False
+
+
+@pytest.mark.parametrize("path", ["../vault2/secret.md", "..\\vault2\\secret.md",
+                                  "../../secret.md"])
+def test_vault_tool_blocks_traversal(vault_dir, path):
+    from bm_automation.app.myai.tools.vault import VaultTool
+
+    sibling = vault_dir.parent / "vault2"
+    sibling.mkdir()
+    secret = sibling / "secret.md"
+    secret.write_text("sir", encoding="utf-8")
+    with pytest.raises(ValueError):
+        asyncio.run(VaultTool().execute("read", path=path))
+    assert secret.read_text(encoding="utf-8") == "sir"
+
+
+@pytest.mark.parametrize("action", ["read", "write", "append", "delete"])
+def test_absolute_paths_rejected(vault_dir, action):
+    path = str(vault_dir.parent / "secret.md")
+    with pytest.raises(ValueError):
+        if action == "write":
+            K.write_note("x", content="matn", path=path, overwrite=True)
+        elif action == "append":
+            K.append_note(path, "matn")
+        else:
+            getattr(K, f"{action}_note")(path)
+
+
+def test_non_markdown_reads_and_writes_rejected(vault_dir):
+    from bm_automation.app.myai.tools.vault import VaultTool
+
+    K.vault_dir()
+    target = vault_dir / "secret.txt"
+    target.write_text("sir", encoding="utf-8")
+    assert K.read_note("secret.txt")["ok"] is False
+    assert K.write_note("x", path="secret.txt", overwrite=True)["ok"] is False
+    assert K.append_note("secret.txt", "matn")["ok"] is False
+    assert K.append_note("new.txt", "matn")["ok"] is False
+    assert K.append_note("Qoidalar", "matn")["ok"] is False
+    result = asyncio.run(VaultTool().execute("read", path="secret.txt"))
+    assert result["found"] is False and result["text"] == ""
+    assert target.read_text(encoding="utf-8") == "sir"
+    assert not (vault_dir / "new.txt").exists()
+
+
+def _symlink(link, target):
+    try:
+        link.symlink_to(target, target_is_directory=target.is_dir())
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"Symlink yaratish mavjud emas: {type(exc).__name__}")
+
+
+@pytest.mark.parametrize("directory", [False, True])
+def test_outside_symlinks_excluded_from_discovery(vault_dir, directory):
+    from bm_automation.app.myai import knowledge_context as kc
+    from bm_automation.app.myai.tools.vault import VaultTool
+
+    K.vault_dir()
+    outside = vault_dir.parent / "vault2"
+    outside.mkdir()
+    secret = outside / "Asosiy-invariantlar.md"
+    secret.write_text("# Sir\n\ntenantmaxfiy\n", encoding="utf-8")
+    link = vault_dir / "Qoidalar" / ("external" if directory else secret.name)
+    _symlink(link, outside if directory else secret)
+    relative = (link / secret.name if directory else link).relative_to(vault_dir)
+    tool = VaultTool()
+
+    assert K.list_notes()["count"] == 0
+    assert K.search_notes("tenantmaxfiy")["count"] == 0
+    assert K.stats()["count"] == 0
+    assert K.graph()["count"] == 0
+    assert K.read_note("Qoidalar")["files"] == []
+    assert K.read_note("Asosiy-invariantlar")["ok"] is False
+    assert "Asosiy-invariantlar" not in K.index_note()
+    assert asyncio.run(tool.execute("list"))["count"] == 0
+    assert asyncio.run(tool.execute("search", keyword="tenantmaxfiy"))["count"] == 0
+    assert asyncio.run(tool.execute("index"))["count"] == 0
+    assert asyncio.run(tool.execute("read", path="Qoidalar"))["files"] == []
+    for read in (K.read_note, lambda p: asyncio.run(tool.execute("read", path=p))):
+        with pytest.raises(ValueError):
+            read(relative.as_posix())
+    with pytest.raises(ValueError):
+        K.write_note("sir", path=relative.as_posix(), overwrite=True)
+    with pytest.raises(ValueError):
+        K.append_note(relative.as_posix(), "yangi")
+    with pytest.raises(ValueError):
+        K.delete_note(relative.as_posix())
+    kc.clear_cache()
+    try:
+        assert kc.relevant_notes("tenantmaxfiy") == []
+    finally:
+        kc.clear_cache()
+    assert secret.read_text(encoding="utf-8") == "# Sir\n\ntenantmaxfiy\n"
+
+
+def test_symlink_cannot_disguise_non_markdown_file(vault_dir):
+    from bm_automation.app.myai.tools.vault import VaultTool
+
+    K.vault_dir()
+    secret = vault_dir / "secret.txt"
+    secret.write_text("sir", encoding="utf-8")
+    _symlink(vault_dir / "alias.md", secret)
+    assert K.list_notes()["count"] == 0
+    assert K.read_note("alias.md")["ok"] is False
+    assert K.write_note("x", path="alias.md", overwrite=True)["ok"] is False
+    assert K.append_note("alias.md", "matn")["ok"] is False
+    assert asyncio.run(VaultTool().execute("read", path="alias.md"))["found"] is False
+    assert secret.read_text(encoding="utf-8") == "sir"
+
+
 # ---------------------------------------------------------------------------
 # Dashboard API
 # ---------------------------------------------------------------------------
@@ -250,6 +398,92 @@ def test_api_delete_note(client, vault_dir):
     assert _post(client, {"path": "../../secret.md"}, url).json()["ok"] is False
 
 
+@pytest.mark.parametrize("endpoint", ["note", "delete"])
+@pytest.mark.parametrize("body", ["null", "[]", '"matn"', "1", "true"])
+def test_api_rejects_non_object_json(client, vault_dir, endpoint, body):
+    from bm_automation.app.dashboard import deps
+
+    deps._last_post_at.clear()
+    response = client.post(f"/api/knowledge/{endpoint}", content=body,
+                           headers={"Content-Type": "application/json"})
+    assert response.status_code == 422
+    assert K.list_notes()["count"] == 0
+
+
+@pytest.mark.parametrize("endpoint", ["note", "delete"])
+def test_api_rejects_invalid_json(client, vault_dir, endpoint):
+    from bm_automation.app.dashboard import deps
+
+    deps._last_post_at.clear()
+    response = client.post(f"/api/knowledge/{endpoint}", content="{",
+                           headers={"Content-Type": "application/json"})
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize("overwrite", ["false", "true", 0, 1, None, [], {}])
+def test_api_overwrite_requires_boolean(client, vault_dir, overwrite):
+    created = K.write_note("Asl", content="eski matn")
+    response = _post(client, {"title": "Asl", "path": created["path"],
+                              "content": "yangi matn", "overwrite": overwrite})
+    assert response.status_code == 422
+    assert "eski matn" in K.read_note(created["path"])["text"]
+    assert K.list_notes()["count"] == 1
+
+
+@pytest.mark.parametrize("field,value", [("title", {}), ("category", []),
+                                         ("content", False), ("path", 123)])
+def test_api_note_fields_require_strings(client, vault_dir, field, value):
+    payload = {"title": "Yangi", "content": "matn", field: value}
+    assert _post(client, payload).status_code == 422
+    assert K.list_notes()["count"] == 0
+
+
+def test_api_false_overwrite_preserves_existing_note(client, vault_dir):
+    created = K.write_note("Asl", content="eski matn")
+    response = _post(client, {"title": "Asl", "path": created["path"],
+                              "content": "yangi matn", "overwrite": False})
+    assert response.json()["ok"] is True
+    assert response.json()["path"] != created["path"]
+    assert "eski matn" in K.read_note(created["path"])["text"]
+
+
+@pytest.mark.parametrize("action", ["read", "write", "delete"])
+@pytest.mark.parametrize("error_type", [OSError, ValueError, RuntimeError])
+def test_api_note_errors_hide_internal_details(client, vault_dir, monkeypatch,
+                                               action, error_type):
+    def fail(*args, **kwargs):
+        raise error_type("C:/private/internal-path secret-detail")
+
+    monkeypatch.setattr(K, f"{action}_note", fail)
+    if action == "read":
+        response = client.get("/api/knowledge/note", params={"path": "qayd.md"})
+    else:
+        endpoint = "note" if action == "write" else "delete"
+        response = _post(client, {"title": "Qayd", "path": "qayd.md"},
+                          f"/api/knowledge/{endpoint}")
+    assert response.json()["ok"] is False
+    assert "internal-path" not in response.text
+    assert "secret-detail" not in response.text
+
+
+@pytest.mark.parametrize("action,method", [("read", "read_text"), ("delete", "unlink")])
+def test_core_note_errors_hide_internal_details(vault_dir, monkeypatch, action, method):
+    created = K.write_note("Qayd", content="matn")
+    original = getattr(Path, method)
+    target = vault_dir / created["path"]
+
+    def fail(path, *args, **kwargs):
+        if path == target:
+            raise OSError("private internal-path secret-detail")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, method, fail)
+    result = getattr(K, f"{action}_note")(created["path"])
+    assert result["ok"] is False
+    assert "internal-path" not in result["error"]
+    assert "secret-detail" not in result["error"]
+
+
 def test_api_requires_super_admin():
     """`/api/knowledge` — ADMIN (4) + `is_super` shart."""
     from fastapi import HTTPException
@@ -315,6 +549,31 @@ def test_graph_link_resolution_by_path(vault_dir):
     pairs = {(e["source"], e["target"]) for e in g["edges"]}
     assert ("Alfa", "Beta") in pairs
     assert g["unresolved"] == []
+
+
+def test_graph_preserves_duplicate_titles_and_path_links(vault_dir):
+    K.vault_dir()
+    (vault_dir / "Kirish.md").write_text(
+        "[[Qoidalar/Bir-xil]] [[Xatolar/Bir-xil]] [[Bir-xil]]", encoding="utf-8")
+    (vault_dir / "Qoidalar/Bir-xil.md").write_text(
+        "[[Xatolar/Bir-xil]] [[Xatolar/Bir-xil]]", encoding="utf-8")
+    (vault_dir / "Xatolar/Bir-xil.md").write_text("matn", encoding="utf-8")
+
+    graph = K.graph()
+    assert graph["count"] == 3
+    assert {n["id"] for n in graph["nodes"]} == {
+        "Kirish", "Qoidalar/Bir-xil", "Xatolar/Bir-xil"}
+    assert {(e["source"], e["target"]) for e in graph["edges"]} == {
+        ("Kirish", "Qoidalar/Bir-xil"), ("Kirish", "Xatolar/Bir-xil"),
+        ("Qoidalar/Bir-xil", "Xatolar/Bir-xil")}
+    assert graph["unresolved"] == [{"from": "Kirish", "target": "Bir-xil"}]
+    for include_autolinks in (False, True):
+        status = K.graph_status(graph, include_autolinks=include_autolinks)
+        assert status["notes"] == 3 and status["edges"] == 3
+        assert status["body_edges"] == 3 and status["isolated"] == 0
+        assert len(status["hubs"]) == 3
+    assert K.graph_status(graph, exclude={"Bir-xil"})["notes"] == 1
+    assert K.graph_status(graph, exclude={"Qoidalar/Bir-xil"})["notes"] == 2
 
 
 def test_graph_status_reports_health(vault_dir):

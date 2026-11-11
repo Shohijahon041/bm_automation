@@ -4,8 +4,8 @@ Hisob-kitoblar yagona manbasi — brutto-route (`GET /gross/route`): saytdagi
 `distanceFact`/`tripFact`/`workingDay` summalari `route_daily` jadvalidagi
 qiymatlar bilan taqqoslanadi. Farq ko'rsatiladi.
 
-Har profil o'z tokeni bilan ishlaydi (profileId bo'lsa `login_by_profile`),
-xuddi `sync_all_profiles` kabi.
+Har profil faqat o'z kompaniya tokeni bilan ishlaydi — boshqa kompaniya
+tokeniga fallback qilinmaydi.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from __future__ import annotations
 import datetime as _dt
 from datetime import date
 
-from ..api.client import BMClient
+from ..core.companies import client_for_profile
 from ..core.profiles import all_profiles
 from ..db.storage import get_storage
 from ..repositories.gross_repo import GrossRepository
@@ -52,22 +52,12 @@ def _db_counts(storage, rid: str, date_str: str) -> dict:
     }
 
 
-def _check_one_day(client, gross_repo, storage, rid: str, name: str,
-                   route_name: str, date_str: str, profiles: dict,
-                   main_access: str, main_refresh: str) -> dict:
+def _check_one_day(storage, rid: str, name: str, route_name: str,
+                   date_str: str, profile: dict) -> dict:
     """Bitta kun uchun sayt ↔ DB solishtirish."""
-
-    def use_main() -> None:
-        client.access_token = main_access
-        client.refresh_token = main_refresh
-        client.session.headers["Authorization"] = f"Bearer {main_access}"
-
-    pid = str(profiles.get(rid, {}).get("profileId") or "").strip()
     try:
-        if pid:
-            client.login_for_profile(pid, fallback_to_main=True)
-        else:
-            use_main()
+        client = client_for_profile(profile)
+        gross_repo = GrossRepository(client)
     except Exception as exc:  # noqa: BLE001
         return {
             "route_id": rid, "name": name, "route_name": route_name,
@@ -138,13 +128,6 @@ def run_check(filters: dict) -> dict:
     if not storage.enabled:
         return {"ok": False, "error": "DB rejimi o'chirilgan"}
 
-    client = BMClient()
-    client.login()
-    gross_repo = GrossRepository(client)
-
-    main_access = client.access_token
-    main_refresh = client.refresh_token
-
     profiles = {str(p.get("routeVariantId") or "").strip(): p
                 for p in all_profiles()
                 if str(p.get("routeVariantId") or "").strip()}
@@ -167,9 +150,8 @@ def run_check(filters: dict) -> dict:
                 prof = profiles.get(rid, {})
                 name = str(prof.get("name") or rid)
                 route_name = str(prof.get("routeName") or "")
-                result = _check_one_day(client, gross_repo, storage, rid, name,
-                                        route_name, ds, profiles,
-                                        main_access, main_refresh)
+                result = _check_one_day(storage, rid, name, route_name, ds,
+                                        prof)
                 all_results.append(result)
                 if result["status"] != "ERROR":
                     summary["total_trips_diff"] += result["diff"].get("trips", 0)
@@ -188,20 +170,16 @@ def run_check(filters: dict) -> dict:
                 "route": route, "results": all_results, "summary": summary}
 
     # Bitta kun — avvalgi mantiq
-    return _check_one_day_result(client, gross_repo, storage, rids, profiles,
-                                 date_str, route, main_access, main_refresh)
+    return _check_one_day_result(storage, rids, profiles, date_str, route)
 
 
-def _check_one_day_result(client, gross_repo, storage, rids, profiles,
-                          date_str, route, main_access, main_refresh) -> dict:
+def _check_one_day_result(storage, rids, profiles, date_str, route) -> dict:
     """Bitta kun uchun natija (avvalgi run_check mantiqi)."""
     results = []
     for rid in rids:
         prof = profiles.get(rid, {})
         name = str(prof.get("name") or rid)
         route_name = str(prof.get("routeName") or "")
-        result = _check_one_day(client, gross_repo, storage, rid, name,
-                                route_name, date_str, profiles,
-                                main_access, main_refresh)
+        result = _check_one_day(storage, rid, name, route_name, date_str, prof)
         results.append(result)
     return {"ok": True, "date": date_str, "route": route, "results": results}

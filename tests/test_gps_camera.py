@@ -209,3 +209,90 @@ def test_migrate_marks_12_digit_imei_as_camera(cam_env):
              for r in db.query("SELECT imei, kind FROM gps_devices")}
     assert kinds["221080328726"] == "camera"
     assert kinds["350424106661230"] == "teltonika"
+
+
+def test_register_device_force_kind_updates_existing(cam_env):
+    """Admin ataylab tanlagan tur mavjud qurilmada ham qo'llanadi.
+
+    Avtomatik ro'yxatga olish (force_kind=False) esa mavjud turni
+    ustidan yozmasligi kerak.
+    """
+    st, db = cam_env
+    _dev(db, "447700000001234", "v1", kind="teltonika")
+    gstorage.register_device("447700000001234", kind="counter",
+                             force_kind=True)
+    kinds = {r["imei"]: r["kind"]
+             for r in db.query("SELECT imei, kind FROM gps_devices")}
+    assert kinds["447700000001234"] == "counter"
+    gstorage.register_device("447700000001234", kind="camera")
+    kinds = {r["imei"]: r["kind"]
+             for r in db.query("SELECT imei, kind FROM gps_devices")}
+    assert kinds["447700000001234"] == "counter"
+
+
+def test_rename_device_keeps_vehicle_binding(cam_env):
+    """Nom tahriri avtobusga bog'lanishni o'chirmaydi."""
+    st, db = cam_env
+    _dev(db, "111", "v1")
+    assert gstorage.rename_device("111", "Yangi nom") is True
+    row = db.query("SELECT vehicle_id, name FROM gps_devices WHERE imei = ?",
+                   ("111",))[0]
+    assert row["vehicle_id"] == "v1"
+    assert row["name"] == "Yangi nom"
+
+
+def test_vehicle_exists(cam_env):
+    assert gstorage.vehicle_exists("v1") is True
+    assert gstorage.vehicle_exists("yo-q") is False
+    assert gstorage.vehicle_exists("") is False
+
+
+def test_list_vehicles_counter_from_gps_row(cam_env):
+    """Sanagich hisobi Teltonika qatorida bo'lsa ham avtobus kartasida
+    ko'rinadi (alohida kind='counter' qatori shart emas)."""
+    st, db = cam_env
+    _dev(db, "111", "v1", 41.3, 69.25)
+    stamp = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "UPDATE gps_devices SET count_in = ?, count_out = ?, "
+        "count_updated_at = ? WHERE imei = ?", (12, 9, stamp, "111"))
+    rows = {r["external_id"]: r for r in gstorage.list_vehicles()}
+    cnt = rows["v1"]["counter"]
+    assert cnt["imei"] == "111"
+    assert cnt["count_in"] == 12 and cnt["count_out"] == 9
+    assert cnt["count_updated_s"]
+    # Hisobsiz avtobusda sanagich ko'rsatilmaydi.
+    assert rows["v2"]["counter"] is None
+
+
+def test_list_vehicles_prefers_live_tracker_when_duplicate(cam_env):
+    """Bir avtobusda 2 ta Teltonika: hayoliy (eski) qator emas, jonli
+    qurilma tanlanadi — avtobus xaritada noto'g'ri oflayn ko'rinmasin."""
+    st, db = cam_env
+    _dev(db, "111", "v1", 41.3, 69.25, age_s=86400)   # dublikat, eski
+    _dev(db, "222", "v1", 41.4, 69.3, age_s=0)        # jonli
+    rows = {r["external_id"]: r for r in gstorage.list_vehicles()}
+    assert rows["v1"]["gps"]["imei"] == "222"
+    assert rows["v1"]["gps"]["online"] is True
+
+
+def test_list_vehicles_single_tracker_unchanged(cam_env):
+    st, db = cam_env
+    _dev(db, "111", "v1", 41.3, 69.25)
+    rows = {r["external_id"]: r for r in gstorage.list_vehicles()}
+    assert rows["v1"]["gps"]["imei"] == "111"
+
+
+def test_counter_counts_from_io(monkeypatch):
+    """IO elementlaridan sanagich soni: o'chirilgan/manfiy/noto'g'ri -> None."""
+    from bm_automation.app.gps import listener
+
+    monkeypatch.setattr(listener.config, "GPS_COUNTER_IN_IO", 0)
+    monkeypatch.setattr(listener.config, "GPS_COUNTER_OUT_IO", 0)
+    assert listener.counter_counts_from_io({"1": 5, "2": 3}) is None
+    monkeypatch.setattr(listener.config, "GPS_COUNTER_IN_IO", 1)
+    monkeypatch.setattr(listener.config, "GPS_COUNTER_OUT_IO", 2)
+    assert listener.counter_counts_from_io({"1": "5", "2": 3}) == (5, 3)
+    assert listener.counter_counts_from_io({"1": -1, "2": 3}) is None
+    assert listener.counter_counts_from_io({"1": "ko'p", "2": 3}) is None
+    assert listener.counter_counts_from_io({}) is None

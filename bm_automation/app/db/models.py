@@ -143,6 +143,7 @@ TABLES = [
     "profiles",
     "routes",
     "vehicles",
+    "vehicle_service_logs",
     "drivers",
     "driver_profiles",
     "driver_work_logs",
@@ -168,4 +169,5 @@ TABLES = [
     "dashboard_users",
     "video_cameras",
     "video_audit",
+    "company_payments",
 ]

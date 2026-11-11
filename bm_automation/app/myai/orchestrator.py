@@ -328,7 +328,15 @@ class Orchestrator:
         scope_raw = params.pop("scope", None) if isinstance(params, dict) else None
         set_scope(scope_raw)
 
+        # Bekor qilish tokeni topshiriq boshidanoq mavjud: foydalanuvchi
+        # rejalashtirish yoki agent kutish paytida bosilsa ham signal yetadi.
+        if (task_row.get("status") or "") == "cancelled":
+            return {"ok": False, "task_id": task_id, "error": "cancelled"}
+        self.create_cancellation_token(task_id)
+
         try:
+            if self._is_task_cancelled(task_id):
+                return self._cancelled_result(task_id)
             state.update_task(task_id, status="running")
             state.add_log(task_id, "master", f"Topshiriq boshlandi: {user_request}")
             emit_task("task.started", task_id=task_id,
@@ -351,6 +359,8 @@ class Orchestrator:
             log.info("Intent aniqlandi: %s", intent.get("intent", "unknown"))
             emit("master", "working", task_id=task_id,
                  action=f"Intent: {intent.get('intent', 'general')}", progress=15)
+            if self._is_task_cancelled(task_id):
+                return self._cancelled_result(task_id)
 
             # 1b. Security pre-check — foydalanuvchi roli bo'yicha ruxsat
             denied = await self._security_gate(task_id, state, emit, intent, params)
@@ -368,7 +378,7 @@ class Orchestrator:
 
             # 2. Planner dan plan olish
             if self._planner is None:
-                return {"ok": False, "error": "Planner Agent o'rnatilmagan"}
+                raise RuntimeError("Planner Agent o'rnatilmagan")
 
             emit("planner", "working", task_id=task_id,
                  action="Reja tuzilmoqda...", progress=20)
@@ -378,7 +388,11 @@ class Orchestrator:
                 params=params,
                 knowledge=task_brief,
             )
+            if self._is_task_cancelled(task_id):
+                return self._cancelled_result(task_id)
             step_count = len(plan.steps)
+            if not step_count:
+                raise RuntimeError("Reja bo'sh: bajariladigan qadam yo'q")
             log.info("Plan yaratildi: %d qadam", step_count)
             emit("planner", "completed", task_id=task_id,
                  action=f"{step_count} qadam yaratildi", progress=25)
@@ -389,23 +403,14 @@ class Orchestrator:
             # 3. Har bir step ni bajarish
             results = {}
             sources: dict[str, str] = {}
-            self.create_cancellation_token(task_id)
             for i, step in enumerate(plan.steps):
-                if self.is_cancelled(task_id):
-                    state.update_task(task_id, status="cancelled")
-                    emit_task("task.cancelled", task_id=task_id,
-                              message="Task bekor qilindi")
-                    self._cleanup_token(task_id)
-                    return {"ok": False, "task_id": task_id,
-                            "error": "cancelled"}
+                if self._is_task_cancelled(task_id):
+                    return self._cancelled_result(task_id)
 
                 # Pause kutish — pause bosilgan bo'lsa, davom etguncha kutadi
                 await self._wait_if_paused(task_id, emit, state)
-
-                agent = self._get_agent(step.agent)
-                if agent is None:
-                    log.warning("Agent topilmadi: %s", step.agent)
-                    continue
+                if self._is_task_cancelled(task_id):
+                    return self._cancelled_result(task_id)
 
                 # Emit waiting for agents that will run later
                 if i == 0:
@@ -467,7 +472,17 @@ class Orchestrator:
                 )
 
                 try:
+                    agent = self._get_agent(step.agent)
+                    if agent is None:
+                        raise RuntimeError(f"Agent topilmadi: {step.agent.value}")
                     result = await agent.run(step_context)
+                    if self._is_task_cancelled(task_id):
+                        state.update_task_step(step_id, status="cancelled",
+                                               error="Bekor qilindi")
+                        return self._cancelled_result(task_id)
+                    if not result.success:
+                        raise RuntimeError(
+                            result.error or f"Agent bajarilmadi: {step.agent.value}")
                     results[step.agent.value] = result.data
 
                     # Manba shaffofligi: agent qaysi manbadan olganini yozamiz
@@ -503,15 +518,16 @@ class Orchestrator:
                 except Exception as exc:  # noqa: BLE001
                     log.error("Step %d/%d xatosi: %s — %s",
                               i + 1, step_count, step.agent.value, exc)
-                    results[step.agent.value] = {"error": str(exc)}
                     emit(step.agent.value, "error", task_id=task_id,
                          action=f"Step {i+1} xatosi: {exc}",
                          progress=step_pct)
                     state.update_task_step(
                         step_id, status="failed", error=str(exc),
                     )
+                    raise
 
-            self._cleanup_token(task_id)
+            if self._is_task_cancelled(task_id):
+                return self._cancelled_result(task_id)
 
             # 4. Reviewer dan tasdiq
             emit("reviewer", "working", task_id=task_id,
@@ -533,9 +549,12 @@ class Orchestrator:
                     log.warning("Reviewer rad etdi: %s", review.errors)
                     emit("reviewer", "error", task_id=task_id,
                          action="Rad etildi: " + str(review.errors))
+                    raise RuntimeError(f"Reviewer rad etdi: {review.errors}")
                 else:
                     emit("reviewer", "completed", task_id=task_id,
                          action="Tasdiqlandi", progress=95)
+            if self._is_task_cancelled(task_id):
+                return self._cancelled_result(task_id)
 
             # 5. Yakuniy javob
             emit("master", "working", task_id=task_id,
@@ -543,6 +562,8 @@ class Orchestrator:
             final_response = await self._build_response(context, results,
                                                         sources=sources,
                                                         task_type=plan.task_type)
+            if self._is_task_cancelled(task_id):
+                return self._cancelled_result(task_id)
             state.update_task(task_id, status="completed",
                               progress=100, result={
                                   "response": final_response,
@@ -568,7 +589,9 @@ class Orchestrator:
         except asyncio.CancelledError:
             # Bridge kutish vaqti tugab coroutine'ni bekor qiladi. Bu
             # Exception emas — ushlanmasa topshiriq abadiy "running" qoladi.
-            self._cleanup_token(task_id)
+            if self._is_task_cancelled(task_id):
+                log.info("Bekor qilingan topshiriq uzildi: %s", task_id)
+                raise
             state.update_task(task_id, status="failed",
                               error="Topshiriq uzildi (timeout)")
             state.add_log(task_id, "master",
@@ -580,7 +603,11 @@ class Orchestrator:
             raise
 
         except Exception as exc:  # noqa: BLE001
-            self._cleanup_token(task_id)
+            # Bekor qilingan task xato bilan yakunlansa ham "cancelled"
+            # holatini failed bilan almashtirmaymiz.
+            if self._is_task_cancelled(task_id):
+                log.warning("Bekor qilingan topshiriq xatosi yutiladi: %s", exc)
+                return self._cancelled_result(task_id)
             state.update_task(task_id, status="failed", error=str(exc))
             state.add_log(task_id, "master",
                           f"Kutilmagan xato: {exc}", level="error")
@@ -591,6 +618,9 @@ class Orchestrator:
             _knowledge_learn_failure("run_task", str(exc))
             log.exception("Topshiriq xatosi: %s", task_id)
             return {"ok": False, "task_id": task_id, "error": str(exc)}
+
+        finally:
+            self._cleanup_token(task_id)
 
     def get_status(self) -> dict:
         self._ensure_init()
@@ -642,6 +672,36 @@ class Orchestrator:
         self._cancel_events.pop(task_id, None)
         self._pause_events.pop(task_id, None)
 
+    def _is_task_cancelled(self, task_id: str) -> bool:
+        """Signal yoki DB holati bo'yicha bekor qilinganmi?
+
+        API task holatini "cancelled" qilib qo'ygan bo'lsa, token
+        tozalangandan keyin ham kutish nuqtalari buni ko'radi.
+        """
+        if self.is_cancelled(task_id):
+            return True
+        try:
+            row = state.get_task(task_id)
+        except Exception:
+            return False
+        return bool(row and row.get("status") == "cancelled")
+
+    def _cancelled_result(self, task_id: str) -> dict:
+        """Topshiriqni bekor qilingan holatda yakunlash."""
+        try:
+            row = state.get_task(task_id) or {}
+            already = row.get("status") == "cancelled"
+            state.update_task(task_id, status="cancelled",
+                              error="Foydalanuvchi tomonidan bekor qilindi")
+            if not already:
+                state.add_log(task_id, "master", "Topshiriq bekor qilindi",
+                              level="warn")
+                emit_task("task.cancelled", task_id=task_id,
+                          message="Bekor qilindi")
+        except Exception:
+            log.exception("Bekor qilish holatini yozishda xato: %s", task_id)
+        return {"ok": False, "task_id": task_id, "error": "cancelled"}
+
     def pause_task(self, task_id: str) -> bool:
         """Task ni pauza qilish.
 
@@ -682,6 +742,8 @@ class Orchestrator:
              action="Pauza — davom etish kutilmoqda")
         state.add_log(task_id, "master", "Task pauza qilindi")
         while self.is_paused(task_id):
+            if self.is_cancelled(task_id):
+                return  # bekor qilish pauzani ham to'xtatadi
             await asyncio.sleep(0.25)
         emit("master", "working", task_id=task_id,
              action="Task davom etmoqda")

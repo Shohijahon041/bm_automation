@@ -69,6 +69,48 @@ _PROFILES_LOCK = threading.RLock()
 _PROFILES_CACHE: dict = {"path": "", "mtime": None, "data": None}
 
 
+def _write_profile_data(data: dict) -> None:
+    atomic_write(PROFILES_FILE, json.dumps(data, ensure_ascii=False, indent=2))
+    try:
+        mtime = PROFILES_FILE.stat().st_mtime_ns
+    except OSError:
+        mtime = None
+    with _PROFILES_LOCK:
+        _PROFILES_CACHE.update(path=str(PROFILES_FILE), mtime=mtime,
+                               data=copy.deepcopy(data))
+
+
+def _latest_valid_backup() -> dict | None:
+    """Eng yangi o'qiladigan `profiles.json.bak_*` nusxasini qaytaradi."""
+    try:
+        paths = sorted(PROFILES_FILE.parent.glob(f"{PROFILES_FILE.name}.bak_*"),
+                       reverse=True)
+    except OSError:
+        return None
+    for path in paths:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("profiles"):
+            log.error("profiles.json zaxirasi ishlatilmoqda: %s", path.name)
+            return data
+    return None
+
+
+def _preserve_corrupt() -> None:
+    """O'qilmagan faylni `.corrupt_<vaqt>` nomi bilan saqlab qo'yadi."""
+    try:
+        if not PROFILES_FILE.exists():
+            return
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        target = PROFILES_FILE.with_name(f"{PROFILES_FILE.name}.corrupt_{stamp}")
+        target.write_bytes(PROFILES_FILE.read_bytes())
+        log.error("Buzilgan profiles.json saqlab qo'yildi: %s", target.name)
+    except OSError as exc:
+        log.error("Buzilgan profiles.json nusxasini olishda xato: %s", exc)
+
+
 def load_profiles() -> dict:
     p = PROFILES_FILE
     try:
@@ -82,17 +124,35 @@ def load_profiles() -> dict:
                     and c["data"] is not None):
                 return copy.deepcopy(c["data"])
     if not p.exists():
-        save_profiles(DEFAULT_PROFILES)
+        # Fayl yo'qligi — jimgina DEFAULT yozish emas: tashqi o'chirish yoki
+        # oldingi buzuq yozuvdan keyin butun kompaniyalar ro'yxati yo'qolardi.
+        backup = _latest_valid_backup()
+        if backup is not None:
+            _write_profile_data(backup)
+            return copy.deepcopy(backup)
+        log.error("profiles.json topilmadi va yaroqli zaxira yo'q — "
+                  "DEFAULT konfiguratsiya ishlatilmoqda")
         return copy.deepcopy(DEFAULT_PROFILES)
     try:
         with open(p, encoding="utf-8") as fh:
             data = json.load(fh)
-    except (json.JSONDecodeError, OSError):
-        data = copy.deepcopy(DEFAULT_PROFILES)
-    if not isinstance(data, dict):
-        # Fayl mazmuni ro'yxat/satr bo'lsa `data["profiles"]` TypeError
-        # berardi — defaults'ga qaytamiz.
-        data = copy.deepcopy(DEFAULT_PROFILES)
+        if not isinstance(data, dict):
+            raise ValueError("ildiz obyekt emas")
+    except (OSError, ValueError) as exc:
+        log.error("profiles.json o'qilmadi (%s) — zaxiradan tiklanmoqda",
+                  type(exc).__name__)
+        _preserve_corrupt()
+        backup = _latest_valid_backup()
+        if backup is not None:
+            _write_profile_data(backup)
+            return copy.deepcopy(backup)
+        with _PROFILES_LOCK:
+            c = _PROFILES_CACHE
+            if c["path"] == str(p) and c["data"] is not None:
+                log.error("zaxira yo'q — oxirgi yaxshi kesh ishlatilmoqda")
+                return copy.deepcopy(c["data"])
+        log.error("zaxira yo'q — DEFAULT konfiguratsiya ishlatilmoqda")
+        return copy.deepcopy(DEFAULT_PROFILES)
     if "profiles" not in data:
         data["profiles"] = []
     with _PROFILES_LOCK:
@@ -112,18 +172,22 @@ def _profile_keys(data: dict) -> set:
     return out
 
 
-def _backup_profiles(reason: str) -> Path | None:
+def _backup_profiles(reason: str, data: dict | None = None) -> Path | None:
     """Joriy profiles.json nusxasini vaqt belgisi bilan saqlaydi.
 
-    Faqat `_PROFILES_BACKUP_KEEP` ta oxirgi nusxa qoladi (disk shishmasin).
+    `data` berilsa (masalan diskdagi fayl buzilgan bo'lsa) nusxa shu
+    ma'lumotdan yoziladi. Faqat `_PROFILES_BACKUP_KEEP` ta oxirgi nusxa
+    qoladi (disk shishmasin).
     """
     try:
-        if not PROFILES_FILE.exists():
+        if data is None and not PROFILES_FILE.exists():
             return None
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         target = PROFILES_FILE.with_name(f"{PROFILES_FILE.name}.bak_{stamp}")
-        target.write_text(PROFILES_FILE.read_text(encoding="utf-8"),
-                          encoding="utf-8")
+        text = (json.dumps(data, ensure_ascii=False, indent=2)
+                if data is not None
+                else PROFILES_FILE.read_text(encoding="utf-8"))
+        target.write_text(text, encoding="utf-8")
         log.warning("profiles.json nusxasi saqlandi (%s): %s", reason, target.name)
     except OSError as exc:
         log.error("profiles.json nusxa olishda xato: %s", exc)
@@ -149,11 +213,26 @@ def save_profiles(data: dict) -> Path:
     PROFILES_FILE.parent.mkdir(parents=True, exist_ok=True)
     # Eski holat to'g'ridan-to'g'ri fayldan o'qiladi: `load_profiles()`
     # fayl bo'lmasa o'zi `save_profiles`ni chaqiradi (rekursiya bo'lardi).
-    try:
-        old = (json.loads(PROFILES_FILE.read_text(encoding="utf-8"))
-               if PROFILES_FILE.exists() else {})
-    except (OSError, ValueError):
-        old = {}
+    old: dict = {}
+    old_readable = False
+    if PROFILES_FILE.exists():
+        try:
+            old = json.loads(PROFILES_FILE.read_text(encoding="utf-8"))
+            old_readable = isinstance(old, dict)
+            if not old_readable:
+                old = {}
+        except (OSError, ValueError):
+            old = {}
+        if not old_readable:
+            # Buzilgan fayl ustiga yozishdan oldin ikkala nusxani saqlaymiz:
+            # buzilgan baytlar (tekshiruv uchun) va oxirgi yaxshi kesh.
+            log.error("profiles.json o'qilmadi — keskin qisqarish nazorati "
+                      "oxirgi yaxshi holat bo'yicha ishlaydi")
+            _preserve_corrupt()
+            with _PROFILES_LOCK:
+                c = _PROFILES_CACHE
+                if c["path"] == str(PROFILES_FILE) and c["data"] is not None:
+                    old = c["data"]
     old_keys = _profile_keys(old)
     new_keys = _profile_keys(data)
     lost = old_keys - new_keys
@@ -165,15 +244,8 @@ def save_profiles(data: dict) -> Path:
                 "(yo'qolgan: %s)",
                 len(old_keys), len(new_keys),
                 ", ".join(sorted(f"{n or '?'}/{r or '?'}" for n, r in lost))[:400])
-            _backup_profiles("keskin qisqarish")
-    atomic_write(PROFILES_FILE, json.dumps(data, ensure_ascii=False, indent=2))
-    try:
-        mtime = PROFILES_FILE.stat().st_mtime_ns
-    except OSError:
-        mtime = None
-    with _PROFILES_LOCK:
-        _PROFILES_CACHE.update(path=str(PROFILES_FILE), mtime=mtime,
-                               data=copy.deepcopy(data))
+            _backup_profiles("keskin qisqarish", None if old_readable else old)
+    _write_profile_data(data)
     return PROFILES_FILE
 
 
@@ -303,6 +375,35 @@ def owner_chat_ids(profile: dict | None) -> list[int]:
         except (TypeError, ValueError):
             continue
     return out
+
+
+def set_owner_chat_ids(name: str, chat_ids) -> dict:
+    """Kompaniya egalarining Telegram chat ID'larini saqlaydi.
+
+    Kredensiallar kabi egalik ham kompaniya darajasida — nomga mos BARCHA
+    yo'nalish qatorlariga bir xil ro'yxat yoziladi. Yaroqsiz qiymatlar
+    tashlab yuboriladi, takrorlar olib tashlanadi.
+    """
+    ids: list[int] = []
+    for v in chat_ids or []:
+        try:
+            cid = int(str(v).strip())
+        except (TypeError, ValueError):
+            continue
+        if cid not in ids:
+            ids.append(cid)
+    data = load_profiles()
+    target = str(name or "").strip().lower()
+    touched = False
+    for p in data.get("profiles") or []:
+        if str(p.get("name") or "").strip().lower() != target:
+            continue
+        touched = True
+        p["ownerChatIds"] = list(ids)
+    if not touched:
+        return {}
+    save_profiles(data)
+    return get_profile(name) or {}
 
 
 _GROUPS_KEY = "company_groups"
@@ -628,11 +729,22 @@ def discover_from_oneid(captured: list[dict], route_name: str = "") -> list[dict
         if not pid or not org:
             continue
         name = re.sub(r'["\u201c\u201d]', "", str(org)).strip()
-        update = {"name": name, "profileId": str(pid)}
+        pid = str(pid)
+        # Avval profileId bo'yicha mavjud qatorni topamiz: kompaniyaning
+        # qulay nomi OneID'dagi rasmiy nomidan farq qilishi mumkin
+        # (FERGANATEX / "FERGANA TEX SERVIS..." MCHJ QK). Aks holda har
+        # login'da dublikat qator qo'shilib ketardi.
+        existing = next(
+            (p for p in load_profiles().get("profiles") or []
+             if str(p.get("profileId") or "") == pid),
+            None,
+        )
+        target_name = str((existing or {}).get("name") or name).strip()
+        update = {"name": target_name, "profileId": pid}
         # routeName bo'sh bo'lsa mavjud qiymatni o'chirmaydi (upsert merge
         # orqali faqat berilgan maydonlar yangilanadi).
         if route_name:
             update["routeName"] = route_name
         upsert_profile(update)
-        added.append({"name": name, "profileId": str(pid)})
+        added.append({"name": target_name, "profileId": pid})
     return added

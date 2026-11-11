@@ -115,6 +115,41 @@ def test_refresh_driver_from_bm_not_found(storage):
     assert out["error"]
 
 
+# --------------------------------- qo'lda kiritilgan telefon / JSHSHR himoyasi
+
+def test_refresh_keeps_manual_phone_and_tin(storage, tmp_path, monkeypatch):
+    """Qo'lda tahrirlangan telefon va JSHSHR BM sinxronida o'zgarmaydi."""
+    from bm_automation.app.db import sync as db_sync
+    monkeypatch.setattr(db_sync, "PHOTO_DIR", tmp_path / "photos")
+    storage.save_driver(external_id="d1", full_name="ALIYEV", route_id="r1",
+                        tin="31704661370099", data={})
+    storage.save_driver_profile("d1", phone="+998901112233")
+
+    out = db_sync.refresh_driver_from_bm(storage, _PhotoClient(_detail(), photo=b""), "d1")
+
+    assert out["ok"] is True
+    profile = storage.find("driver_profiles", driver_id="d1")
+    assert profile["phone"] == "+998901112233"
+    assert storage.find("drivers", external_id="d1")["tin"] == "31704661370099"
+    # Qolgan maydonlar BM'dan yangilanadi.
+    assert profile["license_number"] == "AF1234567"
+    assert profile["gender"] == "MAN"
+
+
+def test_refresh_fills_empty_or_masked_phone_and_tin(storage, tmp_path, monkeypatch):
+    """Bo'sh yoki maskalangan maydon BM'dan to'ldiriladi."""
+    from bm_automation.app.db import sync as db_sync
+    monkeypatch.setattr(db_sync, "PHOTO_DIR", tmp_path / "photos")
+    storage.save_driver(external_id="d1", full_name="ALIYEV", route_id="r1", data={})
+    storage.save_driver_profile("d1", phone="+998******19")
+
+    db_sync.refresh_driver_from_bm(storage, _PhotoClient(_detail(), photo=b""), "d1")
+
+    profile = storage.find("driver_profiles", driver_id="d1")
+    assert profile["phone"] == "+998941063195"
+    assert storage.find("drivers", external_id="d1")["tin"] == "31704661370044"
+
+
 def test_save_driver_photo_bytes_detects_format(tmp_path, monkeypatch):
     from bm_automation.app.db import sync as db_sync
     monkeypatch.setattr(db_sync, "PHOTO_DIR", tmp_path / "photos")
@@ -164,6 +199,27 @@ def test_sync_driver_profiles_skips_existing_photo(storage, tmp_path, monkeypatc
     p = storage.find("driver_profiles", driver_id="drv1")
     assert p["photo_path"] == "data/driver_photos/existing.jpg"
     assert p["phone"] == "+99890"
+
+
+def test_sync_driver_profiles_keeps_manual_phone_and_tin(storage, tmp_path,
+                                                         monkeypatch):
+    """Ommaviy profil sinxroni qo'lda kiritilgan telefon/JSHSHRni buzmaydi."""
+    from bm_automation.app.db import sync as db_sync
+    monkeypatch.setattr(db_sync, "PHOTO_DIR", tmp_path / "photos")
+    storage.save_driver(
+        external_id="drv1", full_name="ALIYEV", route_id="r1",
+        tin="31704661370099",
+        data={"id": "drv1", "fullName": "ALIYEV"})
+    storage.save_driver_profile("drv1", phone="+998901112233")
+
+    client = _PhotoClient(_detail(id="drv1"), photo=b"")
+    r = db_sync.sync_driver_profiles(storage, client, "r1", "2026-08-10",
+                                     force=True)
+
+    assert not r.error
+    p = storage.find("driver_profiles", driver_id="drv1")
+    assert p["phone"] == "+998901112233"
+    assert storage.find("drivers", external_id="drv1")["tin"] == "31704661370099"
 
 
 # ------------------------------------------------------- DriverRepository

@@ -15,10 +15,12 @@ Foydalanish:
 
 from __future__ import annotations
 
+import json
 import os
 import time
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from ..config.settings import backup_db_settings, backup_enabled, backup_interval_hours
@@ -46,6 +48,39 @@ _backup_state = {
     "errors": [],
     "running": False,
 }
+
+# Holat fayli: jarayon qayta ishga tushganda oxirgi muvaffaqiyatli backup
+# vaqti yo'qolmasin (eskirgan backup monitoringi uchun).
+_STATE_FILE = Path("state") / "backup_state.json"
+
+
+def _load_state() -> None:
+    try:
+        data = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if isinstance(data, dict):
+        for key in ("last_run", "last_duration", "last_status",
+                    "tables_synced", "rows_synced"):
+            if key in data:
+                _backup_state[key] = data[key]
+
+
+def _save_state() -> None:
+    try:
+        _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        payload = {k: v for k, v in _backup_state.items()
+                   if k in ("last_run", "last_duration", "last_status",
+                            "tables_synced", "rows_synced")}
+        payload["errors"] = list(_backup_state["errors"][-5:])
+        tmp = _STATE_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(_STATE_FILE)
+    except OSError:
+        pass
+
+
+_load_state()
 
 # Backup jarayoni uchun lock
 _backup_lock = threading.Lock()
@@ -614,6 +649,7 @@ def run_backup(tables: list[str] | None = None) -> dict:
         _backup_state["last_status"] = "OK" if result["ok"] else "PARTIAL"
         _backup_state["tables_synced"] = result["tables_synced"]
         _backup_state["rows_synced"] = result["rows_synced"]
+        _save_state()
 
         log.info(
             "Backup tugadi: %d jadval, %d qator, %.1f soniya",
@@ -629,6 +665,7 @@ def run_backup(tables: list[str] | None = None) -> dict:
         result["error"] = str(exc)
         _backup_state["last_status"] = "ERROR"
         _backup_state["errors"].append(str(exc))
+        _save_state()
         log.error("Backup xatosi: %s", exc)
         _alert_backup("ERROR", str(exc))
 

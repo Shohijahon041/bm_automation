@@ -106,7 +106,8 @@ def ver_env(tmp_path, monkeypatch):
     ]
     monkeypatch.setattr(verify, "get_storage", lambda: st)
     monkeypatch.setattr(verify, "all_profiles", lambda: profiles)
-    monkeypatch.setattr(verify, "BMClient", _FakeClient)
+    monkeypatch.setattr(verify, "client_for_profile",
+                        lambda profile, auto_relogin=True: _FakeClient())
     monkeypatch.setattr(verify, "GrossRepository", _FakeGross)
     return st
 
@@ -205,8 +206,10 @@ def test_verify_month_site_error(ver_env):
 
 
 def test_verify_month_token_error(ver_env, monkeypatch):
-    monkeypatch.setattr(verify, "BMClient",
-                        lambda: _FakeClient(fail_profile="p1"))
+    def _fail(profile, auto_relogin=True):
+        raise RuntimeError("token xato: p1")
+
+    monkeypatch.setattr(verify, "client_for_profile", _fail)
     data = verify.verify_month(month="2026-08", filters={"route": "r-asl"})
     r = data["results"][0]
     assert r["status"] == "ERROR"

@@ -20,9 +20,13 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 _CACHE_TTL_S = 30.0
+
+# Obuna muddati tugagach shuncha kun ishlashda davom etadi (to'lov uchun
+# imtiyoz). Grace tugagach kompaniya bloklanadi.
+GRACE_DAYS = 7
 
 # companies.status — shu qiymatlar kompaniyani to'xtatilgan hisoblaydi.
 # "deleted" ham shu yerda: soft-delete qilingan korxona foydalanuvchilari
@@ -48,6 +52,9 @@ _FILL_MAP: dict[str, tuple[str, str]] = {
     "dashboard_users": ("company", "name"),
     "routes": ("external_id", "route"),
     "vehicles": ("route_id", "route"),
+    # Xizmat jurnali `vehicle_id` bilan yoziladi; `route_id` API'da
+    # avtobusdan ko'chiriladi, shuning uchun company ham shu ustundan.
+    "vehicle_service_logs": ("route_id", "route"),
     "drivers": ("route_id", "route"),
     "duties": ("route_id", "route"),
     "schedules": ("route_id", "route"),
@@ -146,9 +153,10 @@ def company_state(company_name: str, storage=None) -> dict | None:
 
 
 def company_active(row: dict | None) -> bool:
-    """Kompaniya ishlayaptimi: status bloklanmagan va obuna muddati o'tmagan.
+    """Kompaniya ishlayaptimi: status bloklanmagan va grace muddati o'tmagan.
 
-    `row=None` (noma'lum) → True (fail-open).
+    Obuna muddati tugagach `GRACE_DAYS` kun ishlaydi (ogohlantirish davri),
+    keyin bloklanadi. `row=None` (noma'lum) → True (fail-open).
     """
     if not row:
         return True
@@ -161,7 +169,7 @@ def company_active(row: dict | None) -> bool:
             expires = datetime.strptime(raw[:10], "%Y-%m-%d").date()
         except ValueError:
             return True
-        if expires < date.today():
+        if date.today() > expires + timedelta(days=GRACE_DAYS):
             return False
     return True
 

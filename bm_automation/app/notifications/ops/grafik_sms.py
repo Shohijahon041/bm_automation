@@ -188,6 +188,13 @@ def _run_once() -> None:
                 reports.setdefault(rid, []).append(item)
                 print(f"Grafik kuzatuvi: {item}")
 
+                # Grafik o'zgarganda so'rovnomani ham avtomatik yangilash
+                try:
+                    from . import grafik_poll
+                    grafik_poll.sync_poll_with_duty(rid, date_str, graphs=graphs, route_name=label)
+                except Exception as poll_exc:  # noqa: BLE001
+                    print(f"[{label}] SMS davrida so'rovnoma yangilash xatosi: {poll_exc}")
+
         _notify_summary(totals, reports, date_str)
     except Exception as exc:  # noqa: BLE001 - bot umuman to'xtamasligi uchun
         print(f"Grafik kuzatuvi xatosi: {exc}")

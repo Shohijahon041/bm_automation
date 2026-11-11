@@ -232,6 +232,40 @@ def test_link_driver_telegram_enables_notifications(storage):
     assert profile.get("notification_enabled") == 1
 
 
+def test_link_driver_telegram_creates_missing_profile(storage):
+    storage.save_driver(external_id="d6", full_name="Yangi Haydovchi")
+    assert storage.link_driver_telegram("d6", 1234) is True
+    profile = storage.find("driver_profiles", driver_id="d6") or {}
+    assert profile.get("telegram_chat_id") == "1234"
+    assert profile.get("notification_enabled") == 1
+
+
+def test_link_driver_moves_chat_between_drivers(storage):
+    """Bitta chat faqat bitta haydovchiga bog'lanadi (invariant)."""
+    storage.save_driver(external_id="d7", full_name="Birinchi")
+    storage.save_driver(external_id="d8", full_name="Ikkinchi")
+    assert storage.link_driver_telegram("d7", 4321) is True
+    assert storage.link_driver_telegram("d8", 4321) is True
+    old = storage.find("driver_profiles", driver_id="d7") or {}
+    new = storage.find("driver_profiles", driver_id="d8") or {}
+    assert old.get("telegram_chat_id") == ""
+    assert old.get("notification_enabled") == 0
+    assert new.get("telegram_chat_id") == "4321"
+    assert new.get("notification_enabled") == 1
+    found = storage.find_driver_by_telegram(4321) or {}
+    assert found.get("driver_id") == "d8"
+
+
+def test_unlink_driver_telegram_clears_notifications(storage):
+    storage.save_driver(external_id="d9", full_name="Uchinchi")
+    assert storage.link_driver_telegram("d9", 5555) is True
+    assert storage.unlink_driver_telegram(5555) is True
+    profile = storage.find("driver_profiles", driver_id="d9") or {}
+    assert profile.get("telegram_chat_id") == ""
+    assert profile.get("notification_enabled") == 0
+    assert storage.find_driver_by_telegram(5555) is None
+
+
 def test_notification_recipients_skip_blacklisted(storage, monkeypatch):
     from bm_automation.app.notifications.ops import doc_expiry, monthly_results
     storage.save_driver(external_id="d4", full_name="Nosirov")
@@ -594,10 +628,18 @@ def test_sync_all_profiles(storage, monkeypatch):
             {"name": "A", "routeVariantId": "rA", "profileId": ""},
             {"name": "B", "routeVariantId": "rB", "profileId": "pidB"},
         ])
-    client = _Client()
-    results = db_sync_mod.sync_all_profiles(storage, client, "2026-08-10")
-    # faqat profileId'lilar o'z tokenini oladi; bo'sh bo'lgan asosiy token bilan
-    assert client.profile_log == ["pidB"]
+    built = []
+
+    def _client_for_profile(profile, auto_relogin=True):
+        client = _Client()
+        built.append((profile["name"], client))
+        return client
+
+    import bm_automation.app.core.companies as companies_mod
+    monkeypatch.setattr(companies_mod, "client_for_profile", _client_for_profile)
+    results = db_sync_mod.sync_all_profiles(storage, _Client(), "2026-08-10")
+    # Har bir profil alohida client oladi (kompaniya tokeni bilan)
+    assert [name for name, _ in built] == ["A", "B"]
     assert results
     # profil darajasidagi xatolar bo'lmasligi kerak
     assert not [r for r in results

@@ -39,3 +39,12 @@ def _isolate_bot_settings(monkeypatch, tmp_path):
     monkeypatch.setenv("BM_TEST_MODE", "1")
     yield
     bot_settings._reset()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_token_health(monkeypatch, tmp_path):
+    """Token refresh tarixi (`state/company_tokens.json`) testlarda yozilmasin."""
+    from bm_automation.app.core import token_health
+
+    monkeypatch.setattr(token_health, "STATE_FILE",
+                        tmp_path / "company_tokens_test.json")

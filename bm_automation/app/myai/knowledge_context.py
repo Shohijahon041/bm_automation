@@ -16,9 +16,8 @@ import os
 import re
 import time
 from collections import Counter
-from pathlib import Path
 
-from ..core import vault_links
+from .scope import is_admin
 from ..core.knowledge import _walk, vault_dir
 from ..utils.logger import get_logger
 
@@ -40,7 +39,7 @@ _STOP = {
 }
 
 # Indeks keshi — vault o'zgarmasa qayta o'qilmaydi.
-_CACHE: dict = {"at": 0.0, "index": {}, "text": {}, "cats": {}}
+_CACHE: dict = {"at": 0.0, "base": None, "index": {}}
 
 
 def enabled() -> bool:
@@ -51,7 +50,7 @@ def enabled() -> bool:
 
 def clear_cache() -> None:
     """Keshni tozalash (testlar va yozuvdan keyin)."""
-    _CACHE.update({"at": 0.0, "index": {}, "text": {}, "cats": {}})
+    _CACHE.update({"at": 0.0, "base": None, "index": {}})
 
 
 def _tokens(text: str) -> Counter:
@@ -90,11 +89,14 @@ def _cosine(a: Counter, b: Counter) -> float:
 
 
 def _index() -> dict:
-    """Vault indeksi: {stem: {"vec", "text", "category", "path"}} (keshlangan)."""
-    ttl = float(os.environ.get("MYAI_KNOWLEDGE_TTL", "60") or 60)
-    if _CACHE["index"] and (time.time() - _CACHE["at"]) < ttl:
-        return _CACHE["index"]
+    """Vault indeksi: {path: {"vec", "text", "category", "path"}} (keshlangan)."""
+    if not is_admin():
+        return {}
     base = vault_dir()
+    ttl = float(os.environ.get("MYAI_KNOWLEDGE_TTL", "60") or 60)
+    if (_CACHE["base"] == base and _CACHE["index"]
+            and (time.time() - _CACHE["at"]) < ttl):
+        return _CACHE["index"]
     out: dict = {}
     for p in _walk(base):
         try:
@@ -108,14 +110,14 @@ def _index() -> dict:
         vec = _tokens(body)
         for tok, n in _tokens(title).items():
             vec[tok] += n * 3          # sarlavha mazmundan muhimroq
-        out[title] = {
+        out[rel] = {
             "title": title,
             "path": rel,
             "category": parts[0] if len(parts) > 1 else "",
             "text": body,
             "vec": vec,
         }
-    _CACHE.update({"at": time.time(), "index": out})
+    _CACHE.update({"at": time.time(), "base": base, "index": out})
     return out
 
 
@@ -126,10 +128,10 @@ def relevant_notes(query: str = "", limit: int = 3,
                    categories: tuple[str, ...] | list[str] | None = None) -> list[dict]:
     """So'rovga eng tegishli qaydlar (token o'xshashligi bo'yicha).
 
-    Mos keladigan qayd topilmasa — asosiy invariantlar qaytariladi
-    (agent baribir qoidalarni ko'rib ishlashi uchun).
+    Mos keladigan qayd topilmasa — asosiy invariantlar qaytariladi.
+    Umumiy vault korxona vazifalariga yopiq: qaydlarda tenant chegarasi yo'q.
     """
-    if not enabled():
+    if not is_admin() or not enabled():
         return []
     idx = _index()
     if not idx:

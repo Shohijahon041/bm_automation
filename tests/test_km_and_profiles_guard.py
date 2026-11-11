@@ -125,6 +125,34 @@ def test_save_profiles_no_backup_on_small_change(tmp_path, monkeypatch):
     assert not list(tmp_path.glob("profiles.json.bak_*"))
 
 
+def test_discover_from_oneid_updates_by_profile_id(tmp_path, monkeypatch):
+    """OneID rasmiy nomi boshqacha bo'lsa ham dublikat qo'shilmaydi."""
+    from bm_automation.app.core import profiles as P
+
+    f = tmp_path / "profiles.json"
+    monkeypatch.setattr(P, "PROFILES_FILE", f)
+    f.write_text(json.dumps({
+        "active": "FERGANATEX",
+        "profiles": [{
+            "name": "FERGANATEX", "profileId": "p-fer",
+            "routeVariantId": "r-fer", "username": "u", "password": "p",
+        }],
+    }), encoding="utf-8")
+
+    added = P.discover_from_oneid([{
+        "id": "p-fer",
+        "organizationName": '"FERGANA TEX SERVIS YURIY" MCHJ QK',
+    }])
+    data = json.loads(f.read_text(encoding="utf-8"))
+    assert len(data["profiles"]) == 1
+    row = data["profiles"][0]
+    assert row["name"] == "FERGANATEX"
+    assert row["profileId"] == "p-fer"
+    assert row["routeVariantId"] == "r-fer"
+    assert row["username"] == "u" and row["password"] == "p"
+    assert added == [{"name": "FERGANATEX", "profileId": "p-fer"}]
+
+
 def test_save_profiles_yields_when_lost_is_single_route(tmp_path, monkeypatch):
     """Bitta yo'nalishni o'chirish odatiy amal — nusxa shart emas."""
     from bm_automation.app.core import profiles as P

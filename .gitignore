@@ -43,6 +43,10 @@ prepared-media/
 
 # Freebuff workspace metadata
 .freebuff/
+.cloud-attachments/
+*.jpg
+*.jpeg
+*.png.bak
 
 # OS
 .DS_Store

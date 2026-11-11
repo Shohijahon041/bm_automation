@@ -570,16 +570,32 @@ def run(argv: list | None = None) -> int:
     args = parser.parse_args(argv)
 
     token_path = None
+    username = args.user
+    password = args.password
     if args.company:
+        from ..core.profiles import get_profile
         from ..core.tokens import company_tokens_path
 
+        profile = get_profile(args.company)
+        if not profile:
+            print(f"Kompaniya topilmadi: {args.company}", file=sys.stderr)
+            return 1
+        # `--company` faqat token faylini emas, login/parolni ham shu
+        # kompaniyadan oladi. Aks holda admin `.env` akkaunti bilan kirib,
+        # boshqa kompaniya fayliga noto'g'ri token yozilardi.
+        username = username or str(profile.get("username") or "").strip()
+        password = password or str(profile.get("password") or "").strip()
+        if not (username and password):
+            print(f"[{args.company}] login/parol profilda ko'rsatilmagan",
+                  file=sys.stderr)
+            return 1
         token_path = str(company_tokens_path(args.company))
         print(f"Token fayli: {token_path}")
 
     try:
         tokens = browser_login(
-            username=args.user,
-            password=args.password,
+            username=username,
+            password=password,
             organization=args.org or args.company,
             interactive=args.interactive,
             headless=not args.visible,

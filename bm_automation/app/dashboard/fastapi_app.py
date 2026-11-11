@@ -128,6 +128,7 @@ def create_app() -> FastAPI:
             "default-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com; "
             "base-uri 'self'; form-action 'self'; object-src 'none'; "
             "frame-ancestors 'none'; "
+            "frame-src 'self' blob: data: https://leafletjs.com; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
             "script-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: https:; "
@@ -138,7 +139,11 @@ def create_app() -> FastAPI:
         path = request.url.path
         is_photo = path.startswith("/api/drivers/") and path.endswith("/photo")
         is_document = "/document/" in path
-        if path.startswith("/api/") and not (is_photo or is_document):
+        if path in ("/", "/index.html"):
+            # SPA HTML doim qayta tekshirilsin — deploydan keyin ochiq tab
+            # eski JS bilan qolmasin (ETag bilan 304 arzon).
+            response.headers.setdefault("Cache-Control", "no-cache")
+        elif path.startswith("/api/") and not (is_photo or is_document):
             response.headers.setdefault("Cache-Control", "no-store")
         return response
 
@@ -177,7 +182,7 @@ def create_app() -> FastAPI:
     async def post_rate_limit(request: Request, call_next):
         from .deps import rate_limit_post
         if request.method == "POST" and request.url.path.startswith("/api/"):
-            if request.url.path not in ("/api/login", "/api/logout"):
+            if request.url.path not in ("/api/login", "/api/logout") and not request.url.path.startswith("/api/video/"):
                 if not rate_limit_post(request.url.path):
                     return JSONResponse(
                         {"error": "Juda ko'p so'rov — bir oz kuting"}, status_code=429)
@@ -210,13 +215,14 @@ def create_app() -> FastAPI:
         return response
 
     # --- Routers ---
-    from .routers import auth, data, drivers, admin, system, knowledge
+    from .routers import auth, data, drivers, admin, system, knowledge, service
     app.include_router(auth.router)
     app.include_router(data.router)
     app.include_router(drivers.router)
     app.include_router(admin.router)
     app.include_router(system.router)
     app.include_router(knowledge.router)
+    app.include_router(service.router)
 
     # --- Static files (SPA) ---
     @app.get("/", include_in_schema=False)

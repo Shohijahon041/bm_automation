@@ -32,6 +32,26 @@ def stats() -> dict:
     }
 
 
+def counter_counts_from_io(io: dict) -> tuple[int, int] | None:
+    """AVL IO elementlaridan sanagich kirish/chiqish sonini oladi.
+
+    IO ID'lari `GPS_COUNTER_IN_IO` / `GPS_COUNTER_OUT_IO` orqali beriladi;
+    0 (standart) = o'chirilgan. Ikkala qiymat ham butun va manfiy bo'lmasligi
+    kerak, aks holda None qaytadi (eski hisob saqlanib qoladi).
+    """
+    in_id, out_id = config.GPS_COUNTER_IN_IO, config.GPS_COUNTER_OUT_IO
+    if not io or not in_id or not out_id:
+        return None
+    try:
+        in_c = int(io.get(str(in_id)))
+        out_c = int(io.get(str(out_id)))
+    except (TypeError, ValueError):
+        return None
+    if in_c < 0 or out_c < 0:
+        return None
+    return in_c, out_c
+
+
 async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     peer = writer.get_extra_info("peername")
     imei = ""
@@ -121,6 +141,10 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) ->
                                     )
                                 except Exception:  # noqa: BLE001
                                     log.exception("nazorat hook xatosi (%s)", imei)
+                            counts = counter_counts_from_io(r0.io)
+                            if counts:
+                                storage.update_counter_counts(
+                                    imei, counts[0], counts[1])
                 except Exception:  # noqa: BLE001
                     log.exception("GPS: DB yozishda xato (%s)", imei)
                     _STATS["errors"] += 1

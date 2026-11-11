@@ -187,6 +187,17 @@ def _run_once() -> None:
 
             changed = {did for did, h in driver_hashes.items()
                        if old_drivers.get(did) != h}
+
+            # Guruhdagi so'rovnoma (poll) ni yangilangan duty bilan darhol sinxronlash
+            try:
+                from . import grafik_poll
+                grafik_poll.sync_poll_with_duty(
+                    rid, date_str, graphs=duty.get("graphs"), route_name=label
+                )
+                print(f"  [{label}] so'rovnoma xabari avtomatik yangilandi")
+            except Exception as poll_exc:  # noqa: BLE001
+                print(f"  [{label}] so'rovnoma yangilash xatosi: {poll_exc}")
+
             ok = _send_update(client, routes[rid], duty, date_str, changed)
             if ok:
                 dg._mark_grafik_sent(rid, date_str, hash=total_hash,

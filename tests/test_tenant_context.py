@@ -138,6 +138,10 @@ def test_route_map_splits_comma_list():
 # ------------------------------------------------------------ company_active
 
 def test_company_active_semantics():
+    from datetime import date, timedelta
+
+    from bm_automation.app.core.tenant import GRACE_DAYS
+
     assert company_active(None) is True              # noma'lum — fail-open
     assert company_active({"status": "active"}) is True
     assert company_active({"status": "ACTIVE"}) is True
@@ -147,7 +151,11 @@ def test_company_active_semantics():
     assert company_active({"status": "deleted"}) is False
     assert company_active({"status": "archived"}) is False
     assert company_active({"status": "", "subscription_expire_date":
-                           "2020-01-01"}) is False   # muddati o'tgan
+                           "2020-01-01"}) is False   # grace ham o'tgan
+    # Grace davri: muddat tugagan, lekin GRACE_DAYS ichida — ishlaydi.
+    recent = (date.today() - timedelta(days=GRACE_DAYS - 1)).isoformat()
+    assert company_active({"status": "",
+                           "subscription_expire_date": recent}) is True
     assert company_active({"status": "", "subscription_expire_date":
                            "2099-12-31"}) is True
     assert company_active({"status": "", "subscription_expire_date":

@@ -57,6 +57,16 @@ def _full_pinfl(value) -> str:
     return digits if len(digits) == 14 else ""
 
 
+def _kept_value(value) -> bool:
+    """To'liq saqlangan qiymat — BM sinxroni uning ustiga yozmaydi.
+
+    Telefon va JSHSHR qo'lda tahrirlanadi; BM'dan kelgan qiymat ularni
+    ALMASHTIRMAYDI (faqat bo'sh/maskalangan maydonni to'ldiradi).
+    """
+    text = str(value or "").strip()
+    return bool(text) and "*" not in text
+
+
 def _safe_loop(storage: Storage, source: str, body: Callable[[], SyncResult]) -> SyncResult:
     """Funktsiyani xavfsiz bajaradi — xato SyncResult'da qayd qilinadi."""
     try:
@@ -240,7 +250,7 @@ def sync_driver_profiles(storage: Storage, client: BMClient, route_id: str,
 
     def _run() -> SyncResult:
         drivers = storage.query(
-            f"SELECT external_id, data FROM drivers WHERE route_id={storage.db.ph}",
+            f"SELECT external_id, tin, data FROM drivers WHERE route_id={storage.db.ph}",
             (route_id,), limit=10000)
         if not drivers:
             result.error = "drivers jadvali bo'sh — avval sync_drivers ishga tushiring"
@@ -289,8 +299,9 @@ def sync_driver_profiles(storage: Storage, client: BMClient, route_id: str,
                 }
                 # To'liq telefon faqat detail'dan; skip holatida eski (to'liq)
                 # qiymat saqlanib qoladi va maskalangan ro'yxat qiymati bilan
-                # ustiga yozilmaydi.
-                if detail is not None or force:
+                # ustiga yozilmaydi. Qo'lda kiritilgan telefon ham
+                # o'zgartirilmaydi — BM faqat bo'sh maydonni to'ldiradi.
+                if (detail is not None or force) and not _kept_value(existing.get("phone")):
                     fields["phone"] = _get(src, "phoneNumber")
                 status = storage.save_driver_profile(
                     driver_id=driver_id, **fields)
@@ -303,10 +314,12 @@ def sync_driver_profiles(storage: Storage, client: BMClient, route_id: str,
                     _download_driver_photo(storage, client, driver_id)
                 pinfl = _get(detail, "pinfl") if detail is not None else ""
                 if pinfl:
+                    kept_tin = str(d.get("tin") or "").strip()
                     storage.save_driver(
                         external_id=driver_id,
                         full_name=_get(detail, "fullName", "name", "driverName"),
-                        tin=pinfl, route_id=route_id, data=payload)
+                        tin=kept_tin if _kept_value(kept_tin) else pinfl,
+                        route_id=route_id, data=payload)
         # Alohida haydovchi detallaridagi xatolar har biri uchun alohida emas,
         # birlashtirilib BIR qator qilib qayd etiladi (errors jadvalini
         # "flood" qilmaslik uchun).
@@ -349,9 +362,11 @@ def refresh_driver_from_bm(storage: Storage, client: BMClient, driver_id: str,
                            with_photo: bool = True) -> dict:
     """Bitta haydovchi to'liq ma'lumotini BM'dan olib, profilni yangilaydi.
 
-    Jins, PINFL/JSHSHR, telefon, guvohnoma (raqam/toifa/muddat) va rasm
-    (mavjud bo'lsa) saytdan olinadi. Dashboard tugmasi hamda avtomatik sync
-    uchun umumiy funksiya. Xato ko'tarilmaydi — natija `dict`da qaytariladi
+    Jins, guvohnoma (raqam/toifa/muddat) va rasm (mavjud bo'lsa) saytdan
+    olinadi. Telefon va JSHSHR (PINFL) esa faqat BO'SH yoki maskalangan
+    bo'lsa to'ldiriladi — qo'lda kiritilgan qiymat BM sinxronida
+    o'zgartirilmaydi. Dashboard tugmasi hamda avtomatik sync uchun umumiy
+    funksiya. Xato ko'tarilmaydi — natija `dict`da qaytariladi
     (dashboard'da foydalanuvchiga ko'rsatish uchun).
     """
     out = {"ok": False, "driver_id": str(driver_id or ""), "error": "",
@@ -375,8 +390,16 @@ def refresh_driver_from_bm(storage: Storage, client: BMClient, driver_id: str,
     # guvohnoma almashsa ham o'zgarmaydi. BM ba'zan bir shaxsni ikki id ostida
     # qaytaradi — profil shu id ostida ALOHIDA qator bo'lib qolmasligi uchun
     # kanonik (JSHSHR bo'yicha birlashtirilgan) id'ga yo'naltiriladi.
+    # Qo'lda kiritilgan JSHSHR bor bo'lsa, BM'dagi PINFL identifikatsiyani
+    # o'zgartirmaydi (operator kiritgan qiymat ustuvor).
+    base = storage.find("drivers", external_id=did) or {}
+    kept_tin = str(base.get("tin") or "").strip()
+    if not _kept_value(kept_tin):
+        kept_tin = ""
     pinfl = _full_pinfl(_get(detail, "pinfl"))
-    canonical = storage.canonical_driver_id(did, pinfl) if pinfl else did
+    canonical = did
+    if not kept_tin and pinfl:
+        canonical = storage.canonical_driver_id(did, pinfl) or did
     alias = ""
     if canonical and did and canonical != did:
         alias = did
@@ -384,7 +407,7 @@ def refresh_driver_from_bm(storage: Storage, client: BMClient, driver_id: str,
         out["driver_id"] = did
 
     existing = storage.find("driver_profiles", driver_id=did) or {}
-    base = storage.find("drivers", external_id=did) or {}
+    base = storage.find("drivers", external_id=did) or base
     route = route_id or str(base.get("route_id") or "")
 
     fields = {
@@ -392,9 +415,11 @@ def refresh_driver_from_bm(storage: Storage, client: BMClient, driver_id: str,
         "license_category": _get(detail, "category"),
         "license_expiry": _get(detail, "licenseExpiryDate"),
         "gender": _get(detail, "gender"),
-        "phone": _get(detail, "phoneNumber"),
         "data": detail,
     }
+    # Telefon qo'lda tahrirlanadi — mavjud (to'liq) qiymat saqlanib qoladi.
+    if not _kept_value(existing.get("phone")):
+        fields["phone"] = _get(detail, "phoneNumber")
     # Mavjud shaxsiy km_rate saqlanib qoladi (sync uni ustiga yozmaydi).
     try:
         if existing.get("km_rate") and float(existing["km_rate"]) > 0:
@@ -405,7 +430,7 @@ def refresh_driver_from_bm(storage: Storage, client: BMClient, driver_id: str,
     storage.save_driver(
         external_id=did,
         full_name=_get(detail, "fullName") or str(base.get("full_name") or ""),
-        tin=pinfl or str(base.get("tin") or ""),
+        tin=str(base.get("tin") or "").strip() if _kept_value(base.get("tin")) else pinfl,
         route_id=route,
         data=json_loads(base.get("data")) or {},
     )
@@ -546,6 +571,14 @@ def sync_duties(storage: Storage, client: BMClient, route_id: str,
             # o'chiriladi. Aks holda reja (SUM(trip_count)) sun'iy ko'payadi.
             result.deleted += storage.delete_missing(
                 "schedules", key_cols, route_id, date, date, keep)
+
+            # Kunlik so'rovnomani (poll) ham yangilangan duty bilan sinxronlaymiz
+            try:
+                from ..notifications.ops import grafik_poll
+                if grafik_poll.enabled():
+                    grafik_poll.sync_poll_with_duty(route_id, date, graphs=graphs)
+            except Exception:
+                pass
         return result
 
     return _safe_loop(storage, "duties", _run)
@@ -1014,10 +1047,11 @@ def sync_all_profiles(storage: Storage, client: BMClient,
                       date_str: str) -> list[SyncResult]:
     """Barcha profillar (kompaniyalar) bo'yicha sync.
 
-    Har profil o'z tokeni bilan ishlaydi: `profileId` bo'lsa
-    `login_by_profile` (xotirada), bo'lmasa asosiy token. Bitta kompaniya
+    Har profil faqat o'z kompaniya tokeni bilan ishlaydi. Bitta kompaniya
     xatosida butun sync to'xtamaydi — xato `SyncResult`'da qayd etiladi.
+    `client` argumenti eski API bilan moslik uchun qoldirilgan.
     """
+    from ..core.companies import client_for_profile
     from ..core.profiles import all_profiles
 
     profiles = all_profiles()
@@ -1025,35 +1059,23 @@ def sync_all_profiles(storage: Storage, client: BMClient,
     if not profiles:
         return [SyncResult(entity="profiles", error="profiles.json bo'sh")]
 
-    main_access = client.access_token
-    main_refresh = client.refresh_token
-
-    def use_main() -> None:
-        client.access_token = main_access
-        client.refresh_token = main_refresh
-        client.session.headers["Authorization"] = f"Bearer {main_access}"
-
     for p in profiles:
         name = str(p.get("name") or "?")
         rid = str(p.get("routeVariantId") or "").strip()
-        pid = str(p.get("profileId") or "").strip()
         if not rid:
             results.append(SyncResult(
                 entity=f"profiles/{name}", error="routeVariantId ko'rsatilmagan"))
             continue
         try:
-            if pid:
-                client.login_for_profile(pid, fallback_to_main=True)
-            else:
-                use_main()
+            company_client = client_for_profile(p)
         except Exception as exc:  # noqa: BLE001 - token xatosi bir profilni to'xtatadi
             results.append(SyncResult(
                 entity=f"profiles/{name}", error=f"token: {exc}"))
             storage.record_error(source="sync.profiles", message=f"{name}: {exc}")
             continue
         try:
-            results += sync_route_day(storage, client, rid, date_str)
-            results.append(sync_waybills(storage, client, rid, date_str, date_str))
+            results += sync_route_day(storage, company_client, rid, date_str)
+            results.append(sync_waybills(storage, company_client, rid, date_str, date_str))
             results.append(sync_work_logs(storage, date_str, date_str, rid))
         except Exception as exc:  # noqa: BLE001 - API xatosi bir profilni to'xtatadi
             results.append(SyncResult(entity=f"profiles/{name}", error=str(exc)))

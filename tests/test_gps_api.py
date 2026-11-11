@@ -434,10 +434,10 @@ def test_admin_write_allowed(env, monkeypatch):
                             ("bind", imei, vid, name)))
     status, data = _request(monkeypatch, "/api/gps/devices", method="POST",
                             headers=_auth(),
-                            body=b'{"imei":"999","vehicle_id":"v9","name":"X"}',
+                            body=b'{"imei":"999","vehicle_id":"v1","name":"X"}',
                             scope=None)
     assert status == 200 and data.get("ok") is True
-    assert calls == [("reg", "999", "teltonika"), ("bind", "999", "v9", "X")]
+    assert calls == [("reg", "999", "teltonika"), ("bind", "999", "v1", "X")]
 
 
 # ------------------------------------------- qurilma turlari (3 turdagi model)
@@ -522,6 +522,73 @@ def test_post_counter_requires_imei(env, monkeypatch):
         monkeypatch, "/api/gps/counters", method="POST", headers=_auth(),
         body=b'{"in_count":1,"out_count":0}')
     assert status == 400
+
+
+def test_post_counter_negative_rejected(env, monkeypatch):
+    """Manfiy yoki absurd son sanagichga yozilmaydi."""
+    calls = []
+    monkeypatch.setattr(gstorage, "update_counter_counts",
+                        lambda imei, i, o: calls.append((imei, i, o)) or True)
+    for body in (b'{"imei":"555","in_count":-1,"out_count":0}',
+                 b'{"imei":"555","in_count":1000001,"out_count":0}'):
+        status, _ = _request(monkeypatch, "/api/gps/counters", method="POST",
+                             headers=_auth(), body=body)
+        assert status == 400
+    assert calls == []
+
+
+def test_post_device_unknown_vehicle_rejected(env, monkeypatch):
+    """Mavjud bo'lmagan avtobusga bog'lash rad etiladi (yetim qurilma)."""
+    reg = []
+    monkeypatch.setattr(gstorage, "register_device",
+                        lambda *a, **k: reg.append((a, k)))
+    status, data = _request(
+        monkeypatch, "/api/gps/devices", method="POST", headers=_auth(),
+        body=b'{"imei":"999","vehicle_id":"yo-q","kind":"camera"}')
+    assert status == 400
+    assert "avtobus" in data.get("error", "")
+    assert reg == []
+
+
+def test_post_device_kind_forced_for_existing(env, monkeypatch):
+    """Admin tanlagan tur mavjud qurilmada ham qo'llanadi (force_kind)."""
+    seen = []
+    monkeypatch.setattr(
+        gstorage, "register_device",
+        lambda imei, kind="teltonika", force_kind=False:
+        seen.append((imei, kind, force_kind)))
+    monkeypatch.setattr(gstorage, "bind_device",
+                        lambda imei, vid, name: True)
+    status, data = _request(
+        monkeypatch, "/api/gps/devices", method="POST", headers=_auth(),
+        body=b'{"imei":"123456789012","kind":"counter","vehicle_id":"v2"}')
+    assert status == 200 and data.get("kind") == "counter"
+    assert seen == [("123456789012", "counter", True)]
+
+
+def test_patch_name_only_keeps_binding(env, monkeypatch):
+    """Faqat nom tahrirlanganda avtobusga bog'lanish saqlanib qoladi."""
+    calls = []
+    monkeypatch.setattr(gstorage, "bind_device",
+                        lambda imei, vid, name: calls.append(("bind", vid)))
+    monkeypatch.setattr(gstorage, "rename_device",
+                        lambda imei, name: calls.append(("name", name)) or True)
+    status, data = _request(
+        monkeypatch, "/api/gps/devices/111", method="PATCH", headers=_auth(),
+        body=b'{"name":"Yangi nom"}')
+    assert status == 200 and data.get("ok") is True
+    assert calls == [("name", "Yangi nom")]
+
+
+def test_patch_unknown_vehicle_rejected(env, monkeypatch):
+    calls = []
+    monkeypatch.setattr(gstorage, "bind_device",
+                        lambda imei, vid, name: calls.append((vid, name)))
+    status, data = _request(
+        monkeypatch, "/api/gps/devices/111", method="PATCH", headers=_auth(),
+        body=b'{"vehicle_id":"yo-q"}')
+    assert status == 400
+    assert calls == []
 
 
 def test_get_devices_kind_all_includes_cameras(env, monkeypatch):
@@ -781,6 +848,34 @@ def test_jt_live_uses_role_and_company_scope(env, monkeypatch):
                             headers=_auth(), scope=None,
                             body=b'{"phone":"123"}')
     assert status == 200 and data["host"] == "189.74.100.25"
+
+
+def test_jt_live_unbound_camera_denied_for_scoped_user(env, monkeypatch):
+    """Bog'lanmagan yoki ro'yxatda yo'q kamera non-admin uchun 404.
+
+    Ilgari `_phone_allowed` bog'lanmagan qurilmani ham ochiq qoldirardi —
+    har qanday kompaniya xodimi boshqa qurilma oqimini ko'ra olardi.
+    """
+    monkeypatch.setattr(gps_api.config, "JT1078_MEDIA_HOST", "1.2.3.4")
+    monkeypatch.setattr(gps_api.jt808, "send_live_request", lambda *a, **k: True)
+    monkeypatch.setattr(gps_api.jt1078, "allow_stream", lambda *a: None)
+    monkeypatch.setattr(gstorage, "list_camera_devices", lambda: [
+        {"imei": "789", "vehicle_id": "", "plate_number": ""},
+    ])
+    status, _ = _request(monkeypatch, "/api/video/jt-live", method="POST",
+                         headers=_auth(), scope=_SCOPE,
+                         body=b'{"phone":"789"}')
+    assert status == 404
+    # Ro'yxatda umuman yo'q qurilma ham yopiq.
+    status, _ = _request(monkeypatch, "/api/video/jt-live", method="POST",
+                         headers=_auth(), scope=_SCOPE,
+                         body=b'{"phone":"321"}')
+    assert status == 404
+    # ADMIN (sessiyasiz) uchun ochiq.
+    status, data = _request(monkeypatch, "/api/video/jt-live", method="POST",
+                            headers=_auth(), scope=None,
+                            body=b'{"phone":"789"}')
+    assert status == 200 and data["ok"] is True
 
 
 def test_jt_inputs_are_validated(env, monkeypatch):

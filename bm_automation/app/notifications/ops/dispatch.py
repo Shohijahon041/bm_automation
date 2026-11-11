@@ -1,4 +1,4 @@
-﻿"""Buyruqlar va callback'larni yo'naltirish (role-gated).
+"""Buyruqlar va callback'larni yo'naltirish (role-gated).
 
 `handle_message` — matnli buyruqlar va reply-menyu tugmalari;
 `handle_callback` — inline tugmalar (nav / prob / sync / exp / rs).
@@ -537,7 +537,7 @@ def commit_addcompany(chat_id: int) -> None:
 # ------------------------------------------------- admin: haydovchi bog'lash
 
 def _search_drivers(text: str, limit: int = 8) -> list[dict]:
-    """Haydovchini ism yoki telefon bo'yicha qidiradi (admin bog'lash oqimi)."""
+    """Haydovchini ism, telefon yoki ID bo'yicha qidiradi (bog'lash oqimi)."""
     from ...db.storage import get_storage
     st = get_storage()
     if not st.enabled:
@@ -549,8 +549,9 @@ def _search_drivers(text: str, limit: int = 8) -> list[dict]:
             "SELECT d.external_id, d.full_name, p.phone, p.telegram_chat_id"
             f" FROM drivers d LEFT JOIN driver_profiles p ON p.driver_id = d.external_id"
             f" WHERE d.full_name ILIKE {ph} OR p.phone ILIKE {ph}"
+            f" OR p.notification_target ILIKE {ph} OR d.external_id ILIKE {ph}"
             f" ORDER BY d.full_name",
-            (q, q), limit=limit)
+            (q, q, q, q), limit=limit)
     except Exception as exc:  # noqa: BLE001
         log.warning("haydovchi qidiruvi xatosi: %s", exc)
         return []
@@ -578,6 +579,10 @@ def _continue_admin_link_flow(chat_id: int, text: str) -> bool:
         clear_pending(chat_id)
         reply(chat_id, "✅ Bog'lash bekor qilindi.")
         return True
+    if value.startswith("/"):
+        from ...core.bot_settings import clear_pending
+        clear_pending(chat_id)
+        return False
     results = _search_drivers(value)
     if not results:
         reply(chat_id, "❌ Hech kim topilmadi. Boshqa ism/telefon bilan "
@@ -598,24 +603,34 @@ def _continue_admin_link_flow(chat_id: int, text: str) -> bool:
     return True
 
 
-def _link_pick_driver(chat_id: int, cq: dict, driver_id: str) -> None:
-    """Bog'lash oqimi 3-qadam: bot foydalanuvchisini tanlash."""
-    from ...core.bot_settings import set_pending
+def _search_bot_users(text: str, limit: int = 10) -> list[dict]:
+    """Bot foydalanuvchilarini ism, username yoki chat_id bo'yicha qidiradi."""
+    from ...core.bot_users import get_users
+    q = (text or "").strip().lower().lstrip("@")
+    users = get_users()
+    if q:
+        users = [u for u in users
+                 if q in str(u.get("first_name") or "").lower()
+                 or q in str(u.get("username") or "").lower()
+                 or q in str(u.get("chat_id") or "")]
+    else:
+        users = sorted(users, key=lambda u: str(u.get("last_seen") or ""),
+                       reverse=True)
+    return users[:limit]
+
+
+def _send_link_user_choices(chat_id: int, driver_id: str, query: str,
+                            users: list[dict]) -> None:
+    """Haydovchiga bog'lanadigan bot foydalanuvchilarini tugma qilib yuboradi."""
     from ...db.storage import get_storage
-    from .roles import Role, resolve_role
-    if resolve_role(chat_id) not in (Role.ADMIN, Role.DISPATCHER, Role.MANAGER):
-        answer(cq, "Huquq yo'q")
-        reply(chat_id, DENIED_TEXT)
-        return
     drow = get_storage().find("drivers", external_id=driver_id) or {}
     name = short_name(str(drow.get("full_name") or driver_id))
-    set_pending(chat_id, f"link_user:{driver_id}")
-    answer(cq, "Foydalanuvchi tanlash")
-    from ...core.bot_users import get_users
-    users = get_users()[:10]
     if not users:
-        reply(chat_id, "⚠️ Bot foydalanuvchilari topilmadi. Avval foydalanuvchi "
-                       "botga /start yuborsin.")
+        suffix = f" («{query}»)" if query else ""
+        reply(chat_id,
+              f"❌ Foydalanuvchi topilmadi{suffix}.\n"
+              "Ism, @username yoki chat ID bilan qayta yozing "
+              "(bekor: /cancel).")
         return
     rows = []
     for u in users:
@@ -626,16 +641,62 @@ def _link_pick_driver(chat_id: int, cq: dict, driver_id: str) -> None:
         rows.append([{"text": f"👤 {label} [{role}]",
                       "callback_data": f"linkuser:{u.get('chat_id')}"}])
     rows.append([{"text": "❌ Bekor qilish", "callback_data": "nav:settings"}])
-    reply(chat_id,
-          f"🔗 <b>{name}</b> uchun Telegram foydalanuvchini tanlang:",
+    head = (f"🔗 <b>{name}</b> uchun Telegram foydalanuvchini tanlang:"
+            if not query else
+            f"🔍 <b>TOPILDI: {len(users)}</b> — {name} uchun foydalanuvchi:")
+    reply(chat_id, head + "\n\nBoshqa foydalanuvchi kerak bo'lsa — "
+                        "ism/@username/chat ID yozing (bekor: /cancel).",
           reply_markup={"inline_keyboard": rows})
+
+
+def _link_pick_driver(chat_id: int, cq: dict, driver_id: str) -> None:
+    """Bog'lash oqimi 3-qadam: bot foydalanuvchisini tanlash."""
+    from ...core.bot_settings import set_pending
+    from ...db.storage import get_storage
+    from .roles import Role, resolve_role
+    if resolve_role(chat_id) not in (Role.ADMIN, Role.DISPATCHER, Role.MANAGER):
+        answer(cq, "Huquq yo'q")
+        reply(chat_id, DENIED_TEXT)
+        return
+    if not (get_storage().find("drivers", external_id=driver_id) or {}):
+        answer(cq, "Haydovchi topilmadi")
+        return
+    set_pending(chat_id, f"link_user:{driver_id}")
+    answer(cq, "Foydalanuvchi tanlash")
+    users = _search_bot_users("")
+    if not users:
+        reply(chat_id, "⚠️ Bot foydalanuvchilari topilmadi. Avval foydalanuvchi "
+                       "botga /start yuborsin.")
+        return
+    _send_link_user_choices(chat_id, driver_id, "", users)
+
+
+def _continue_admin_link_user_flow(chat_id: int, text: str) -> bool:
+    """Bog'lash oqimi 3-qadam: foydalanuvchini yozib qidirish."""
+    from ...core.bot_settings import pending, clear_pending
+    state = str(pending(chat_id) or "")
+    if not state.startswith("link_user:"):
+        return False
+    value = text.strip()
+    if value.lower() in ("/cancel", "cancel", "bekor"):
+        clear_pending(chat_id)
+        reply(chat_id, "✅ Bog'lash bekor qilindi.")
+        return True
+    if value.startswith("/"):
+        # Boshqa buyruq kiritildi — oqimni yopib, buyruqni ishlatamiz.
+        clear_pending(chat_id)
+        return False
+    driver_id = state.split(":", 1)[1]
+    _send_link_user_choices(chat_id, driver_id, value,
+                            _search_bot_users(value))
+    return True
 
 
 def _link_apply_user(chat_id: int, cq: dict, target_chat: str, driver_id: str) -> None:
     """Bog'lashni yakunlaydi: driver_profiles.telegram_chat_id = chat_id."""
     from ...core.bot_settings import clear_pending
     from ...db.storage import get_storage
-    from .roles import Role, resolve_role, _DRIVER_CHAT_CACHE
+    from .roles import Role, resolve_role, forget_driver_chat, promote_driver_role
     if resolve_role(chat_id) not in (Role.ADMIN, Role.DISPATCHER, Role.MANAGER):
         answer(cq, "Huquq yo'q")
         reply(chat_id, DENIED_TEXT)
@@ -647,19 +708,29 @@ def _link_apply_user(chat_id: int, cq: dict, target_chat: str, driver_id: str) -
         return
     st = get_storage()
     drow = st.find("drivers", external_id=driver_id) or {}
+    if not drow:
+        clear_pending(chat_id)
+        answer(cq, "Haydovchi topilmadi")
+        reply(chat_id, "❌ Haydovchi topilmadi — qaytadan /boglash bilan urinib ko'ring.")
+        return
     name = short_name(str(drow.get("full_name") or driver_id))
-    st.save_driver_profile(driver_id, telegram_chat_id=str(target))
-    st.save_driver_profile(driver_id, notification_enabled=True)
-    _DRIVER_CHAT_CACHE.pop(target, None)  # rol keshini yangilash
-    # Bog'langan foydalanuvchi roli darhol HAYDOVCHI bo'ladi.
-    try:
-        from ...core.bot_users import set_role
-        set_role(target, "DRIVER")
-    except Exception:  # noqa: BLE001
-        pass
+    prev = st.find_driver_by_telegram(target)
+    moved = ""
+    if prev and str(prev.get("driver_id") or "") != driver_id:
+        old_id = str(prev.get("driver_id") or "")
+        old_row = st.find("drivers", external_id=old_id) or {}
+        old_name = short_name(str(old_row.get("full_name") or old_id))
+        moved = f"\n⚠️ Bu foydalanuvchining avvalgi bog'lanishi ({old_name}) olib tashlandi."
+    if not st.link_driver_telegram(driver_id, target):
+        answer(cq, "Xatolik")
+        reply(chat_id, "❌ Bog'lash saqlanmadi. Qaytadan urinib ko'ring.")
+        return
+    forget_driver_chat(target)  # rol keshini yangilash
+    # Bog'langan foydalanuvchi roli darhol HAYDOVCHI bo'ladi (yuqori rol saqlanadi).
+    promote_driver_role(target)
     clear_pending(chat_id)
     answer(cq, "Bog'landi")
-    reply(chat_id, f"✅ <b>{name}</b> ↔ Telegram foydalanuvchi bog'landi.",
+    reply(chat_id, f"✅ <b>{name}</b> ↔ Telegram foydalanuvchi bog'landi.{moved}",
           reply_markup=kb.settings_kb(chat_id))
     # Bog'langan foydalanuvchiga xabar
     try:
@@ -852,31 +923,42 @@ def _run_login(chat_id: int, username: str, password: str) -> None:
 
     def _run() -> None:
         from ...core.companies import detect_company
-        from ...core.profiles import owner_chat_ids, profile_by_owner, set_credentials
+        from ...core.profiles import (owner_chat_ids, set_credentials,
+                                      set_owner_chat_ids)
 
         try:
-            profile, _client = detect_company(username, password)
-        except Exception as exc:
-            reply(chat_id, f"⛔ Login muvaffaqiyatsiz: {exc}")
+            profile, client = detect_company(username, password)
+        except Exception as exc:  # noqa: BLE001 - foydalanuvchiga javob berilsin
+            log.warning("login: firma aniqlash xatosi (chat=%s): %s",
+                        chat_id, str(exc)[:160])
+            reply(chat_id, "⛔ Login tekshiruvida tarmoq xatosi. "
+                           "Bir daqiqadan so'ng qayta urinib ko'ring.")
             return
 
         if not profile:
-            # Firmasi topilmadi — lekin kredensiallar to'g'ri. Ega ekanini
-            # avvaldan ro'yxatda bo'lsa ham tekshiramiz.
-            owned = profile_by_owner(chat_id)
-            if not owned:
-                reply(chat_id, "⛔ Firmangiz topilmadi. Admin bilan bog'laning "
-                               "(<code>/addcompany</code>).")
+            if client is None:
+                # Kredensiallar saqlanganlarga mos kelmadi va BM login ham
+                # rad etdi — parol xato. Saqlangan kredensial USTIDAN
+                # yozilmaydi (tekshirilmagan qiymat bilan buzilmasin).
+                reply(chat_id, "⛔ Login yoki parol xato.\n"
+                               "Qayta urinish: /login")
                 return
-            profile = owned[0]
+            # Kredensial to'g'ri, lekin qaysi firma ekani aniqlanmadi.
+            reply(chat_id, "⚠️ Login to'g'ri, lekin firma aniqlanmadi.\n"
+                           "Admin <code>/addcompany</code> orqali korxonani "
+                           "qo'shishi kerak.")
+            return
 
         name = profile["name"]
-        set_credentials(name, username, password)
+        # Kredensial faqat BM login bilan TASDIQLANGAN bo'lsa yangilanadi.
+        # Saqlangan kredensialga mos tushgan holatda yozish shart emas.
+        if client is not None:
+            set_credentials(name, username, password)
         # Mavjud egalarni saqlab, yangi chat_id ni qo'shamiz.
         owners = list(dict.fromkeys(owner_chat_ids(profile) + [chat_id]))
         set_owner_chat_ids(name, owners)
 
-        reply(chat_id, f"✅ <b>{name}</b> firmasiga ulandingiz.")
+        reply(chat_id, f"✅ <b>{esc(name)}</b> firmasiga ulandingiz.")
         show_company_stats(chat_id, name, [chat_id])
 
     threading.Thread(target=_run, daemon=True).start()
@@ -1679,11 +1761,11 @@ def _try_link_driver(chat_id: int, text: str) -> None:
     1) Agar /start bo'lsa — telefon raqamini so'raymiz.
     2) Agar raqam kiritilgan bo'lsa — DB dan qidiramiz va bog'laymiz.
     """
-    from .roles import driver_id_for_chat, _DRIVER_CHAT_CACHE
+    from .roles import driver_id_for_chat, remember_driver_chat, promote_driver_role
     from ...db import get_storage
 
     text_clean = text.strip().lower().replace(" ", "").replace("-", "")
-    if text_clean in ("start", "/start"):
+    if text_clean in ("start", "/start", "startlink", "/startlink") or text.strip().lower().startswith(("/start", "start")):
         reply(chat_id,
               "👤 <b>Haydovchi kirishi</b>\n\n"
               "Telefon raqamingizni yuboring — quyidagi 📱 tugmani bossangiz, "
@@ -1723,14 +1805,12 @@ def _try_link_driver(chat_id: int, text: str) -> None:
         if not driver_id:
             reply(chat_id, "❌ Haydovchi ID topilmadi.")
             return
-        st.link_driver_telegram(driver_id, chat_id)
-        _DRIVER_CHAT_CACHE[chat_id] = driver_id
+        if not st.link_driver_telegram(driver_id, chat_id):
+            reply(chat_id, "❌ Bog'lanish saqlanmadi. Admin bilan bog'laning.")
+            return
+        remember_driver_chat(chat_id, driver_id)
         # Rol darhol HAYDOVCHI bo'lsin (eski VIEWER yozuvidan ustun).
-        try:
-            from ...core.bot_users import set_role
-            set_role(chat_id, "DRIVER")
-        except Exception:  # noqa: BLE001 - kuzatuv yozuvi to'smaydi
-            pass
+        promote_driver_role(chat_id)
         from ...db import get_storage as _gs
         _drow = _gs().find("drivers", external_id=driver_id)
         dname = short_name(str((_drow or {}).get("full_name") or driver_id[:12]))
@@ -1773,6 +1853,10 @@ def handle_message(chat_id: int, text: str) -> None:
 
     # ADMIN haydovchi bog'lash oqimi (izlash qadami)
     if _continue_admin_link_flow(chat_id, text):
+        return
+
+    # ADMIN bog'lash oqimi (Telegram foydalanuvchisini izlash qadami)
+    if _continue_admin_link_user_flow(chat_id, text):
         return
 
     if cmd in ("start", "help"):
@@ -2283,6 +2367,58 @@ def handle_message(chat_id: int, text: str) -> None:
             seen = (u.get("last_seen") or "")[:16]
             lines.append(f"<code>{cid}</code> — {esc(name)} · <b>{role}</b> · "
                          f"{seen}")
+        lines.append("\n<i>💡 Harakatlar tasmasi: /harakatlar yoki /harakatlar &lt;chat_id&gt;</i>")
+        reply(chat_id, "\n".join(lines))
+        return
+    if cmd in ("harakatlar", "activity", "faoliyat", "tarix"):
+        from ...core import bot_users
+        if resolve_role(chat_id) is not Role.ADMIN and \
+           resolve_role(chat_id) is not Role.DISPATCHER and \
+           resolve_role(chat_id) is not Role.MANAGER:
+            reply(chat_id, DENIED_TEXT)
+            return
+
+        target_cid = None
+        if len(parts) > 1 and parts[1].strip().isdigit():
+            target_cid = int(parts[1].strip())
+
+        acts = bot_users.get_all_activities(limit=25, chat_id=target_cid)
+        if not acts:
+            reply(chat_id, "📭 Hozircha faoliyat qaydlari topilmadi.")
+            return
+
+        title = "⚡️ <b>FOYDALANUVCHILAR FAOLIYATI</b>"
+        if target_cid:
+            title += f" (ID: <code>{target_cid}</code>)"
+        lines = [title, ""]
+
+        action_icons = {
+            "message": "💬",
+            "callback": "🔘",
+            "contact": "📱",
+            "contact_linked": "🔗",
+            "poll_confirm": "⚡️",
+            "poll_confirmed": "🟢",
+            "poll_click": "🔘",
+            "role_changed": "🛡",
+            "group_command": "👥",
+            "document": "📄",
+            "photo": "🖼",
+        }
+
+        for a in acts[:20]:
+            act_time = (a.get("at") or "")[11:16]
+            act_date = (a.get("at") or "")[5:10]
+            u_name = esc(a.get("first_name") or a.get("driver_name") or str(a.get("chat_id")))
+            u_role = a.get("role") or "VIEWER"
+            icon = action_icons.get(a.get("action"), "🔹")
+            detail = esc(str(a.get("detail") or a.get("action") or "")[:100])
+            lines.append(f"<b>{act_date} {act_time}</b> · {u_name} (<i>{u_role}</i>)\n"
+                         f"   {icon} {detail}\n")
+
+        if not target_cid:
+            lines.append("<i>💡 Aniq foydalanuvchi tarixini ko'rish: /harakatlar &lt;chat_id&gt;</i>")
+
         reply(chat_id, "\n".join(lines))
         return
     if cmd == "myrole":
@@ -2404,6 +2540,193 @@ def handle_message(chat_id: int, text: str) -> None:
         start_grafik(chat_id, rids, day_offset=offset)
         return
 
+    if cmd in ("sorov", "sorovnoma", "poll"):
+        if not can(role, "sync"):
+            reply(chat_id, DENIED_TEXT)
+            return
+        from datetime import date, timedelta
+        from . import grafik_poll
+        from ...core.profiles import all_profiles
+
+        target_date = date.today() + timedelta(days=1)
+        if len(parts) > 1 and parts[1].lower() == "bugun":
+            target_date = date.today()
+
+        f = context.filters_for(chat_id)
+        rfilter = (f.get("route") or "").strip() if role is not Role.ADMIN else ""
+        allowed_rids = [t.strip() for t in rfilter.replace(",", " ").split() if t.strip()] if rfilter else None
+
+        all_rids = []
+        for p in all_profiles():
+            rid = str(p.get("routeVariantId") or "").strip()
+            if rid and (allowed_rids is None or rid in allowed_rids):
+                all_rids.append((rid, str(p.get("routeName") or p.get("name") or rid[:8])))
+
+        if not all_rids:
+            reply(chat_id, "⚠️ Yo'nalishlar topilmadi.")
+            return
+
+        results = []
+        for rid, rname in all_rids:
+            res = grafik_poll.send_poll_to_groups(rid, target_date, route_name=rname, force=True)
+            sent = res.get("sent", 0)
+            if sent > 0:
+                results.append(f"✅ <b>{rname}</b>: {sent} ta guruhga so'rovnoma yuborildi.")
+            else:
+                err = res.get("error") or "yuborilmadi"
+                results.append(f"⚠️ <b>{rname}</b>: {err}")
+
+        reply(chat_id, f"📋 <b>SO'ROVNOMA YUBORISH ({target_date:%d.%m.%Y})</b>\n\n" + "\n".join(results))
+        return
+
+    if cmd in ("sorov_status", "poll_status"):
+        if not can(role, "sync"):
+            reply(chat_id, DENIED_TEXT)
+            return
+        from datetime import date, timedelta
+        from . import grafik_poll
+        from ...core.profiles import all_profiles
+
+        target_date = date.today() + timedelta(days=1)
+        if len(parts) > 1 and parts[1].lower() == "bugun":
+            target_date = date.today()
+
+        f = context.filters_for(chat_id)
+        rfilter = (f.get("route") or "").strip() if role is not Role.ADMIN else ""
+        allowed_rids = [t.strip() for t in rfilter.replace(",", " ").split() if t.strip()] if rfilter else None
+
+        all_rids = []
+        for p in all_profiles():
+            rid = str(p.get("routeVariantId") or "").strip()
+            if rid and (allowed_rids is None or rid in allowed_rids):
+                all_rids.append(rid)
+
+        reports = []
+        for rid in all_rids:
+            reports.append(grafik_poll.get_poll_status_text(rid, target_date.isoformat()))
+        reply(chat_id, "\n\n".join(reports) if reports else "ℹ️ Yo'nalishlar topilmadi.")
+        return
+
+    if cmd in ("sorov_bekor", "sorov_reset"):
+        if not can(role, "sync"):
+            reply(chat_id, DENIED_TEXT)
+            return
+        from datetime import date, timedelta
+        from html import escape
+        from . import grafik_poll
+        from ...core.profiles import all_profiles
+
+        if len(parts) < 2:
+            reply(chat_id, "ℹ️ Foydalanish: <code>/sorov_bekor &lt;grafik_raqami&gt;</code>\nMasalan: <code>/sorov_bekor 2</code>")
+            return
+        g_target = parts[1].strip()
+        target_date = date.today() + timedelta(days=1)
+        f = context.filters_for(chat_id)
+        rfilter = (f.get("route") or "").strip() if role is not Role.ADMIN else ""
+        allowed_rids = [t.strip() for t in rfilter.replace(",", " ").split() if t.strip()] if rfilter else None
+
+        all_rids = []
+        for p in all_profiles():
+            rid = str(p.get("routeVariantId") or "").strip()
+            if rid and (allowed_rids is None or rid in allowed_rids):
+                all_rids.append(rid)
+
+        reset_done = False
+        for rid in all_rids:
+            if grafik_poll.reset_confirmation(rid, target_date.isoformat(), g_target):
+                reset_done = True
+            elif grafik_poll.reset_confirmation(rid, date.today().isoformat(), g_target):
+                reset_done = True
+        if reset_done:
+            reply(chat_id, f"✅ Grafik {escape(g_target)} tasdiqlanishi bekor qilindi.")
+        else:
+            reply(chat_id, f"⚠️ Grafik {escape(g_target)} topilmadi yoki tasdiqlanmagan.")
+        return
+
+    if cmd in ("sorov_tasdiq", "poll_confirm"):
+        if not can(role, "settings"):
+            reply(chat_id, DENIED_TEXT)
+            return
+        from datetime import date, timedelta
+        from html import escape
+        from . import grafik_poll
+        from ...core.profiles import all_profiles
+
+        if len(parts) < 2:
+            reply(chat_id, "ℹ️ Foydalanish: <code>/sorov_tasdiq &lt;grafik_raqami&gt;</code>\nMasalan: <code>/sorov_tasdiq 2</code>")
+            return
+        g_target = parts[1].strip()
+        target_date = date.today() + timedelta(days=1)
+        f = context.filters_for(chat_id)
+        rfilter = (f.get("route") or "").strip() if role is not Role.ADMIN else ""
+        allowed_rids = [t.strip() for t in rfilter.replace(",", " ").split() if t.strip()] if rfilter else None
+
+        all_rids = []
+        for p in all_profiles():
+            rid = str(p.get("routeVariantId") or "").strip()
+            if rid and (allowed_rids is None or rid in allowed_rids):
+                all_rids.append(rid)
+
+        confirm_done = False
+        for rid in all_rids:
+            if grafik_poll.confirm_by_admin(rid, target_date.isoformat(), g_target, admin_name="Dispetcher"):
+                confirm_done = True
+            elif grafik_poll.confirm_by_admin(rid, date.today().isoformat(), g_target, admin_name="Dispetcher"):
+                confirm_done = True
+        if confirm_done:
+            reply(chat_id, f"✅ Grafik {escape(g_target)} dispetcher tomonidan tasdiqlandi.")
+        else:
+            reply(chat_id, f"⚠️ Grafik {escape(g_target)} topilmadi yoki allaqachon tasdiqlangan.")
+        return
+
+    if cmd in ("sorov_almash", "grafik_almash", "poll_swap"):
+        if not can(role, "settings"):
+            reply(chat_id, DENIED_TEXT)
+            return
+        from datetime import date, timedelta
+        from html import escape
+        from . import grafik_poll
+        from ...core.profiles import all_profiles
+
+        if len(parts) < 3:
+            reply(chat_id, "ℹ️ Foydalanish: <code>/sorov_almash &lt;grafik1&gt; &lt;grafik2&gt;</code>\n"
+                           "Masalan: <code>/sorov_almash 1 4</code>")
+            return
+        g1, g2 = parts[1].strip(), parts[2].strip()
+        target_date = date.today() + timedelta(days=1)
+        f = context.filters_for(chat_id)
+        rfilter = (f.get("route") or "").strip() if role is not Role.ADMIN else ""
+        allowed_rids = [t.strip() for t in rfilter.replace(",", " ").split() if t.strip()] if rfilter else None
+
+        all_rids = []
+        for p in all_profiles():
+            rid = str(p.get("routeVariantId") or "").strip()
+            if rid and (allowed_rids is None or rid in allowed_rids):
+                all_rids.append(rid)
+
+        swap_res = None
+        for rid in all_rids:
+            res = grafik_poll.swap_graphs(rid, target_date.isoformat(), g1, g2, admin_name="Dispetcher")
+            if res.get("ok"):
+                swap_res = res
+                break
+            else:
+                res_today = grafik_poll.swap_graphs(rid, date.today().isoformat(), g1, g2, admin_name="Dispetcher")
+                if res_today.get("ok"):
+                    swap_res = res_today
+                    break
+
+        if swap_res and swap_res.get("ok"):
+            reply(chat_id,
+                  f"🔄 <b>GRAFIK ALMASHISHI:</b>\n\n"
+                  f"• <b>Grafik {escape(str(swap_res['graph1']))}:</b> {escape(str(swap_res['driver1']))}\n"
+                  f"• <b>Grafik {escape(str(swap_res['graph2']))}:</b> {escape(str(swap_res['driver2']))}\n\n"
+                  f"<i>Har ikki grafik tasdiqlash uchun qayta ochildi va so'rovnoma yangilandi.</i>")
+        else:
+            err = (swap_res or {}).get("error") or "Grafiklar topilmadi"
+            reply(chat_id, f"⚠️ Almashtirilmadi: {escape(err)}")
+        return
+
     if cmd == "salary_dl":
         if not can(role, "salary"):
             reply(chat_id, DENIED_TEXT)
@@ -2486,6 +2809,11 @@ def handle_message(chat_id: int, text: str) -> None:
 
 
 def handle_callback(chat_id: int, cq: dict, data: str) -> None:
+    if data.startswith(("gck:", "gme:", "grf:", "ginfo:")):
+        from . import grafik_poll
+        grafik_poll.handle_group_callback(chat_id, cq, data)
+        return
+
     role = resolve_role(chat_id)
     f = context.filters_for(chat_id)
 
@@ -3000,19 +3328,17 @@ def handle_contact(chat_id: int, contact: dict) -> None:
     if not driver_id:
         reply(chat_id, "❌ Haydovchi ID topilmadi. Admin bilan bog'laning.")
         return
-    st.link_driver_telegram(driver_id, chat_id)
-    from .roles import _DRIVER_CHAT_CACHE
-    _DRIVER_CHAT_CACHE[chat_id] = driver_id
+    if not st.link_driver_telegram(driver_id, chat_id):
+        reply(chat_id, "❌ Bog'lanish saqlanmadi. Admin bilan bog'laning.")
+        return
+    from .roles import remember_driver_chat, promote_driver_role
+    remember_driver_chat(chat_id, driver_id)
     with _DRIVER_LINK_LOCK:
         _DRIVER_LINK_STATE.discard(chat_id)
     from ...core.bot_settings import clear_pending
     clear_pending(chat_id)
     # Contact bilan bog'langan foydalanuvchi ham darhol HAYDOVCHI.
-    try:
-        from ...core.bot_users import set_role
-        set_role(chat_id, "DRIVER")
-    except Exception:  # noqa: BLE001
-        pass
+    promote_driver_role(chat_id)
     _drow = st.find("drivers", external_id=driver_id)
     dname = short_name(str((_drow or {}).get("full_name") or driver_id[:12]))
     answer_txt = (f"✅ <b>Xush kelibsiz, {dname}!</b>\n\n"
