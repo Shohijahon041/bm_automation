@@ -88,6 +88,11 @@ def _summary(counts: dict) -> str:
             f"Noma'lum: {counts.get('unknown', 0)}")
 
 
+def enabled() -> bool:
+    from ...core import bot_settings
+    return bot_settings.problem_alerts_notify()
+
+
 def check_and_notify() -> None:
     """Joriy muammo sonini tekshiradi, o'zgarish bo'lsa xabar yuboradi.
 
@@ -96,6 +101,9 @@ def check_and_notify() -> None:
     """
     global _LAST_CHECK_AT
     if not get_storage().enabled:
+        return
+    from ...core import bot_settings
+    if not bot_settings.problem_alerts_notify():
         return
     with _LOCK:
         now = datetime.now()

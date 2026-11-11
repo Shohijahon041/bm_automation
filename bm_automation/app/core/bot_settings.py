@@ -442,3 +442,63 @@ def set_pending(chat_id: int, key: str) -> None:
 
 def clear_pending(chat_id: int) -> None:
     _PENDING.pop(chat_id, None)
+
+
+# ------------------------------------------------------------- bildirishnomalar (offline & problems)
+
+def offline_notify() -> bool:
+    """GPS aloqa uzilishi (offline) bildirishnomasi yoqilganmi (standart: ha).
+
+    Agar state/bot_settings.jsonda saqlanmagan bo'lsa, env GPS_OFFLINE_TELEGRAM
+    dan olinadi (standart: 1).
+    """
+    import os
+    try:
+        val = _load().get("offline_notify")
+    except Exception:
+        val = None
+    if val is not None:
+        return bool(val)
+    env_v = os.getenv("GPS_OFFLINE_TELEGRAM", "1").strip().lower()
+    return env_v not in ("0", "off", "false", "no")
+
+
+def set_offline_notify(value: bool | None, by: str = "") -> bool:
+    """GPS aloqa uzilishi (offline) bildirishnomasini yoqadi/o'chiradi."""
+    with _LOCK:
+        _load()
+        old = offline_notify()
+        on = bool(value)
+        _CACHE["offline_notify"] = on
+        _audit("offline_notify", old, on, by=by)
+        _save()
+    return on
+
+
+def problem_alerts_notify() -> bool:
+    """Muammo holati o'zgarishi bildirishnomasi yoqilganmi (standart: ha).
+
+    Agar state/bot_settings.jsonda saqlanmagan bo'lsa, env AI_PROBLEM_ALERTS
+    dan olinadi (standart: 1).
+    """
+    import os
+    try:
+        val = _load().get("problem_alerts_notify")
+    except Exception:
+        val = None
+    if val is not None:
+        return bool(val)
+    env_v = os.getenv("AI_PROBLEM_ALERTS", "1").strip().lower()
+    return env_v not in ("0", "off", "false", "no")
+
+
+def set_problem_alerts_notify(value: bool | None, by: str = "") -> bool:
+    """Muammo holati o'zgarishi bildirishnomasini yoqadi/o'chiradi."""
+    with _LOCK:
+        _load()
+        old = problem_alerts_notify()
+        on = bool(value)
+        _CACHE["problem_alerts_notify"] = on
+        _audit("problem_alerts_notify", old, on, by=by)
+        _save()
+    return on

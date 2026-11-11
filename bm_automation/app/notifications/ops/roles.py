@@ -214,9 +214,11 @@ def resolve_role(chat_id: int | None) -> Role:
     if not roles:
         # Env sozlanmagan bo'lsa ham tayinlangan rol / haydovchi hurmat qilinadi
         assigned = stored_role(chat_id)
+        driver_role = _resolve_driver_role(chat_id)
+        if driver_role is Role.DRIVER and assigned is Role.VIEWER:
+            return driver_role
         if assigned:
             return assigned
-        driver_role = _resolve_driver_role(chat_id)
         if driver_role:
             return driver_role
         return Role.ADMIN

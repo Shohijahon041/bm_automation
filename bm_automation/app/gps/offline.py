@@ -115,7 +115,9 @@ def _raise_offline(device: dict, age: float) -> None:
     except Exception:  # noqa: BLE001
         log.exception("offline: alert yozilmadi (imei=%s)", imei)
 
-    if config.OFFLINE_TELEGRAM:
+    from ..core import bot_settings
+
+    if config.OFFLINE_TELEGRAM and bot_settings.offline_notify():
         try:
             from ..notifications.telegram import send_message
 
@@ -124,6 +126,8 @@ def _raise_offline(device: dict, age: float) -> None:
                 log.warning("offline: telegram yuborilmadi (configured emas?)")
         except Exception:  # noqa: BLE001
             log.exception("offline: telegram xatosi (davom etamiz)")
+    else:
+        log.info("offline: telegram bildirishnomasi o'chirilgan (offline_notify=off)")
 
     log.info("offline: imei=%s (%s daqiqa)", imei, mins)
 

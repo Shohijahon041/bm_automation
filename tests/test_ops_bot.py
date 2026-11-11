@@ -1636,6 +1636,7 @@ def test_dispatch_unknown_uses_llm(ai_env, admin, monkeypatch):
 
 
 def test_openrouter_complete_sends_choices(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     class FakeResp:
         status_code = 200
 
@@ -1648,6 +1649,7 @@ def test_openrouter_complete_sends_choices(monkeypatch):
 
 
 def test_openrouter_complete_http_error(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     class FakeResp:
         status_code = 401
         text = "unauthorized"
@@ -1659,6 +1661,7 @@ def test_openrouter_complete_http_error(monkeypatch):
 
 
 def test_openrouter_complete_empty_choices(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     class FakeResp:
         status_code = 200
 
@@ -2813,3 +2816,188 @@ def test_group_chiqish_role_gated(monkeypatch, tmp_path):
     ops._handle_group_update(_group_upd("/chiqish_off"), -100500)
     assert sent == []
     assert group_departures.chat_enabled(-100500) is True
+
+
+
+def test_offline_and_problems_notification_toggles_bot(monkeypatch, tmp_path):
+    from bm_automation.app.core import bot_settings
+    from bm_automation.app.notifications.ops import dispatch
+    bot_settings.STATE_FILE = tmp_path / "bot_s.json"
+    bot_settings._reset()
+
+    sent = []
+    def fake_reply(chat_id, text, **kw):
+        sent.append((chat_id, text, kw))
+
+    monkeypatch.setattr(dispatch, "reply", fake_reply)
+    monkeypatch.setattr(dispatch, "resolve_role", lambda cid: Role.ADMIN)
+
+    # 1. /offline_off
+    dispatch.handle_message(1234, "/offline_off")
+    assert bot_settings.offline_notify() is False
+    assert "o'chirildi" in sent[-1][1]
+
+    # 2. /offline_on
+    dispatch.handle_message(1234, "/offline_on")
+    assert bot_settings.offline_notify() is True
+    assert "yoqildi" in sent[-1][1]
+
+    # 3. /offline (inquiry)
+    dispatch.handle_message(1234, "/offline")
+    assert "YOQILGAN" in sent[-1][1]
+    assert "offline_toggle_kb" in str(sent[-1][2]) or "reply_markup" in sent[-1][2]
+
+    # 4. /problems_off
+    dispatch.handle_message(1234, "/problems_off")
+    assert bot_settings.problem_alerts_notify() is False
+    assert "o'chirildi" in sent[-1][1]
+
+    # 5. /problems_on
+    dispatch.handle_message(1234, "/problems_on")
+    assert bot_settings.problem_alerts_notify() is True
+    assert "yoqildi" in sent[-1][1]
+
+    # 6. /problems_notify (inquiry)
+    dispatch.handle_message(1234, "/problems_notify")
+    assert "YOQILGAN" in sent[-1][1]
+
+
+def test_offline_and_problems_callbacks(monkeypatch, tmp_path):
+    from bm_automation.app.core import bot_settings
+    from bm_automation.app.notifications.ops import dispatch
+    bot_settings.STATE_FILE = tmp_path / "bot_s.json"
+    bot_settings._reset()
+
+    sent = []
+    answered = []
+    def fake_reply(chat_id, text, **kw):
+        sent.append((chat_id, text, kw))
+    def fake_answer(cq, text=None):
+        answered.append((cq, text))
+
+    monkeypatch.setattr(dispatch, "reply", fake_reply)
+    monkeypatch.setattr(dispatch, "answer", fake_answer)
+    monkeypatch.setattr(dispatch, "resolve_role", lambda cid: Role.ADMIN)
+
+    cq = {"id": "cq1"}
+    # Toggle offline via settings button
+    dispatch.handle_callback(1234, cq, "settings:toggle_offline")
+    assert bot_settings.offline_notify() is False
+
+    dispatch.handle_callback(1234, cq, "toggle:offline_on")
+    assert bot_settings.offline_notify() is True
+
+    # Toggle problems via settings button
+    dispatch.handle_callback(1234, cq, "settings:toggle_problems")
+    assert bot_settings.problem_alerts_notify() is False
+
+    dispatch.handle_callback(1234, cq, "toggle:problems_on")
+    assert bot_settings.problem_alerts_notify() is True
+
+
+def test_group_offline_and_problems_commands(monkeypatch, tmp_path):
+    from bm_automation.app.core import bot_settings
+    from bm_automation.app.notifications.ops import ops
+    bot_settings.STATE_FILE = tmp_path / "bot_s.json"
+    bot_settings._reset()
+
+    monkeypatch.setattr(ops, "record_group_message", lambda *a, **k: None)
+    monkeypatch.setattr(ops, "resolve_role", lambda cid: Role.ADMIN)
+    sent = []
+    monkeypatch.setattr(ops, "send_message",
+                        lambda text, chat_id=None, parse_mode=None:
+                        sent.append((chat_id, text)))
+
+    # /offline_off in group
+    ops._handle_group_update(_group_upd("/offline_off"), -100500)
+    assert bot_settings.offline_notify() is False
+    assert "o'chirildi" in sent[-1][1]
+
+    # /offline_on in group
+    ops._handle_group_update(_group_upd("/offline_on"), -100500)
+    assert bot_settings.offline_notify() is True
+    assert "yoqildi" in sent[-1][1]
+
+    # /problems_off in group
+    ops._handle_group_update(_group_upd("/problems_off"), -100500)
+    assert bot_settings.problem_alerts_notify() is False
+    assert "o'chirildi" in sent[-1][1]
+
+    # /problems_on in group
+    ops._handle_group_update(_group_upd("/problems_on"), -100500)
+    assert bot_settings.problem_alerts_notify() is True
+    assert "yoqildi" in sent[-1][1]
+
+
+def test_dashboard_settings_offline_and_problems_toggles(monkeypatch, tmp_path):
+    from bm_automation.app.core import bot_settings
+    from fastapi.testclient import TestClient
+    from bm_automation.app.dashboard import deps
+    from bm_automation.app.dashboard.fastapi_app import app
+    bot_settings.STATE_FILE = tmp_path / "bot_s.json"
+    bot_settings._reset()
+
+    client = TestClient(app)
+    # Check initial GET
+    out = client.get("/api/settings").json()
+    assert "offline_notify" in out["global"]
+    assert "problem_alerts_notify" in out["global"]
+
+    # POST to toggle both off
+    monkeypatch.setattr(deps, "_POST_MIN_INTERVAL_S", 0.0)
+    with deps._POST_LOCK:
+        deps._last_post_at.clear()
+    res = client.post("/api/settings", json={
+        "offline_notify": False,
+        "problem_alerts_notify": False
+    }).json()
+    assert res["ok"]
+    assert bot_settings.offline_notify() is False
+    assert bot_settings.problem_alerts_notify() is False
+
+    # POST to toggle offline on
+    res2 = client.post("/api/settings", json={
+        "offline_notify": True,
+    }).json()
+    assert res2["ok"]
+    assert bot_settings.offline_notify() is True
+    assert bot_settings.problem_alerts_notify() is False
+
+
+
+def test_gps_offline_respects_setting(monkeypatch, tmp_path):
+    from bm_automation.app.gps import offline
+    from bm_automation.app.core import bot_settings
+    from bm_automation.app.notifications import telegram
+    bot_settings.STATE_FILE = tmp_path / "bot_s.json"
+    bot_settings._reset()
+
+    sent = []
+    monkeypatch.setattr(telegram, "send_message", lambda msg, **kw: sent.append(msg) or True)
+    monkeypatch.setattr(offline.storage, "insert_alert", lambda *a, **k: None)
+    monkeypatch.setattr(offline.config, "OFFLINE_TELEGRAM", True)
+    dev = {"plate_number": "60857GCA", "imei": "353691845747285"}
+
+    # When offline_notify is False -> should not send
+    bot_settings.set_offline_notify(False)
+    offline._raise_offline(dev, 1800.0)
+    assert len(sent) == 0
+
+    # When offline_notify is True -> sends
+    bot_settings.set_offline_notify(True)
+    offline._raise_offline(dev, 1800.0)
+    assert len(sent) == 1
+    assert "Aloqa uzildi" in sent[0]
+
+
+def test_problem_alerts_respects_setting(monkeypatch, tmp_path):
+    from bm_automation.app.notifications.ops import problem_alerts
+    from bm_automation.app.core import bot_settings
+    bot_settings.STATE_FILE = tmp_path / "bot_s.json"
+    bot_settings._reset()
+
+    bot_settings.set_problem_alerts_notify(False)
+    assert problem_alerts.enabled() is False
+
+    bot_settings.set_problem_alerts_notify(True)
+    assert problem_alerts.enabled() is True

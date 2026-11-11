@@ -1964,6 +1964,42 @@ def handle_message(chat_id: int, text: str) -> None:
         reply(chat_id, render.settings_text(chat_id),
               reply_markup=kb.settings_kb(chat_id))
         return
+    if cmd in ("offline", "offline_on", "offline_off"):
+        if role not in (Role.ADMIN, Role.MANAGER, Role.DISPATCHER):
+            reply(chat_id, DENIED_TEXT)
+            return
+        if cmd == "offline_on":
+            bot_settings.set_offline_notify(True, by=f"tg:{chat_id}")
+            reply(chat_id, "🔔 <b>Offline (aloqa uzildi) bildirishnomalari yoqildi.</b>",
+                  reply_markup=kb.offline_toggle_kb(True))
+            return
+        if cmd == "offline_off":
+            bot_settings.set_offline_notify(False, by=f"tg:{chat_id}")
+            reply(chat_id, "🔕 <b>Offline (aloqa uzildi) bildirishnomalari o'chirildi.</b>",
+                  reply_markup=kb.offline_toggle_kb(False))
+            return
+        cur_on = bot_settings.offline_notify()
+        reply(chat_id, render.offline_notify_text(cur_on),
+              reply_markup=kb.offline_toggle_kb(cur_on))
+        return
+    if cmd in ("problems_notify", "problems_on", "problems_off", "muammo_on", "muammo_off", "muammo_notify"):
+        if role not in (Role.ADMIN, Role.MANAGER, Role.DISPATCHER):
+            reply(chat_id, DENIED_TEXT)
+            return
+        if cmd in ("problems_on", "muammo_on"):
+            bot_settings.set_problem_alerts_notify(True, by=f"tg:{chat_id}")
+            reply(chat_id, "🔔 <b>Muammo holati o'zgarishi bildirishnomalari yoqildi.</b>",
+                  reply_markup=kb.problems_notify_toggle_kb(True))
+            return
+        if cmd in ("problems_off", "muammo_off"):
+            bot_settings.set_problem_alerts_notify(False, by=f"tg:{chat_id}")
+            reply(chat_id, "🔕 <b>Muammo holati o'zgarishi bildirishnomalari o'chirildi.</b>",
+                  reply_markup=kb.problems_notify_toggle_kb(False))
+            return
+        cur_on = bot_settings.problem_alerts_notify()
+        reply(chat_id, render.problem_alerts_notify_text(cur_on),
+              reply_markup=kb.problems_notify_toggle_kb(cur_on))
+        return
     if cmd in ("setrole", "role"):
         from ...core import bot_users
         from .roles import _parse_role, Role as _Role
@@ -2438,6 +2474,48 @@ def handle_callback(chat_id: int, cq: dict, data: str) -> None:
         answer(cq, "Til saqlandi")
         reply(chat_id, render.settings_text(chat_id),
               reply_markup=kb.settings_kb(chat_id))
+        return
+    if data in ("settings:toggle_offline", "toggle:offline_on", "toggle:offline_off"):
+        if role not in (Role.ADMIN, Role.MANAGER, Role.DISPATCHER):
+            answer(cq, "Huquq yo'q")
+            reply(chat_id, DENIED_TEXT)
+            return
+        if data == "toggle:offline_on":
+            new_val = True
+        elif data == "toggle:offline_off":
+            new_val = False
+        else:
+            new_val = not bot_settings.offline_notify()
+        bot_settings.set_offline_notify(new_val, by=f"tg:{chat_id}")
+        st_txt = "yoqildi" if new_val else "o'chirildi"
+        answer(cq, f"Offline bildirishnomasi {st_txt}")
+        if data.startswith("settings:"):
+            reply(chat_id, render.settings_text(chat_id),
+                  reply_markup=kb.settings_kb(chat_id))
+        else:
+            reply(chat_id, render.offline_notify_text(new_val),
+                  reply_markup=kb.offline_toggle_kb(new_val))
+        return
+    if data in ("settings:toggle_problems", "toggle:problems_on", "toggle:problems_off"):
+        if role not in (Role.ADMIN, Role.MANAGER, Role.DISPATCHER):
+            answer(cq, "Huquq yo'q")
+            reply(chat_id, DENIED_TEXT)
+            return
+        if data == "toggle:problems_on":
+            new_val = True
+        elif data == "toggle:problems_off":
+            new_val = False
+        else:
+            new_val = not bot_settings.problem_alerts_notify()
+        bot_settings.set_problem_alerts_notify(new_val, by=f"tg:{chat_id}")
+        st_txt = "yoqildi" if new_val else "o'chirildi"
+        answer(cq, f"Muammo bildirishnomasi {st_txt}")
+        if data.startswith("settings:"):
+            reply(chat_id, render.settings_text(chat_id),
+                  reply_markup=kb.settings_kb(chat_id))
+        else:
+            reply(chat_id, render.problem_alerts_notify_text(new_val),
+                  reply_markup=kb.problems_notify_toggle_kb(new_val))
         return
 
     if data.startswith("prob:"):

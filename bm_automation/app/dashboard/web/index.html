@@ -584,27 +584,86 @@ footer{border-top:1px solid var(--line)!important;background:#070b11!important;c
 
 
 /* === BM COMMAND CENTER STRUCTURAL LAYOUT === */
-.app{min-height:100vh;min-height:100dvh;display:grid;grid-template-columns:238px minmax(0,1fr)}
-.sidebar{position:sticky;top:0;height:100vh;height:100dvh;padding:20px 13px;border-right:1px solid rgba(148,163,184,.08);background:rgba(8,12,20,.95);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);z-index:40;display:flex;flex-direction:column;transition:transform .28s cubic-bezier(0.16, 1, 0.3, 1)}
-.side-brand{display:flex;align-items:center;gap:10px;padding:4px 8px 20px;flex-shrink:0}
-.side-brand .brand-mark{width:40px;height:40px;flex-shrink:0}
-.side-brand .brand-name{font-weight:800}
-.side-brand .brand-sub{display:block}
+.app{min-height:100vh;min-height:100dvh;display:grid;grid-template-columns:260px minmax(0,1fr);transition:grid-template-columns .22s cubic-bezier(0.16, 1, 0.3, 1)}
+.sidebar{position:sticky;top:0;height:100vh;height:100dvh;padding:16px 14px 14px;border-right:1px solid rgba(255,255,255,.07);background:linear-gradient(180deg,rgba(11,16,26,.98),rgba(7,10,18,.99));backdrop-filter:blur(24px) saturate(180%);-webkit-backdrop-filter:blur(24px) saturate(180%);z-index:40;display:flex;flex-direction:column;transition:width .22s cubic-bezier(0.16, 1, 0.3, 1),transform .28s cubic-bezier(0.16, 1, 0.3, 1),padding .22s ease;box-shadow:2px 0 24px rgba(0,0,0,.35)}
+.side-brand{display:flex;align-items:center;gap:10px;padding:2px 4px 12px;flex-shrink:0;position:relative}
+.side-brand .brand-mark{width:38px;height:38px;border-radius:10px;flex-shrink:0;background:linear-gradient(135deg,#f0a93e 0%,#d97706 100%);color:#0b0f19;font-weight:900;font-size:19px;box-shadow:0 4px 14px rgba(240,169,62,.35),inset 0 1px 0 rgba(255,255,255,.3);display:grid;place-items:center;letter-spacing:-.5px}
+.brand-text{min-width:0;flex:1}
+.brand-text .brand-name{display:block;font-weight:800;font-size:16px;letter-spacing:.5px;color:var(--ink,#f1f5f9);line-height:1.15}
+.brand-text .brand-sub{display:block;font-family:var(--font-mono,monospace);font-size:8.5px;color:var(--muted,#64748b);letter-spacing:1.6px;text-transform:uppercase;margin-top:2px}
+.sidebar-collapse-btn{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:8px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);color:var(--muted,#94a3b8);cursor:pointer;transition:all .18s cubic-bezier(0.16, 1, 0.3, 1);flex-shrink:0;margin-left:auto}
+.sidebar-collapse-btn:hover{background:rgba(255,255,255,.09);color:#ffffff;border-color:rgba(255,255,255,.2);transform:scale(1.05)}
+.sidebar-collapse-btn .nav-ic{width:16px;height:16px}
 .drawer-close{display:none;background:var(--bg-raised);border:1px solid var(--line);color:var(--ink);width:32px;height:32px;border-radius:10px;cursor:pointer;font-size:14px;font-weight:700;align-items:center;justify-content:center;margin-left:auto;transition:background .15s ease}
 .drawer-close:active{transform:scale(0.92)}
-.nav-label{padding:12px 10px 7px;color:var(--muted);font:10px "IBM Plex Mono",monospace;letter-spacing:1.3px;text-transform:uppercase;flex-shrink:0}
-.side-nav{display:grid;gap:4px;overflow-y:auto;flex:1;padding-bottom:4px;-webkit-overflow-scrolling:touch}
-.side-nav a{display:flex;align-items:center;gap:10px;padding:11px 12px;border:1px solid transparent;border-radius:12px;text-decoration:none;color:var(--muted);transition:all .2s ease;position:relative;overflow:hidden;-webkit-tap-highlight-color:transparent}
-.side-nav a:hover{background:rgba(129,140,248,.06);color:var(--ink);border-color:rgba(129,140,248,.15);transform:translateX(2px)}
-.side-nav a.active{background:linear-gradient(135deg,rgba(129,140,248,.1),rgba(52,211,153,.05));color:var(--ink);border-color:rgba(129,140,248,.25);box-shadow:inset 3px 0 var(--amber),0 0 20px rgba(129,140,248,.05)}
-.side-nav a.active::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:linear-gradient(180deg,var(--amber),var(--teal));border-radius:0 3px 3px 0}
-.nav-dot{width:7px;height:7px;border-radius:50%;background:#3a4558;transition:all .2s ease}
-.active .nav-dot{background:var(--teal);box-shadow:0 0 12px rgba(52,211,153,.8)}
-.side-bottom{flex-shrink:0;padding-top:8px}
-.live-box{padding:12px;border:1px solid rgba(148,163,184,.08);border-radius:14px;background:linear-gradient(145deg,rgba(15,22,35,.95),rgba(12,16,28,.98));backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
-.live{display:flex;align-items:center;gap:7px;color:var(--teal);font:700 11px "IBM Plex Mono",monospace}
-.live i{width:7px;height:7px;border-radius:50%;background:var(--teal);box-shadow:0 0 12px var(--teal);animation:pulse2 1.7s infinite}
-.live-box small{display:block;color:var(--muted);font-size:10px;margin-top:6px;line-height:1.4}
+
+/* Quick Navigation Search */
+.side-search{position:relative;display:flex;align-items:center;gap:8px;background:rgba(15,23,42,.55);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:0 10px;height:35px;margin:0 0 10px;flex-shrink:0;transition:border-color .18s ease,box-shadow .18s ease,background .18s ease}
+.side-search:focus-within{background:rgba(15,23,42,.95);border-color:var(--accent,#00d4ff);box-shadow:0 0 0 3px rgba(0,212,255,.15),0 4px 14px rgba(0,0,0,.2)}
+.side-search-icon{color:var(--muted,#64748b);display:grid;place-items:center;flex-shrink:0}
+.side-search-icon .nav-ic{width:14px;height:14px}
+.side-search input{flex:1;min-width:0;background:transparent;border:none;outline:none;font-size:12px;font-family:inherit;color:var(--ink,#e2e8f0);padding:0}
+.side-search input::placeholder{color:rgba(148,163,184,.55);font-size:11.5px}
+.side-search-kbd{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:5px;padding:1px 6px;font-family:var(--font-mono,monospace);font-size:10px;color:var(--muted,#94a3b8);line-height:1.4;user-select:none}
+.side-search-clear{background:transparent;border:none;color:var(--muted,#94a3b8);font-size:12px;cursor:pointer;padding:2px;display:grid;place-items:center;border-radius:4px}
+.side-search-clear:hover{color:#ffffff;background:rgba(255,255,255,.1)}
+
+/* Navigation Links & List */
+.side-nav{display:flex;flex-direction:column;gap:3px;overflow-y:auto;overflow-x:hidden;flex:1;padding:2px 2px 8px;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.12) transparent;-webkit-overflow-scrolling:touch}
+.side-nav::-webkit-scrollbar{width:4px}
+.side-nav::-webkit-scrollbar-track{background:transparent}
+.side-nav::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:4px}
+.side-nav::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.22)}
+
+.side-nav a{display:flex;align-items:center;gap:11px;padding:8px 12px;border-radius:10px;border:1px solid transparent;text-decoration:none;color:#94a3b8;font-size:13px;font-weight:500;transition:all .18s cubic-bezier(0.16, 1, 0.3, 1);position:relative;overflow:hidden;-webkit-tap-highlight-color:transparent}
+.side-nav a:hover{background:rgba(255,255,255,.04);color:#f1f5f9;border-color:rgba(255,255,255,.07);transform:translateX(3px)}
+.side-nav a.active{background:linear-gradient(90deg,rgba(0,212,255,.12),rgba(99,102,241,.06));color:#ffffff;border-color:rgba(0,212,255,.28);font-weight:600;box-shadow:0 2px 12px rgba(0,212,255,.08),inset 0 1px 0 rgba(255,255,255,.06)}
+.side-nav a.active::before{content:"";position:absolute;left:0;top:15%;bottom:15%;width:3.5px;border-radius:0 4px 4px 0;background:linear-gradient(180deg,#00d4ff,#6366f1);box-shadow:0 0 10px #00d4ff}
+.side-nav a .nav-ic{width:17px;height:17px;flex-shrink:0;color:#64748b;transition:color .18s ease,transform .18s ease}
+.side-nav a:hover .nav-ic{color:#00d4ff;transform:scale(1.08)}
+.side-nav a.active .nav-ic{color:#00d4ff}
+.side-nav a span:not(.nav-badge){flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* Micro Status Badges */
+.nav-badge{display:inline-flex;align-items:center;gap:4px;font-family:var(--font-mono,monospace);font-size:9px;font-weight:700;letter-spacing:.5px;padding:2px 6px;border-radius:6px;line-height:1.2;flex-shrink:0;text-transform:uppercase}
+.nav-badge.live{background:rgba(16,185,129,.14);border:1px solid rgba(16,185,129,.38);color:#34d399}
+.nav-badge.cam{background:rgba(99,102,241,.16);border:1px solid rgba(99,102,241,.38);color:#a5b4fc}
+.nav-badge.ai{background:linear-gradient(135deg,rgba(168,85,247,.2),rgba(99,102,241,.2));border:1px solid rgba(168,85,247,.42);color:#c084fc;box-shadow:0 0 8px rgba(168,85,247,.18)}
+.nav-badge.warn{background:rgba(239,68,68,.16);border:1px solid rgba(239,68,68,.38);color:#f87171}
+.nav-badge.info{background:rgba(59,130,246,.16);border:1px solid rgba(59,130,246,.38);color:#60a5fa}
+.nav-badge .badge-dot{width:5px;height:5px;border-radius:50%;background:currentColor;box-shadow:0 0 6px currentColor;animation:badgePulse 1.8s infinite}
+.badge-dot.cam-dot{background:#818cf8;box-shadow:0 0 6px #818cf8}
+@keyframes badgePulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.75)}}
+
+/* User Card in Sidebar Footer */
+.side-bottom{flex-shrink:0;padding-top:10px}
+.side-user-card{display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);border-radius:12px;margin-bottom:8px;transition:background .18s ease,border-color .18s ease}
+.side-user-card:hover{background:rgba(255,255,255,.045);border-color:rgba(255,255,255,.12)}
+.side-user-avatar{width:32px;height:32px;border-radius:9px;background:linear-gradient(135deg,#3b82f6,#6366f1);color:#ffffff;font-weight:700;font-size:11.5px;display:grid;place-items:center;flex-shrink:0;letter-spacing:.5px;box-shadow:0 2px 8px rgba(59,130,246,.3)}
+.side-user-info{flex:1;min-width:0}
+.side-user-name-row{display:flex;align-items:center;gap:6px}
+.side-user-name{font-weight:700;font-size:12px;color:var(--ink,#f1f5f9);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:95px}
+.side-user-badge{font-family:var(--font-mono,monospace);font-size:8px;font-weight:700;padding:1px 5px;border-radius:4px;background:rgba(0,212,255,.12);color:var(--accent,#00d4ff);border:1px solid rgba(0,212,255,.25);text-transform:uppercase}
+.side-user-company{font-family:var(--font-mono,monospace);font-size:9.5px;color:var(--muted,#64748b);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+.side-logout-btn{width:26px;height:26px;border-radius:6px;background:transparent;border:1px solid transparent;color:var(--muted,#64748b);display:grid;place-items:center;cursor:pointer;transition:all .16s ease;flex-shrink:0}
+.side-logout-btn:hover{background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.25);color:#f87171}
+.side-logout-btn .nav-ic{width:13px;height:13px}
+
+/* Empty Search Placeholder */
+.side-search-empty{padding:24px 12px;text-align:center;color:var(--muted,#64748b);font-size:12px;display:flex;flex-direction:column;align-items:center;gap:8px}
+.side-search-empty .nav-ic{width:22px;height:22px;opacity:.5}
+.side-search-reset-btn{margin-top:4px;padding:4px 10px;border-radius:6px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);color:var(--ink,#e2e8f0);font-size:11px;cursor:pointer;transition:background .16s ease}
+.side-search-reset-btn:hover{background:rgba(255,255,255,.1)}
+
+/* Live Status Box */
+.live-box{padding:10px 12px;border:1px solid rgba(148,163,184,.08);border-radius:12px;background:linear-gradient(145deg,rgba(15,22,35,.95),rgba(12,16,28,.98));backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.live{display:flex;align-items:center;gap:7px;color:var(--teal,#10b981);font:700 11px var(--font-mono,monospace)}
+.live i{width:7px;height:7px;border-radius:50%;background:var(--teal,#10b981);box-shadow:0 0 12px var(--teal,#10b981);animation:pulse2 1.7s infinite}
+.live-box small{display:block;color:var(--muted,#64748b);font-size:10px;margin-top:4px;line-height:1.35}
+
+/* Filter / Nav Hidden utilities */
+.filter-hidden{display:none!important}
+.nav-hidden{display:none!important}
 .content{min-width:0}
 .new-topbar{position:sticky;top:0;z-index:35;height:70px;display:flex;align-items:center;gap:18px;padding:0 24px;border-bottom:1px solid var(--line);background:rgba(14,17,23,.88);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
 .top-title{flex:1}
@@ -643,14 +702,45 @@ footer{border-top:1px solid var(--line)!important;background:#070b11!important;c
 
 /* Tablet ekrani (1200px - 851px) */
 @media(max-width:1200px) and (min-width:851px){
-  .app{grid-template-columns:72px minmax(0,1fr)}
-  .side-brand>div:last-child,.nav-label,.side-nav a span:not(.nav-dot),.live-box small{display:none}
-  .side-brand{justify-content:center}
-  .side-nav a{justify-content:center}
+  .app{grid-template-columns:74px minmax(0,1fr)}
+  .brand-text,.side-search,.sidebar-collapse-btn,.orn-divider,.nav-section-label,.side-nav a span,.side-user-info,.side-logout-btn,.live-box small{display:none!important}
+  .side-brand{justify-content:center;padding:4px 0 16px}
+  .side-nav a{justify-content:center;padding:11px 0}
+  .side-user-card{justify-content:center;padding:8px 0;background:transparent;border-color:transparent}
+  .live-box{padding:8px 4px;text-align:center}
+  .live{justify-content:center;font-size:0}
+  .live i{margin:0}
   .command-bar{grid-template-columns:repeat(3,1fr)}
   .workspace{grid-template-columns:1fr}
   .right-stack{grid-template-columns:repeat(3,1fr)}
   .overview-kpis{grid-template-columns:repeat(2,1fr)}
+}
+
+/* Desktop Compact rejim (qo'lda yig'ilganda) */
+@media(min-width:851px){
+  body.sidebar-compact .app{grid-template-columns:74px minmax(0,1fr)}
+  body.sidebar-compact .sidebar{width:74px;padding:16px 8px 14px}
+  body.sidebar-compact .brand-text,
+  body.sidebar-compact .side-search,
+  body.sidebar-compact .orn-divider,
+  body.sidebar-compact .nav-section-label,
+  body.sidebar-compact .side-nav a span,
+  body.sidebar-compact .side-user-info,
+  body.sidebar-compact .side-logout-btn,
+  body.sidebar-compact .live-box small{display:none!important}
+  body.sidebar-compact .side-brand{justify-content:center;padding:4px 0 16px}
+  body.sidebar-compact .sidebar-collapse-btn{
+    margin-left:0;position:absolute;right:-13px;top:22px;
+    background:#111827;border:1px solid rgba(255,255,255,0.15);
+    box-shadow:0 4px 12px rgba(0,0,0,0.5);z-index:50;
+    width:26px;height:26px;border-radius:50%;
+  }
+  body.sidebar-compact .side-nav a{justify-content:center;padding:11px 0}
+  body.sidebar-compact .side-nav a:hover{transform:none}
+  body.sidebar-compact .side-user-card{justify-content:center;padding:8px 0;background:transparent;border-color:transparent}
+  body.sidebar-compact .live-box{padding:8px 4px;text-align:center}
+  body.sidebar-compact .live{justify-content:center;font-size:0}
+  body.sidebar-compact .live i{margin:0}
 }
 
 /* === PAGE-BASED OPERATIONS UI === */
@@ -664,7 +754,7 @@ footer{border-top:1px solid var(--line)!important;background:#070b11!important;c
   .app{grid-template-columns:1fr;position:relative}
   .sidebar{
     position:fixed;top:0;bottom:0;left:0;height:100vh;height:100dvh;
-    width:300px;max-width:86vw;z-index:120;
+    width:310px;max-width:88vw;z-index:120;
     transform:translateX(-105%);
     border-right:1px solid var(--line);
     background:var(--bg-panel);box-shadow:var(--shadow-lg);
@@ -677,10 +767,14 @@ footer{border-top:1px solid var(--line)!important;background:#070b11!important;c
     background:rgba(4,7,13,.65);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
   }
   .drawer-close{display:inline-flex}
+  .sidebar-collapse-btn{display:none!important}
   .side-brand{padding-bottom:14px}
-  .side-brand>div:last-child{display:block}
+  .brand-text{display:block}
+  .side-search{display:flex}
   .nav-label{display:block}
   .side-nav a span{display:inline}
+  .side-user-info{display:block}
+  .side-logout-btn{display:grid}
   .live-box small{display:block}
   .mobile-menu{display:inline-grid;place-items:center}
 
@@ -1053,25 +1147,11 @@ body:before { background-image: linear-gradient(var(--grid-overlay) 1px, transpa
 .driver-message.ok { border-color: var(--teal-soft-border); background: var(--teal-soft); color: var(--teal-text); }
 .driver-message { border-color: var(--alert-soft-border); background: var(--alert-soft); color: var(--alert-text); }
 
-/* ---- sidebar + ornamentlar (arabcha uslub) ---- */
-.sidebar { background-color: var(--sidebar-bg); background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='46' height='46'><g fill='none' stroke='%238190a3' stroke-opacity='.07'><rect x='15' y='15' width='16' height='16'/><rect x='15' y='15' width='16' height='16' transform='rotate(45 23 23)'/></g></svg>"); border-right-color: var(--line); }
-.side-nav a { position: relative; color: var(--muted-2); font-family: "IBM Plex Sans", sans-serif; letter-spacing: .2px; }
-.side-nav a:hover, .side-nav a.active { background: var(--bg-raised); color: var(--ink); border-color: var(--line); }
-.side-nav a:hover { border-color: var(--accent-soft-border); }
-.side-nav a.active { background: linear-gradient(135deg, var(--accent-soft), var(--bg-raised)); color: var(--accent-text); border-color: var(--accent-soft-border); box-shadow: inset 3px 0 var(--accent); }
-.side-nav a.active::after { content: "❖"; position: absolute; right: 9px; top: 50%; transform: translateY(-50%); color: var(--accent); font-size: 9px; opacity: .8; }
-.nav-ic { width: 18px; height: 18px; flex-shrink: 0; color: var(--muted-3); transition: color .16s var(--ease); }
+/* ---- sidebar ikonkalar va yordamchi uslublar ---- */
+.nav-ic { width: 17px; height: 17px; flex-shrink: 0; color: var(--muted-3); transition: color .16s var(--ease); }
 .nav-ic svg { width: 100%; height: 100%; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .side-nav a:hover .nav-ic { color: var(--accent); }
 .side-nav a.active .nav-ic { color: var(--accent-text); }
-.nav-section { margin-bottom: 4px; }
-.nav-section .nav-label { font: 9px "JetBrains Mono", monospace; letter-spacing: 1.2px; text-transform: uppercase; color: var(--muted-3); padding: 10px 12px 4px; opacity: 0.7; }
-.nav-section .nav-label:before { content: none; }
-.side-nav { display: flex; flex-direction: column; gap: 2px; }
-.live-box { border-color: var(--line); background: linear-gradient(145deg, var(--bg-raised), var(--bg-panel)); }
-.live { color: var(--teal-text); }
-.live i { background: var(--teal); box-shadow: 0 0 9px var(--teal); }
-.live-box small { color: var(--muted); }
 
 /* Header live indicator */
 .header-live { display: flex; align-items: center; gap: 6px; font: 600 11px "JetBrains Mono", monospace; color: var(--green); letter-spacing: 0.5px; }
@@ -1114,7 +1194,6 @@ body:before { background-image: linear-gradient(var(--grid-overlay) 1px, transpa
 .top-actions { display: flex; align-items: center; gap: 8px; }
 .top-actions .icon-button { width: 34px; height: 34px; border-radius: 10px; font-size: 15px; line-height: 1; }
 @keyframes pulse2 { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
-@media(max-width:1200px){ .side-nav a.active::after { display: none; } }
 @media(max-width:620px){ .sidebar .orn-divider { display: none; } }
 
 /* ============================================================
@@ -1204,23 +1283,32 @@ body.auth-locked .auth-overlay { display: flex; }
 /* Section headers in sidebar navigation */
 .nav-section-label {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 9.5px;
   font-weight: 700;
-  letter-spacing: 1.6px;
+  letter-spacing: 1.4px;
   text-transform: uppercase;
   color: var(--muted-2);
-  padding: 14px 10px 4px;
+  padding: 12px 10px 4px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
   user-select: none;
   opacity: 0.85;
 }
-.nav-section-label::after {
-  content: "";
-  flex: 1;
-  height: 1px;
-  background: var(--line-soft);
+.nav-section-label span:first-child {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.nav-section-label .section-count {
+  font-size: 8.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-weight: 600;
+  letter-spacing: 0;
 }
 @media (max-width: 1200px) and (min-width: 851px) {
   .nav-section-label { display: none !important; }
@@ -1390,45 +1478,92 @@ body.auth-locked .auth-overlay { display: flex; }
 <div id="global-bar"></div>
 <div class="app">
   <div class="navbar-overlay" id="navbar-overlay"></div>
-  <aside class="sidebar">
-    <div class="side-brand"><div class="brand-mark">BM</div><div><span class="brand-name">BM COMMAND</span><span class="brand-sub">FLEET OPERATIONS</span></div><button type="button" class="drawer-close" id="drawer-close" aria-label="Menyuni yopish">✕</button></div>
+  <aside class="sidebar" id="app-sidebar">
+    <div class="side-brand">
+      <div class="brand-mark">BM</div>
+      <div class="brand-text">
+        <span class="brand-name">BM COMMAND</span>
+        <span class="brand-sub">FLEET OPERATIONS</span>
+      </div>
+      <button type="button" class="sidebar-collapse-btn" id="sidebar-collapse-btn" title="Yon panelni yig'ish / kengaytirish (Ctrl+B)" aria-label="Yon panelni yig'ish">
+        <i class="nav-ic" data-ic="sidebar"></i>
+      </button>
+      <button type="button" class="drawer-close" id="drawer-close" aria-label="Menyuni yopish">✕</button>
+    </div>
+
+    <!-- Tezkor bo'lim qidiruvi -->
+    <div class="side-search" id="side-search-wrap">
+      <span class="side-search-icon"><i class="nav-ic" data-ic="search"></i></span>
+      <input type="text" id="side-search-input" placeholder="Bo'limni qidirish..." autocomplete="off" spellcheck="false" aria-label="Bo'limni qidirish">
+      <kbd class="side-search-kbd" id="side-search-kbd" title="Qidiruv kaliti">/</kbd>
+      <button type="button" id="side-search-clear" class="side-search-clear" aria-label="Tozalash" title="Tozalash" style="display:none">✕</button>
+    </div>
+
     <div class="orn-divider"><span class="orn"></span></div>
+
     <nav class="side-nav" id="main-nav">
-      <div class="nav-section-label">ASOSIY</div>
-      <a class="active" href="#overview" data-page="overview"><i class="nav-ic" data-ic="activity"></i><span>Overview</span></a>
-      <a href="#dispatch" data-page="dispatch"><i class="nav-ic" data-ic="zap"></i><span>Dispatch</span></a>
-      <a href="#routes" data-page="routes"><i class="nav-ic" data-ic="route"></i><span>Routes</span></a>
-      <a href="#vehicles" data-page="vehicles"><i class="nav-ic" data-ic="truck"></i><span>Buses</span></a>
-      <a href="#drivers" data-page="drivers"><i class="nav-ic" data-ic="users"></i><span>Drivers</span></a>
-      <a href="#appeals" data-page="appeals"><i class="nav-ic" data-ic="message-square"></i><span>Murojaatlar</span></a>
+      <div class="nav-section-label"><span>ASOSIY</span><span class="section-count">6</span></div>
+      <a class="active" href="#overview" data-page="overview" title="Umumiy operatsion holat"><i class="nav-ic" data-ic="activity"></i><span>Overview</span></a>
+      <a href="#dispatch" data-page="dispatch" title="Kunlik reyslar va dispetcher nazorati"><i class="nav-ic" data-ic="zap"></i><span>Dispatch</span></a>
+      <a href="#routes" data-page="routes" title="Yo'nalishlar va oraliq intervallar"><i class="nav-ic" data-ic="route"></i><span>Routes</span></a>
+      <a href="#vehicles" data-page="vehicles" title="Avtobuslar parki va texnik holat"><i class="nav-ic" data-ic="truck"></i><span>Buses</span></a>
+      <a href="#drivers" data-page="drivers" title="Haydovchilar tabeli va grafiklar"><i class="nav-ic" data-ic="users"></i><span>Drivers</span></a>
+      <a href="#appeals" data-page="appeals" title="Yo'lovchilar murojaatlari"><i class="nav-ic" data-ic="message-square"></i><span>Murojaatlar</span><span class="nav-badge info" id="nav-appeals-badge" style="display:none">0</span></a>
 
-      <div class="nav-section-label">MOLIYA VA TAHLIL</div>
-      <a href="#performance" data-page="performance"><i class="nav-ic" data-ic="calendar"></i><span>Performance</span></a>
-      <a href="#top-performance" data-page="top-performance"><i class="nav-ic" data-ic="shield"></i><span>Top Performers</span></a>
-      <a href="#electricity" data-page="electricity"><i class="nav-ic" data-ic="zap"></i><span>Energy</span></a>
-      <a href="#rejects" data-page="rejects"><i class="nav-ic" data-ic="alert-triangle"></i><span>Qabul Qilinmagan</span></a>
-      <a href="#brutto" data-page="brutto"><i class="nav-ic" data-ic="briefcase"></i><span>Brutto</span></a>
-      <a href="#tariffs" data-page="tariffs"><i class="nav-ic" data-ic="route"></i><span>Tariflar</span></a>
-      <a href="#insights" data-page="insights"><i class="nav-ic" data-ic="activity"></i><span>AI Tahlil</span></a>
-      <a href="#audit" data-page="audit"><i class="nav-ic" data-ic="clipboard"></i><span>Audit</span></a>
-      <a href="#myai" data-page="myai"><i class="nav-ic" data-ic="bot"></i><span>MyAI Agent</span></a>
+      <div class="nav-section-label"><span>MOLIYA VA TAHLIL</span><span class="section-count">9</span></div>
+      <a href="#performance" data-page="performance" title="Ish unumdorligi va oylik reja"><i class="nav-ic" data-ic="calendar"></i><span>Performance</span></a>
+      <a href="#top-performance" data-page="top-performance" title="Eng yaxshi haydovchilar reytingi"><i class="nav-ic" data-ic="shield"></i><span>Top Performers</span></a>
+      <a href="#electricity" data-page="electricity" title="Elektr va energiya sarfi tahlili"><i class="nav-ic" data-ic="zap"></i><span>Energy</span></a>
+      <a href="#rejects" data-page="rejects" title="Qabul qilinmagan reyslar va jarimalar"><i class="nav-ic" data-ic="alert-triangle"></i><span>Qabul Qilinmagan</span></a>
+      <a href="#brutto" data-page="brutto" title="Brutto-shartnoma hisob-kitoblari"><i class="nav-ic" data-ic="briefcase"></i><span>Brutto</span></a>
+      <a href="#tariffs" data-page="tariffs" title="Yo'nalishlar tariflari va shartnomalar"><i class="nav-ic" data-ic="route"></i><span>Tariflar</span></a>
+      <a href="#insights" data-page="insights" title="Sun'iy intellekt tahlili va xulosalar"><i class="nav-ic" data-ic="activity"></i><span>AI Tahlil</span><span class="nav-badge ai">✦ AI</span></a>
+      <a href="#audit" data-page="audit" title="Audit va operatsion tekshiruvlar"><i class="nav-ic" data-ic="clipboard"></i><span>Audit</span></a>
+      <a href="#myai" data-page="myai" title="Aqlli avtonom yordamchi agent"><i class="nav-ic" data-ic="bot"></i><span>MyAI Agent</span><span class="nav-badge ai">AGENT</span></a>
 
-      <div class="nav-section-label">TELEMETRIYA VA ALOQA</div>
-      <a href="#gps" data-page="gps"><i class="nav-ic" data-ic="map-pin"></i><span>GPS Kuzatuv</span></a>
-      <a href="#video" data-page="video"><i class="nav-ic" data-ic="video"></i><span>Video Kuzatuv</span></a>
-      <a href="#alerts" data-page="alerts"><i class="nav-ic" data-ic="alert-triangle"></i><span>Alerts</span></a>
-      <a href="#sms" data-page="sms"><i class="nav-ic" data-ic="message-square"></i><span>SMS</span></a>
+      <div class="nav-section-label"><span>TELEMETRIYA VA ALOQA</span><span class="section-count">4</span></div>
+      <a href="#gps" data-page="gps" title="Xaritada avtobuslarni real vaqtda kuzatish"><i class="nav-ic" data-ic="map-pin"></i><span>GPS Kuzatuv</span><span class="nav-badge live"><i class="badge-dot"></i>LIVE</span></a>
+      <a href="#video" data-page="video" title="MDVR salon va yo'l kameralari jonli oqimi"><i class="nav-ic" data-ic="video"></i><span>Video Kuzatuv</span><span class="nav-badge cam"><i class="badge-dot cam-dot"></i>CAM</span></a>
+      <a href="#alerts" data-page="alerts" title="Tizim ogohlantirishlari va nosozliklar"><i class="nav-ic" data-ic="alert-triangle"></i><span>Alerts</span><span class="nav-badge warn" id="nav-alerts-badge" style="display:none">0</span></a>
+      <a href="#sms" data-page="sms" title="SMS xabarnomalar va aloqa"><i class="nav-ic" data-ic="message-square"></i><span>SMS</span></a>
 
-      <div class="nav-section-label">BOSHQARUV VA TIZIM</div>
-      <a href="#admin" data-page="admin"><i class="nav-ic" data-ic="briefcase"></i><span>Ma'muriy</span></a>
-      <a href="#logs" data-page="logs"><i class="nav-ic" data-ic="terminal"></i><span>Logs</span></a>
-      <a href="#disk" data-page="disk"><i class="nav-ic" data-ic="database"></i><span>Disk</span></a>
-      <a href="#documents" data-page="documents"><i class="nav-ic" data-ic="file-text"></i><span>Documents</span></a>
-      <a href="#users" data-page="users"><i class="nav-ic" data-ic="user-plus"></i><span>Users</span></a>
-      <a href="#dusers" data-page="dusers"><i class="nav-ic" data-ic="user-plus"></i><span>Dashboard Users</span></a>
-      <a href="#settings" data-page="settings"><i class="nav-ic" data-ic="settings"></i><span>Settings</span></a>
+      <div class="nav-section-label"><span>BOSHQARUV VA TIZIM</span><span class="section-count">7</span></div>
+      <a href="#admin" data-page="admin" title="Ma'muriy boshqaruv"><i class="nav-ic" data-ic="briefcase"></i><span>Ma'muriy</span></a>
+      <a href="#logs" data-page="logs" title="Tizim loglari va audit"><i class="nav-ic" data-ic="terminal"></i><span>Logs</span></a>
+      <a href="#disk" data-page="disk" title="Server xotirasi va baza hajmi"><i class="nav-ic" data-ic="database"></i><span>Disk</span></a>
+      <a href="#documents" data-page="documents" title="Rasmiy hujjatlar va yo'llanma qog'ozlari"><i class="nav-ic" data-ic="file-text"></i><span>Documents</span></a>
+      <a href="#users" data-page="users" title="Telegram bot foydalanuvchilari"><i class="nav-ic" data-ic="user-plus"></i><span>Users</span></a>
+      <a href="#dusers" data-page="dusers" title="Dashboard boshqaruv foydalanuvchilari"><i class="nav-ic" data-ic="user-plus"></i><span>Dashboard Users</span></a>
+      <a href="#settings" data-page="settings" title="Global tizim sozlamalari"><i class="nav-ic" data-ic="settings"></i><span>Settings</span></a>
+
+      <!-- Qidiruv natijasi bo'sh bo'lganda ko'rinadigan blok -->
+      <div class="side-search-empty" id="side-search-empty" style="display:none">
+        <i class="nav-ic" data-ic="search"></i>
+        <span>Mos bo‘lim topilmadi</span>
+        <button type="button" class="side-search-reset-btn" id="side-search-reset-btn">Qidiruvni tozalash</button>
+      </div>
     </nav>
-    <div class="side-bottom"><div class="live-box"><div class="live"><i></i> SYSTEM LIVE</div><small>BM monitoring markazi real vaqt rejimida.</small></div></div>
+
+    <!-- Pastki profil va tizim holati -->
+    <div class="side-bottom">
+      <div class="side-user-card" id="side-user-card">
+        <div class="side-user-avatar" id="side-user-avatar">AD</div>
+        <div class="side-user-info">
+          <div class="side-user-name-row">
+            <span class="side-user-name" id="side-user-name">Admin</span>
+            <span class="side-user-badge" id="side-user-role">ADMIN</span>
+          </div>
+          <div class="side-user-company" id="side-user-company">Boshqaruv markazi</div>
+        </div>
+        <button type="button" class="side-logout-btn" id="side-logout-btn" title="Tizimdan chiqish" aria-label="Chiqish">
+          <i class="nav-ic" data-ic="log-out"></i>
+        </button>
+      </div>
+      <div class="live-box">
+        <div class="live"><i></i> SYSTEM LIVE</div>
+        <small>BM monitoring markazi real vaqt rejimida.</small>
+      </div>
+    </div>
   </aside>
 
   <div class="content">
@@ -2244,6 +2379,18 @@ body.auth-locked .auth-overlay { display: flex; }
               </label>
               <span class="hint">Har shu daqiqada kechagi (kun boshida) va bugungi kun ma'lumotlari avtomatik yuklanadi (bot ishlab turishi kerak).</span>
             </div>
+            <div style="grid-column:1/-1;display:flex;align-items:center;gap:10px;padding-top:6px;border-top:1px solid var(--line)">
+              <label class="check-field" style="font:600 13px 'Inter',sans-serif;cursor:pointer">
+                <input type="checkbox" id="s-offline-notify"> 📴 GPS aloqa uzildi (offline) bildirishnomasi
+              </label>
+              <span class="hint">Avtobus GPS qurilmasidan aloqa uzilganda Telegram botga ogohlantirish yuborish.</span>
+            </div>
+            <div style="grid-column:1/-1;display:flex;align-items:center;gap:10px;padding-top:6px;border-top:1px solid var(--line)">
+              <label class="check-field" style="font:600 13px 'Inter',sans-serif;cursor:pointer">
+                <input type="checkbox" id="s-problems-notify"> ⚠️ Muammo holati o'zgarishi bildirishnomasi
+              </label>
+              <span class="hint">Avtobuslarda muammolar (GPS / Jadval / Texnik) o'zgarganda Telegram botga ogohlantirish yuborish.</span>
+            </div>
           </div>
           <div id="global-audit" style="padding:0 18px 14px;font:10px 'IBM Plex Mono',monospace;color:var(--muted);line-height:1.6"></div>
           <div style="padding:0 18px 18px;display:flex;gap:10px;justify-content:flex-end">
@@ -2436,6 +2583,11 @@ const FEATHER = {
   "video": '<polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>',
   "menu": '<line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/>',
   "x": '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+  "search": '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+  "sidebar": '<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/>',
+  "log-out": '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
+  "chevron-left": '<polyline points="15 18 9 12 15 6"/>',
+  "chevron-right": '<polyline points="9 18 15 12 9 6"/>',
 };
 function featherIcon(name) { const p = FEATHER[name] || FEATHER["activity"]; return `<svg viewBox="0 0 24 24" aria-hidden="true">${p}</svg>`; }
 function _initKpiIcons(root) { (root || document).querySelectorAll(".kpi-ic, .nav-ic, .dock-ic").forEach(el => { if (!el.dataset.ic) return; el.innerHTML = featherIcon(el.dataset.ic); }); }
@@ -2619,6 +2771,15 @@ function renderHero(d) {
   const t = d.today || {};
   const perf = t.total_trips ? Math.round(t.completed / t.total_trips * 100) : 0;
   const probCount = (d.problems && d.problems.counts) ? Object.values(d.problems.counts).reduce((a, b) => a + b, 0) : 0;
+  const navAlertsBadge = document.getElementById("nav-alerts-badge");
+  if (navAlertsBadge) {
+    if (probCount > 0) {
+      navAlertsBadge.textContent = probCount;
+      navAlertsBadge.style.display = "inline-flex";
+    } else {
+      navAlertsBadge.style.display = "none";
+    }
+  }
   const staff = (d.drivers || []).length;
 
   const cards = [
@@ -3427,6 +3588,16 @@ async function loadAppeals() {
     if (!d.ok) throw new Error(d.error || "Murojaatlar olinmadi");
     const rows = d.appeals || [];
     if (hintEl) hintEl.textContent = rows.length ? rows.length + " ta" : "";
+    const openAppeals = rows.filter(a => a.status === "open" || a.status === "pending").length;
+    const appealsBadge = document.getElementById("nav-appeals-badge");
+    if (appealsBadge) {
+      if (openAppeals > 0) {
+        appealsBadge.textContent = openAppeals;
+        appealsBadge.style.display = "inline-flex";
+      } else {
+        appealsBadge.style.display = "none";
+      }
+    }
     body.innerHTML = rows.length ? `<div class="driver-history"><table><thead><tr>
       <th>Haydovchi</th><th>Mavzu</th><th>Matn / Javob</th><th>Holat</th><th>Yuborilgan</th><th></th>
     </tr></thead><tbody>${rows.map(a => `
@@ -4424,6 +4595,10 @@ async function loadSettings() {
     document.getElementById("s-show-salary").checked = s.global.show_driver_salary !== false;
     document.getElementById("s-auto-sync").checked = s.global.auto_sync !== false;
     document.getElementById("s-auto-sync-interval").value = s.global.auto_sync_interval_min != null ? s.global.auto_sync_interval_min : 10;
+    const offEl = document.getElementById("s-offline-notify");
+    if (offEl) offEl.checked = s.global.offline_notify !== false;
+    const probEl = document.getElementById("s-problems-notify");
+    if (probEl) probEl.checked = s.global.problem_alerts_notify !== false;
     const auditEl = document.getElementById("global-audit");
     if (auditEl) {
       const rows = (s.global.audit || []).slice(0, 6);
@@ -4454,7 +4629,9 @@ async function saveSettings() {
       brutto_skm: parseFloat(document.getElementById("s-brutto-skm").value) || 0,
       show_driver_salary: document.getElementById("s-show-salary").checked,
       auto_sync: document.getElementById("s-auto-sync").checked,
-      auto_sync_interval_min: parseInt(document.getElementById("s-auto-sync-interval").value, 10)
+      auto_sync_interval_min: parseInt(document.getElementById("s-auto-sync-interval").value, 10),
+      offline_notify: document.getElementById("s-offline-notify") ? document.getElementById("s-offline-notify").checked : true,
+      problem_alerts_notify: document.getElementById("s-problems-notify") ? document.getElementById("s-problems-notify").checked : true
     };
     const d = await postJSON("/api/settings", body);
     if (!d.ok) throw new Error(d.error || "Xatolik");
@@ -6778,6 +6955,7 @@ setInterval(tickClock, 1000);
 scheduleRefresh();
 setInterval(loadDriverDirectory, 90000);
 initMobileMenu();
+initSidebar();
 
 /* ------------------------------------------------ kun/tun rejimi */
 function applyTheme(t) {
@@ -6820,6 +6998,192 @@ function initMobileMenu() {
   window.addEventListener("resize", () => { if (window.innerWidth > 850) setOpen(false); });
 }
 
+/* ------------------------------------------------ 2026 Modern Sidebar Navigation & Quick Search */
+const NAV_KEYWORDS = {
+  overview: "bosh sahifa umumiy statistika xulosa dashboard nazorat asosiy",
+  dispatch: "dispetcher reys reyslar marshrut kunlik jadval grafik boshqaruv",
+  routes: "marshrut yonalish yo'nalish oraliq vaqt interval bekat masofa kilometr",
+  vehicles: "avtobus garaj texnik holat park davlat raqami shassi mashina transport",
+  drivers: "haydovchi shofyor tabel shaxsiy grafik aloqa telefon",
+  appeals: "murojaat shikoyat taklif yolovchi yo'lovchi xizmat arizalar",
+  performance: "unumdorlik bajarilish plan foiz jadval oylik hisobot",
+  "top-performance": "top reyting eng yaxshi peshqadam lider mukofot reytingi",
+  electricity: "elektr energiya kwh batareya yonilgi sarf zaryad quvvat",
+  rejects: "qabul qilinmagan bekor rad jarima nohaq hisobot xato chala",
+  brutto: "brutto reys shartnoma pul tushum summa km narx hisob kassa",
+  tariffs: "tarif narx shartnoma belgilangan norma stavka",
+  insights: "ai tahlil suniy sun'iy intellekt xulosa maslahat bashorat tavsiya",
+  audit: "audit tekshiruv nazorat reys nazorati xavfsizlik",
+  myai: "myai agent chat copilot intellekt yordamchi suniy",
+  gps: "gps xarita xaritalar trek navigatsiya lokatsiya jonli live tezlik monitoring",
+  video: "video kamera kameralar cctv mdvr jonli oqim stream live salon yol",
+  alerts: "ogohlantirish muammo xatolik nosozlik alert signal",
+  sms: "sms xabar xabarnoma telegram yuborish dispatch aloqa",
+  admin: "mamuriy ma'muriy admin boshqaruv huquq ruxsat sozlama xodim",
+  logs: "log jurnal xatolar server konsol audit terminal",
+  disk: "disk xotira baza postgresql hajm backup joy server",
+  documents: "hujjat akt shablon yollanma yo'llanma print chop etish pdf excel shartnoma",
+  users: "foydalanuvchilar telegram bot user akkaunt xodimlar rollar",
+  dusers: "dashboard panel login parol foydalanuvchi akkaunt rol dispetcher",
+  settings: "sozlamalar konfiguratsiya parametr api token parol parametrlar"
+};
+
+function filterNav(q) {
+  const query = (q || "").trim().toLowerCase();
+  const nav = document.getElementById("main-nav");
+  if (!nav) return;
+  const links = nav.querySelectorAll("a[data-page]");
+  const sections = nav.querySelectorAll(".nav-section-label");
+  const emptyEl = document.getElementById("side-search-empty");
+  const clearBtn = document.getElementById("side-search-clear");
+  const kbd = document.getElementById("side-search-kbd");
+
+  if (clearBtn) clearBtn.style.display = query ? "grid" : "none";
+  if (kbd) kbd.style.display = query ? "none" : "inline-block";
+
+  let totalVisible = 0;
+
+  links.forEach(a => {
+    const page = a.dataset.page || "";
+    const allowed = typeof hasPage === "function" ? hasPage(page) : true;
+    if (!allowed) {
+      a.classList.add("nav-hidden");
+      return;
+    }
+    a.classList.remove("nav-hidden");
+
+    if (!query) {
+      a.classList.remove("filter-hidden");
+      totalVisible++;
+      return;
+    }
+
+    const title = (a.textContent || "").toLowerCase();
+    const kw = NAV_KEYWORDS[page] || "";
+    const match = title.includes(query) || page.includes(query) || kw.includes(query);
+    if (match) {
+      a.classList.remove("filter-hidden");
+      totalVisible++;
+    } else {
+      a.classList.add("filter-hidden");
+    }
+  });
+
+  sections.forEach(sec => {
+    let next = sec.nextElementSibling;
+    let secCount = 0;
+    while (next && !next.classList.contains("nav-section-label") && !next.classList.contains("side-search-empty")) {
+      if (next.tagName === "A" && !next.classList.contains("nav-hidden") && !next.classList.contains("filter-hidden")) {
+        secCount++;
+      }
+      next = next.nextElementSibling;
+    }
+    const countBadge = sec.querySelector(".section-count");
+    if (countBadge) countBadge.textContent = secCount;
+    if (secCount === 0) {
+      sec.classList.add("filter-hidden");
+    } else {
+      sec.classList.remove("filter-hidden");
+    }
+  });
+
+  if (emptyEl) emptyEl.style.display = totalVisible === 0 ? "flex" : "none";
+}
+
+function initSidebar() {
+  const collapseBtn = document.getElementById("sidebar-collapse-btn");
+  const searchInput = document.getElementById("side-search-input");
+  const clearBtn = document.getElementById("side-search-clear");
+  const resetBtn = document.getElementById("side-search-reset-btn");
+  const sideLogout = document.getElementById("side-logout-btn");
+  const nav = document.getElementById("main-nav");
+
+  // Desktopda compact holatini saqlab qolish
+  try {
+    const isCompact = localStorage.getItem("bm_sidebar_compact") === "true";
+    if (isCompact && window.innerWidth > 1200) {
+      document.body.classList.add("sidebar-compact");
+    }
+  } catch (e) {}
+
+  if (collapseBtn) {
+    collapseBtn.addEventListener("click", () => {
+      const next = !document.body.classList.contains("sidebar-compact");
+      document.body.classList.toggle("sidebar-compact", next);
+      try { localStorage.setItem("bm_sidebar_compact", next ? "true" : "false"); } catch (e) {}
+    });
+  }
+
+  if (searchInput) {
+    searchInput.addEventListener("input", e => {
+      filterNav(e.target.value);
+    });
+    searchInput.addEventListener("keydown", e => {
+      if (e.key === "Escape") {
+        searchInput.value = "";
+        filterNav("");
+        searchInput.blur();
+      } else if (e.key === "Enter") {
+        if (!nav) return;
+        const first = nav.querySelector("a[data-page]:not(.filter-hidden):not(.nav-hidden)");
+        if (first) {
+          first.click();
+          searchInput.blur();
+        }
+      }
+    });
+  }
+
+  if (clearBtn) {
+    clearBtn.addEventListener("click", () => {
+      if (searchInput) {
+        searchInput.value = "";
+        filterNav("");
+        searchInput.focus();
+      }
+    });
+  }
+
+  if (resetBtn) {
+    resetBtn.addEventListener("click", () => {
+      if (searchInput) {
+        searchInput.value = "";
+        filterNav("");
+        searchInput.focus();
+      }
+    });
+  }
+
+  if (sideLogout) {
+    sideLogout.addEventListener("click", () => {
+      const topLogout = document.getElementById("logout-btn");
+      if (topLogout) topLogout.click();
+    });
+  }
+
+  // Global klaviatura yorliqlari: "/" qidiruv, Ctrl+B yig'ish
+  document.addEventListener("keydown", e => {
+    if (e.key === "/" && !["INPUT", "TEXTAREA", "SELECT"].includes((document.activeElement || {}).tagName)) {
+      e.preventDefault();
+      if (searchInput) {
+        if (document.body.classList.contains("sidebar-compact")) {
+          document.body.classList.remove("sidebar-compact");
+          try { localStorage.setItem("bm_sidebar_compact", "false"); } catch (err) {}
+        }
+        searchInput.focus();
+        searchInput.select();
+      }
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") {
+      e.preventDefault();
+      if (collapseBtn) collapseBtn.click();
+    }
+  });
+
+  _initKpiIcons();
+  filterNav("");
+}
+
 /* ------------------------------------------------ kirish (akkaunt) */
 function applyAccessUI() {
   const nameEl = document.getElementById("user-name");
@@ -6830,6 +7194,23 @@ function applyAccessUI() {
   if (nameEl) nameEl.textContent = firstName;
   if (roleEl) roleEl.textContent = roleTxt ? roleTxt.toUpperCase() : "";
   if (badge) badge.style.display = me ? "flex" : "none";
+
+  // Yon panel foydalanuvchi ma'lumotlari
+  const sideNameEl = document.getElementById("side-user-name");
+  const sideRoleEl = document.getElementById("side-user-role");
+  const sideAvatarEl = document.getElementById("side-user-avatar");
+  const sideCompEl = document.getElementById("side-user-company");
+  if (sideNameEl) sideNameEl.textContent = firstName || "Admin";
+  if (sideRoleEl) sideRoleEl.textContent = roleTxt ? roleTxt.toUpperCase() : "ADMIN";
+  if (sideAvatarEl) {
+    const raw = (firstName || "AD").trim();
+    sideAvatarEl.textContent = (raw.length >= 2 ? raw.slice(0, 2) : raw + "D").toUpperCase();
+  }
+  if (sideCompEl) {
+    const compName = (me && me.company && (me.company.name || me.company.title)) || (me && me.is_admin ? "Boshqaruv markazi" : "BM Transport");
+    sideCompEl.textContent = compName;
+  }
+
   document.querySelectorAll("#main-nav a[data-page], .dock-item[data-page]").forEach(a => {
     a.classList.toggle("nav-hidden", !hasPage(a.dataset.page));
   });
@@ -6842,6 +7223,9 @@ function applyAccessUI() {
   if (me && !me.is_admin && me.company && me.company.routeVariantId) {
     route = me.company.routeVariantId;
     if (sel) sel.value = route;
+  }
+  if (typeof filterNav === "function") {
+    filterNav(document.getElementById("side-search-input")?.value || "");
   }
 }
 async function tryLogin() {

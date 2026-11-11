@@ -301,6 +301,48 @@ def _handle_group_update(upd: dict, chat_id: int) -> None:
             print(f"Guruh /chiqish xatosi: {exc}")
         return
 
+    if cmd in ("offline_on", "offline_off", "offline"):
+        try:
+            from ...core import bot_settings
+            if cmd == "offline_on":
+                bot_settings.set_offline_notify(True, by=f"group:{chat_id}:{sender_id}")
+                send_message("🔔 <b>Offline (aloqa uzildi) bildirishnomalari yoqildi.</b>",
+                             chat_id=chat_id, parse_mode="HTML")
+            elif cmd == "offline_off":
+                bot_settings.set_offline_notify(False, by=f"group:{chat_id}:{sender_id}")
+                send_message("🔕 <b>Offline (aloqa uzildi) bildirishnomalari o'chirildi.</b>",
+                             chat_id=chat_id, parse_mode="HTML")
+            else:
+                holat = "YOQILGAN" if bot_settings.offline_notify() else "O'CHIRILGAN"
+                send_message(f"🔔 <b>Offline bildirishnomasi: {holat}</b>\n\n"
+                             "/offline_on — yoqish\n"
+                             "/offline_off — o'chirish",
+                             chat_id=chat_id, parse_mode="HTML")
+        except Exception as exc:  # noqa: BLE001
+            print(f"Guruh /offline xatosi: {exc}")
+        return
+
+    if cmd in ("problems_on", "problems_off", "problems_notify", "muammo_on", "muammo_off"):
+        try:
+            from ...core import bot_settings
+            if cmd in ("problems_on", "muammo_on"):
+                bot_settings.set_problem_alerts_notify(True, by=f"group:{chat_id}:{sender_id}")
+                send_message("🔔 <b>Muammo holati bildirishnomalari yoqildi.</b>",
+                             chat_id=chat_id, parse_mode="HTML")
+            elif cmd in ("problems_off", "muammo_off"):
+                bot_settings.set_problem_alerts_notify(False, by=f"group:{chat_id}:{sender_id}")
+                send_message("🔕 <b>Muammo holati bildirishnomalari o'chirildi.</b>",
+                             chat_id=chat_id, parse_mode="HTML")
+            else:
+                holat = "YOQILGAN" if bot_settings.problem_alerts_notify() else "O'CHIRILGAN"
+                send_message(f"🔔 <b>Muammo holati bildirishnomasi: {holat}</b>\n\n"
+                             "/problems_on — yoqish\n"
+                             "/problems_off — o'chirish",
+                             chat_id=chat_id, parse_mode="HTML")
+        except Exception as exc:  # noqa: BLE001
+            print(f"Guruh /problems xatosi: {exc}")
+        return
+
     if _bot_mentioned(upd) and not is_command:
         send_message("ℹ️ Guruhda faqat admin/dispetcher so'rovlariga "
                      "javob beraman. To'liq hisobot shaxsiy chatda "

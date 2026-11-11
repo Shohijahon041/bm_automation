@@ -117,7 +117,10 @@ async def get_settings(request: Request, scope: dict = Depends(Scope())):
     )
     from ...core import bot_settings
 
-    cfg = get_config()
+    try:
+        cfg = get_config()
+    except Exception:
+        cfg = None
     tg = telegram_settings()
     ai = openrouter_settings()
     db = db_settings()
@@ -148,10 +151,10 @@ async def get_settings(request: Request, scope: dict = Depends(Scope())):
     return {
         "ok": True,
         "bm_api": {
-            "base_url": cfg.base_url,
-            "username": cfg.username,
-            "password": _mask_secret(cfg.password),
-            "organization": cfg.organization,
+            "base_url": cfg.base_url if cfg else "",
+            "username": cfg.username if cfg else "",
+            "password": _mask_secret(cfg.password) if cfg else "",
+            "organization": cfg.organization if cfg else "",
         },
         "telegram": {
             "token": _mask_secret(tg.get("token", "")),
@@ -182,6 +185,8 @@ async def get_settings(request: Request, scope: dict = Depends(Scope())):
             "show_driver_salary": bot_settings.show_driver_salary(),
             "auto_sync": bot_settings.auto_sync(),
             "auto_sync_interval_min": bot_settings.auto_sync_interval_min(),
+            "offline_notify": bot_settings.offline_notify(),
+            "problem_alerts_notify": bot_settings.problem_alerts_notify(),
             "audit": bot_settings.audit_log(10),
         },
     }
@@ -238,6 +243,20 @@ async def update_settings(request: Request, scope: dict = Depends(Scope())):
             changed.append("auto_sync_interval_min")
         except (TypeError, ValueError):
             return {"ok": False, "error": "auto_sync_interval_min noto'g'ri qiymat"}
+
+    ofn = payload.get("offline_notify")
+    if ofn is not None:
+        if isinstance(ofn, str):
+            ofn = str(ofn).strip().lower() in ("1", "true", "yes", "on", "ha")
+        bot_settings.set_offline_notify(bool(ofn))
+        changed.append("offline_notify")
+
+    pan = payload.get("problem_alerts_notify")
+    if pan is not None:
+        if isinstance(pan, str):
+            pan = str(pan).strip().lower() in ("1", "true", "yes", "on", "ha")
+        bot_settings.set_problem_alerts_notify(bool(pan))
+        changed.append("problem_alerts_notify")
 
     rskm = payload.get("route_skm")
     if isinstance(rskm, dict):
