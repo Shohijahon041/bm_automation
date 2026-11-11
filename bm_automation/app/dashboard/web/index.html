@@ -315,8 +315,6 @@
   .pill-status.run  { color: var(--warn); border-color: rgba(240,169,62,.4); background: rgba(240,169,62,.1); }
   .pill-status.gray { color: var(--muted); border-color: var(--line); background: transparent; }
 
-  .hide-sm { }
-
   /* ------------------------------------------------ two-col */
   .cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-bottom: 18px; align-items: start; }
 
@@ -1161,7 +1159,13 @@ body.mfa-forcing .auth-spinner { display: none !important; }
 #sessions-body tr.sess-current td { background: var(--accent-soft); }
 #sessions-body .err { display: block; }
 #sessions-body .button:disabled { opacity: .5; cursor: not-allowed; transform: none; }
-@@CSS@@; display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+#sessions-foot {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
 @media(max-width:620px){
   #sessions-body table { min-width: 0 !important; }
   #sessions-body thead { display: none; }
