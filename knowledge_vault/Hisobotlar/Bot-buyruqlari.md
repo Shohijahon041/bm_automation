@@ -3,12 +3,13 @@
 
 _Bu qayd avtomatik yangilanadi (`knowledge_grow`) — qo'lda tahrir keyingi kengaytirishda ustidan yoziladi._
 
-_yangilandi: 2026-10-27 01:48_
+_yangilandi: 2026-11-11 23:21_
 
-Jami **72** buyruq topildi (slash shaklda foydalanuvchi yozadi).
+Jami **98** buyruq topildi (slash shaklda foydalanuvchi yozadi).
 
 ## Buyruqlar
 
+- `/activity`
 - `/addcompany`
 - `/ai`
 - `/alerts`
@@ -29,13 +30,16 @@ Jami **72** buyruq topildi (slash shaklda foydalanuvchi yozadi).
 - `/drivers`
 - `/errors`
 - `/export`
+- `/faoliyat`
 - `/finesreport`
 - `/gps`
 - `/grafik`
+- `/grafik_almash`
 - `/grafik_today`
 - `/grafik_tomorrow`
 - `/grafik_yesterday`
 - `/guruh`
+- `/harakatlar`
 - `/help`
 - `/hisob`
 - `/insights`
@@ -44,17 +48,30 @@ Jami **72** buyruq topildi (slash shaklda foydalanuvchi yozadi).
 - `/login`
 - `/month`
 - `/monthly`
+- `/muammo_notify`
+- `/muammo_off`
+- `/muammo_on`
 - `/murojaat`
 - `/murojaatlarim`
 - `/myai`
 - `/myrole`
 - `/notify`
 - `/off`
+- `/offline`
+- `/offline_off`
+- `/offline_on`
 - `/passport`
 - `/passports`
 - `/photo`
 - `/plan`
+- `/poll`
+- `/poll_confirm`
+- `/poll_status`
+- `/poll_swap`
 - `/problems`
+- `/problems_notify`
+- `/problems_off`
+- `/problems_on`
 - `/profiles`
 - `/reports`
 - `/resend`
@@ -65,12 +82,21 @@ Jami **72** buyruq topildi (slash shaklda foydalanuvchi yozadi).
 - `/setrole`
 - `/settings`
 - `/sohbat`
+- `/sorov`
+- `/sorov_almash`
+- `/sorov_bekor`
+- `/sorov_reset`
+- `/sorov_status`
+- `/sorov_tasdiq`
+- `/sorovnoma`
 - `/start`
+- `/startlink`
 - `/status`
 - `/stop`
 - `/suhbat`
 - `/sync`
 - `/syncmonthly`
+- `/tarix`
 - `/today`
 - `/top`
 - `/trips`
@@ -98,6 +124,7 @@ Matn ko'rinishidagi menyu tugmalari `dispatch.py::MENU_MAP` da (masalan `📊 da
 
 ### `bm_automation/app/notifications/ops/dispatch.py`
 
+- `/activity`
 - `/addcompany`
 - `/ai`
 - `/alerts`
@@ -116,11 +143,14 @@ Matn ko'rinishidagi menyu tugmalari `dispatch.py::MENU_MAP` da (masalan `📊 da
 - `/drivers`
 - `/errors`
 - `/export`
+- `/faoliyat`
 - `/finesreport`
 - `/grafik`
+- `/grafik_almash`
 - `/grafik_today`
 - `/grafik_tomorrow`
 - `/grafik_yesterday`
+- `/harakatlar`
 - `/help`
 - `/hisob`
 - `/insights`
@@ -129,16 +159,29 @@ Matn ko'rinishidagi menyu tugmalari `dispatch.py::MENU_MAP` da (masalan `📊 da
 - `/login`
 - `/month`
 - `/monthly`
+- `/muammo_notify`
+- `/muammo_off`
+- `/muammo_on`
 - `/murojaat`
 - `/murojaatlarim`
 - `/myai`
 - `/myrole`
 - `/notify`
 - `/off`
+- `/offline`
+- `/offline_off`
+- `/offline_on`
 - `/passport`
 - `/passports`
 - `/plan`
+- `/poll`
+- `/poll_confirm`
+- `/poll_status`
+- `/poll_swap`
 - `/problems`
+- `/problems_notify`
+- `/problems_off`
+- `/problems_on`
 - `/profiles`
 - `/reports`
 - `/resend`
@@ -149,12 +192,21 @@ Matn ko'rinishidagi menyu tugmalari `dispatch.py::MENU_MAP` da (masalan `📊 da
 - `/setrole`
 - `/settings`
 - `/sohbat`
+- `/sorov`
+- `/sorov_almash`
+- `/sorov_bekor`
+- `/sorov_reset`
+- `/sorov_status`
+- `/sorov_tasdiq`
+- `/sorovnoma`
 - `/start`
+- `/startlink`
 - `/status`
 - `/stop`
 - `/suhbat`
 - `/sync`
 - `/syncmonthly`
+- `/tarix`
 - `/today`
 - `/top`
 - `/trips`
@@ -172,10 +224,30 @@ Matn ko'rinishidagi menyu tugmalari `dispatch.py::MENU_MAP` da (masalan `📊 da
 - `/chiqish_off`
 - `/chiqish_on`
 - `/grafik`
+- `/grafik_almash`
 - `/grafik_today`
 - `/grafik_tomorrow`
 - `/grafik_yesterday`
 - `/guruh`
+- `/muammo_off`
+- `/muammo_on`
+- `/offline`
+- `/offline_off`
+- `/offline_on`
+- `/poll`
+- `/poll_confirm`
+- `/poll_status`
+- `/poll_swap`
+- `/problems_notify`
+- `/problems_off`
+- `/problems_on`
+- `/sorov`
+- `/sorov_almash`
+- `/sorov_bekor`
+- `/sorov_reset`
+- `/sorov_status`
+- `/sorov_tasdiq`
+- `/sorovnoma`
 - `/today`
 
 <!-- avto-bog'liq:start -->

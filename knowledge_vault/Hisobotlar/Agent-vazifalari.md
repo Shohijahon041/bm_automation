@@ -3,7 +3,7 @@
 
 _Bu qayd avtomatik yangilanadi (`knowledge_grow`) — qo'lda tahrir keyingi kengaytirishda ustidan yoziladi._
 
-_yangilandi: 2026-10-27 01:48_
+_yangilandi: 2026-11-11 23:21_
 
 Jami **5** vazifa (muvaffaqiyatli: 5).
 

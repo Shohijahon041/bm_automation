@@ -63,8 +63,8 @@ Bog'liq: [[Qoidalar/Tekshirish-qoidalari]] · [[Arxitektura]]
 
 - [[Bilim-bazasi]] — bosh indeks
 - [[Bilim-bazasini-yuritish]]
-- [[Log-tahlili]]
 - [[Arxitektura]]
 - [[Asosiy-invariantlar]]
+- [[Agent-vazifalari]]
 
 <!-- avto-bog'liq:end -->

@@ -3,9 +3,9 @@
 
 _Bu qayd avtomatik yangilanadi (`knowledge_grow`) — qo'lda tahrir keyingi kengaytirishda ustidan yoziladi._
 
-_yangilandi: 2026-10-27 01:48_
+_yangilandi: 2026-11-11 23:21_
 
-Jami **173** env o'zgaruvchi.
+Jami **196** env o'zgaruvchi.
 
 | O'ZGARUVCHI | STANDART |
 | --- | --- |
@@ -18,13 +18,17 @@ Jami **173** env o'zgaruvchi.
 | `ANDROID_SMS_GATEWAY_LOGIN` | _(majburiy/bo'sh)_ |
 | `ANDROID_SMS_GATEWAY_PASSWORD` | _(majburiy/bo'sh)_ |
 | `ANDROID_SMS_GATEWAY_URL` | _(majburiy/bo'sh)_ |
+| `AUTO_BACKUP_IN_APP` | on |
 | `BACKUP_INTERVAL_HOURS` | 6 |
+| `BM_ALLOW_COMPANY_ADMIN_FALLBACK` | _(majburiy/bo'sh)_ |
 | `BM_ALLOW_DESTRUCTIVE_RESYNC` | _(majburiy/bo'sh)_ |
 | `BM_BROWSER_LAUNCH_TIMEOUT_MS` | 60000 |
 | `BM_BROWSER_LOGIN` | on |
+| `BM_BROWSER_LOGIN_BLOCKED_SIGNIN_COOLDOWN_S` | 21600 |
 | `BM_BROWSER_LOGIN_COOLDOWN_S` | 600 |
 | `BM_BROWSER_LOGIN_STATE` | str(default |
 | `BM_DB_DSN` | _(majburiy/bo'sh)_ |
+| `BM_DISK_PATH` | _(majburiy/bo'sh)_ |
 | `BM_ENV` | test |
 | `BM_LOG_DIR` | logs |
 | `BM_LOG_FILE` | logs/bm.log |
@@ -34,6 +38,9 @@ Jami **173** env o'zgaruvchi.
 | `BM_ORGANIZATION` | _(majburiy/bo'sh)_ |
 | `BM_PASSWORD` | _(majburiy/bo'sh)_ |
 | `BM_PROFILES_FILE` | str(Path(__file__ |
+| `BM_PROFILE_REJECT_TTL_S` | 900 |
+| `BM_REFRESH_FILE_WAIT_S` | 2.0 |
+| `BM_SLOW_QUERY_MS` | _(majburiy/bo'sh)_ |
 | `BM_TEST_MODE` | _(majburiy/bo'sh)_ |
 | `BM_TOKENS_DIR` | str(TOKENS_FILE.parent / "tokens |
 | `BM_TOKENS_FILE` | str(Path(__file__ |
@@ -43,8 +50,10 @@ Jami **173** env o'zgaruvchi.
 | `COMPANY_STIR` | _(majburiy/bo'sh)_ |
 | `DASHBOARD_ADMIN_PASS` | _(majburiy/bo'sh)_ |
 | `DASHBOARD_ADMIN_USER` | _(majburiy/bo'sh)_ |
+| `DASHBOARD_ALLOWED_HOSTS` | _(majburiy/bo'sh)_ |
 | `DASHBOARD_CORS_ORIGINS` | _(majburiy/bo'sh)_ |
 | `DASHBOARD_DOCS` | _(majburiy/bo'sh)_ |
+| `DASHBOARD_MFA_REQUIRED` | _(majburiy/bo'sh)_ |
 | `DASHBOARD_TOKEN` | _(majburiy/bo'sh)_ |
 | `FFMPEG_BIN` | ffmpeg |
 | `FINES_REPORT` | on |
@@ -58,6 +67,9 @@ Jami **173** env o'zgaruvchi.
 | `GPS_AUTO_REGISTER` | 1 |
 | `GPS_CAMERA_FRESH_S` | 900 |
 | `GPS_CAMERA_MATCH_M` | 300 |
+| `GPS_CORS_ORIGINS` | _(majburiy/bo'sh)_ |
+| `GPS_COUNTER_IN_IO` | 0 |
+| `GPS_COUNTER_OUT_IO` | 0 |
 | `GPS_HLS_DIR` | os.path.join(os.environ.get("TEMP", tempfile.gettempdir( |
 | `GPS_HLS_MAX_AGE_S` | 3600 |
 | `GPS_HLS_RELAY` | 1 |
@@ -77,6 +89,9 @@ Jami **173** env o'zgaruvchi.
 | `GPS_JT1078_LIVE_PRIME_CAP_S` | 2.0 |
 | `GPS_JT1078_LIVE_PRIME_MAX_AU` | 30 |
 | `GPS_JT1078_LIVE_PRIME_MS` | 600 |
+| `GPS_JT1078_LIVE_RESTART_MAX` | 8 |
+| `GPS_JT1078_LIVE_RESTART_MIN_S` | 20 |
+| `GPS_JT1078_LIVE_STALL_S` | 15 |
 | `GPS_JT1078_MAX_STREAMS` | 16 |
 | `GPS_JT1078_PACE_MAX_SLEEP_S` | 1.0 |
 | `GPS_JT1078_PLAYBACK_PACE` | 1 |
@@ -86,7 +101,11 @@ Jami **173** env o'zgaruvchi.
 | `GPS_JT1078_QUEUE_MAX` | 128 |
 | `GPS_JT1078_RAW_DUMP` | 0 |
 | `GPS_JT1078_THREAD_QUEUE` | 1024 |
-| `GPS_JT1078_X264_PRESET` | ultrafast |
+| `GPS_JT1078_X264_BUFSIZE` | 7000k |
+| `GPS_JT1078_X264_CRF` | 21 |
+| `GPS_JT1078_X264_CRF_PB` | 19 |
+| `GPS_JT1078_X264_MAXRATE` | 3500k |
+| `GPS_JT1078_X264_PRESET` | veryfast |
 | `GPS_JT1078_X264_THREADS` | 0 |
 | `GPS_OFFLINE_AFTER_S` | 1800 |
 | `GPS_OFFLINE_ALERT_ENABLED` | 1 |
@@ -114,10 +133,13 @@ Jami **173** env o'zgaruvchi.
 | `GPS_TCP_PORT` | 5027 |
 | `GPS_VS_MANUAL_REPORT` | 1 |
 | `GPS_VS_MANUAL_TOLERANCE_PCT` | 20 |
+| `GPS_ZLMEDIAKIT_API` | _(majburiy/bo'sh)_ |
 | `GPS_ZLMEDIAKIT_HTTP` | _(majburiy/bo'sh)_ |
 | `GPS_ZLMEDIAKIT_RTMP` | _(majburiy/bo'sh)_ |
+| `GPS_ZLMEDIAKIT_SECRET` | _(majburiy/bo'sh)_ |
+| `GRAFIK_POLL` | 1 |
 | `GROUP_DEPARTURE_NOTIFY` | off |
-| `JT1078_MEDIA_HOST` | _(majburiy/bo'sh)_ |
+| `JT1078_MEDIA_HOST` | bmbrutto.uz |
 | `JT1078_TCP_PORT` | 6107 |
 | `JT808_ENABLED` | 1 |
 | `JT808_TCP_PORT` | 6808 |
@@ -171,6 +193,7 @@ Jami **173** env o'zgaruvchi.
 | `TG_ADMIN_IDS` | _(majburiy/bo'sh)_ |
 | `TG_ALLOWED_IDS` | _(majburiy/bo'sh)_ |
 | `TG_BOT_TOKEN` | _(majburiy/bo'sh)_ |
+| `TG_BOT_USERNAME` | _(majburiy/bo'sh)_ |
 | `TG_CHAT_ID` | _(majburiy/bo'sh)_ |
 | `TG_DEFAULT_ROLE` | viewer |
 | `TG_DISPATCHER_IDS` | _(majburiy/bo'sh)_ |

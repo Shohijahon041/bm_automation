@@ -92,8 +92,8 @@
 
 - [[Bilim-bazasi]] — bosh indeks
 - [[Dashboard-auth-va-sessiya]]
-- [[Arxitektura]]
 - [[Integratsiyalar]]
+- [[Arxitektura]]
 - [[Xato-jurnali]]
 
 <!-- avto-bog'liq:end -->

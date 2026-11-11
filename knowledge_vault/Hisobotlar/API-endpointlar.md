@@ -3,15 +3,16 @@
 
 _Bu qayd avtomatik yangilanadi (`knowledge_grow`) — qo'lda tahrir keyingi kengaytirishda ustidan yoziladi._
 
-_yangilandi: 2026-10-27 01:48_
+_yangilandi: 2026-11-11 23:21_
 
-Jami **143** endpoint, 7 modulda.
+Jami **164** endpoint, 8 modulda.
 
 ## `bm_automation/app/dashboard/routers/admin.py`
 
 - `DELETE` `/api/admin/companies/{company_id}`
 - `DELETE` `/api/video/cameras/{cam_id}`
 - `GET   ` `/api/admin/avans`
+- `GET   ` `/api/admin/billing`
 - `GET   ` `/api/admin/companies/{company_id}/users`
 - `GET   ` `/api/admin/companies/{company_id}`
 - `GET   ` `/api/admin/companies`
@@ -30,10 +31,12 @@ Jami **143** endpoint, 7 modulda.
 - `GET   ` `/api/documents`
 - `GET   ` `/api/group-stats`
 - `GET   ` `/api/settings/companies`
+- `GET   ` `/api/settings/company-tokens`
 - `GET   ` `/api/settings/env`
 - `GET   ` `/api/settings`
 - `GET   ` `/api/sms-log`
 - `GET   ` `/api/sms/routes`
+- `GET   ` `/api/users/activities`
 - `GET   ` `/api/users/{uid}/driver-info`
 - `GET   ` `/api/users/{uid}/photo`
 - `GET   ` `/api/users/{uid}`
@@ -46,6 +49,9 @@ Jami **143** endpoint, 7 modulda.
 - `PATCH ` `/api/video/cameras/{cam_id}`
 - `POST  ` `/api/admin/avans/delete`
 - `POST  ` `/api/admin/avans`
+- `POST  ` `/api/admin/billing/payments/delete`
+- `POST  ` `/api/admin/billing/payments/update`
+- `POST  ` `/api/admin/billing/payments`
 - `POST  ` `/api/admin/companies/detect`
 - `POST  ` `/api/admin/companies/edit`
 - `POST  ` `/api/admin/companies/onboard`
@@ -63,6 +69,7 @@ Jami **143** endpoint, 7 modulda.
 - `POST  ` `/api/documents/{doc_id}`
 - `POST  ` `/api/documents`
 - `POST  ` `/api/settings/companies`
+- `POST  ` `/api/settings/company-tokens/refresh`
 - `POST  ` `/api/settings/env`
 - `POST  ` `/api/settings`
 - `POST  ` `/api/sms/retry`
@@ -80,10 +87,15 @@ Jami **143** endpoint, 7 modulda.
 
 - `GET   ` `/api/dashboard-users`
 - `GET   ` `/api/me`
+- `GET   ` `/api/mfa/status`
+- `GET   ` `/api/sessions`
 - `POST  ` `/api/change-password`
 - `POST  ` `/api/dashboard-users`
 - `POST  ` `/api/login`
 - `POST  ` `/api/logout`
+- `POST  ` `/api/mfa/disable`
+- `POST  ` `/api/mfa/enable`
+- `POST  ` `/api/mfa/setup`
 
 ## `bm_automation/app/dashboard/routers/data.py`
 
@@ -92,9 +104,11 @@ Jami **143** endpoint, 7 modulda.
 - `GET   ` `/api/brutto/master`
 - `GET   ` `/api/brutto`
 - `GET   ` `/api/check`
+- `GET   ` `/api/early-start`
 - `GET   ` `/api/electricity/price`
 - `GET   ` `/api/electricity`
 - `GET   ` `/api/export`
+- `GET   ` `/api/grafik-poll`
 - `GET   ` `/api/kmrate`
 - `GET   ` `/api/month`
 - `GET   ` `/api/rejects/tariff`
@@ -105,6 +119,9 @@ Jami **143** endpoint, 7 modulda.
 - `GET   ` `/api/summary`
 - `POST  ` `/api/appeals`
 - `POST  ` `/api/electricity/price`
+- `POST  ` `/api/grafik-poll/reset`
+- `POST  ` `/api/grafik-poll/send`
+- `POST  ` `/api/grafik-poll/swap`
 - `POST  ` `/api/kmrate`
 - `POST  ` `/api/rejects/tariff`
 - `POST  ` `/api/route-skm`
@@ -146,9 +163,15 @@ Jami **143** endpoint, 7 modulda.
 - `POST  ` `/api/knowledge/grow`
 - `POST  ` `/api/knowledge/note`
 
+## `bm_automation/app/dashboard/routers/service.py`
+
+- `DELETE` `/api/vehicles/{vehicle_id}/service/{row_id}`
+- `GET   ` `/api/service/upcoming`
+- `GET   ` `/api/vehicles/{vehicle_id}/service`
+- `POST  ` `/api/vehicles/{vehicle_id}/service`
+
 ## `bm_automation/app/dashboard/routers/system.py`
 
-- `GET   ` `/api/backup/run`
 - `GET   ` `/api/backup/status`
 - `GET   ` `/api/disk`
 - `GET   ` `/api/health`
@@ -164,6 +187,7 @@ Jami **143** endpoint, 7 modulda.
 - `GET   ` `/api/myai/tasks`
 - `GET   ` `/api/sync/monthly/status`
 - `GET   ` `/api/sync/status`
+- `POST  ` `/api/backup/run`
 - `POST  ` `/api/myai/task/cancel`
 - `POST  ` `/api/myai/task/pause`
 - `POST  ` `/api/myai/task/resume`
@@ -175,9 +199,9 @@ Jami **143** endpoint, 7 modulda.
 ## Bog'liq qaydlar
 
 - [[Bilim-bazasi]] — bosh indeks
+- [[Log-tahlili]]
 - [[Bot-buyruqlari]]
 - [[Bilim-bazasini-yuritish]]
 - [[GPS-kuzatuv]]
-- [[Log-tahlili]]
 
 <!-- avto-bog'liq:end -->

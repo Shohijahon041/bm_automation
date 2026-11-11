@@ -5622,12 +5622,16 @@ function _vaultBindDirty(){
 }
 function _vaultMd(src){
   const lines = String(src || "").replace(/\r\n/g, "\n").split("\n");
-  const inline = s => s
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (m, target, label) =>
-      '<a href="#" data-wikilink="' + target.trim() + '">' +
+  const inline = s => {
+    const codes = [];
+    s = s.replace(/`([^`]+)`/g, (_, c) => { codes.push(c); return `\u0001C_${codes.length - 1}\u0001`; });
+    s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    s = s.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, target, label) =>
+      '<a href="#" data-wikilink="' + escAttr(target.trim()) + '">' +
       esc((label || target).trim()) + "</a>");
+    s = s.replace(/\u0001C_(\d+)\u0001/g, (_, i) => "<code>" + esc(codes[i]) + "</code>");
+    return s;
+  };
   const out = [];
   let inCode = false, inList = false;
   for (const raw of lines) {
@@ -5949,7 +5953,13 @@ async function loadVaultGraphStatus(){
 let _vgAll = null;                 // {nodes, edges, byId} — to'liq graf
 let _vgNodes = [], _vgEdges = [];  // ko'rinayotgan qism (lokal grafda qism)
 let _vgAlpha = 0, _vgAlphaTarget = 0, _vgRaf = 0;
-let _vgHover = "", _vgQuery = "", _vgFocus = "", _vgDepth = 1;
+let _vgHover = "", _vgQuery = "", _vgFocus = "", _vgDepth = 1, _vgCatFilter = "";
+function _vgToggleCatFilter(cat){
+  _vgCatFilter = (_vgCatFilter === cat) ? "" : cat;
+  _vgApplyView();
+  _vgFit();
+  _vgReheat(0.4);
+}
 /* Ko'rinish (zoom/pan): ekran = world * k + (x, y) */
 let _vgView = {k: 1, x: 0, y: 0};
 let _vgDrag = null, _vgMoved = false, _vgDown = null;
@@ -5990,8 +6000,14 @@ function vaultToggleGraph(){
     btn.setAttribute("aria-pressed", show ? "true" : "false");
     btn.textContent = show ? "RO'YXAT" : "GRAFIK";
   }
-  if (show) loadVaultGraph();
-  else { _vgStop(); loadVault(); }
+  if (show){
+    requestAnimationFrame(() => {
+      loadVaultGraph();
+    });
+  } else {
+    _vgStop();
+    loadVault();
+  }
 }
 async function loadVaultGraph(){
   const wrap = _vgWrap();
@@ -6082,7 +6098,7 @@ function _vgStep(){
   if (!n) return;
   const {w, h} = _vgSize(cv);
   const cx = w / 2, cy = h / 2;
-  const k = Math.sqrt((w * h) / n) * 0.46;
+  const k = Math.sqrt((w * h) / n) * 0.52;
   const alpha = _vgAlpha;
   for (let i = 0; i < n; i++){
     const a = _vgNodes[i];
@@ -6090,51 +6106,72 @@ function _vgStep(){
       const b = _vgNodes[j];
       let dx = b.x - a.x, dy = b.y - a.y;
       let d2 = dx * dx + dy * dy;
-      if (d2 < 1){ dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 1; }
+      if (d2 < 4){ dx = (Math.random() - 0.5) * 2; dy = (Math.random() - 0.5) * 2; d2 = 4; }
       const d = Math.sqrt(d2);
-      const f = (k * k) / d2 * alpha;
+      const f = ((k * k) / (d2 + 80)) * alpha;
       const fx = (dx / d) * f, fy = (dy / d) * f;
       a.vx -= fx; a.vy -= fy; b.vx += fx; b.vy += fy;
     }
-    a.vx += (cx - a.x) * 0.016 * alpha;
-    a.vy += (cy - a.y) * 0.016 * alpha;
+    a.vx += (cx - a.x) * 0.012 * alpha;
+    a.vy += (cy - a.y) * 0.012 * alpha;
   }
   for (const e of _vgEdges){
     const a = e.a, b = e.b;
     if (!a || !b) continue;
     const dx = b.x - a.x, dy = b.y - a.y;
     const d = Math.sqrt(dx * dx + dy * dy) || 1;
-    const f = (d - k * 0.9) * 0.05 * alpha;
+    const restLen = k * (0.8 + Math.min(1.2, (a.deg + b.deg) * 0.03));
+    const f = (d - restLen) * 0.045 * alpha;
     const fx = (dx / d) * f, fy = (dy / d) * f;
     a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
   }
   for (const a of _vgNodes){
-    if (a.fx != null){        // sudralayotgan tugun — qo'lda ushlab turilgan
+    if (a.fx != null){
       a.x = a.fx; a.y = a.fy; a.vx = 0; a.vy = 0;
       continue;
     }
-    a.vx *= 0.86; a.vy *= 0.86;
-    a.x += Math.max(-16, Math.min(16, a.vx));
-    a.y += Math.max(-16, Math.min(16, a.vy));
-    a.x = Math.max(a.r + 4, Math.min(w - a.r - 4, a.x));
-    a.y = Math.max(a.r + 12, Math.min(h - a.r - 4, a.y));
+    a.vx *= 0.85; a.vy *= 0.85;
+    const sp = Math.hypot(a.vx, a.vy);
+    if (sp > 18){ a.vx = (a.vx / sp) * 18; a.vy = (a.vy / sp) * 18; }
+    a.x += a.vx;
+    a.y += a.vy;
   }
-  _vgAlpha += (_vgAlphaTarget - _vgAlpha) * 0.055;
-  if (_vgAlphaTarget === 0 && _vgAlpha < 0.004) _vgAlpha = 0;
+  _vgAlpha += (_vgAlphaTarget - _vgAlpha) * 0.05;
+  if (_vgAlphaTarget === 0 && _vgAlpha < 0.003) _vgAlpha = 0;
+}
+function _vgDrawGrid(ctx, w, h, view, light){
+  if (view.k < 0.38) return;
+  const step = 45, pad = 60;
+  const minX = Math.floor((-view.x / view.k - pad) / step) * step;
+  const minY = Math.floor((-view.y / view.k - pad) / step) * step;
+  const maxX = Math.ceil(((w - view.x) / view.k + pad) / step) * step;
+  const maxY = Math.ceil(((h - view.y) / view.k + pad) / step) * step;
+  ctx.fillStyle = light ? "rgba(100,116,139,0.07)" : "rgba(148,163,184,0.07)";
+  for (let gx = minX; gx <= maxX; gx += step){
+    for (let gy = minY; gy <= maxY; gy += step){
+      ctx.beginPath();
+      ctx.arc(gx, gy, 1 / view.k, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
 }
 function _vgDraw(cv){
   const {w, h} = _vgSize(cv);
-  const dpr = window.devicePixelRatio || 1;
-  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)){
-    cv.width = Math.round(w * dpr);
-    cv.height = Math.round(h * dpr);
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const needW = Math.round(w * dpr);
+  const needH = Math.round(h * dpr);
+  if (cv.width !== needW || cv.height !== needH){
+    cv.width = needW;
+    cv.height = needH;
   }
   const ctx = cv.getContext("2d");
   if (!ctx) return;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, cv.width, cv.height);
   const light = _vgTheme() === "l";
   const view = _vgView;
   ctx.setTransform(dpr * view.k, 0, 0, dpr * view.k, dpr * view.x, dpr * view.y);
-  ctx.clearRect(0, 0, w, h);
+  _vgDrawGrid(ctx, w, h, view, light);
   const hover = _vgHover, focus = _vgFocus;
   const q = _vgQuery.toLowerCase();
   const matches = id => {
@@ -6157,10 +6194,10 @@ function _vgDraw(cv){
   for (const e of _vgEdges){
     const on = edgeOn(e), dim = hover && !on;
     ctx.strokeStyle = on
-      ? (light ? "rgba(30,41,59,.55)" : "rgba(226,232,240,.75)")
-      : (dim ? (light ? "rgba(100,116,139,.10)" : "rgba(148,163,184,.09)")
-             : (light ? "rgba(100,116,139,.26)" : "rgba(148,163,184,.30)"));
-    ctx.lineWidth = (on ? 1.7 : 1) / view.k;
+      ? (light ? "rgba(4, 120, 87, 0.85)" : "rgba(79, 216, 189, 0.9)")
+      : (dim ? (light ? "rgba(100,116,139,.06)" : "rgba(148,163,184,.05)")
+             : (light ? "rgba(100,116,139,.20)" : "rgba(148,163,184,.22)"));
+    ctx.lineWidth = (on ? 2.2 : 1) / view.k;
     ctx.beginPath(); ctx.moveTo(e.a.x, e.a.y); ctx.lineTo(e.b.x, e.b.y); ctx.stroke();
   }
   // Kichik tugunlar avval, katta (hub) tugunlar ustida — Obsidian'da ham shunday.
@@ -6250,9 +6287,16 @@ function _vgZoomAt(f, mx, my){
 function _vgApplyView(){
   if (!_vgAll){ _vgNodes = []; _vgEdges = []; _vgUpdateChrome(); return; }
   const all = _vgAll;
+  let baseNodes = all.nodes;
+  let baseEdges = all.edges;
+  if (_vgCatFilter){
+    const catKeep = new Set(baseNodes.filter(n => n.category === _vgCatFilter).map(n => n.id));
+    baseNodes = baseNodes.filter(n => catKeep.has(n.id));
+    baseEdges = baseEdges.filter(e => catKeep.has(e.s) && catKeep.has(e.t));
+  }
   if (!_vgFocus || !all.byId[_vgFocus]){
-    _vgNodes = all.nodes;
-    _vgEdges = all.edges;
+    _vgNodes = baseNodes;
+    _vgEdges = baseEdges;
   } else {
     const keep = new Set([_vgFocus]);
     let frontier = [_vgFocus];
@@ -6449,7 +6493,7 @@ function _vgBindCanvas(cv){
     }
     if (_vgDrag && _vgDrag.id === ev.pointerId){
       const moved = _vgDown
-        ? Math.hypot(ev.clientX - _vgDown.x, ev.clientY - _vgDown.y) > 3 : true;
+        ? Math.hypot(ev.clientX - _vgDown.x, ev.clientY - _vgDown.y) > 6 : true;
       if (moved) _vgMoved = true;
       if (_vgDrag.node){
         const a = _vgDrag.node, p = _vgToWorld(cv, ev);

@@ -3,71 +3,63 @@
 
 _Bu qayd avtomatik yangilanadi (`knowledge_grow`) — qo'lda tahrir keyingi kengaytirishda ustidan yoziladi._
 
-_yangilandi: 2026-10-27 01:48_
+_yangilandi: 2026-11-11 23:21_
 
 Manba: `C:\Users\User\OneDrive\Документы\Default Project\logs\bm.log` (oxirgi 400 KB)
 
-Jami **81** muammo satri, 34 xil imzo.
+Jami **16** muammo satri, 13 xil imzo.
 
-### 10× — `bm_automation.db | DB mavjud emas (postgres): connection timeout expired`
+### 4× — `bm_automation.app.notifications.ops.early_start | erta qatnov: AND ECO TRANSPORT MCHJ client xatosi: [AND ECO `
 
-> 2026-10-27 00:44:26 | WARNING | bm_automation.db | DB mavjud emas (postgres): connection timeout expired
+> 2026-11-11 20:36:06 | WARNING | bm_automation.app.notifications.ops.early_start | erta qatnov: AND ECO TRANSPORT MCHJ client xatosi: [AND ECO TRANSPORT MCHJ] client qurish xatosi: kompaniya tokeni olinmadi: API xatosi (HTTP 0): login so'rov
 
-### 4× — `myai.reviewer | LLM call xatosi: LLM yo'q`
+### 1× — `bm_automation.dashboard.monitor | Monitoring muammo topdi: {'disk': False, 'db': True, 'backup': True}`
 
-> 2026-10-27 00:53:39 | ERROR   | myai.reviewer | LLM call xatosi: LLM yo'q
+> 2026-11-11 20:35:54 | WARNING | bm_automation.dashboard.monitor | Monitoring muammo topdi: {'disk': False, 'db': True, 'backup': True}
 
-### 4× — `myai.reviewer | LLM tekshiruvi ishlamadi: LLM yo'q — local tekshiruv`
+### 1× — `myai.master | LLM call xatosi: Barcha LLM providerlar ishlamadi: openrouter: ("Connection broken: ConnectionRe`
 
-> 2026-10-27 00:53:39 | WARNING | myai.reviewer | LLM tekshiruvi ishlamadi: LLM yo'q — local tekshiruv
+> 2026-11-11 20:36:05 | ERROR   | myai.master | LLM call xatosi: Barcha LLM providerlar ishlamadi: openrouter: ("Connection broken: ConnectionResetError(10054, 'Удаленный хост принудительно разорвал существующее подключение', None, 10054, Non
 
-### 4× — `myai.reviewer | Self-check rad etdi (analytics_calculate): ['Invariant buzildi: accepted (N) + not_accepted (N`
+### 1× — `myai.master | Intent aniqlanmadi: Barcha LLM providerlar ishlamadi: openrouter: ("Connection broken: Connectio`
 
-> 2026-10-27 00:53:39 | WARNING | myai.reviewer | Self-check rad etdi (analytics_calculate): ['Invariant buzildi: accepted (8) + not_accepted (5) != total_trips (10)']
+> 2026-11-11 20:36:05 | WARNING | myai.master | Intent aniqlanmadi: Barcha LLM providerlar ishlamadi: openrouter: ("Connection broken: ConnectionResetError(10054, 'Удаленный хост принудительно разорвал существующее подключение', None, 10054, 
 
-### 2× — `bm_automation.db | Xavfsizlik: schedules replace-sync o'chirishi bloklandi (upstream bo'sh: N/N qator). Upstre`
+### 1× — `myai.planner | LLM call xatosi: Barcha LLM providerlar ishlamadi: openrouter: OpenRouter API ulanib bo'lmadi: `
 
-> 2026-10-27 00:44:55 | WARNING | bm_automation.db | Xavfsizlik: schedules replace-sync o'chirishi bloklandi (upstream bo'sh: 2/2 qator). Upstream javoni bo'sh/noto'g'ri bo'lishi mumkin. Ruxsat uchun: BM_ALLOW_DESTRUCTIVE_RESYNC=1
+> 2026-11-11 20:36:06 | ERROR   | myai.planner | LLM call xatosi: Barcha LLM providerlar ishlamadi: openrouter: OpenRouter API ulanib bo'lmadi: HTTPSConnectionPool(host='openrouter.ai', port=443): Max retries exceeded with url: /api/v1/chat/c
 
-### 2× — `bm_automation.db | Xavfsizlik: schedules replace-sync o'chirishi bloklandi (o'chiriladigan ulush juda katta: N`
+### 1× — `myai.planner | LLM plan yarata olmadi: Barcha LLM providerlar ishlamadi: openrouter: OpenRouter API ulanib bo'`
 
-> 2026-10-27 00:44:55 | WARNING | bm_automation.db | Xavfsizlik: schedules replace-sync o'chirishi bloklandi (o'chiriladigan ulush juda katta: 590/600 qator). Upstream javoni bo'sh/noto'g'ri bo'lishi mumkin. Ruxsat uchun: BM_ALLOW_DESTRUCTIVE
+> 2026-11-11 20:36:06 | WARNING | myai.planner | LLM plan yarata olmadi: Barcha LLM providerlar ishlamadi: openrouter: OpenRouter API ulanib bo'lmadi: HTTPSConnectionPool(host='openrouter.ai', port=443): Max retries exceeded with url: /api/v1
 
-### 2× — `bm_automation.db | Xavfsizlik: driver_work_logs eski qatorlar o'chirilmadi — trips so'rovi N qatorda N chegara`
+### 1× — `bm_automation.app.notifications.ops.early_start | erta qatnov: ASL SUNDAY MCHJ client xatosi: [ASL SUNDAY MCHJ`
 
-> 2026-10-27 00:44:56 | WARNING | bm_automation.db | Xavfsizlik: driver_work_logs eski qatorlar o'chirilmadi — trips so'rovi 50000 qatorda 50000 chegarasiga tegdi. Manba (trips) to'liq o'qilmagan bo'lishi mumkin, o'chirish esa haqiqiy ma'lumo
+> 2026-11-11 20:36:06 | WARNING | bm_automation.app.notifications.ops.early_start | erta qatnov: ASL SUNDAY MCHJ client xatosi: [ASL SUNDAY MCHJ] client qurish xatosi: kompaniya tokeni olinmadi: API xatosi (HTTP 0): login so'rovi tarmoq xatos
 
-### 2× — `bm_automation.bot | sendMessage xatosi: Telegram xatosi: Bad Request: chat not found`
+### 1× — `bm_automation.app.notifications.ops.early_start | erta qatnov: FERGANATEX client xatosi: [FERGANATEX] client q`
 
-> 2026-10-27 00:46:04 | WARNING | bm_automation.bot | sendMessage xatosi: Telegram xatosi: Bad Request: chat not found
+> 2026-11-11 20:36:06 | WARNING | bm_automation.app.notifications.ops.early_start | erta qatnov: FERGANATEX client xatosi: [FERGANATEX] client qurish xatosi: kompaniya tokeni olinmadi: API xatosi (HTTP 0): login so'rovi tarmoq xatosi. Boshqa 
 
-### 2× — `myai.orchestrator | Topshiriq uzildi (cancel): t_ext`
+### 1× — `bm_automation.app.notifications.ops.early_start | erta qatnov: DEMAND TRANS SERVIS MCHJ client xatosi: [DEMAND`
 
-> 2026-10-27 00:48:29 | WARNING | myai.orchestrator | Topshiriq uzildi (cancel): t_ext
+> 2026-11-11 20:36:06 | WARNING | bm_automation.app.notifications.ops.early_start | erta qatnov: DEMAND TRANS SERVIS MCHJ client xatosi: [DEMAND TRANS SERVIS MCHJ] client qurish xatosi: kompaniya tokeni olinmadi: API xatosi (HTTP 0): login so
 
-### 2× — `myai.browser_agent | DB bo'sh — API/browser ga o'tiladi`
+### 1× — `bm_automation.bot | sendMessage xatosi: HTTPSConnectionPool(host='api.telegram.org', port=N): Max retries exce`
 
-> 2026-10-27 00:48:29 | WARNING | myai.browser_agent | DB bo'sh — API/browser ga o'tiladi
+> 2026-11-11 20:36:18 | WARNING | bm_automation.bot | sendMessage xatosi: HTTPSConnectionPool(host='api.telegram.org', port=443): Max retries exceeded with url: /bot7603032337:AAFEC2l4VoCWyi6Q2Ib6dthL6U5NgZXZNNA/sendMessage (Caused by NameRes
 
-### 2× — `myai.browser_agent | API bo'sh qaytardi — browserga o'tiladi`
+### 1× — `bm_automation.bot | OpenRouter javob olmadi, lokal rejimga o'tildi: API down`
 
-> 2026-10-27 00:48:29 | WARNING | myai.browser_agent | API bo'sh qaytardi — browserga o'tiladi
+> 2026-11-11 20:36:20 | WARNING | bm_automation.bot | OpenRouter javob olmadi, lokal rejimga o'tildi: API down
 
-### 2× — `myai.browser_agent | Browser ham ishlamadi — DB ga o'tiladi`
+### 1× — `bm_automation.bot | OpenRouter javob olmadi, lokal rejimga o'tildi: down`
 
-> 2026-10-27 00:48:29 | WARNING | myai.browser_agent | Browser ham ishlamadi — DB ga o'tiladi
+> 2026-11-11 20:36:23 | WARNING | bm_automation.bot | OpenRouter javob olmadi, lokal rejimga o'tildi: down
 
-### 2× — `myai.master | LLM call timeout (N.2s):`
+### 1× — `bm_automation.db | DB mavjud emas (postgres): connection timeout expired`
 
-> 2026-10-27 00:48:30 | ERROR   | myai.master | LLM call timeout (0.2s):
-
-### 2× — `myai.reviewer | LLM tekshiruvi ishlamadi: — local tekshiruv`
-
-> 2026-10-27 00:48:33 | WARNING | myai.reviewer | LLM tekshiruvi ishlamadi:  — local tekshiruv
-
-### 2× — `myai.test.transport | Tool timeout (5s): demo.read`
-
-> 2026-10-27 00:48:34 | ERROR   | myai.test.transport | Tool timeout (5s): demo.read
+> 2026-11-11 22:37:03 | WARNING | bm_automation.db | DB mavjud emas (postgres): connection timeout expired
 
 Tuzatish topilgach qoidani `Qoidalar/` yoki `Xatolar/` qaydiga yozing — agentlar keyingi vazifada o'qiydi.
 
@@ -75,9 +67,9 @@ Tuzatish topilgach qoidani `Qoidalar/` yoki `Xatolar/` qaydiga yozing — agentl
 ## Bog'liq qaydlar
 
 - [[Bilim-bazasi]] — bosh indeks
-- [[Agentlar-arxitekturasi]]
-- [[Bilim-bazasini-yuritish]]
+- [[API-endpointlar]]
 - [[Xavfsizlik]]
-- [[Test-va-tekshiruv]]
+- [[Arxitektura]]
+- [[and-eco-token]]
 
 <!-- avto-bog'liq:end -->

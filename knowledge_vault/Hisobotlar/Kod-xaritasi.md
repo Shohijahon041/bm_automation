@@ -3,20 +3,20 @@
 
 _Bu qayd avtomatik yangilanadi (`knowledge_grow`) — qo'lda tahrir keyingi kengaytirishda ustidan yoziladi._
 
-_yangilandi: 2026-10-27 01:48_
+_yangilandi: 2026-11-11 23:21_
 
-Jami: **223** python fayl, **62727** qator.
+Jami: **233** python fayl, **71548** qator.
 
-## app (198 fayl, 61270 qator)
+## app (208 fayl, 70036 qator)
 
 - `app/__init__.py` (5 qator)
 
-## cli (5 fayl, 1165 qator)
+## cli (5 fayl, 1220 qator)
 
 - `cli/__init__.py` (1 qator) — CLI paketi — `python -m bm_automation <buyruq>`.
-- `cli/commands.py` (480 qator)
+- `cli/commands.py` (531 qator)
 - `cli/common.py` (27 qator)
-- `cli/db_commands.py` (337 qator)
+- `cli/db_commands.py` (341 qator)
 - `cli/parser.py` (320 qator)
 
 ## (ildiz) (20 fayl, 292 qator)
@@ -44,7 +44,7 @@ Jami: **223** python fayl, **62727** qator.
 
 ## Testlar papkasi
 
-- `tests/` — 72 fayl, 25760 qator.
+- `tests/` — 82 fayl, 31584 qator.
 
 <!-- avto-bog'liq:start -->
 ## Bog'liq qaydlar
@@ -52,7 +52,7 @@ Jami: **223** python fayl, **62727** qator.
 - [[Bilim-bazasi]] — bosh indeks
 - [[Testlar]]
 - [[Xato-jurnali]]
-- [[Log-tahlili]]
 - [[profiles-ruxsat]]
+- [[Kod-va-uslub]]
 
 <!-- avto-bog'liq:end -->

@@ -101,8 +101,8 @@ Tashqi TCP portlar: `5027` (Teltonika), `6808` (JT808), `6107` (JT1078).
 
 - [[Bilim-bazasi]] — bosh indeks
 - [[GPS-kuzatuv]]
-- [[Arxitektura]]
 - [[Ish-oqimlari]]
+- [[Arxitektura]]
 - [[Xavfsizlik]]
 
 <!-- avto-bog'liq:end -->

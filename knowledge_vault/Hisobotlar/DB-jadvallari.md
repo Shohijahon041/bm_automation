@@ -3,13 +3,13 @@
 
 _Bu qayd avtomatik yangilanadi (`knowledge_grow`) — qo'lda tahrir keyingi kengaytirishda ustidan yoziladi._
 
-_yangilandi: 2026-10-27 01:48_
+_yangilandi: 2026-11-11 23:21_
 
-Jami **29** jadval.
+Jami **31** jadval.
 
-- Ko'p korxonali (`company_id`) jadvallar: 23
+- Ko'p korxonali (`company_id`) jadvallar: 24
 
-## `companies` (16 ustun)
+## `companies` (18 ustun)
 
 - `name` TEXT NOT NULL DEFAULT ''
 - `slug` TEXT NOT NULL DEFAULT ''
@@ -27,6 +27,8 @@ Jami **29** jadval.
 - `contact_telegram` TEXT NOT NULL DEFAULT ''
 - `contact_phone` TEXT NOT NULL DEFAULT ''
 - `notes` TEXT NOT NULL DEFAULT ''
+- `billing_amount` REAL NOT NULL DEFAULT 0
+- `billing_day` INTEGER NOT NULL DEFAULT 5
 
 ## `profiles` (11 ustun) · `company_id`
 
@@ -62,6 +64,22 @@ Jami **29** jadval.
 - `model` TEXT NOT NULL DEFAULT ''
 - `route_id` TEXT NOT NULL DEFAULT ''
 - `data` TEXT NOT NULL DEFAULT '{}'
+- `company_id` BIGINT NOT NULL DEFAULT 0
+- `created_by` TEXT NOT NULL DEFAULT ''
+- `updated_by` TEXT NOT NULL DEFAULT ''
+
+## `vehicle_service_logs` (13 ustun) · `company_id`
+
+- `vehicle_id` TEXT NOT NULL
+- `route_id` TEXT NOT NULL DEFAULT ''
+- `service_date` TEXT NOT NULL DEFAULT ''
+- `service_type` TEXT NOT NULL DEFAULT ''
+- `odometer` INTEGER NOT NULL DEFAULT 0
+- `cost` REAL NOT NULL DEFAULT 0
+- `vendor` TEXT NOT NULL DEFAULT ''
+- `note` TEXT NOT NULL DEFAULT ''
+- `next_service_date` TEXT NOT NULL DEFAULT ''
+- `next_service_km` INTEGER NOT NULL DEFAULT 0
 - `company_id` BIGINT NOT NULL DEFAULT 0
 - `created_by` TEXT NOT NULL DEFAULT ''
 - `updated_by` TEXT NOT NULL DEFAULT ''
@@ -360,7 +378,7 @@ Jami **29** jadval.
 - `created_by` TEXT NOT NULL DEFAULT ''
 - `updated_by` TEXT NOT NULL DEFAULT ''
 
-## `dashboard_users` (10 ustun) · `company_id`
+## `dashboard_users` (11 ustun) · `company_id`
 
 - `username` TEXT NOT NULL
 - `salt` TEXT NOT NULL DEFAULT ''
@@ -369,6 +387,7 @@ Jami **29** jadval.
 - `company` TEXT NOT NULL DEFAULT ''
 - `active` INTEGER NOT NULL DEFAULT 1
 - `data` TEXT NOT NULL DEFAULT '{}'
+- `totp_secret` TEXT NOT NULL DEFAULT ''
 - `company_id` BIGINT NOT NULL DEFAULT 0
 - `created_by` TEXT NOT NULL DEFAULT ''
 - `updated_by` TEXT NOT NULL DEFAULT ''
@@ -385,17 +404,32 @@ Jami **29** jadval.
 - `created_by` TEXT NOT NULL DEFAULT ''
 - `updated_by` TEXT NOT NULL DEFAULT ''
 
-## `video_audit` (9 ustun) · `company_id`
+## `video_audit` (11 ustun) · `company_id`
 
 - `camera_id` BIGINT NOT NULL
 - `user_id` BIGINT NOT NULL
 - `username` TEXT NOT NULL
 - `action` TEXT NOT NULL
+- `channel` INTEGER NOT NULL DEFAULT 1
+- `vehicle_id` TEXT NOT NULL DEFAULT ''
 - `ip` TEXT NOT NULL DEFAULT ''
 - `duration_s` INTEGER NOT NULL DEFAULT 0
 - `company_id` BIGINT NOT NULL DEFAULT 0
 - `created_by` TEXT NOT NULL DEFAULT ''
 - `updated_by` TEXT NOT NULL DEFAULT ''
+
+## `company_payments` (10 ustun)
+
+- `company_id` BIGINT NOT NULL DEFAULT 0
+- `company` TEXT NOT NULL DEFAULT ''
+- `period` TEXT NOT NULL DEFAULT ''
+- `amount` REAL NOT NULL DEFAULT 0
+- `method` TEXT NOT NULL DEFAULT 'cash'
+- `contract_no` TEXT NOT NULL DEFAULT ''
+- `receipt_no` TEXT NOT NULL DEFAULT ''
+- `paid_on` TEXT NOT NULL DEFAULT ''
+- `note` TEXT NOT NULL DEFAULT ''
+- `created_by` TEXT NOT NULL DEFAULT ''
 
 <!-- avto-bog'liq:start -->
 ## Bog'liq qaydlar

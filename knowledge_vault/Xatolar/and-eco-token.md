@@ -53,9 +53,9 @@ Bog'liq: [[Ish-oqimlari]], [[Integratsiyalar]], [[oylik-takror]].
 ## Bog'liq qaydlar
 
 - [[Bilim-bazasi]] — bosh indeks
+- [[Integratsiyalar]]
 - [[Xato-jurnali]]
 - [[Ish-oqimlari]]
 - [[Kop-korxonali-izolyatsiya]]
-- [[Integratsiyalar]]
 
 <!-- avto-bog'liq:end -->
